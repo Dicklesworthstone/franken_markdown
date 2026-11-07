@@ -3,8 +3,7 @@
 
 use franken_markdown::verify::{verify_pdf, verify_pdf_result};
 use franken_markdown::{
-    BaselineGrid, PdfOptions, RenderError, parse_markdown, render_pdf_document,
-    render_pdf_reported,
+    BaselineGrid, PdfOptions, RenderError, parse_markdown, render_pdf_document, render_pdf_reported,
 };
 
 fn tight_options() -> PdfOptions {
@@ -38,7 +37,11 @@ fn best_effort_verification_retains_a_typed_fallback_finding() {
     let mut opts = tight_options();
     opts.strict_pagination = false;
     opts.optimal_pagination = true;
-    assert!(render_pdf_document(&doc, &opts).unwrap().starts_with(b"%PDF-"));
+    assert!(
+        render_pdf_document(&doc, &opts)
+            .unwrap()
+            .starts_with(b"%PDF-")
+    );
     let report = verify_pdf_result(&doc, &opts).unwrap();
     assert_eq!(report.verdict, "findings");
     assert!(

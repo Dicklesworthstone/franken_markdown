@@ -72,6 +72,7 @@ pub(crate) mod source_navigation;
 mod table_panels;
 mod text_composition;
 mod text_positioning;
+mod toc_convergence;
 
 #[cfg(test)]
 mod text_positioning_tests;
@@ -2685,16 +2686,18 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         if opts.requests_optimal_pagination() || has_inline_math {
             let prepared = crate::transform_footnotes_for_pdf(doc, opts);
             let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
-            let (lines, paragraph_variants) =
-                layout_with_pagination_report(&prepared.blocks, &effective, &faces, page);
-            inline_math_fit::append_warnings(&lines, &mut warnings);
-            if opts.requests_optimal_pagination() {
-                let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
-                PdfPaginationReport {
-                    page_breaks,
-                    paragraph_variants,
+            if let Ok((lines, paragraph_variants)) =
+                layout_with_pagination_report(&prepared.blocks, &effective, &faces, page)
+            {
+                inline_math_fit::append_warnings(&lines, &mut warnings);
+                if opts.requests_optimal_pagination() {
+                    let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
+                    PdfPaginationReport {
+                        page_breaks,
+                        paragraph_variants,
+                    }
+                    .append_warnings(&mut warnings);
                 }
-                .append_warnings(&mut warnings);
             }
         }
         let mut text = Vec::new();
@@ -2952,8 +2955,9 @@ fn fit_to_target_pages(
     target_pages: usize,
 ) -> (PdfOptions, PageGeom) {
     let base_page = PageGeom::from_theme(&opts.theme);
-    let initial_lines = layout(&doc.blocks, opts, faces, base_page);
-    let initial_pages = page_count_for_fit(&initial_lines, base_page, opts);
+    let initial_pages = layout_with_pagination_report(&doc.blocks, opts, faces, base_page)
+        .ok()
+        .and_then(|(lines, _)| page_count_for_fit(&lines, base_page, opts));
 
     if initial_pages.is_some_and(|pages| pages <= target_pages) {
         return (opts.clone(), base_page);
@@ -2987,8 +2991,10 @@ fn fit_to_target_pages(
         };
 
         let candidate_page = PageGeom::from_theme(&candidate_opts.theme);
-        let lines = layout(&doc.blocks, &candidate_opts, faces, candidate_page);
-        let pages = page_count_for_fit(&lines, candidate_page, &candidate_opts);
+        let pages =
+            layout_with_pagination_report(&doc.blocks, &candidate_opts, faces, candidate_page)
+                .ok()
+                .and_then(|(lines, _)| page_count_for_fit(&lines, candidate_page, &candidate_opts));
 
         if pages.is_some_and(|pages| pages <= target_pages) {
             best_opts = candidate_opts;
@@ -3056,7 +3062,7 @@ fn render_inner(
         "block layout, text measuring, and paragraph line breaking",
         || layout_with_pagination_report(&doc.blocks, &effective_opts, &faces, page),
         |_| 0,
-    );
+    )?;
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
     let (bytes, page_breaks, outlines) = serialize(
@@ -3350,6 +3356,7 @@ struct PdfTocEntry {
     level: u8,
     title: String,
     id: String,
+    page_label_widths: toc_convergence::PageLabelWidths,
 }
 
 fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
@@ -3395,6 +3402,7 @@ fn collect_pdf_toc_entries(blocks: &[Block]) -> Vec<PdfTocEntry> {
                         level: *level,
                         title: source.title,
                         id,
+                        page_label_widths: toc_convergence::PageLabelWidths::default(),
                     });
                 }
                 Block::BlockQuote(inner) => walk(inner, state, entries),
@@ -3412,11 +3420,12 @@ fn collect_pdf_toc_entries(blocks: &[Block]) -> Vec<PdfTocEntry> {
 }
 
 fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
-    let filtered: Vec<PdfTocEntry> = cx
+    let filtered: Vec<usize> = cx
         .toc_entries
         .iter()
-        .filter(|e| max_depth.is_none_or(|max| e.level <= max))
-        .cloned()
+        .enumerate()
+        .filter(|(_, entry)| max_depth.is_none_or(|max| entry.level <= max))
+        .map(|(index, _)| index)
         .collect();
     if filtered.is_empty() {
         return;
@@ -3430,20 +3439,26 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
     let space_w = cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, " ", fs).to_points_f32();
 
     gap(out, 6.0);
-    for entry in filtered {
+    for entry_index in filtered {
+        let entry = &cx.toc_entries[entry_index];
         let level_indent = ((entry.level.saturating_sub(1)) as f32) * 14.0;
-        let page_num = cx.toc_page_map.get(&entry.id).copied().unwrap_or(1);
+        let id = entry.id.clone();
+        let title = entry.title.clone();
+        let page_num = cx.toc_page_map.get(&id).copied().unwrap_or(1);
         let page_str = format!("{page_num}");
         let page_w =
             cached_shaped_width(cx.faces, &cx.width_cache, F_BODY, &page_str, fs).to_points_f32();
+        let page_column_w = cx.toc_entries[entry_index]
+            .page_label_widths
+            .column_width(fs, page_w);
         let right_x = cx.page.right_x();
         let base_x = cx.page.left + indent;
-        let title_right = right_x - page_w - 2.0 * space_w;
+        let title_right = right_x - page_column_w - 2.0 * space_w;
         let max_indent = (title_right - base_x - 2.0 * font_size).max(0.0);
         let left_x = base_x + level_indent.min(max_indent);
         let title_width = (title_right - left_x).max(1.0);
         let mut toks = Vec::new();
-        push_text_tokens(&entry.title, F_BODY, false, None, &mut toks);
+        push_text_tokens(&title, F_BODY, false, None, &mut toks);
         apply_symbol_fallback(&mut toks, cx.faces);
         let wrapped = wrap_cell_styled(&toks, title_width, font_size, cx.faces, &cx.width_cache);
         let count = wrapped.len();
@@ -3458,7 +3473,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     slot: run.slot,
                     text_hash: seg_text_hash(&run.text),
                     text: run.text,
-                    link: Some(LinkTarget::Fragment(entry.id.clone())),
+                    link: Some(LinkTarget::Fragment(id.clone())),
                     fill: Fill::Black,
                     strike: false,
                     task: None,
@@ -3468,7 +3483,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 x += run.width;
             }
             if last {
-                append_pdf_toc_page(&mut segs, &entry.id, x, right_x, &page_str, font_size, cx);
+                append_pdf_toc_page(&mut segs, &id, x, right_x, &page_str, font_size, cx);
             }
             out.push(Line {
                 size: font_size,
@@ -3570,8 +3585,12 @@ fn append_pdf_toc_page(
 
 // ---- layout -----------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(clippy::expect_used)]
 fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) -> Vec<Line> {
-    layout_with_pagination_report(blocks, opts, faces, page).0
+    layout_with_pagination_report(blocks, opts, faces, page)
+        .expect("test layout must have consistent TOC page numbers")
+        .0
 }
 
 fn layout_with_pagination_report(
@@ -3579,7 +3598,7 @@ fn layout_with_pagination_report(
     opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
-) -> (Vec<Line>, PdfParagraphVariantReport) {
+) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
     inline_image::prepare(blocks, &opts.image_assets, faces);
     let markers = crate::toc::markers(blocks);
     let has_toc = opts.toc || markers.any();
@@ -3618,7 +3637,7 @@ fn layout_with_pagination_report(
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         figure_fit::apply(&mut out, page, faces);
         let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
-        return (out, report);
+        return Ok((out, report));
     }
 
     let toc_entries = collect_pdf_toc_entries(blocks);
@@ -3627,8 +3646,6 @@ fn layout_with_pagination_report(
         page_map.insert(entry.id.clone(), 1);
     }
 
-    let mut final_lines = Vec::new();
-    let mut final_report = PdfParagraphVariantReport::default();
     // One LayoutCx spans the whole fixpoint so every value-pure cache survives
     // across passes: between iterations the document content is identical —
     // only TOC page numbers change, and those affect pagination, never a
@@ -3646,8 +3663,10 @@ fn layout_with_pagination_report(
     //     `paragraph_scratch` + `line_breaks`/`line_toks`/`glue_adjustments`/
     //     `code_highlight_spans` (cleared at every consumer entry), `links`
     //     (intern indices are internal-only and content-keyed: Segs own the
-    //     resolved `LinkTarget`, and equal indices ⇔ equal targets), and
-    //     `toc_entries` (built once above, read-only during layout).
+    //     resolved `LinkTarget`, and equal indices ⇔ equal targets).
+    //   - retained convergence state: `toc_entries` keeps immutable heading
+    //     content plus the maximum page-label width seen at each font size.
+    //     Those maxima affect layout only after the ordinary passes fail.
     //   - reset per iteration to the exact fresh-construction values:
     //     `toc_page_map` (the fixpoint variable itself), the `next_flow`/
     //     `next_bg` counters, `pending_page_break`, and `list_stack` — every
@@ -3679,7 +3698,16 @@ fn layout_with_pagination_report(
         automatic_toc: false,
         toc_page_map: page_map.clone(),
     };
-    for _iter in 0..5 {
+    for iteration in 0..toc_convergence::MAX_PASSES {
+        if iteration == toc_convergence::ORDINARY_PASSES {
+            // A proportional page numeral can alternate title wrapping and
+            // move its own destination back and forth. From here on, reserve
+            // the widest label observed for each entry instead of shrinking
+            // that entry's page-number column again on the next pass.
+            for entry in &mut cx.toc_entries {
+                entry.page_label_widths.reserve();
+            }
+        }
         cx.automatic_toc = opts.toc && !markers.body;
         cx.pending_page_break = false;
         cx.paragraph_candidates.clear();
@@ -3693,7 +3721,7 @@ fn layout_with_pagination_report(
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         figure_fit::apply(&mut out, page, faces);
-        final_report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
+        let report = joint_pagination::apply(&mut out, page, &cx.paragraph_candidates);
 
         // Run pagination to find the resulting page of each heading
         let heading_metas = heading_metadata(&out);
@@ -3711,15 +3739,17 @@ fn layout_with_pagination_report(
             }
         }
 
-        let converged = new_page_map == page_map;
-        page_map = new_page_map;
-        final_lines = out;
-        if converged {
-            break;
+        if new_page_map == page_map {
+            return Ok((out, report));
         }
+        page_map = new_page_map;
     }
 
-    (final_lines, final_report)
+    // Publishing the final attempt would expose labels from the previous
+    // page map. Both emission and verification must reject that stale layout.
+    Err(RenderError::PdfGeneration(
+        "toc_page_numbers_did_not_converge",
+    ))
 }
 
 /// Flow note number of a page-bottom footnote region's separator rule.
@@ -44336,7 +44366,7 @@ pub(crate) fn verification_text_layer_for_layout(
     let faces = Faces::load(opts)?;
     let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
-    let lines = layout(&doc.blocks, &effective_opts, &faces, page);
+    let (lines, _) = layout_with_pagination_report(&doc.blocks, &effective_opts, &faces, page)?;
     let (plan, _) = validated_page_break_plan(&lines, page, &effective_opts)?;
     let pages = paginate_lines_with(&lines, page, plan.as_ref());
     if let Some(running) = running {

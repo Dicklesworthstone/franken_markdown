@@ -11,7 +11,9 @@
 use crate::PdfOptions;
 use crate::ast::Document;
 use crate::caret::{CaretStyle, render_caret};
-use crate::pdf::{RenderWarning, audit_anchors, render_warnings, verification_text_layer_for_layout};
+use crate::pdf::{
+    RenderWarning, audit_anchors, render_warnings, verification_text_layer_for_layout,
+};
 use crate::span::{DiagnosticSeverity, SourceSpan};
 
 /// Report schema version (bump on any breaking shape change).

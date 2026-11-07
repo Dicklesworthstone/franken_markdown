@@ -123,7 +123,7 @@ export class OwnedWorkerRpc {
 
   // prepare runs synchronously only AFTER admission. It snapshots caller data;
   // transfer may therefore contain only buffers owned by that snapshot.
-  request(method, retainedBytes, prepare, controls = {}) {
+  request(method, retainedBytes, prepare, controls = {}, validate = () => {}) {
     try {
       if (this.#closed)
         throw failure("SESSION_DISPOSED", "worker session is closed; create a new session");
@@ -151,6 +151,7 @@ export class OwnedWorkerRpc {
         id: this.#nextId++,
         method,
         payload: null,
+        validate,
         ready: false,
         bytes: retainedBytes,
         resolve,
@@ -227,6 +228,7 @@ export class OwnedWorkerRpc {
     if (entry.timer !== null) clearTimeout(entry.timer);
     this.#bytes -= entry.bytes;
     entry.payload = null;
+    entry.validate = null;
     try {
       entry.signal?.removeEventListener("abort", entry.onAbort);
     } catch {
@@ -290,6 +292,11 @@ export class OwnedWorkerRpc {
       this.#finish(entry, error);
     } else {
       try {
+        // Request-specific checks run before accepting shared state. They may
+        // depend on the latest acknowledged state, including earlier queued
+        // mutations, rather than a stale snapshot from request admission.
+        entry.validate(message.state, message.value);
+        if (this.#closed) return;
         this.#accept(message.state, entry.method, message.value);
       } catch {
         this.#stop(failure("WORKER_PROTOCOL_ERROR", "invalid worker state acknowledgment"), entry);

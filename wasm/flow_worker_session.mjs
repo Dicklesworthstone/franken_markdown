@@ -251,7 +251,13 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       if (method === "getSource") sourceText(result);
       state = next;
     });
-    await rpc.request("create", requestWeight(initial), () => ({ args: initial }), startupControl());
+    await rpc.request("create", requestWeight(initial), () => ({ args: initial }), startupControl(),
+      (value) => {
+        const next = acknowledgedState(value);
+        if (Object.keys(next.layout).some((key) => next.layout[key] !== initial[1][key])) {
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "worker did not create the requested layout");
+        }
+      });
     const alive = () => {
       if (rpc.closed) throw new FlowWorkerError("SESSION_DISPOSED", "worker session is closed");
     };
@@ -300,11 +306,24 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           : method === "viewport" && supportsViewportDeltas ? "viewportDelta" : method;
         const wireArgs = wireMethod !== method
           ? [normalized[0], snapshotDeltas.baseId] : normalized;
+        const validate = method === "reflow" ? (value) => {
+          const next = acknowledgedState(value), expected = normalized[1];
+          const layout = { ...state.layout, ...normalized[0] };
+          if (expected.revision !== state.token.revision ||
+              expected.layoutRevision !== state.token.layoutRevision ||
+              next.token.revision !== expected.revision ||
+              Object.keys(layout).some((key) => next.layout[key] !== layout[key]) ||
+              (Object.keys(layout).some((key) => layout[key] !== state.layout[key]) &&
+                next.token.layoutRevision === state.token.layoutRevision)) {
+            throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "worker did not apply the requested reflow");
+          }
+        } : undefined;
         const pending = rpc.request(
           wireMethod,
           requestWeight(wireArgs),
           () => snapshotArguments(wireMethod, wireArgs),
           controls,
+          validate,
         );
         if (method === "setCodeHighlighting")
           return pending.then((result) => {

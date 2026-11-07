@@ -51,6 +51,13 @@ edits with the same expected revision does not silently rebase the second edit;
 it reports the resulting revision conflict. Source retrieval is asynchronous
 `await editor.getSource()`, not a speculative `source` property.
 
+Creation and reflow must acknowledge the requested viewport and typography.
+Partial reflows preserve the other layout fields and source identity, and a
+changed layout must advance its revision. These checks use the last successful
+acknowledgment, including earlier queued operations. A mismatched success reply
+closes the session with `WORKER_PROTOCOL_ERROR` before changing acknowledged
+state or dispatching another queued operation.
+
 UTF-16/UTF-8 domains, source envelopes, asset generations and host authorization
 rules are identical to `FLOW.md`. All remotely supplied identities remain decimal
 strings or bigint inputs, never lossy JavaScript Numbers.

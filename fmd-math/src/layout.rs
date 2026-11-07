@@ -3759,9 +3759,9 @@ impl Engine {
 
     /// The stretchy over-constructions (`\widehat`, `\widetilde`,
     /// `\overrightarrow`, `\overleftarrow`): a drawn band spanning the
-    /// base's width, placed with a small rule-thickness clearance (hats
-    /// and tildes ride close, the way the authored accents do; arrows take
-    /// a little more air). Any width draws — the constructions are total.
+    /// base's width. Hats and tildes use accent placement; the amsmath
+    /// arrows use a centered alignment with a font-derived minimum width
+    /// and arrow-row height. Any width draws — the constructions are total.
     fn stretchy_accent(
         &self,
         kind: AccentKind,
@@ -3771,23 +3771,48 @@ impl Engine {
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
         let theta = self.consts_at(&ctx).rule_thickness * size;
-        // Over-accents cramp their base (rule 12 / overline's rule 9). The
-        // wide accents clean their base and the arrows are amsmath
-        // alignments whose body is its own formula; either way a lone
-        // character keeps its italic correction in the width.
-        let inner = self.clean_box(base, ctx.map(StyleCtx::cramp))?.boxx;
+        let is_arrow = matches!(kind, AccentKind::OverRightArrow | AccentKind::OverLeftArrow);
+        // Primitive accents cramp their base (rule 12); amsmath's
+        // overarrow@ alignment starts a fresh $style nucleus$ formula,
+        // even inside an already cramped radicand or denominator. As in
+        // cancel's fresh formula, an enclosing math alphabet does not leak
+        // in; an alphabet explicitly inside the nucleus still applies.
+        // Both constructions retain a lone character's italic correction.
+        let base_ctx = if is_arrow {
+            LayCtx {
+                style: StyleCtx::new(ctx.style.style),
+                alphabet: None,
+                align_rows: false,
+                ..ctx
+            }
+        } else {
+            ctx.map(StyleCtx::cramp)
+        };
+        let inner = self.clean_box(base, base_ctx)?.boxx;
         let stretch_kind = match kind {
             AccentKind::WideHat => crate::drawn::Stretch::Hat,
             AccentKind::WideTilde => crate::drawn::Stretch::Tilde,
             AccentKind::OverRightArrow => crate::drawn::Stretch::RightArrow,
             _ => crate::drawn::Stretch::LeftArrow,
         };
-        let width = inner.width.max(0.25 * size);
-        let band = crate::drawn::stretch(stretch_kind, width, size);
-        let gap = match kind {
-            AccentKind::WideHat | AccentKind::WideTilde => theta,
-            _ => 2.0 * theta,
+        let arrow_metrics = if is_arrow {
+            Some(
+                over_arrow_metrics(kind, ctx).ok_or(MathError::UnmappedChar {
+                    ch: if kind == AccentKind::OverRightArrow {
+                        '→'
+                    } else {
+                        '←'
+                    },
+                    span,
+                })?,
+            )
+        } else {
+            None
         };
+        let width = inner
+            .width
+            .max(arrow_metrics.map_or(0.25 * size, |(minimum, _)| minimum));
+        let band = crate::drawn::stretch(stretch_kind, width, size);
         let height = if kind == AccentKind::WideHat {
             let text_width = self.wide_accent_text_width(base, ctx)?;
             let text_em = self.interword_font(ctx).param(6) * ctx.text_size();
@@ -3801,20 +3826,23 @@ impl Engine {
             inner
                 .height
                 .max(inner.height + accent_height - inner.height.min(x_height))
+        } else if let Some((_, row_height)) = arrow_metrics {
+            inner.height + row_height
         } else {
-            inner.height + gap + band.height
+            inner.height + theta + band.height
         };
-        let band_dy = if kind == AccentKind::WideHat {
+        let band_dy = if kind == AccentKind::WideHat || is_arrow {
             height - band.height
         } else {
-            inner.height + gap
+            inner.height + theta
         };
         let depth = inner.depth;
         let inner_width = inner.width;
         Ok(Laid {
             boxx: MBox {
                 kind: BoxKind::Horizontal,
-                // An accent has zero advance, even over an empty nucleus.
+                // A wide hat has zero accent advance, even over an empty
+                // nucleus; arrows keep their alignment's minimum width.
                 width: if kind == AccentKind::WideHat {
                     inner_width
                 } else {
@@ -3836,7 +3864,11 @@ impl Engine {
                         },
                     },
                     Positioned {
-                        dx: 0.0,
+                        dx: if is_arrow {
+                            (width - inner_width) / 2.0
+                        } else {
+                            0.0
+                        },
                         dy: 0.0,
                         node: MNode::Box(inner),
                     },
@@ -4829,6 +4861,26 @@ fn tex_small_font(family: u8, points: f64) -> &'static crate::tfm::TfmFont {
         },
         _ => crate::metrics::size_fonts(points).0,
     }
+}
+
+/// amsmath's arrowfill@ has one smashed relbar and one arrow, with two
+/// -7mu kerns and a zero-natural-width leader between them. The arrow
+/// supplies the row's height/depth; no interline glue separates that row
+/// from the nucleus. Use the actual optical symbol font for both mu and
+/// character metrics, including script and declared font sizes.
+fn over_arrow_metrics(kind: AccentKind, ctx: LayCtx) -> Option<(f64, f64)> {
+    let size = ctx.size();
+    let font = tex_small_font(2, 10.0 * size);
+    let arrow = font.char(match kind {
+        AccentKind::OverRightArrow => 0x21,
+        AccentKind::OverLeftArrow => 0x20,
+        _ => return None,
+    })?;
+    let bar = font.char(0x00)?;
+    Some((
+        (bar.width + arrow.width - 14.0 * font.param(6) / 18.0) * size,
+        (arrow.height.max(0.0) + arrow.depth.max(0.0)) * size,
+    ))
 }
 
 /// TeX's wide-hat successor chain, including amsfonts' branch to MSBM

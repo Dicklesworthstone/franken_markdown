@@ -3749,6 +3749,232 @@ fn delimiters_walk_texs_size_chain() {
 }
 
 #[test]
+fn over_arrow_boxes_follow_amsmath_alignment() {
+    // Independent pre-edit ruled-Reference capture for fm-7xc7q: 36 cases,
+    // input SHA19908e2a, retained with all54 previous controls. amsmath's
+    // arrow fill contributes its own minimum width and row height; its
+    // nucleus is a fresh formula, not a cramped primitive-accent nucleus.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    let mut mismatches = Vec::new();
+    for (source, width, height, depth) in [
+        (r"\overrightarrow{P}", 1.000023, 1.050206, 0.0),
+        (r"\overrightarrow{}", 1.000023, 0.366875, 0.0),
+        (r"\overrightarrow{8}", 1.000023, 1.011319, 0.0),
+        (r"\overrightarrow{x}", 1.000023, 0.797429, 0.0),
+        (r"\overrightarrow{y}", 1.000023, 0.797429, 0.194444),
+        (r"\overrightarrow{f}", 1.000023, 1.061319, 0.194444),
+        (r"\overrightarrow{{P}}", 1.000023, 1.050206, 0.0),
+        (r"\overrightarrow{AB}", 1.558682, 1.050206, 0.0),
+        (r"\overrightarrow{ABCD}", 3.200626, 1.050206, 0.0),
+        (r"\overrightarrow{wxyz}", 2.349542, 0.797429, 0.194444),
+        (
+            r"\overrightarrow{\frac{1}{2}}",
+            1.000023,
+            1.687827,
+            0.685951,
+        ),
+        (
+            r"\overrightarrow{\frac{y}{\frac{1}{2}}}",
+            1.000023,
+            1.473936,
+            1.079677,
+        ),
+        (r"\overrightarrow{\sqrt{x}}", 1.404863, 1.215967, 0.190904),
+        (
+            r"\overrightarrow{\overrightarrow{P}}",
+            1.000023,
+            1.417080,
+            0.0,
+        ),
+        (r"\overrightarrow{P_2}", 1.090627, 1.050206, 0.149998),
+        (r"\overrightarrow{x^2}", 1.020140, 1.230878, 0.0),
+        (r"\overrightarrow{y}_{i}", 1.332951, 0.797429, 0.194444),
+        (r"\overrightarrow{P}^{2}", 1.448636, 1.050206, 0.0),
+        (r"\textstyle\overrightarrow{P}", 1.000023, 1.050206, 0.0),
+        (
+            r"\textstyle\overrightarrow{\frac{1}{2}}",
+            1.000023,
+            1.211717,
+            0.344841,
+        ),
+        (r"\scriptstyle\overrightarrow{P}", 0.784882, 0.747190, 0.0),
+        (r"\scriptstyle\overrightarrow{8}", 0.784882, 0.719966, 0.0),
+        (r"\scriptstyle\overrightarrow{}", 0.784882, 0.268855, 0.0),
+        (
+            r"\scriptstyle\overrightarrow{ABCD}",
+            2.537666,
+            0.747190,
+            0.0,
+        ),
+        (
+            r"\scriptstyle\overrightarrow{\frac{1}{2}}",
+            0.784882,
+            0.859808,
+            0.240950,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{P}",
+            0.649707,
+            0.539870,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{8}",
+            0.649707,
+            0.520424,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{}",
+            0.649707,
+            0.198203,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{ABCD}",
+            2.164229,
+            0.539870,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{\frac{1}{2}}",
+            0.649707,
+            0.714156,
+            0.265953,
+        ),
+        (r"\overleftarrow{P}", 1.000023, 1.050206, 0.0),
+        (r"\overleftarrow{}", 1.000023, 0.366875, 0.0),
+        (r"\overleftarrow{y}", 1.000023, 0.797429, 0.194444),
+        (r"\overleftarrow{ABCD}", 3.200626, 1.050206, 0.0),
+        (r"\overleftarrow{\frac{1}{2}}", 1.000023, 1.687827, 0.685951),
+        (r"\scriptstyle\overleftarrow{P}", 0.784882, 0.747190, 0.0),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        if !((layout.width - width).abs() <= 1e-4
+            && (layout.height - height).abs() <= 1e-4
+            && (layout.depth - depth).abs() <= 1e-4)
+        {
+            mismatches.push(format!(
+                "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+                layout.width, layout.height, layout.depth
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
+fn over_arrow_outer_scripts_preserve_explicit_grouping() {
+    // Independent post-failure TeX showbox traces distinguish scripts on
+    // mathpalette's following empty noad from scripts on a grouped box.
+    // Keep the original36-case oracle and its tolerance unchanged.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for (source, width, height, depth) in [
+        (r"\overrightarrow{P}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"{\overrightarrow{P}}^{2}", 1.448_636, 1.254_097, 0.0),
+        (r"\overrightarrow{y}_{i}", 1.332_951, 0.797_429, 0.194_444),
+        (r"{\overrightarrow{y}}_{i}", 1.332_951, 0.797_429, 0.244_443),
+        (r"\overleftarrow{P}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"\overrightarrow{}^{2}", 1.448_636, 0.864_003, 0.0),
+        (r"\overrightarrow{P}{}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"\mathchoice{P}{P}{P}{P}^{2}", 1.229_517, 0.864_003, 0.0),
+        (r"{\mathchoice{P}{P}{P}{P}}^{2}", 1.229_517, 0.887_222, 0.0),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        assert!(
+            (layout.width - width).abs() <= 1e-4
+                && (layout.height - height).abs() <= 1e-4
+                && (layout.depth - depth).abs() <= 1e-4,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+            layout.width,
+            layout.height,
+            layout.depth
+        );
+    }
+}
+
+#[test]
+fn over_arrow_nuclei_restart_the_math_alphabet() {
+    // Independent pre-fix Reference capture: outer math alphabets stop at
+    // amsmath's fresh $style nucleus$ formula. Explicit inner alphabets
+    // still apply. Primitive wide hats retain the surrounding alphabet.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for (source, width, height) in [
+        (r"\mathrm{\overrightarrow{ABCD}}", 3.200_626, 1.050_206),
+        (r"\overrightarrow{\mathrm{ABCD}}", 2.944_450, 1.050_206),
+        (r"\mathrm{\overleftarrow{ABCD}}", 3.200_626, 1.050_206),
+        (r"\overleftarrow{\mathrm{ABCD}}", 2.944_450, 1.050_206),
+        (
+            r"\scriptstyle\mathrm{\overrightarrow{ABCD}}",
+            2.537_666,
+            0.747_190,
+        ),
+        (
+            r"\scriptstyle\overrightarrow{\mathrm{ABCD}}",
+            2.322_234,
+            0.747_190,
+        ),
+        (
+            r"\scriptscriptstyle\mathrm{\overrightarrow{ABCD}}",
+            2.164_229,
+            0.539_870,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{\mathrm{ABCD}}",
+            1.938_919,
+            0.538_083,
+        ),
+        (r"\mathrm{\widehat{ABCD}}", 2.944_450, 1.045_372),
+        (r"\mathrm{ABCD}", 2.944_450, 0.683_331),
+        (r"\overrightarrow{ABCD}", 3.200_626, 1.050_206),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        assert!(
+            (layout.width - width).abs() <= 1e-4
+                && (layout.height - height).abs() <= 1e-4
+                && layout.depth.abs() <= 1e-4,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, 0)",
+            layout.width,
+            layout.height,
+            layout.depth
+        );
+    }
+}
+
+#[test]
+fn over_arrow_nuclei_are_centered_without_changing_their_baseline() {
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for style in [
+        Style::Display,
+        Style::Text,
+        Style::Script,
+        Style::ScriptScript,
+    ] {
+        let plain = e.typeset_with_macros("P", style, &reference).unwrap();
+        let plain_glyph = plain.glyphs.iter().find(|glyph| glyph.ch == 'P').unwrap();
+        for source in [r"\overrightarrow{P}", r"\overleftarrow{P}"] {
+            let arrow = e.typeset_with_macros(source, style, &reference).unwrap();
+            let nucleus = arrow.glyphs.iter().find(|glyph| glyph.ch == 'P').unwrap();
+            let centered_x = plain_glyph.x + (arrow.width - plain.width) / 2.0;
+            assert!((nucleus.x - centered_x).abs() <= EPS, "{source}: {style:?}");
+            assert_eq!(nucleus.y.to_bits(), plain_glyph.y.to_bits());
+            assert_eq!(nucleus.size.to_bits(), plain_glyph.size.to_bits());
+            assert_eq!(nucleus.face, plain_glyph.face);
+        }
+    }
+}
+
+#[test]
 fn script_greek_capitals_take_cmr7_and_cmr5() {
     // cmr's upright Greek capitals (codes 0-10) at script and scriptscript
     // size are cmr7's and cmr5's own designs, as digits are; scaling cmr10's

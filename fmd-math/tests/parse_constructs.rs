@@ -316,6 +316,63 @@ fn script_cluster_structure() {
 }
 
 #[test]
+fn over_arrow_scripts_have_an_empty_base_unless_the_arrow_is_grouped() {
+    // amsmath's mathpalette leaves the completed arrow before the script
+    // atom. Preserve that boundary in the public tree and source spans,
+    // as the existing mathchoice/cancel path already does.
+    for (arrow, kind) in [
+        (r"\overrightarrow{P}", AccentKind::OverRightArrow),
+        (r"\overleftarrow{P}", AccentKind::OverLeftArrow),
+    ] {
+        for suffix in ["^2", "_i", "_i^2", "'_i"] {
+            let source = format!("{arrow}{suffix}");
+            let items = parse_items(&source);
+            assert_eq!(items.len(), 2, "{source}: arrow and following script atom");
+            assert!(
+                matches!(&items[0].kind, NodeKind::Accent { accent, .. } if *accent == kind),
+                "{source}"
+            );
+            let NodeKind::Scripts { base, .. } = &items[1].kind else {
+                panic!("{source}: following script atom");
+            };
+            assert!(base.is_none(), "{source}");
+            assert_eq!(items[0].span.end, arrow.len(), "{source}");
+            assert_eq!(items[1].span.start, arrow.len(), "{source}");
+            assert_eq!(items[1].span.end, source.len(), "{source}");
+
+            let grouped = format!("{{{arrow}}}{suffix}");
+            let items = parse_items(&grouped);
+            assert_eq!(items.len(), 1, "{grouped}");
+            let NodeKind::Scripts { base, .. } = &items[0].kind else {
+                panic!("{grouped}: script on the explicit group");
+            };
+            let group = base.as_deref().expect("explicit group remains the base");
+            let NodeKind::List(children) = &group.kind else {
+                panic!("{grouped}: explicit group");
+            };
+            assert_eq!(children.len(), 1, "{grouped}");
+            assert!(
+                matches!(&children[0].kind, NodeKind::Accent { accent, .. } if *accent == kind),
+                "{grouped}"
+            );
+            assert_eq!(group.span.start, 0, "{grouped}");
+            assert_eq!(group.span.end, arrow.len() + 2, "{grouped}");
+        }
+    }
+    // Primitive accents retain their script-bearing nucleus.
+    for source in [r"\hat{P}^2", r"\widehat{P}^2", r"\widetilde{P}^2"] {
+        let items = parse_items(source);
+        let NodeKind::Scripts { base, .. } = &items[0].kind else {
+            panic!("{source}: primitive-accent script");
+        };
+        assert!(matches!(
+            &base.as_deref().unwrap().kind,
+            NodeKind::Accent { .. }
+        ));
+    }
+}
+
+#[test]
 fn primes_count_and_combine_with_subscripts() {
     let items = parse_items(r"f''_n");
     let NodeKind::Scripts {

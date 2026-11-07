@@ -2037,16 +2037,22 @@ impl<'s> Parser<'s> {
 
     /// A `^`/`_`/`'` script cluster attaching to the preceding atom (or to
     /// an empty base, as TeX does when a script opens a list). A
-    /// `\mathchoice` is not an atom when TeX reads the script, and neither is
-    /// `\cancel` (a `\mathpalette`, so a choice too): the script takes an
-    /// empty base after it, as TeX's does.
+    /// `\mathchoice` is not an atom when TeX reads the script. Neither are
+    /// `\cancel` and amsmath's over-arrows, which expand through mathpalette:
+    /// scripts take an empty base after them. An explicit enclosing group
+    /// remains a script-bearing atom.
     fn script_cluster(&mut self, items: &mut Vec<Node>) -> Result<(), MathError> {
         let base = match items.last() {
             Some(last)
                 if intrinsic_class(last).is_some()
                     && !matches!(
                         last.kind,
-                        NodeKind::MathChoice { .. } | NodeKind::Cancel { .. }
+                        NodeKind::MathChoice { .. }
+                            | NodeKind::Cancel { .. }
+                            | NodeKind::Accent {
+                                accent: AccentKind::OverRightArrow | AccentKind::OverLeftArrow,
+                                ..
+                            }
                     ) =>
             {
                 items.pop().map(Box::new)

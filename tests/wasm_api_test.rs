@@ -397,12 +397,14 @@ fn wasm_diagnostics_json_escapes_control_and_quote_characters() {
         bytes: b"<main></main>".to_vec(),
         diagnostics: vec![
             franken_markdown::wasm::WasmDiagnostic {
+                code: None,
                 severity: "warning",
                 start: 0,
                 end: 3,
                 message: "first".to_string(),
             },
             franken_markdown::wasm::WasmDiagnostic {
+                code: Some("custom\"code\n\u{0001}"),
                 severity: "error\"level\n\u{0001}",
                 start: 4,
                 end: 9,
@@ -414,6 +416,10 @@ fn wasm_diagnostics_json_escapes_control_and_quote_characters() {
     let json = out.diagnostics_json();
     assert!(json.starts_with('['));
     assert!(json.contains("\"severity\":\"warning\""));
+    assert!(
+        json.contains("\"code\":\"custom\\\"code\\n \""),
+        "public diagnostic code must be escaped: {json}"
+    );
     assert!(
         json.contains("\"severity\":\"error\\\"level\\n \""),
         "public diagnostic severity must be escaped: {json}"

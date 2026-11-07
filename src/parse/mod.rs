@@ -96,11 +96,38 @@ const INLINE_PARSE_CACHE_MAX_TRACKED_HASHES: usize = INLINE_PARSE_CACHE_MAX_ENTR
 const MAX_INLINE_PARSE_RECURSION: usize = 64;
 const INLINE_PARSE_WORK_MULTIPLIER: usize = 64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InlineLimit {
+    Work,
+    Depth,
+}
+
+impl InlineLimit {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Work => "inline_work_limit",
+            Self::Depth => "inline_depth_limit",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Work => {
+                "inline parsing work limit reached; this inline run is rendered as literal text"
+            }
+            Self::Depth => {
+                "inline nesting limit reached; this inline run is rendered as literal text"
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct InlineWorkBudget {
     depth: usize,
     remaining: usize,
     exhausted: bool,
+    limit: Option<InlineLimit>,
 }
 
 impl InlineWorkBudget {
@@ -109,18 +136,26 @@ impl InlineWorkBudget {
     /// costs at most one extra input-length scan. The outermost inline parser
     /// then preserves the complete source and discards speculative destinations.
     fn charge(&mut self, scanned: usize) -> bool {
-        if self.exhausted || scanned > self.remaining {
-            self.exhausted = true;
+        if self.exhausted {
+            return false;
+        }
+        if scanned > self.remaining {
+            self.exhaust(InlineLimit::Work);
             return false;
         }
         self.remaining -= scanned;
         true
     }
+
+    fn exhaust(&mut self, limit: InlineLimit) {
+        self.exhausted = true;
+        self.limit.get_or_insert(limit);
+    }
 }
 
 #[derive(Default)]
 struct InlineParseCache {
-    entries: BTreeMap<String, Vec<Inline>>,
+    entries: BTreeMap<String, (Vec<Inline>, Option<InlineLimit>)>,
     total_key_bytes: usize,
     // Two-hit admission: most documents contain few repeated paragraphs, so a
     // first sighting would otherwise pay the insert-side deep clone of the
@@ -134,7 +169,7 @@ struct InlineParseCache {
 }
 
 impl InlineParseCache {
-    fn get(&self, text: &str) -> Option<Vec<Inline>> {
+    fn get(&self, text: &str) -> Option<(Vec<Inline>, Option<InlineLimit>)> {
         self.entries.get(text).cloned()
     }
 
@@ -155,7 +190,7 @@ impl InlineParseCache {
         false
     }
 
-    fn insert(&mut self, text: &str, inlines: &[Inline]) {
+    fn insert(&mut self, text: &str, inlines: &[Inline], limit: Option<InlineLimit>) {
         if self.entries.contains_key(text) {
             return;
         }
@@ -166,7 +201,8 @@ impl InlineParseCache {
             return;
         }
         self.total_key_bytes += text.len();
-        self.entries.insert(text.to_string(), inlines.to_vec());
+        self.entries
+            .insert(text.to_string(), (inlines.to_vec(), limit));
     }
 }
 
@@ -441,7 +477,9 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         |lines| (lines.len(), src.len(), 1),
     );
     let reference_started = profiler.checkpoint();
-    let has_reference_candidate = src.contains("]:");
+    // Spanned parsing reuses this same metadata walk for malformed-reference
+    // and unclosed-fence diagnostics, even when no reference candidate exists.
+    let has_reference_candidate = src.contains("]:") || profiler.diagnostics_enabled();
     let (lines, refs, _, consumed_references) = if has_reference_candidate {
         collect_link_references_tracked(lines, profiler.destinations.as_mut())
     } else {
@@ -550,6 +588,7 @@ pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
 
 fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> SpannedDocument {
     let source_lines = source_lines(src);
+    profiler.destinations = Some(destinations::DestinationTracker::for_diagnostics(src));
     profiler.block_spans = Some(BlockSpanTracker {
         lines: source_lines
             .iter()
@@ -579,12 +618,13 @@ fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> Span
         .map(|(idx, block)| Spanned::new(block, spans.get(idx).copied().unwrap_or(fallback)))
         .collect();
 
+    let diagnostics = profiler.destinations.take();
     SpannedDocument {
         blocks,
         diagnostics: profiler.measure(
             "diagnostics_collection",
-            "collect recoverable parser diagnostics such as malformed references and fences",
-            || collect_parse_diagnostics(src, &source_lines),
+            "collect parser diagnostics from source-tracked metadata and bounded parsing",
+            || diagnostics.map_or_else(Vec::new, |tracker| tracker.finish_diagnostics()),
             |diagnostics| (diagnostics.len(), src.len(), diagnostics.len()),
         ),
         source_len: src.len(),
@@ -592,8 +632,7 @@ fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> Span
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SourceLine<'a> {
-    text: &'a str,
+struct SourceLine {
     start: usize,
     end: usize,
 }
@@ -601,7 +640,7 @@ struct SourceLine<'a> {
 /// Original byte coordinates for the same logical lines the parser sees,
 /// before tab expansion or reference-definition removal. Metadata never owns a
 /// renderer block. All three line-ending forms retain their original byte widths.
-fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
+fn source_lines(src: &str) -> Vec<SourceLine> {
     let body = document_body(src);
     let offset = src.len() - body.len();
     let address = body.as_ptr() as usize;
@@ -609,7 +648,6 @@ fn source_lines(src: &str) -> Vec<SourceLine<'_>> {
         .map(|text| {
             let start = offset + (text.as_ptr() as usize - address);
             SourceLine {
-                text,
                 start,
                 end: start + text.len(),
             }
@@ -639,32 +677,6 @@ fn span_for_lines(lines: &[SourceSpan], start: usize, end: usize) -> SourceSpan 
         return *first;
     };
     SourceSpan::new(first.start, last.end)
-}
-
-fn collect_parse_diagnostics(src: &str, lines: &[SourceLine<'_>]) -> Vec<ParseDiagnostic> {
-    // Reference collection already owns block boundaries, complete multiline
-    // definitions, literal HTML/math/code, and recursively stripped containers.
-    // Reuse that walk instead of diagnosing isolated physical lines with a
-    // different grammar. Its origin maps retain exact source bytes even when
-    // a list/quote prefix or tab expansion required an owned string.
-    let mut tracker = destinations::DestinationTracker::for_diagnostics(src);
-    let expanded: Vec<_> = lines
-        .iter()
-        .map(|line| expand_leading_tabs(line.text))
-        .collect();
-    for (line, expanded) in lines.iter().zip(&expanded) {
-        if let std::borrow::Cow::Owned(copied) = expanded {
-            tracker.map_suffix(copied, line.text);
-        }
-    }
-    let lines: Vec<_> = expanded.iter().map(|line| line.as_ref()).collect();
-    collect_link_reference_metadata_into_tracked(
-        &lines,
-        None,
-        &mut ReferenceMap::new(),
-        Some(&mut tracker),
-    );
-    tracker.finish_diagnostics()
 }
 
 fn looks_like_reference_definition(line: &str) -> bool {
@@ -1409,9 +1421,29 @@ fn parse_blocks_bounded(
         if trimmed.is_empty() {
             return Vec::new();
         }
-        return vec![Block::Paragraph(parse_inlines_with_refs_profiled(
-            trimmed, refs, profiler,
-        ))];
+        let checkpoint = profiler.destination_checkpoint();
+        if profiler.diagnostics_enabled() {
+            let mut offset = 0;
+            let parts: Vec<_> = kept
+                .iter()
+                .map(|line| {
+                    let part = (offset, *line);
+                    offset += line.len() + 1;
+                    part
+                })
+                .collect();
+            profiler.destination_parts(&text, &parts);
+            if let Some(tracker) = &mut profiler.destinations {
+                tracker.parse_limit(
+                    &[trimmed],
+                    "block_depth_limit",
+                    "block nesting limit reached; remaining block structure is rendered as one paragraph",
+                );
+            }
+        }
+        let inlines = parse_inlines_with_refs_profiled(trimmed, refs, profiler);
+        profiler.destination_restore(checkpoint);
+        return vec![Block::Paragraph(inlines)];
     }
     profiler.block_depth += 1;
     let blocks = parse_blocks_with_reference_boundaries(lines, &consumed, refs, profiler);
@@ -2026,6 +2058,7 @@ fn parse_lines_as_inlines(
             if let Some(tracker) = &mut profiler.destinations {
                 tracker.pop_chars();
             }
+            profiler.inline_limit_diagnostic(lines, profiler.inline_work.limit);
             (parsed, scan.byte_len, 0)
         }
     }
@@ -4329,13 +4362,17 @@ fn parse_inlines_with_refs_profiled(
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
     let started = profiler.checkpoint();
-    let maybe_cacheable = profiler.destinations.is_none()
+    let maybe_cacheable = profiler
+        .destinations
+        .as_ref()
+        .is_none_or(|tracker| tracker.diagnostics_only())
         && profiler.inline_parse_depth == 0
         && !profiler.table_cell_code_escapes
         && inline_cache_size_allows(text);
     let needs_full_parse = maybe_cacheable.then(|| inline_text_needs_full_parse(text));
     let cacheable = maybe_cacheable && needs_full_parse == Some(true);
-    if cacheable && let Some(inlines) = profiler.inline_cache.get(text) {
+    if cacheable && let Some((inlines, limit)) = profiler.inline_cache.get(text) {
+        profiler.inline_limit_diagnostic(&[text], limit);
         let char_count = if profiler.enabled {
             text.chars().count()
         } else {
@@ -4357,13 +4394,17 @@ fn parse_inlines_with_refs_profiled(
         return inlines;
     }
 
+    profiler.inline_work.limit = None;
     profiler.inline_parse_depth += 1;
     let inlines =
         parse_inlines_with_refs_profiled_uncached(text, refs, profiler, started, needs_full_parse);
     profiler.inline_parse_depth -= 1;
 
+    let limit = profiler.inline_work.limit;
+    profiler.inline_limit_diagnostic(&[text], limit);
+
     if cacheable && profiler.inline_cache.admit(text) {
-        profiler.inline_cache.insert(text, &inlines);
+        profiler.inline_cache.insert(text, &inlines, limit);
     }
 
     inlines
@@ -4444,14 +4485,15 @@ fn parse_inlines_chars_nested(
     context: InlineContext,
     profiler: &mut ParseProfiler,
 ) -> Vec<Inline> {
-    if profiler.inline_work.exhausted
-        || profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION
-        || !profiler.inline_work.charge(chars.len())
+    if !profiler.inline_work.exhausted
+        && profiler.inline_work.depth >= MAX_INLINE_PARSE_RECURSION
     {
+        profiler.inline_work.exhaust(InlineLimit::Depth);
+    }
+    if profiler.inline_work.exhausted || !profiler.inline_work.charge(chars.len()) {
         // Abandon speculative work without collecting another potentially large
         // label. The outermost run preserves the complete source as literal text
         // and rolls back any destination spans from its discarded parse.
-        profiler.inline_work.exhausted = true;
         return Vec::new();
     }
     let started = profiler.checkpoint();
@@ -4614,6 +4656,7 @@ fn parse_inlines_chars_with_refs_profiled(
             .saturating_mul(INLINE_PARSE_WORK_MULTIPLIER)
             .max(4096);
         profiler.inline_work.exhausted = false;
+        profiler.inline_work.limit = None;
     }
     let destination_mark = profiler.destination_mark();
     profiler.inline_work.depth += 1;
@@ -5392,24 +5435,14 @@ fn find_code_close(
 }
 
 fn normalize_code_span(chars: &[char]) -> String {
-    // CommonMark: collapse internal line endings to spaces; strip one leading and
-    // trailing space if the span is not all spaces.
-    //
-    // Single-collect discipline: the span String is materialized exactly once,
-    // straight from the char slice. The strip guard mirrors the old
-    // post-`replace` test exactly: `replace` mapped each '\n' (1 UTF-8 byte) to
-    // ' ' (1 byte), so a first/last '\n' is a first/last ' ' afterwards, the
-    // byte-strip `s[1..len-1]` of the replaced string equals this char-strip,
-    // and '\n' -> ' ' preserves every char's whitespace class, so
-    // `s.trim() != ""` equals `any(!char::is_whitespace)`. Clean spans (no '\n',
-    // no strip — the common shape) collect with zero extra passes; newline
-    // spans fold '\n' -> ' ' during the collect, byte-identical to
-    // `str::replace` because each newline is exactly one byte becoming exactly
-    // one byte (runs are not collapsed: one space per newline, as before).
+    // CommonMark: each line ending becomes one ASCII space. Strip one leading
+    // and trailing space unless the resulting span consists entirely of ASCII
+    // spaces. Tabs and Unicode whitespace are code content, so they do not
+    // qualify for that exception. Materialize the normalized String only once.
     let strip = chars.len() >= 2
         && matches!(chars[0], ' ' | '\n')
         && matches!(chars[chars.len() - 1], ' ' | '\n')
-        && chars.iter().any(|c| !c.is_whitespace());
+        && chars.iter().any(|c| !matches!(c, ' ' | '\n'));
     let body = if strip {
         &chars[1..chars.len() - 1]
     } else {
@@ -8484,25 +8517,25 @@ mod inline_helper_branch_tests {
 
         let mut cache = InlineParseCache::default();
         let key = "0123456789abcdef";
-        cache.insert(key, &[Inline::Text("first".to_string())]);
-        cache.insert(key, &[Inline::Text("second".to_string())]);
+        cache.insert(key, &[Inline::Text("first".to_string())], None);
+        cache.insert(key, &[Inline::Text("second".to_string())], None);
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(
             cache.get(key),
-            Some(vec![Inline::Text("first".to_string())])
+            Some((vec![Inline::Text("first".to_string())], None))
         );
 
         cache.total_key_bytes = INLINE_PARSE_CACHE_MAX_TOTAL_KEY_BYTES - 1;
-        cache.insert("another-sixteen", &[Inline::Text("ignored".to_string())]);
+        cache.insert("another-sixteen", &[Inline::Text("ignored".to_string())], None);
         assert_eq!(cache.entries.len(), 1);
 
         let mut full = InlineParseCache::default();
         for idx in 0..INLINE_PARSE_CACHE_MAX_ENTRIES {
             let key = format!("cache-key-{idx:04}");
-            full.insert(&key, &[Inline::Text(key.clone())]);
+            full.insert(&key, &[Inline::Text(key.clone())], None);
         }
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
-        full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())]);
+        full.insert("cache-key-overflow", &[Inline::Text("ignored".to_string())], None);
         assert_eq!(full.entries.len(), INLINE_PARSE_CACHE_MAX_ENTRIES);
     }
 
@@ -8516,10 +8549,10 @@ mod inline_helper_branch_tests {
             "nothing may be stored before admission"
         );
         assert!(cache.admit(key), "second sighting admits");
-        cache.insert(key, &[Inline::Text("stored".to_string())]);
+        cache.insert(key, &[Inline::Text("stored".to_string())], None);
         assert_eq!(
             cache.get(key),
-            Some(vec![Inline::Text("stored".to_string())])
+            Some((vec![Inline::Text("stored".to_string())], None))
         );
 
         let other = "another sixteen";

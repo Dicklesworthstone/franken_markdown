@@ -392,8 +392,8 @@ impl DestinationTracker {
         }
     }
 
-    /// A source-coordinate-only walk. It does not parse inline content or
-    /// retain editable destination/label inventories.
+    /// Track only diagnostic source envelopes in the ordinary parse. Inline
+    /// character maps and editable destination/label inventories are unnecessary.
     pub(super) fn for_diagnostics(source: &str) -> Self {
         let mut tracker = Self::new(source);
         let mut end = 0;
@@ -411,8 +411,40 @@ impl DestinationTracker {
     }
 
     pub(super) fn finish_diagnostics(self) -> Vec<ParseDiagnostic> {
-        self.diagnostics
-            .map_or_else(Vec::new, |state| state.findings)
+        let mut findings = self.diagnostics.map_or_else(Vec::new, |state| state.findings);
+        // Reference/fence findings come from metadata collection; resource
+        // findings come from AST construction. Publish both in source order.
+        findings.sort_by_key(|finding| (finding.span.start, finding.span.end, finding.code));
+        findings
+    }
+
+    pub(super) fn diagnostics_only(&self) -> bool {
+        self.diagnostics.is_some()
+    }
+
+    /// This is an enclosing source span, not a claim that copied container
+    /// text is contiguous. Original prefixes and line endings between its
+    /// literal endpoints are deliberately included in the diagnostic range.
+    pub(super) fn parse_limit(
+        &mut self,
+        lines: &[&str],
+        code: &'static str,
+        message: &'static str,
+    ) {
+        if self.diagnostics.is_none() {
+            return;
+        }
+        let first = lines.iter().find_map(|line| self.text_envelope(line));
+        let last = lines.iter().rev().find_map(|line| self.text_envelope(line));
+        if let (Some(first), Some(last), Some(state)) = (first, last, &mut self.diagnostics)
+            && first.start < last.end
+        {
+            state.findings.push(ParseDiagnostic::warning_with_code(
+                SourceSpan::new(first.start, last.end),
+                code,
+                message,
+            ));
+        }
     }
 
     pub(super) fn malformed_reference(&mut self, line: &str) {
@@ -425,8 +457,9 @@ impl DestinationTracker {
             .text_range(line)
             .or_else(|| self.text_range(trim_start_space_tab(line)));
         if let (Some(range), Some(state)) = (range, &mut self.diagnostics) {
-            state.findings.push(ParseDiagnostic::warning(
+            state.findings.push(ParseDiagnostic::warning_with_code(
                 SourceSpan::new(range.start, range.end),
+                "malformed_reference",
                 "malformed link reference definition rendered as text",
             ));
         }
@@ -458,8 +491,9 @@ impl DestinationTracker {
                     "unclosed fenced code block reaches end of container",
                 )
             };
-            state.findings.push(ParseDiagnostic::warning(
+            state.findings.push(ParseDiagnostic::warning_with_code(
                 SourceSpan::new(first.start, end),
+                "unclosed_fence",
                 message,
             ));
         }
@@ -575,6 +609,36 @@ impl DestinationTracker {
         Some(start..start + text.len())
     }
 
+    fn text_envelope(&self, text: &str) -> Option<Range<usize>> {
+        if text.is_empty() {
+            return None;
+        }
+        if let Some(range) = self.text_range(text) {
+            return Some(range);
+        }
+        let address = text.as_ptr() as usize;
+        let (&base, map) = self.text.range(..=address).next_back()?;
+        let offset = address.checked_sub(base)?;
+        if offset > map.len || text.len() > map.len - offset {
+            return None;
+        }
+        let end = offset + text.len();
+        let first = map
+            .runs
+            .get(map.runs.partition_point(|run| run.copied.end <= offset))?;
+        let last = map.runs.get(
+            map.runs
+                .partition_point(|run| run.copied.start < end)
+                .checked_sub(1)?,
+        )?;
+        if first.copied.start >= end || last.copied.end <= offset {
+            return None;
+        }
+        let start = first.original.start + offset.saturating_sub(first.copied.start);
+        let end = last.original.start + end.min(last.copied.end) - last.copied.start;
+        (start < end).then_some(start..end)
+    }
+
     fn push_run(runs: &mut Vec<TextRun>, copied: Range<usize>, original: Range<usize>) {
         if copied.is_empty() {
             return;
@@ -594,6 +658,10 @@ impl DestinationTracker {
     pub(super) fn map_parts(&mut self, output: &str, parts: &[(usize, &str)]) {
         let mut runs = Vec::new();
         for &(offset, part) in parts {
+            if let Some(original) = self.text_range(part) {
+                Self::push_run(&mut runs, offset..offset + part.len(), original);
+                continue;
+            }
             for (index, character) in part.char_indices() {
                 let end = index + character.len_utf8();
                 if let Some(original) = self.text_range(&part[index..end]) {
@@ -657,6 +725,9 @@ impl DestinationTracker {
     }
 
     pub(super) fn push_chars_text(&mut self, chars: &[char], text: &str) {
+        if self.diagnostics_only() {
+            return;
+        }
         let mut map = CharMap {
             address: chars.as_ptr() as usize,
             widths: Vec::with_capacity(chars.len()),
@@ -667,6 +738,9 @@ impl DestinationTracker {
     }
 
     pub(super) fn push_chars_lines(&mut self, chars: &[char], lines: &[&str]) {
+        if self.diagnostics_only() {
+            return;
+        }
         let mut map = CharMap {
             address: chars.as_ptr() as usize,
             widths: Vec::with_capacity(chars.len()),
@@ -692,7 +766,7 @@ impl DestinationTracker {
     }
 
     pub(super) fn record(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
-        if self.container_fences.is_some() {
+        if self.container_fences.is_some() || self.diagnostics_only() {
             return;
         }
         self.record_token(chars, token, dest, DestinationSyntax::Markdown);
@@ -923,6 +997,18 @@ impl DestinationTracker {
 }
 
 impl ParseProfiler {
+    pub(super) fn diagnostics_enabled(&self) -> bool {
+        self.destinations
+            .as_ref()
+            .is_some_and(DestinationTracker::diagnostics_only)
+    }
+
+    pub(super) fn inline_limit_diagnostic(&mut self, lines: &[&str], limit: Option<InlineLimit>) {
+        if let (Some(tracker), Some(limit)) = (&mut self.destinations, limit) {
+            tracker.parse_limit(lines, limit.code(), limit.message());
+        }
+    }
+
     pub(super) fn destination_checkpoint(&self) -> usize {
         self.destinations
             .as_ref()
@@ -982,6 +1068,45 @@ impl ParseProfiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_tracking_keeps_cache_reasons_without_editable_character_maps()
+    -> Result<(), &'static str> {
+        let hostile = format!("{}leaf{}", "[".repeat(32), "](/target)".repeat(32));
+        let source = format!("{hostile}\n\n{hostile}\n\n{hostile}");
+        let mut profiler = ParseProfiler::disabled();
+        profiler.destinations = Some(DestinationTracker::for_diagnostics(&source));
+        assert_eq!(
+            parse_document_inner(&source, &mut profiler),
+            parse_document(&source)
+        );
+        assert_eq!(
+            profiler
+                .inline_cache
+                .get(&hostile)
+                .ok_or("fallback was not cached")?
+                .1,
+            Some(InlineLimit::Work)
+        );
+        let tracker = profiler.destinations.ok_or("missing diagnostics tracker")?;
+        assert!(tracker.spans.is_empty());
+        assert!(tracker.labels.is_none());
+        assert_eq!(
+            tracker.chars.capacity(),
+            0,
+            "diagnostics must not retain per-character maps"
+        );
+        let findings = tracker.finish_diagnostics();
+        assert_eq!(findings.len(), 3);
+        for (diagnostic, (start, _)) in findings.iter().zip(source.match_indices(&hostile)) {
+            assert_eq!(diagnostic.code, "inline_work_limit");
+            assert_eq!(
+                diagnostic.span,
+                SourceSpan::new(start, start + hostile.len())
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn normalized_inline_breaks_keep_exact_original_destination_tokens() -> Result<(), &'static str>

@@ -495,6 +495,8 @@ impl WasmRenderOptions {
 /// Recoverable parser diagnostic for browser/editor hosts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WasmDiagnostic {
+    /// Stable parser classification when available; independent of message text.
+    pub code: Option<&'static str>,
     /// Stable severity spelling: `warning` or `error`.
     pub severity: &'static str,
     /// Diagnostic byte start offset in the original Markdown.
@@ -589,6 +591,7 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
     // host must get the same signal so degradation is never silent.
     for warning in render_warnings(&doc, &pdf_options) {
         diagnostics.push(WasmDiagnostic {
+            code: None,
             severity: "warning",
             start: 0,
             end: 0,
@@ -683,6 +686,7 @@ fn wasm_diagnostics(diagnostics: &[crate::ParseDiagnostic]) -> Vec<WasmDiagnosti
     diagnostics
         .iter()
         .map(|diagnostic| WasmDiagnostic {
+            code: Some(diagnostic.code),
             severity: severity_str(diagnostic.severity),
             start: diagnostic.span.start,
             end: diagnostic.span.end,
@@ -712,7 +716,13 @@ fn diagnostics_json(diagnostics: &[WasmDiagnostic]) -> String {
         out.push_str(&diagnostic.end.to_string());
         out.push_str(",\"message\":\"");
         json_escape_into(&diagnostic.message, &mut out);
-        out.push_str("\"}");
+        out.push('"');
+        if let Some(code) = diagnostic.code {
+            out.push_str(",\"code\":\"");
+            json_escape_into(code, &mut out);
+            out.push('"');
+        }
+        out.push('}');
     }
     out.push(']');
     out

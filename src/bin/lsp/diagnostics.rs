@@ -82,7 +82,7 @@ pub(super) fn snapshot(buffer: &Buffer) -> Snapshot {
                     DiagnosticSeverity::Warning => 2,
                 },
                 &diagnostic.message,
-                None,
+                Some(diagnostic.code),
             )
         })
         .collect();
@@ -314,7 +314,32 @@ mod tests {
                     .any(|entry| entry.get("message").and_then(Json::as_str)
                         == Some(bounded_message(&diagnostic.message).as_str()))
             );
+            assert!(
+                entries(&report)
+                    .iter()
+                    .any(|entry| entry.get("code").and_then(Json::as_str) == Some(diagnostic.code))
+            );
         }
+    }
+
+    #[test]
+    fn parser_limits_publish_stable_codes_and_real_utf16_ranges() -> TestResult {
+        let hostile = format!("😀 {}leaf{}", "[".repeat(32), "](/target)".repeat(32));
+        let source = format!("café\r\n\r\n{hostile}\r\n\r\n[good](/ok)");
+        let report = inspect(&source);
+        let findings = entries(&report);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].get("code").and_then(Json::as_str),
+            Some("inline_work_limit")
+        );
+        let expected = format!(
+            "{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":{}}}}}",
+            hostile.encode_utf16().count()
+        );
+        assert_eq!(findings[0].get("range"), Some(&parse_json(&expected)?));
+        assert_eq!(findings[0].get("severity"), Some(&Json::Number(2.0)));
+        Ok(())
     }
 
     #[test]

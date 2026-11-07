@@ -193,7 +193,7 @@ pub(super) fn render_with_options(
             severity,
             diagnostic.span.start,
             diagnostic.span.end,
-            None,
+            Some(diagnostic.code),
             &diagnostic.message,
         );
     }
@@ -255,7 +255,10 @@ fn diagnostic_json(
     push_json_escaped(out, message);
     out.push('"');
     if let Some(code) = code {
-        out.push_str(",\"scope\":\"document\",\"code\":\"");
+        if start == 0 && end == 0 {
+            out.push_str(",\"scope\":\"document\"");
+        }
+        out.push_str(",\"code\":\"");
         push_json_escaped(out, code);
         out.push('"');
     }

@@ -2530,18 +2530,26 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
             );
         }
     }
-    let doc = parse_markdown(&src);
+    let parsed = crate::parse_markdown_spanned(&src);
+    let parse_findings = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| crate::verify::VerifyFinding {
+            code: diagnostic.code,
+            detail: format!(
+                "{} (source bytes {}..{})",
+                diagnostic.message, diagnostic.span.start, diagnostic.span.end,
+            ),
+        })
+        .collect();
+    let doc = parsed.into_document();
     // Verification baseline: the default theme/options, deliberately
     // independent of config, so the same document verifies identically on
     // every machine (the digest is a portable change detector).
     let opts = PdfOptions::default();
-    let Some(report) = crate::verify::verify_pdf(&doc, &opts) else {
-        return fail_json(
-            70,
-            "font_load_failed",
-            "verification could not load the bundled fonts",
-            json,
-        );
+    let report = match crate::verify::verify_pdf_result(&doc, &opts) {
+        Ok(report) => crate::verify::with_extra_findings(report, parse_findings),
+        Err(error) => return fail_json(70, error.code(), &error.to_string(), json),
     };
     let report = if args.a11y {
         crate::verify::filter_a11y(report)

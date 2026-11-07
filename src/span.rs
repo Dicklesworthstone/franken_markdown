@@ -315,6 +315,8 @@ pub enum DiagnosticSeverity {
 /// A parser diagnostic tied to a source span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseDiagnostic {
+    /// Stable machine-readable classification, independent of the message text.
+    pub code: &'static str,
     /// Warning/error classification.
     pub severity: DiagnosticSeverity,
     /// Source range for the diagnostic.
@@ -327,7 +329,18 @@ impl ParseDiagnostic {
     /// Create a warning diagnostic.
     #[must_use]
     pub fn warning(span: SourceSpan, message: impl Into<String>) -> Self {
+        Self::warning_with_code(span, "parse_warning", message)
+    }
+
+    /// Create a warning with an explicit stable classification.
+    #[must_use]
+    pub fn warning_with_code(
+        span: SourceSpan,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
+            code,
             severity: DiagnosticSeverity::Warning,
             span,
             message: message.into(),

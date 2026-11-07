@@ -158,6 +158,8 @@ fn render_publication(
             diagnostic.span.start, diagnostic.span.end
         );
         push_json_escaped(&mut diagnostics, &diagnostic.message);
+        diagnostics.push_str("\",\"code\":\"");
+        push_json_escaped(&mut diagnostics, diagnostic.code);
         diagnostics.push_str("\"}");
     }
     diagnostics.push(']');

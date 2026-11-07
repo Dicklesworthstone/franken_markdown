@@ -212,6 +212,7 @@ fn render_archival(
         .diagnostics
         .iter()
         .map(|item| WasmDiagnostic {
+            code: Some(item.code),
             severity: match item.severity {
                 DiagnosticSeverity::Warning => "warning",
                 DiagnosticSeverity::Error => "error",
@@ -225,6 +226,7 @@ fn render_archival(
     let pdf_options = options.pdf_options();
     for warning in crate::render_warnings(&doc, &pdf_options) {
         diagnostics.push(WasmDiagnostic {
+            code: None,
             severity: "warning",
             start: 0,
             end: 0,

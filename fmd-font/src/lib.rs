@@ -35,6 +35,7 @@ pub mod outline;
 pub mod shaping;
 mod subset;
 pub mod text_run;
+mod variation_metrics;
 pub use macos::{
     DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_BYTES, MAX_MAC_RASTER_DIMENSION, MacBridgeDriver,
     MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError, RawCoreGraphicsRaster,
@@ -762,10 +763,12 @@ impl Font {
 
     /// Instance this face at CSS `font-weight` `weight` on the `wght` axis.
     ///
-    /// Applies `gvar` tuple deltas (packed point numbers, packed deltas, IUP)
-    /// and returns a **static** TrueType font: `fvar`/`avar`/`gvar` are
-    /// dropped, `glyf`/`loca` hold the frozen outlines. `None` when the font
-    /// has no `wght` axis, no TrueType outlines, or a table is unreadable.
+    /// Applies `gvar` tuple deltas (including empty-glyph phantom points),
+    /// `HVAR` horizontal metrics, and `MVAR` font-wide metrics. Returns a
+    /// **static** TrueType font with frozen outlines and recomputed bounds;
+    /// `fvar`/`avar`/`gvar`/`HVAR`/`MVAR` are removed. `None` when the font
+    /// has no `wght` axis, no TrueType outlines, or metric tables are malformed,
+    /// unrepresentable, or exceed the bounded variation work allowance.
     ///
     /// The same `weight` twice yields identical bytes.
     #[must_use]

@@ -4,10 +4,12 @@
 //! at a pinned `wght` location and emits a static TrueType font.
 
 use crate::{
-    Font, be_i16, be_u16, be_u32, find_table_full, off, off_mul, table_checksum, write_u32,
+    Font, be_i16, be_u16, be_u32, find_table_full, off, off_mul, table_checksum,
+    variation_metrics::InstanceMetrics, write_u16, write_u32,
 };
 
 mod composite;
+mod summary;
 
 const MAX_TUPLES: usize = 256;
 const MAX_GVAR_POINTS: usize = 4096;
@@ -52,6 +54,10 @@ pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
         return None;
     }
     let location = location_for_weight(font, weight)?;
+    // Admit all metric tables before interpolating outlines. HVAR replaces
+    // original horizontal metrics plus deltas; it must never be added to
+    // the equivalent gvar phantom deltas a second time.
+    let metrics = InstanceMetrics::new(font, &location)?;
     let data = font.raw_bytes();
     let (gvar_off, gvar_len) = find_table_full(data, b"gvar")?;
     let parsed = parse_gvar(data, gvar_off, gvar_len, n_axes)?;
@@ -70,8 +76,10 @@ pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
         hmtx.push((aw, lsb));
     }
     composite::refresh_bounds(&mut glyf_bytes, &loca, &mut hmtx)?;
+    metrics.apply_horizontal(&mut hmtx)?;
+    let summary = summary::Summary::new(&glyf_bytes, &loca, &hmtx)?;
     let loca_bytes = encode_loca(&loca);
-    let assembled = rebuild_static(font, glyf_bytes, loca_bytes, Some(&hmtx))?;
+    let assembled = rebuild_static(font, glyf_bytes, loca_bytes, &hmtx, &metrics, &summary)?;
     Font::parse(assembled).ok()
 }
 
@@ -175,11 +183,22 @@ fn instance_glyph(
 ) -> Option<(Vec<u8>, u16, i16)> {
     let data = font.glyph_data(gid).unwrap_or(&[]);
     if data.is_empty() {
-        return Some((
-            Vec::new(),
-            font.advance_width(gid),
-            font.left_side_bearing(gid),
-        ));
+        // Empty glyphs still have four phantom points. Their advance can vary
+        // through gvar even when HVAR is absent (notably spaces).
+        let mut phantoms = default_phantoms(&[], font, gid);
+        if let Some(gvar) = gvar {
+            apply_store(
+                font.raw_bytes(),
+                gvar,
+                gid,
+                location,
+                &mut [],
+                Some(&[]),
+                Some(&mut phantoms),
+            );
+        }
+        let (advance, bearing) = hmtx_from_phantoms(&[], &phantoms);
+        return Some((Vec::new(), advance, bearing));
     }
     let n_contours = be_i16(data, 0)?;
     if n_contours >= 0 {
@@ -994,7 +1013,9 @@ fn rebuild_static(
     font: &Font,
     glyf: Vec<u8>,
     loca: Vec<u8>,
-    hmtx_metrics: Option<&[(u16, i16)]>,
+    hmtx_metrics: &[(u16, i16)],
+    metrics: &InstanceMetrics,
+    summary: &summary::Summary,
 ) -> Option<Vec<u8>> {
     let src = font.raw_bytes();
     let num_tables = be_u16(src, 4)? as usize;
@@ -1003,60 +1024,35 @@ fn rebuild_static(
         let rec = off_mul(12, i, 16)?;
         let mut tag = [0u8; 4];
         tag.copy_from_slice(src.get(rec..rec.checked_add(4)?)?);
-        if &tag == b"fvar"
-            || &tag == b"avar"
-            || &tag == b"gvar"
-            || &tag == b"HVAR"
-            || &tag == b"VVAR"
-            || &tag == b"MVAR"
-        {
+        if matches!(
+            &tag,
+            b"fvar" | b"avar" | b"gvar" | b"HVAR" | b"VVAR" | b"MVAR"
+        ) {
             continue;
         }
-        if &tag == b"glyf" {
-            tables.push((tag, glyf.clone()));
+        // Move the rewritten tables into the final directory below; do not
+        // duplicate a complete glyf/loca allocation while rebuilding sfnt.
+        if matches!(&tag, b"glyf" | b"loca" | b"hmtx") {
             continue;
         }
-        if &tag == b"loca" {
-            tables.push((tag, loca.clone()));
-            continue;
-        }
-        if &tag == b"hmtx"
-            && let Some(metrics) = hmtx_metrics
-        {
-            tables.push((tag, encode_hmtx(metrics)));
-            continue;
-        }
+        let offset = usize::try_from(be_u32_at(src, rec, 8)?).ok()?;
+        let length = usize::try_from(be_u32_at(src, rec, 12)?).ok()?;
+        let mut bytes = src.get(offset..offset.checked_add(length)?)?.to_vec();
+        metrics.apply_table(&tag, &mut bytes)?;
         if &tag == b"hhea" {
-            let (o, l) = find_table_full(src, b"hhea")?;
-            let mut hhea = src.get(o..off(o, l)?)?.to_vec();
-            if hmtx_metrics.is_some() && hhea.len() >= 36 {
-                hhea[34..36].copy_from_slice(&font.num_glyphs.to_be_bytes());
-            }
-            tables.push((tag, hhea));
-            continue;
+            summary.apply_hhea(&mut bytes)?;
+            write_u16(&mut bytes, 34, font.num_glyphs)?;
         }
         if &tag == b"head" {
-            let (o, l) = find_table_full(src, b"head")?;
-            let mut head = src.get(o..off(o, l)?)?.to_vec();
-            // long loca
-            if head.len() >= 52 {
-                head[50..52].copy_from_slice(&1u16.to_be_bytes());
-            }
-            // zero checkSumAdjustment
-            if head.len() >= 12 {
-                head[8..12].copy_from_slice(&0u32.to_be_bytes());
-            }
-            tables.push((tag, head));
-            continue;
+            summary.apply_head(&mut bytes)?;
+            write_u16(&mut bytes, 50, 1)?; // long loca
+            write_u32(&mut bytes, 8, 0)?; // checksumAdjustment
         }
-        if &tag == b"maxp" {
-            let (o, l) = find_table_full(src, b"maxp")?;
-            tables.push((tag, src.get(o..off(o, l)?)?.to_vec()));
-            continue;
-        }
-        let (o, l) = find_table_full(src, &tag)?;
-        tables.push((tag, src.get(o..off(o, l)?)?.to_vec()));
+        tables.push((tag, bytes));
     }
+    tables.push((*b"glyf", glyf));
+    tables.push((*b"loca", loca));
+    tables.push((*b"hmtx", encode_hmtx(hmtx_metrics)));
     tables.sort_by_key(|a| a.0);
     assemble_sfnt(&tables)
 }

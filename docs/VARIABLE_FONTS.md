@@ -5,10 +5,12 @@ those sizes feed the distribution-parity budget (`smif.2`).
 
 ## What is implemented
 
-`Font::instance(weight)` reads `fvar`/`avar`/`gvar` clean-room, applies packed
-tuple deltas (shared or private point numbers, IUP, four phantom points),
-rewrites `glyf`/`loca`/`hmtx`, and returns a **static** TrueType font with
-`fvar`/`avar`/`gvar`/`HVAR` dropped. The same weight twice is byte-identical.
+`Font::instance(weight)` reads `fvar`/`avar`/`gvar`/`HVAR`/`MVAR` clean-room,
+applies packed tuple deltas (shared or private point numbers, IUP, four phantom
+points), and freezes horizontal and font-wide metrics at the selected weight.
+It rewrites `glyf`/`loca`/`hmtx`, recomputes `head` bounds and the horizontal
+extrema in `hhea`, and returns a **static** TrueType font with the consumed
+variation tables removed. The same weight twice is byte-identical.
 
 Host bytes reach the renderer through `FontAssets` slot pins (`--pdf-font` /
 `--pdf-font-weight` on the CLI, `WasmRenderOptions::with_font_asset_bytes` +
@@ -26,10 +28,12 @@ meaning. After every child has been instanced, the engine recomputes composite
 glyph bounds and left side bearings from the actual resulting outlines. This
 also updates parents with no variation tuple of their own and works regardless
 of glyph order. Horizontal advances remain independent of component movement.
-Static `hmtx` values use the composite's own phantom-point deltas. The public
-outline reader separately honors the last child marked `USE_MY_METRICS`, as it
-does for static fonts; these are distinct unhinted-table and outline metrics.
-The instancer does not execute TrueType hinting programs.
+Without `HVAR`, static `hmtx` values use the composite's own phantom-point
+deltas. With `HVAR`, explicit horizontal variation metrics take precedence as
+described below. The public outline reader separately honors the last child
+marked `USE_MY_METRICS`, as it does for static fonts; these are distinct
+unhinted-table and outline metrics. The instancer does not execute TrueType
+hinting programs.
 
 The bounds pass reuses the ordinary outline decoder without constructing a
 temporary font. Its existing per-glyph depth, component and point limits remain
@@ -43,6 +47,67 @@ FontTools' saved static instances at three weights. It includes growing byte
 offsets, a nested scaled parent, point-attached accents and subset round trips.
 This extends the synthetic bbox-only evidence described below; it does not
 claim complete validation of arbitrary retail variable fonts or hinted output.
+
+## Horizontal and font-wide variation metrics
+
+`HVAR` advance deltas are applied to the original `hmtx` values. The resulting
+advances replace the metrics derived from `gvar` phantom points, so an advance
+represented in both tables changes exactly once. Both implicit glyph-ID
+indexing and explicit delta-set maps are supported, including shared map rows,
+short maps that repeat their final entry, and no-variation indices. Optional
+mapped left side bearings likewise use their original values plus the `HVAR`
+delta. Without that map, the final outline and `gvar` left phantom determine
+the bearing. Right-bearing maps are read and validated; static TrueType derives
+the right bearing from advance, left bearing, and the final outline width.
+These paths agree for consistent `gvar` and `HVAR` tables, as required by the
+[OpenType HVAR format](https://learn.microsoft.com/en-us/typography/opentype/spec/hvar).
+
+Contourless glyphs still process their four `gvar` phantom points. A space
+therefore gets its selected advance even when the variable font has no `HVAR`
+table. It remains contourless in the static font and does not acquire synthetic
+ink bounds.
+
+`MVAR` applies the standard metric tags for `OS/2`, `hhea`, `vhea`, `post`, and
+the first ten adjustable `gasp` ranges. This includes typographic ascent,
+descent, line gap, clipping metrics, x-height/cap-height, caret metrics,
+subscript/superscript dimensions, strikeout and underline measurements. The
+terminal `gasp` range remains `65535`. Unknown private metric tags are ignored
+according to the [MVAR specification](https://learn.microsoft.com/en-us/typography/opentype/spec/mvar).
+As in FontTools static instancing, originally equal `hhea` and `OS/2`
+ascent/descent/line-gap triples stay synchronized; intentionally different
+`hhea` values remain independent.
+
+The metric reader uses the same normalized, `avar`-mapped axis location as the
+outline instancer. Other axes remain at their defaults. It handles intermediate
+and negative regions, both signed short/byte and long/short delta rows, and
+OpenType integer rounding (half-unit ties toward positive infinity). Region
+scalars are computed once, delta rows remain borrowed, and repeated map indices
+reuse cached results. Each store admits at most 262,144 region columns, with
+one eight-million-unit work allowance across `HVAR` and `MVAR`. A malformed, truncated,
+over-budget or unrepresentable metric table rejects the entire instance;
+partially updated metrics are never returned.
+
+After outlines and metrics are final, a linear scan rebuilds the font-wide
+bounding box, maximum advance, minimum left/right bearings, and maximum ink
+extent. Contourless glyphs participate in maximum advance only, matching the
+[`head`](https://learn.microsoft.com/en-us/typography/opentype/spec/head) and
+[`hhea`](https://learn.microsoft.com/en-us/typography/opentype/spec/hhea) rules.
+The serializer moves the completed outline tables into the static font without
+cloning another full `glyf`/`loca` pair.
+
+The authored OFL fixtures `FmdMetricsVF` and `FmdMappedMetricsVF` compare saved
+FontTools static-instance horizontal metrics and global table fields at six
+weights. They exercise two axes, nonlinear `avar`, intermediate regions,
+contourless space, and both kinds of advance mapping. FontTools 4.61.1 does not
+instantiate MVAR `gasp` range tags; those expectations are explicitly separate
+spec-derived tests. The independent FontTools table oracle is not used to
+assert behavior that FontTools does not implement. Additional tests cover
+HVAR-absent phantom metrics, static subset round trips, checksum validity,
+determinism, source immutability, truncation and mutation.
+
+This is horizontal TrueType instancing. Per-glyph vertical `VVAR` metrics,
+CFF2 outlines, and execution of TrueType hinting programs are outside the
+supported path.
 
 ## Outline tolerance comparison method
 
@@ -72,10 +137,10 @@ codepoint the fixture cmap maps, and it shares gid 0 with `.notdef`. A retail
 face should probe a documented letter set the same way; the method does not
 change.
 
-This is deterministic, has no rasterizer dependency, and matches the
-apply-then-encode pipeline. It will **not** catch a point that moves inside an
-unchanged bbox; that is an accepted gap until a contour-walk comparison lands
-as its own bead.
+This older bbox score is deterministic, has no rasterizer dependency, and
+matches the apply-then-encode pipeline. On its own it cannot catch a point
+moving inside an unchanged box. The composite fixture also compares complete outline vertices against
+independently saved FontTools instances.
 
 ## Size report (feeds smif.2)
 
@@ -106,13 +171,19 @@ one retail VF is a separate measurement, gated on an actual candidate file.
 ## Hostile sweeps
 
 `fvar` and `gvar` table bytes are LCG-mutated independently. `Font::parse` +
-`Font::instance` + `render_pdf` must never panic. A mutated table may fail
-closed to the default master or to a render error; aborting is the defect.
+`Font::instance` + `render_pdf` must never panic. Existing `gvar` recovery may
+retain a default outline; invalid `HVAR`/`MVAR` admission returns `None` for the
+whole instance. The metric tests also exercise every table-prefix truncation
+and deterministic table-byte mutation, including malformed offsets and counts.
 
 ## Tests and scripts
 
 - `fmd-font/tests/variation_test.rs` — committed FmdTestVF axes, bbox
   tolerance, fvar LCG, optional `FMD_DUMP_TRIANGLE_VF` dump.
+- `fmd-font/tests/composite_variation_test.rs` — independently captured
+  composite outlines, stored bounds, metrics, and subset round trips.
+- `fmd-font/tests/variation_metrics_test.rs` — independent static metric
+  oracle, HVAR/MVAR integration, blank glyphs, and bounded hostile inputs.
 - `tests/variable_font_e2e.rs` — library + WASM API + CLI slot.
 - `scripts/variable-font-e2e.sh` — CLI e2e with a machine-readable
   `summary.json` / `checks.jsonl` under `tests/artifacts/variable-font/<run-id>/`.

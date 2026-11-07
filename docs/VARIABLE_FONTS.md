@@ -198,5 +198,8 @@ and deterministic table-byte mutation, including malformed offsets and counts.
 - `fmd-font/tests/variation_metrics_test.rs` — independent static metric
   oracle, HVAR/MVAR integration, blank glyphs, and bounded hostile inputs.
 - `tests/variable_font_e2e.rs` — library + WASM API + CLI slot.
+- `tests/variable_font_metrics_e2e.rs` — reparses PDF and HTML embedded fonts,
+  checks independent HVAR/MVAR values and PDF CID widths, and compares native
+  and WASM-facing Rust APIs on the host.
 - `scripts/variable-font-e2e.sh` — CLI e2e with a machine-readable
   `summary.json` / `checks.jsonl` under `tests/artifacts/variable-font/<run-id>/`.

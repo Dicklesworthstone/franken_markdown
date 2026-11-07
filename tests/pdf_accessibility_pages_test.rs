@@ -326,6 +326,63 @@ fn inline_object_links_resolve_destinations_without_reviving_missing_targets() {
 }
 
 #[test]
+fn separate_same_target_inline_links_keep_intervening_prose_in_reading_order() {
+    let options = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "status.svg",
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#007ec6"/></svg>"##.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let source = "Before [**first** ![One](status.svg) $x$](https://example.com/shared) between [![Two](status.svg) $y$ **second**](https://example.com/shared) after.";
+    let pdf = render_pdf(source, &options).unwrap();
+    let elements = nodes(&pdf);
+    let paragraphs: Vec<_> = elements.iter().filter(|node| node.tag == "P").collect();
+    assert_eq!(paragraphs.len(), 1);
+    let paragraph = paragraphs[0];
+    let links: Vec<_> = elements.iter().filter(|node| node.tag == "Link").collect();
+    assert_eq!(
+        links.len(),
+        2,
+        "separate links must not absorb intervening prose"
+    );
+    let kids = paragraph
+        .body
+        .split_once(" /K [")
+        .unwrap()
+        .1
+        .split_once(']')
+        .unwrap()
+        .0;
+    let first_ref = format!(" {} 0 R", links[0].id);
+    let first = kids.find(&first_ref).unwrap();
+    let last = kids.find(&format!(" {} 0 R", links[1].id)).unwrap();
+    assert!(first < last);
+    assert!(
+        kids[first + first_ref.len()..last].contains("/Type /MCR "),
+        "intervening prose must stay between the two Link children: {kids}"
+    );
+    for (link, (image_alt, formula_alt)) in links.iter().zip([("One", "x"), ("Two", "y")]) {
+        assert_eq!(link.parent, paragraph.id);
+        for (tag, alt) in [("Figure", image_alt), ("Formula", formula_alt)] {
+            let children: Vec<_> = elements
+                .iter()
+                .filter(|node| node.tag == tag && node.parent == link.id)
+                .collect();
+            assert_eq!(children.len(), 1);
+            assert!(children[0].body.contains(&format!("/Alt ({alt})")));
+            assert!(!children[0].body.contains("/Type /OBJR"));
+        }
+    }
+    assert!(assert_link_annotation_owners(&pdf, &elements) >= 6);
+    assert_unique_content_owners(&elements);
+    assert_eq!(
+        pdf,
+        render_pdf_emitted(source, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
+}
+
+#[test]
 fn nested_lists_and_quotes_keep_their_hierarchy_across_pages() {
     let mut source = String::new();
     for item in 0..8 {

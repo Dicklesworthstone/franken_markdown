@@ -22947,6 +22947,9 @@ struct RenderScratch {
     outlines: Vec<OutlineEntry>,
     seen_heading_groups: BTreeSet<u32>,
     seen_table_header_lines: BTreeSet<(u32, usize)>,
+    inline_link_runs: BTreeMap<u32, LinkRun>,
+    table_link_runs: BTreeMap<(u32, u32, u32), LinkRun>,
+    table_header_link_runs: BTreeMap<(u32, usize, usize), u64>,
 }
 
 impl RenderScratch {
@@ -22956,8 +22959,39 @@ impl RenderScratch {
             outlines: Vec::with_capacity(heading_count),
             seen_heading_groups: BTreeSet::new(),
             seen_table_header_lines: BTreeSet::new(),
+            inline_link_runs: BTreeMap::new(),
+            table_link_runs: BTreeMap::new(),
+            table_header_link_runs: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Default)]
+struct LinkRun {
+    target: Option<LinkTarget>,
+    index: u64,
+}
+
+/// Continue a link through styling and wrapping, but start a distinct logical
+/// link after intervening unlinked content or a different target. Containers
+/// have independent state because table columns interleave in paint order.
+fn link_run_key<K: Ord>(
+    runs: &mut BTreeMap<K, LinkRun>,
+    container: K,
+    target: Option<&LinkTarget>,
+) -> Option<u64> {
+    let Some(target) = target else {
+        if let Some(run) = runs.get_mut(&container) {
+            run.target = None;
+        }
+        return None;
+    };
+    let run = runs.entry(container).or_default();
+    if run.target.as_ref() != Some(target) {
+        run.index = run.index.saturating_add(1);
+        run.target = Some(target.clone());
+    }
+    Some(run.index)
 }
 
 struct PageContent {
@@ -23856,7 +23890,9 @@ fn generate_page_content(
                 .filter(|_| line.flow.index == 0 && !repeated_header)
                 .map(|row| row.columns);
             let mut next_column = 0;
-            for (seg, &col) in line.segs.iter().zip(line.table_cols.iter()) {
+            for (segment_index, (seg, &col)) in
+                line.segs.iter().zip(line.table_cols.iter()).enumerate()
+            {
                 if seg.text.is_empty() {
                     continue;
                 }
@@ -23873,9 +23909,25 @@ fn generate_page_content(
                     next_column = col.saturating_add(1);
                 }
                 let mut path = table_cell_path(&prefix, line.flow.group, tbl_row, col, header);
-                let content_tag = if let Some(target) = &seg.link {
+                let header_segment = (line.flow.group, line.flow.index, segment_index);
+                let link_key = if repeated_header {
+                    // Repeated paint must reuse the original header occurrence
+                    // instead of advancing that cell's logical reading order.
+                    scratch.table_header_link_runs.get(&header_segment).copied()
+                } else {
+                    let key = link_run_key(
+                        &mut scratch.table_link_runs,
+                        (line.flow.group, tbl_row, col),
+                        seg.link.as_ref(),
+                    );
+                    if header && let Some(key) = key {
+                        scratch.table_header_link_runs.insert(header_segment, key);
+                    }
+                    key
+                };
+                let content_tag = if let Some(key) = link_key {
                     path.push(SElem {
-                        key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                        key: SKey::TableLink(key),
                         tag: "Link",
                     });
                     "Link"
@@ -24156,15 +24208,26 @@ fn generate_page_content(
             let mut open_link: Option<u64> = None;
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
+                    // Empty marks at line boundaries do not interrupt a
+                    // wrapped source link; only actual content advances runs.
+                    let link_key = if seg.text.is_empty() {
+                        None
+                    } else {
+                        link_run_key(
+                            &mut scratch.inline_link_runs,
+                            line.flow.group,
+                            seg.link.as_ref(),
+                        )
+                    };
                     if let (F_IMAGE, Some((_, path))) = (seg.slot, text_path.as_ref()) {
                         if text_open {
                             body.push_str("EMC\n");
                             text_open = false;
                         }
                         let mut figure_path = SmallPath::from_slice(path.as_slice());
-                        if let Some(target) = &seg.link {
+                        if let Some(key) = link_key {
                             figure_path.push(SElem {
-                                key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                                key: SKey::InlineLink(line.flow.group, key),
                                 tag: "Link",
                             });
                         }
@@ -24207,9 +24270,9 @@ fn generate_page_content(
                             text_open = false;
                         }
                         let mut formula_path = SmallPath::from_slice(path.as_slice());
-                        if let Some(target) = &seg.link {
+                        if let Some(key) = link_key {
                             formula_path.push(SElem {
-                                key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                                key: SKey::InlineLink(line.flow.group, key),
                                 tag: "Link",
                             });
                         }
@@ -24251,7 +24314,6 @@ fn generate_page_content(
                     // A link run is its own /Link element inside the line's
                     // leaf, owning its annotations (/OBJR); prose around it
                     // stays in the leaf itself.
-                    let link_key = seg.link.as_ref().map(link_struct_key);
                     if text_path.is_some() && text_open && open_link != link_key {
                         body.push_str("EMC\n");
                         text_open = false;
@@ -24409,23 +24471,17 @@ enum SKey {
     Table(u32),
     TableRow(u32, u32),
     TableCell(u32, u32, u32),
+    /// A contiguous link occurrence within its logical table-cell parent.
+    TableLink(u64),
     Figure(u32),
     Link(u32),
     /// An inline formula inside a text line, keyed by its own MCID.
     InlineFormula(usize),
     /// An inline image inside a text line, keyed by its own MCID.
     InlineFigure(usize),
-    /// A link run inside a text line: its flow group plus the target digest,
-    /// so a link wrapping onto the next line continues the same element.
+    /// A contiguous link run within its flow group. Wrapping continues the
+    /// same element; intervening content separates even same-target links.
     InlineLink(u32, u64),
-}
-
-/// Stable digest identifying a link target for structure-element sharing.
-fn link_struct_key(target: &LinkTarget) -> u64 {
-    match target {
-        LinkTarget::Uri(uri) => seg_text_hash(uri),
-        LinkTarget::Fragment(fragment) => !seg_text_hash(fragment),
-    }
 }
 
 /// One element on a mark's container path: its sharing key plus the `/S`

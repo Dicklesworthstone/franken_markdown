@@ -376,6 +376,24 @@ fn object_ancestry(pdf: &[u8], tag: &str) -> Vec<Vec<String>> {
                 .split_whitespace()
                 .next()
                 .unwrap();
+            if tag == "Link" {
+                assert!(dictionary.contains("/Type /OBJR"));
+                assert!(!objects.dictionary(id).contains("/Type /OBJR"));
+                let root = (1..objects.offsets.len())
+                    .map(|id| objects.dictionary(id))
+                    .find(|dictionary| dictionary.contains("/Type /StructTreeRoot "))
+                    .unwrap();
+                let tree = objects.dictionary(integer_after(root, "/ParentTree "));
+                for reference in dictionary.split("/Type /OBJR ").skip(1) {
+                    let annotation = objects.dictionary(integer_after(reference, "/Obj "));
+                    assert!(annotation.contains("/Subtype /Link "));
+                    let key = integer_after(annotation, "/StructParent ");
+                    assert!(
+                        tree.contains(&format!(" {key} {parent} 0 R")),
+                        "annotation must map back to the enclosing Link"
+                    );
+                }
+            }
             ancestry.push(tag.to_string());
             if tag == "Document" {
                 break;
@@ -672,7 +690,7 @@ fn linked_inline_image_can_select_a_shorter_shape_and_keep_its_paint_and_link() 
         verify_geometry(&before, &after.bytes, &opts);
         assert_eq!(
             object_ancestry(&after.bytes, "Figure"),
-            vec![vec!["P", "Document"]]
+            vec![vec!["Link", "P", "Document"]]
         );
         if raster {
             assert!(String::from_utf8_lossy(&after.bytes).contains("/Subtype /Image"));
@@ -706,7 +724,15 @@ fn nested_list_and_quote_keep_selected_formula_and_image_ownership() {
     assert_body_size(&after.bytes, 11.0);
     assert_formula_sources(&after.bytes, &["x"]);
     verify_geometry(&before, &after.bytes, &opts);
-    let expected = vec![vec!["P", "LBody", "LI", "L", "BlockQuote", "Document"]];
+    let expected = vec![vec![
+        "Link",
+        "P",
+        "LBody",
+        "LI",
+        "L",
+        "BlockQuote",
+        "Document",
+    ]];
     assert_eq!(object_ancestry(&after.bytes, "Formula"), expected);
     assert_eq!(object_ancestry(&after.bytes, "Figure"), expected);
     for ink in formula_paint(&after.bytes)

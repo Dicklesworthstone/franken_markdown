@@ -450,6 +450,82 @@ fn wrapped_and_repeated_cells_keep_one_header_association_and_link_owner() {
 }
 
 #[test]
+fn separate_same_target_cell_links_preserve_reading_order_through_wrapping_and_repetition() {
+    let target = "https://example.com/shared";
+    let source = format!(
+        "| [one]({target}) middle [two]({target}) | Side |\n|---|---|\n\
+         | [**{}**]({target}) between [last]({target}) | [neighbor]({target}) |\n",
+        ["wrapping words"; 45].join(" ")
+    );
+    let options = small_pages();
+    let pdf = render_pdf(&source, &options).unwrap();
+    let elements = nodes(&pdf);
+    let table = elements.iter().find(|node| node.tag == "Table").unwrap();
+    assert_grid(&elements, table, 2, 1);
+    assert_lookup_and_content_ownership(&pdf, &elements);
+    let rows = children(&elements, table);
+    for row in &rows {
+        let cell = children(&elements, row)[0];
+        let links: Vec<_> = elements
+            .iter()
+            .filter(|node| node.tag == "Link" && node.parent == cell.id)
+            .collect();
+        assert_eq!(
+            links.len(),
+            2,
+            "intervening prose separates same-target links"
+        );
+        let kids = cell
+            .body
+            .split_once(" /K [")
+            .unwrap()
+            .1
+            .split_once(']')
+            .unwrap()
+            .0;
+        let first = kids.find(&format!(" {} 0 R", links[0].id)).unwrap();
+        let middle = kids.find("/Type /MCR ").unwrap();
+        let last = kids.find(&format!(" {} 0 R", links[1].id)).unwrap();
+        assert!(
+            first < middle && middle < last,
+            "cell reading order: {kids}"
+        );
+        assert!(!cell.body.contains("/Type /OBJR"));
+        if cell.tag == "TH" {
+            for link in links {
+                let pages: BTreeSet<_> = link
+                    .body
+                    .split("/Type /OBJR /Pg ")
+                    .skip(1)
+                    .map(|tail| tail.split_whitespace().next().unwrap())
+                    .collect();
+                assert!(
+                    pages.len() > 1,
+                    "each original header link repeats across pages"
+                );
+            }
+        } else {
+            let pages: BTreeSet<_> = links[0]
+                .body
+                .split("/Type /MCR /Pg ")
+                .skip(1)
+                .map(|tail| tail.split_whitespace().next().unwrap())
+                .collect();
+            assert!(
+                pages.len() > 1,
+                "one link continues through wrapping and page breaks"
+            );
+        }
+    }
+    assert_eq!(elements.iter().filter(|node| node.tag == "Link").count(), 5);
+    assert!(assert_annotation_owners(&pdf, &elements) > 5);
+    assert_eq!(
+        pdf,
+        render_pdf_emitted(&source, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
+}
+
+#[test]
 fn blank_tables_keep_list_and_footnote_container_ownership() {
     let table = Block::Table(Table {
         align: vec![Align::Left; 2],

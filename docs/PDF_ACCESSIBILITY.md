@@ -56,6 +56,10 @@ Cross-cutting guarantees, all asserted by tests:
   A linked figure or formula still owns its content `/MCID`, alt text, and
   bounds; its enclosing `/Link` owns the annotation `/OBJR`.
   The `/StructTreeRoot` advertises `/ParentTreeNextKey`.
+- **Link reading order.** Separate links to the same destination remain
+  separate `/Link` children when unlinked content intervenes, preserving that
+  content's position in the parent `/K` array. Contiguous styled text, images,
+  and formulas share their link across line and page boundaries.
 - **Parent tree integrity.** Each page declares `/StructParents`, and the
   `/ParentTree` `/Nums` maps every content `/MCID`, in order, to the structure
   element that owns it. Each content-stream `/MCID` is referenced by exactly one
@@ -94,6 +98,10 @@ MCIDs restart on each page. Both PDF emission modes use this same hierarchy.
 Linked content adds a `/Link` below its text or cell container, with any
 `/Figure` or `/Formula` below the link. Annotation ownership follows that
 enclosing link without changing the content's marked owner or geometry.
+Contiguous link runs are tracked independently for each text flow and table
+cell, so another column's paint cannot interrupt a wrapped link. Repeated
+headers replay the original segment-to-link mapping without advancing those
+logical runs.
 
 A table header ID is derived from the document-wide table identity and source
 column. Each data cell's `/Headers` array names that ID, and `/StructTreeRoot`
@@ -133,6 +141,7 @@ laid-out footnotes, inline formula identity, deterministic output, and equality
 between monolithic and chunked emission. Mixed text/image/formula links retain
 one `/Link` across pages, unlinked objects keep ordinary paragraph ownership,
 and missing internal destinations create no clickable annotations.
+Separate same-target links retain intervening prose in the parent reading order.
 It also exercises adaptive table
 scaling below the ordinary body-table floor inside a small-type footnote.
 
@@ -143,6 +152,8 @@ list/footnote ownership, linked images with preserved alt text, PDF/A output,
 annotation back-references to `/Link` owners, linked formulas and images under
 repeated headers, distinct same-target links in separate cells, deterministic
 bytes, and parity between emitters.
+Same-target links within a cell also retain intervening content in `/K` order,
+including when the first link wraps across pages and its header repeats.
 
 Closing `qw1.9` cited:
 

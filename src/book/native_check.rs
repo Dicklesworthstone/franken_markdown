@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use super::{BookArgs, Failure, error, failure, inputs, json_string, stdout_line};
-use crate::book::Book;
+use crate::book::{Book, BookSourceDiagnostics};
 use crate::book::validation::{LinkReport, check_book_links};
 
 /// Serialize the complete report before emitting anything. A validator or
@@ -47,10 +47,20 @@ pub(super) fn run(args: &BookArgs, json_requested: bool) -> ExitCode {
         // Warnings are diagnostics, never additions to the portable core JSON
         // schema on stdout. They cannot be mistaken for navigation findings.
         write_warnings(&loaded.warnings, true, &mut io::stderr().lock())
+            .and_then(|()| {
+                write_source_diagnostics(
+                    &loaded.source_diagnostics,
+                    true,
+                    &mut io::stderr().lock(),
+                )
+            })
             .and_then(|()| stdout_line(&json))
     } else {
         let mut stderr = io::stderr().lock();
         write_warnings(&loaded.warnings, false, &mut stderr)
+            .and_then(|()| {
+                write_source_diagnostics(&loaded.source_diagnostics, false, &mut stderr)
+            })
             .and_then(|()| write_human(&report, &mut stderr))
             .and_then(|()| stderr.flush())
     };
@@ -58,6 +68,47 @@ pub(super) fn run(args: &BookArgs, json_requested: bool) -> ExitCode {
         return ExitCode::from(74);
     }
     ExitCode::from(if report.finding_count() == 0 { 0 } else { 65 })
+}
+
+pub(super) fn source_warnings(report: &BookSourceDiagnostics) -> Vec<String> {
+    report
+        .chapters()
+        .iter()
+        .flat_map(|chapter| {
+            chapter.diagnostics.iter().map(move |diagnostic| {
+                format!(
+                    "{}: {:?}, expanded chapter bytes {}..{}: {}",
+                    diagnostic.code,
+                    chapter.path,
+                    diagnostic.span.start,
+                    diagnostic.span.end,
+                    diagnostic.message,
+                )
+            })
+        })
+        .collect()
+}
+
+fn write_source_diagnostics(
+    report: &BookSourceDiagnostics,
+    json: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    if report.is_empty() {
+        return Ok(());
+    }
+    if json {
+        writeln!(
+            out,
+            "{{\"level\":\"warning\",\"code\":\"book_source_diagnostics\",\"report\":{}}}",
+            report.to_json(),
+        )
+    } else {
+        for warning in source_warnings(report) {
+            writeln!(out, "fmd: source warning: {warning}")?;
+        }
+        Ok(())
+    }
 }
 
 fn write_warnings(warnings: &[String], json: bool, out: &mut impl Write) -> io::Result<()> {

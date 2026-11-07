@@ -11,7 +11,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::manifest::{self, Manifest};
-use crate::book::{Book, BookInput, build_book, resolve_book_destination};
+use crate::book::{
+    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics, resolve_book_destination,
+};
 use crate::{Block, Inline, PdfImageAsset};
 
 const MAX_CHAPTERS: usize = 4096;
@@ -24,6 +26,7 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(super) struct LoadedBook {
     root: PathBuf,
     pub book: Book,
+    pub source_diagnostics: BookSourceDiagnostics,
     pub manifest: Manifest,
     pub source_bytes: Vec<usize>,
     pub images: Vec<PdfImageAsset>,
@@ -141,12 +144,14 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
         });
     }
     protected_paths.extend(include_paths.into_inner());
-    let book = build_book(&inputs).map_err(|error| error.to_string())?;
+    let (book, source_diagnostics) =
+        build_book_with_diagnostics(&inputs).map_err(|error| error.to_string())?;
     warnings.sort();
     warnings.dedup();
     Ok(LoadedBook {
         root,
         book,
+        source_diagnostics,
         manifest,
         source_bytes,
         images: Vec::new(),

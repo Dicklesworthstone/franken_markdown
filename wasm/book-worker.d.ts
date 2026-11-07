@@ -1,6 +1,6 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookSourceDiagnosticsOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
-export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links";
+export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links" | "diagnostics";
 /** A transport capture revision is local to this worker client, not a native
  * source revision. Present only when the worker negotiated source deltas. */
 export interface BookWorkerCapture {
@@ -96,6 +96,14 @@ export interface BookWorker {
     options?: BookOptions,
     request?: { signal?: AbortSignal },
   ): Promise<Omit<BookLinksOutput, "filename">>;
+  /** Parser diagnostics for expanded chapters. No image/font/presentation
+   * authority is read or transferred; capped at 4 MiB. One-shot only. */
+  render(
+    files: readonly BookFile[],
+    format: "diagnostics",
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<Omit<BookSourceDiagnosticsOutput, "filename">>;
   render(
     files: readonly BookFile[],
     format: BookWorkerFormat,
@@ -107,6 +115,7 @@ export interface BookWorker {
     | BookChapterWorkerOutput
     | BookInspectionOutput
     | Omit<BookLinksOutput, "filename">
+    | Omit<BookSourceDiagnosticsOutput, "filename">
   >;
   /** Export after selective text changes to exact retained chapter/include keys.
    * Sends only changes; no settings, unchanged sources, image or font bytes.

@@ -89,6 +89,16 @@ impl FmdBook {
         self.renderer.source_revision()
     }
 
+    /// Complete parser findings for the currently captured chapter revision,
+    /// without reparsing or rendering. Returns fmd-book-source-diagnostics-v1
+    /// JSON with explicit expanded_chapter UTF-8 coordinates. Original include
+    /// source offsets are not implied; assets and presentation do not affect it.
+    #[wasm_bindgen(js_name = sourceDiagnostics)]
+    #[must_use]
+    pub fn source_diagnostics(&self) -> String {
+        self.renderer.source_diagnostics().to_json()
+    }
+
     /// Atomically replace selected chapter/include sources at an expected
     /// revision, without recreating the renderer or reparsing unchanged chapters.
     /// Source membership, reading order and expansion mode remain fixed.

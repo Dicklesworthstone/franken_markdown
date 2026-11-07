@@ -232,6 +232,10 @@ export interface BookSession {
   renderChapterPreview(selected?: number): BookChapterPreviewOutput;
   /** Check local HTML navigation on the retained AST without rendering pages. */
   validateLinks(): BookLinksOutput;
+  /** Retained parser warnings for the exact expanded/rebased chapter text.
+   * No reparsing, rendering or asset access. Old WASM fails with
+   * UNSUPPORTED_BOOK_SOURCE_DIAGNOSTICS instead of reporting a clean book. */
+  sourceDiagnostics(): BookSourceDiagnosticsOutput;
   /** Idempotent. All subsequent operations except dispose throw. */
   dispose(): void;
 }
@@ -251,6 +255,45 @@ export function renderBookSite(
   files: readonly BookFile[],
   options?: BookOptions,
 ): Promise<BookOutput>;
+
+export interface BookSourceDiagnostic {
+  readonly code: string;
+  readonly severity: "warning" | "error";
+  /** UTF-8 byte offsets in the expanded/rebased chapter, not include files. */
+  readonly start: number;
+  readonly end: number;
+  readonly message: string;
+}
+export interface BookSourceDiagnosticsReport {
+  readonly schema: "fmd-book-source-diagnostics-v1";
+  readonly coordinateSpace: "expanded_chapter";
+  readonly chapters: readonly Readonly<{
+    path: string;
+    sourceBytes: number;
+    diagnostics: readonly BookSourceDiagnostic[];
+  }>[];
+  readonly summary: Readonly<{ chapters: number; diagnostics: number }>;
+}
+export interface BookSourceDiagnosticsOutput {
+  readonly format: "book-diagnostics";
+  readonly mimeType: "application/json";
+  readonly extension: "json";
+  readonly sourceLength: number;
+  readonly bytes: Uint8Array;
+  blob(): Blob;
+  filename(baseName?: string): string;
+}
+/** Source-only parsing check with guaranteed session disposal. Includes are
+ * captured; image/font/presentation properties are not read. Reports contain
+ * complete diagnostics for at most 4096 chapters/diagnostics in 4 MiB. */
+export function checkBookSourceDiagnostics(
+  files: readonly BookFile[], options?: BookOptions,
+): Promise<BookSourceDiagnosticsOutput>;
+/** Verify bounded report data and totals; optionally bind chapter identity and
+ * order to canonical paths. Does not parse Markdown or map include locations. */
+export function parseBookSourceDiagnosticsReport(
+  bytes: Uint8Array, expectedPaths?: readonly string[],
+): BookSourceDiagnosticsReport;
 
 export interface BookLinkFinding {
   readonly code:

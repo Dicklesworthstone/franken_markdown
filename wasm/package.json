@@ -109,6 +109,7 @@
     "book.js",
     "book.d.ts",
     "book_session.mjs",
+    "book_source_diagnostics.mjs",
     "demo/index.html",
     "demo/demo.js",
     "pkg/franken_markdown.js",

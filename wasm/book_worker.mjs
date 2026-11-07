@@ -5,6 +5,7 @@ export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
 const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
+const sourceFormats = new Set(["links", "diagnostics"]);
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
@@ -14,11 +15,12 @@ const formats = Object.freeze({
   "chapter-preview": ["renderBookSelectedPreview", "application/json", "json"],
   inspection: ["inspectBook", "application/json", "json"],
   links: ["checkBookLinks", "application/json", "json"],
+  diagnostics: ["checkBookSourceDiagnostics", "application/json", "json"],
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
   if (!Object.hasOwn(formats, format))
-    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection or links.");
+    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection, links or diagnostics.");
   return formats[format];
 }
 
@@ -414,7 +416,7 @@ export function createBookWorkerClient({
           const fontReceipt = bookFontEmbeddingReceipt(data,
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength,
-            format === "links" ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
+            sourceFormats.has(format) ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
               throw bookError("WORKER_PROTOCOL_ERROR", "Book worker replied for a different chapter.");
@@ -488,7 +490,7 @@ export function createBookWorkerClient({
         }
         if (!sourceOnly) input = prepareBookInput(
           files,
-          format === "inspection" ? {} : format === "links" ? bookLinkOptions(options) : options,
+          format === "inspection" ? {} : sourceFormats.has(format) ? bookLinkOptions(options) : options,
         );
         if (settled) return;
         if (signal?.aborted) {
@@ -647,7 +649,7 @@ export function installBookWorker(scope, engine) {
         if (capture && capture.mode !== mode) releaseCapture();
         input = prepareBookInput(
           data.files,
-          data.format === "inspection" ? {} : data.format === "links"
+          data.format === "inspection" ? {} : sourceFormats.has(data.format)
             ? bookLinkOptions(data.options) : data.options,
         );
       }
@@ -661,7 +663,7 @@ export function installBookWorker(scope, engine) {
       const fontReceipt = bookFontEmbeddingReceipt(result,
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength,
-        data.format === "links" ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
+        sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
       if (data.format === "pdf") {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))
           throw bookError("UNSUPPORTED_BOOK_PDFA", "The renderer did not acknowledge the requested PDF/A emission policy.");

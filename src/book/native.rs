@@ -303,6 +303,9 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             String::new(),
         )
     };
+    loaded
+        .warnings
+        .extend(preflight::source_warnings(&loaded.source_diagnostics));
     let first = loaded
         .book
         .chapters
@@ -594,8 +597,16 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     } else {
         String::new()
     };
+    let source_diagnostics = if loaded.source_diagnostics.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ",\"source_diagnostics\":{}",
+            loaded.source_diagnostics.to_json(),
+        )
+    };
     let json = format!(
-        "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]{link_check}{archival}}}",
+        "{{\"ok\":true,\"tool\":\"fmd\",\"command\":\"book\",\"target\":{},\"input\":{},\"chapters\":{},\"files\":[{}],\"unresolved_links\":{unresolved},\"pages\":{pages},\"images\":{image_count},\"outputs\":[{}],\"warnings\":[{}]{link_check}{archival}{source_diagnostics}}}",
         json_string(args.to.as_str()),
         json_string(&args.input.display().to_string()),
         loaded.book.chapters.len(),

@@ -10,7 +10,7 @@ const repo = dirname(wasm.replace(/[\\/]$/, ''));
 const read = path => readFileSync(path, 'utf8');
 // The proof helpers' full relative import closure, plus their documentation.
 const required = [
-  'book_pdf_proof.mjs', 'book_session.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
+  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
   // book_pdf_controls.mjs reads publishing-profile fields from the collection
   // module (a3ca221), which in turn uses the font asset store.
   'demo/book_pdf_controls.mjs', 'demo/book_collection.mjs', 'demo/book_font_assets.mjs', 'BOOK_PDF_PROOF.md',
@@ -87,7 +87,7 @@ async function bootstrap(fail = false) {
     // (d15040f, f905593); each is an independent subsystem like the others.
     'demo/book_image_controls.mjs': 'export const createBookImagePanel = () => {}; export const createBookImageControls = options => globalThis.__bookPdfBoot.create("images", options);',
     'demo/book_font_controls.mjs': 'export const createBookFontPanel = () => {}; export const createBookFontControls = options => globalThis.__bookPdfBoot.create("fonts", options);',
-    'demo/book_inspection_controls.mjs': 'export const createBookInspectionPanel = () => {}; export const createBookLinkPanel = () => {}; export const createBookInspectionControls = options => globalThis.__bookPdfBoot.create("inspection", options); export const createBookLinkControls = options => globalThis.__bookPdfBoot.create("links", options);',
+    'demo/book_inspection_controls.mjs': 'export const createBookInspectionPanel = () => {}; export const createBookLinkPanel = () => {}; export const createBookSourceDiagnosticsPanel = () => {}; export const createBookSourceDiagnosticsControls = options => globalThis.__bookPdfBoot.create("parser", options); export const createBookInspectionControls = options => globalThis.__bookPdfBoot.create("inspection", options); export const createBookLinkControls = options => globalThis.__bookPdfBoot.create("links", options);',
     ...Object.fromEntries(['Library', 'Preview', 'Search'].map(name => [
       `demo/book_${name.toLowerCase()}_controls.mjs`,
       `export const createBook${name}Controls = options => globalThis.__bookPdfBoot.create("${name.toLowerCase()}", options);`,

@@ -19,6 +19,14 @@ The shared source expands into that chapter using the existing bounded include
 resolver. It does not become a separate HTML page, search chapter, PDF chapter,
 or EPUB spine item. The manifest changes only chapter membership; it does not
 rewrite any source file or move an include's contents to another location.
+
+Parser warnings survive book assembly and appear in ordinary publishing
+diagnostics. JSON receipts include the complete `source_diagnostics` report when
+findings exist; `--check-links --json` keeps its navigation report on stdout and
+emits the source report separately on stderr. Ranges address the expanded and
+URL-rebased chapter bytes, without inventing locations in original include files.
+See [BOOK_SOURCE_DIAGNOSTICS.md](BOOK_SOURCE_DIAGNOSTICS.md).
+
 Relative links and images inside a snippet resolve from the file that defines
 them. For example, `parts/shared.md` can use `![Chart](chart.svg)` and
 `[Next](next.md#setup)` when included by either `start.md` or

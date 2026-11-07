@@ -32,6 +32,7 @@ impl BookRenderer {
     pub(crate) fn commit_workspace_sources(
         &mut self,
         replacements: Vec<Option<crate::book::BookChapter>>,
+        diagnostics: crate::book::BookSourceDiagnostics,
         source_length: usize,
     ) {
         debug_assert_eq!(replacements.len(), self.book.chapters.len());
@@ -43,6 +44,7 @@ impl BookRenderer {
         // The selected path set is unchanged. Canonicalization is idempotent
         // for retained chapters, and binds newly parsed links against ALL pages.
         paths::canonicalize(&mut self.book.chapters);
+        self.source_diagnostics = diagnostics;
         self.source_length = source_length;
     }
     /// Expand an explicitly supplied source collection, then parse once.

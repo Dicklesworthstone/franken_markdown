@@ -23,11 +23,19 @@ Use this object as the `params` of `tools/call`:
 }
 ```
 
-The MCP text-content item contains the unchanged `fmd-book-link-report-v1`
+The first MCP text-content item contains the unchanged `fmd-book-link-report-v1`
 JSON report. `scope` is `expanded-html-navigation`. Its chapter-ordered entries
 include `path`, `checked`, `external`, `unchecked`, and `findings`; the summary
 aggregates those counts. Each finding has `code`, `destination`, and `message`.
 The example reports a `missing_anchor` for the first chapter's link.
+
+When the parser reports source findings, a second text-content item contains
+the complete `fmd-book-source-diagnostics-v1` report. This preserves warnings
+such as `inline_work_limit` even when literal fallback leaves no link to check.
+Its byte ranges explicitly address the expanded and URL-rebased chapter, not an
+original include file. Clean calls retain their original one-item response.
+See [BOOK_SOURCE_DIAGNOSTICS.md](BOOK_SOURCE_DIAGNOSTICS.md) for the shared
+coordinate, admission, and retained-revision contract.
 
 Finding broken links is a successful verification operation, so the report is
 returned with `isError: false` even when `summary.findings` is nonzero. This is

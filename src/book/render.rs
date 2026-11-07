@@ -4,7 +4,12 @@
 use crate::Inline;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Book, BookInput, build_book, inject_book_nav, merge, out_name, paths};
+#[cfg(test)]
+use super::build_book;
+use super::{
+    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics, inject_book_nav, merge,
+    out_name, paths,
+};
 use crate::wasm::WasmRenderOptions;
 use crate::{
     Block, Document, HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, ZipWriter,
@@ -39,6 +44,7 @@ const MAX_SITE_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct BookRenderer {
     book: Book,
+    source_diagnostics: BookSourceDiagnostics,
     options: WasmRenderOptions,
     source_length: usize,
 }
@@ -68,8 +74,10 @@ impl BookRenderer {
                 }
             }
         }
+        let (book, source_diagnostics) = build_book_with_diagnostics(inputs)?;
         Ok(Self {
-            book: build_book(inputs)?,
+            book,
+            source_diagnostics,
             options: WasmRenderOptions::default(),
             source_length,
         })
@@ -79,6 +87,14 @@ impl BookRenderer {
     #[must_use]
     pub fn book(&self) -> &Book {
         &self.book
+    }
+
+    /// Complete parser findings from the same chapter capture as the retained
+    /// AST. Reading this report never reparses source or loads host resources.
+    /// Ranges refer to expanded/rebased chapter bytes, not include-file offsets.
+    #[must_use]
+    pub fn source_diagnostics(&self) -> &BookSourceDiagnostics {
+        &self.source_diagnostics
     }
 
     /// Original Markdown byte count, excluding logical filenames.

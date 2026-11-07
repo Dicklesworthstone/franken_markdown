@@ -21,7 +21,7 @@ for file in franken_markdown.js franken_markdown.d.ts fmd-view.js fmd-view.d.ts 
   native_workspace_publisher.mjs native_source_project_open_worker.mjs native_source_project_open_ui.mjs \
   native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md \
   book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
-  book.js book.d.ts book_session.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_publication.mjs BOOK_PUBLICATION.md BOOK_EDITION.md book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md BOOK_DIRECTORY.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
+  book.js book.d.ts book_session.mjs book_source_diagnostics.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_publication.mjs BOOK_PUBLICATION.md BOOK_EDITION.md book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md BOOK_DIRECTORY.md INSPECTION.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
   flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
@@ -48,6 +48,7 @@ node --test wasm/tests/book_pdf*.test.mjs
 node --test wasm/tests/book_retained_exports.test.mjs wasm/tests/book_publishing_retention.test.mjs
 node --test wasm/tests/book_portable*.test.mjs
 node --test wasm/tests/book_source_history*.test.mjs
+node --test wasm/tests/book_source_diagnostics.test.mjs
 node --test wasm/tests/book_publication*.test.mjs
 node --test wasm/tests/book_edition*.test.mjs
 node --test wasm/tests/book_file_*.test.mjs

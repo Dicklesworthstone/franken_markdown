@@ -85,7 +85,7 @@ const bindings={
  './book_edition_controls.mjs':{createBookEditionControls(args){received.edition=args;if(failure)throw new Error('installation fixture');return {...component('edition'),dispose(){calls.push('edition.dispose');publisher.dispose()}}}},
  './book_image_controls.mjs':{createBookImagePanel(){},createBookImageControls:()=>component('images')},
  './book_font_controls.mjs':{createBookFontPanel(){},createBookFontControls:()=>component('fonts')},
- './book_inspection_controls.mjs':{createBookInspectionPanel(){},createBookLinkPanel(){},createBookInspectionControls:()=>component('inspection'),createBookLinkControls:()=>component('links')},
+ './book_inspection_controls.mjs':{createBookInspectionPanel(){},createBookLinkPanel(){},createBookSourceDiagnosticsPanel(){},createBookSourceDiagnosticsControls:()=>component('parser'),createBookInspectionControls:()=>component('inspection'),createBookLinkControls:()=>component('links')},
  './book_library_controls.mjs':{createBookLibraryControls(args){assert.equal(args.controls,facade);return component('library')}},
  './book_pdf_controls.mjs':{createBookPdfPanel(){},createBookPdfControls:()=>component('proof'),createBookPublicationControls:()=>component('profile')},
  './book_preview_controls.mjs':{createBookPreviewControls:()=>component('preview')},
@@ -106,7 +106,7 @@ if(!failure){assert(calls.indexOf('edition.suspend')<calls.indexOf('source.suspe
 events.get('pagehide')({persisted:false});
 assert.equal(calls.filter(value=>value==='publisher.dispose').length,1);
 if(!failure)assert(calls.indexOf('edition.dispose')<calls.indexOf('source.dispose'));
-for(const name of ['files','directory','history','formatting','profile','images','fonts','proof','links','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
+for(const name of ['files','directory','history','formatting','profile','images','fonts','proof','links','parser','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
 console.log('application edition wiring and lifecycle passed');
 `;
 for (const fail of [false, true]) {

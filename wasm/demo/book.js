@@ -8,6 +8,8 @@ import {
   createBookInspectionPanel,
   createBookLinkControls,
   createBookLinkPanel,
+  createBookSourceDiagnosticsControls,
+  createBookSourceDiagnosticsPanel,
 } from "./book_inspection_controls.mjs";
 import { createBookLibraryControls } from "./book_library_controls.mjs";
 import { createBookPdfControls, createBookPdfPanel, createBookPublicationControls } from "./book_pdf_controls.mjs";
@@ -34,7 +36,8 @@ let library = null,
   sourceDirectory = null,
   edition = null,
   inspection = null,
-  links = null;
+  links = null,
+  parserDiagnostics = null;
 let controls = createBookControls({
   root: document,
   worker: createBookWorker({ retainBook: true }),
@@ -199,6 +202,20 @@ try {
     status.textContent =
       "Expanded link checking is unavailable. Source inspection, editing, saves and publication exports remain available.";
 }
+// Parser warnings use the same expanded source capture as publication.
+let parserDiagnosticsWorker = null;
+try {
+  createBookSourceDiagnosticsPanel(document);
+  parserDiagnosticsWorker = createBookWorker({ maxOutputBytes: 4 * 1024 * 1024 });
+  parserDiagnostics = createBookSourceDiagnosticsControls({
+    root: document, controls, collection, worker: parserDiagnosticsWorker,
+  });
+} catch {
+  parserDiagnosticsWorker?.dispose();
+  const status = document.querySelector("#parser-status");
+  if (status) status.textContent = "Parser diagnostics are unavailable. Use a matching renderer package to check expanded chapters.";
+}
+
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
     sourceFormatting?.suspend();
@@ -211,6 +228,7 @@ window.addEventListener("pagehide", (event) => {
     fontControls?.suspend();
     pdfProof?.suspend();
     links?.suspend();
+    parserDiagnostics?.suspend();
     inspection?.suspend();
     search?.suspend();
     preview?.suspend();
@@ -227,6 +245,7 @@ window.addEventListener("pagehide", (event) => {
     fontControls?.dispose();
     pdfProof?.dispose();
     links?.dispose();
+    parserDiagnostics?.dispose();
     inspection?.dispose();
     search?.dispose();
     preview?.dispose();
@@ -250,5 +269,6 @@ window.addEventListener("pageshow", (event) => {
     search?.resume();
     inspection?.resume();
     links?.resume();
+    parserDiagnostics?.resume();
   }
 });

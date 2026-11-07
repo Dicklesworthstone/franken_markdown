@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 // or loading the generated WASM binary. No production source body is rewritten.
 const source = readFileSync(new URL("../demo/book.js", import.meta.url), "utf8");
 let serial = 0;
-async function bootstrap(failPreview = false) {
+async function bootstrap(failPreview = false, failDiagnostics = false) {
   const workers = [], instances = new Map(), status = new Map();
   const window = new EventTarget(); window.confirm = () => true;
   const document = { querySelector(selector) {
@@ -28,11 +28,12 @@ async function bootstrap(failPreview = false) {
     readBookProject: value => value,
     serializeBookProject: value => value,
   };
-  for (const name of ["Controls", "FontControls", "InspectionControls", "LinkControls",
+  for (const name of ["Controls", "FontControls", "InspectionControls", "LinkControls", "SourceDiagnosticsControls",
     "LibraryControls", "PdfControls", "PublicationControls", "PreviewControls", "SearchControls",
     "ImageControls", "FileControls", "DirectoryControls", "EditionControls", "SourceHistoryControls", "SourceFormattingControls"]) {
     context[`createBook${name}`] = options => {
       if (name === "PreviewControls" && failPreview) throw Error("intentional startup failure");
+      if (name === "SourceDiagnosticsControls" && failDiagnostics) throw Error("intentional diagnostic startup failure");
       const instance = { options, suspended: 0, resumed: 0, disposed: 0,
         suspend() { this.suspended++; }, resume() { this.resumed++; },
         dispose() { this.disposed++; options.worker?.dispose(); options.publisher?.dispose(); }, detach() {}, reset() {} };
@@ -40,7 +41,7 @@ async function bootstrap(failPreview = false) {
       instances.set(name, instance); return instance;
     };
   }
-  for (const name of ["Font", "Inspection", "Link", "Pdf", "Image"]) context[`createBook${name}Panel`] = () => {};
+  for (const name of ["Font", "Inspection", "Link", "Pdf", "Image", "SourceDiagnostics"]) context[`createBook${name}Panel`] = () => {};
   const key = `__fmdRetainedBootstrap${serial++}`;
   let replacements = 0;
   const code = source.replace(/^import\s*\{([^}]+)\}\s*from\s*"([^"]+)";/gm, (_all, symbols) => {
@@ -67,11 +68,12 @@ async function bootstrap(failPreview = false) {
 
 test("publisher opts only the isolated HTML preview into retention and preserves lifecycle ordering", async () => {
   const f = await bootstrap();
-  assert.equal(f.workers.length, 7);
+  assert.equal(f.workers.length, 8);
   const preview = f.instances.get("PreviewControls");
   assert.deepEqual(preview.options.worker.options, { maxOutputBytes: 64 * 1024 * 1024, retainPreview: true });
   assert.equal(f.workers.filter(worker => worker.options.retainPreview === true).length, 1);
   assert.notEqual(preview.options.worker, f.instances.get("PdfControls").options.worker);
+  assert.deepEqual(f.instances.get("SourceDiagnosticsControls").options.worker.options, { maxOutputBytes: 4 * 1024 * 1024 });
   assert.notEqual(preview.options.worker, f.instances.get("Controls").options.worker);
   f.dispatch("pagehide", true); assert.equal(preview.suspended, 1);
   f.dispatch("pageshow", true); assert.equal(preview.resumed, 1);
@@ -81,12 +83,23 @@ test("publisher opts only the isolated HTML preview into retention and preserves
 
 test("failed preview startup disposes its owned client without preventing the publisher from loading", async () => {
   const f = await bootstrap(true);
-  assert.equal(f.workers.length, 7);
+  assert.equal(f.workers.length, 8);
   const previewWorker = f.workers.find(worker => worker.options.retainPreview === true);
   assert(previewWorker, "publisher must request retained previews");
   assert.equal(previewWorker.disposed, 1);
   assert.match(f.status.get("#preview-status").textContent, /unavailable/);
   assert(f.instances.has("PdfControls") && f.instances.has("FontControls") && f.instances.has("SearchControls"));
+  f.dispatch("pagehide", false);
+  assert(f.workers.every(worker => worker.disposed === 1));
+});
+
+
+test("diagnostic startup failure releases its worker while keeping ordinary publishing usable", async () => {
+  const f = await bootstrap(false, true);
+  assert.equal(f.workers.length, 8);
+  assert.equal(f.workers.at(-1).disposed, 1);
+  assert.match(f.status.get("#parser-status").textContent, /unavailable/);
+  assert(f.instances.has("Controls") && f.instances.has("PreviewControls") && f.instances.has("LinkControls"));
   f.dispatch("pagehide", false);
   assert(f.workers.every(worker => worker.disposed === 1));
 });

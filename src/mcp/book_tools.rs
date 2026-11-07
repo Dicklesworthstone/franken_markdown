@@ -331,7 +331,25 @@ pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
     let renderer = renderer(args, limit)?;
     let report = link_report(&renderer)?;
     let json = report.to_json().map_err(link_analysis_error)?;
-    Ok(wrap_text_content(&json))
+    if renderer.source_diagnostics().is_empty() {
+        return Ok(wrap_text_content(&json));
+    }
+    // Preserve the narrow navigation report as the first content item. Parser
+    // findings have their own schema and coordinate space, never guessed link
+    // findings or offsets into an original include file.
+    Ok(object([
+        (
+            "content",
+            Json::Array(vec![
+                object([("type", text("text")), ("text", text(&json))]),
+                object([
+                    ("type", text("text")),
+                    ("text", text(&renderer.source_diagnostics().to_json())),
+                ]),
+            ]),
+        ),
+        ("isError", Json::Bool(false)),
+    ]))
 }
 
 fn enforce_links(renderer: &BookRenderer) -> Result<(), ToolError> {
@@ -361,6 +379,21 @@ fn enforce_links(renderer: &BookRenderer) -> Result<(), ToolError> {
 pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
     let mut publication = Publication::prepare(args)?;
     let renderer = renderer(args, limit)?;
+    // Decode only the already bounded report, before resources or publication.
+    // The complete source warning data belongs to the same parsed revision.
+    let source_diagnostics = if renderer.source_diagnostics().is_empty() {
+        None
+    } else {
+        Some(
+            crate::mcp::parse_json(&renderer.source_diagnostics().to_json()).map_err(|error| {
+                (
+                    ERROR_RENDER_FAILED,
+                    format!("Book source diagnostic report failed: {error}"),
+                    "book_source_diagnostics_failed",
+                )
+            })?,
+        )
+    };
     if boolean(args, "strictLinks") {
         enforce_links(&renderer)?;
     }
@@ -420,12 +453,15 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
         }
         outputs.push(output);
     }
-    let result = object([
+    let mut result = object([
         ("schema", text("fmd-mcp-book-publication-v1")),
         ("chapters", number(renderer.book().chapters.len())),
         ("sourceBytes", number(renderer.source_length())),
         ("artifactBytes", number(bytes_written)),
         ("outputs", Json::Array(outputs)),
     ]);
+    if let (Some(report), Json::Object(fields)) = (source_diagnostics, &mut result) {
+        fields.insert("sourceDiagnostics".into(), report);
+    }
     Ok(wrap_text_content(&result.to_json_string()))
 }

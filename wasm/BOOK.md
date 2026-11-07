@@ -10,6 +10,51 @@ The workbench combines the existing Rust `FmdBook` renderer with an ordered loca
 collection and dedicated module workers. It adds no Markdown renderer, ZIP writer,
 browser-print PDF, third-party dependency, network loader, or server-side storage.
 
+## Parser diagnostics for published chapters
+
+**Check expanded chapter parsing** in the workbench reports parser warnings for
+the actual chapter text after include expansion and resource-path rebasing.
+This includes `inline_work_limit`, `inline_depth_limit`, `block_depth_limit`,
+`unclosed_fence`, and `malformed_reference`. Work/depth limits retain content as
+literal text, so a successful export can still need author review.
+
+The same check is available through the public book API:
+
+```js
+import {
+  checkBookSourceDiagnostics,
+  parseBookSourceDiagnosticsReport,
+} from "@franken-suite/franken-markdown/book";
+
+const result = await checkBookSourceDiagnostics(chapters, { includeSources });
+const report = parseBookSourceDiagnosticsReport(result.bytes,
+  chapters.map(chapter => chapter.path)); // canonical book-relative paths
+for (const chapter of report.chapters) {
+  for (const diagnostic of chapter.diagnostics) {
+    console.log(chapter.path, diagnostic.code, diagnostic.start, diagnostic.end);
+  }
+}
+```
+
+`BookSession.sourceDiagnostics()` reads the diagnostics retained with its current
+parsed source revision, without reparsing or rendering. Source updates publish
+the AST and diagnostics together; rejected edits keep both previous versions.
+`worker.render(chapters, "diagnostics", { includeSources })` offers the same
+source-only check with worker cancellation. Image/font bytes and presentation
+properties are not read or transferred. Each complete report is bounded to
+4096 chapters, 4096 diagnostics and 4 MiB; excess reports fail explicitly.
+
+The versioned JSON uses `coordinateSpace: "expanded_chapter"`. Each range is a
+UTF-8 byte range in that chapter's expanded, rebased text. It is not an original
+include-file range or a JavaScript editor selection. The workbench opens the
+publishing chapter without guessing a source selection. Source changes retire
+old results and prepared downloads. These parser warnings complement link and
+accessibility checks; they are not a PDF/EPUB conformance verdict.
+
+This additive API requires a rebuilt WASM package with
+`FmdBook.sourceDiagnostics`. Older packages return
+`UNSUPPORTED_BOOK_SOURCE_DIAGNOSTICS`, and ordinary rendering stays available.
+
 ## Running logos in the book API
 
 The programmatic `book`/`book-worker` APIs accept a header or footer

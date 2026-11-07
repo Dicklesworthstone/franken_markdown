@@ -1,5 +1,5 @@
 import { inspectionDownload, readBookInspection } from "../book_inspection.mjs";
-import { parseBookLinkReport } from "../book_session.mjs";
+import { parseBookLinkReport, parseBookSourceDiagnosticsReport } from "../book_session.mjs";
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const PAGE_SIZE = 50;
@@ -499,7 +499,17 @@ export function createBookInspectionPanel(root) {
 
 /** Expanded navigation preflight. Independent from source lint and publication:
  * one dedicated worker, explicit runs, no asset grants, no automatic repairs. */
-export function createBookLinkControls({ root, controls, collection, worker, urls = URL }) {
+export function createBookLinkControls(options) {
+  return createBookCheckControls(options, false);
+}
+
+/** Parser warnings from the actual expanded chapters, including bounded literal
+ * fallbacks. This has its own worker and source-ownership fence. */
+export function createBookSourceDiagnosticsControls(options) {
+  return createBookCheckControls(options, true);
+}
+
+function createBookCheckControls({ root, controls, collection, worker, urls = URL }, parser) {
   const ids = [
     "links-run",
     "links-cancel",
@@ -512,8 +522,8 @@ export function createBookLinkControls({ root, controls, collection, worker, url
     "links-save",
     "links-download",
   ];
-  const el = Object.fromEntries(ids.map((id) => [id, root.querySelector(`#${id}`)]));
-  if (Object.values(el).some((value) => !value)) throw new Error("Missing book link controls.");
+  const el = Object.fromEntries(ids.map((id) => [id, root.querySelector(`#${parser ? id.replace(/^links-/, "parser-") : id}`)]));
+  if (Object.values(el).some((value) => !value)) throw new Error("Missing book check controls.");
   let disposed = false,
     suspended = false,
     busy = false,
@@ -525,7 +535,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
     url = null;
   const listeners = [];
   function alive() {
-    if (disposed || suspended) throw fail("LINK_CHECK_CLOSED", "Book link checking is not active.");
+    if (disposed || suspended) throw fail(parser ? "SOURCE_DIAGNOSTICS_CLOSED" : "LINK_CHECK_CLOSED", "Book checking is not active.");
   }
   function buttons() {
     const blocked = disposed || suspended || controls.sourceBusy;
@@ -570,7 +580,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
       retire();
       buttons();
       throw fail(
-        "STALE_LINK_CHECK",
+        parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK",
         "Source or editor state changed. Check the current book again.",
       );
     }
@@ -585,11 +595,12 @@ export function createBookLinkControls({ root, controls, collection, worker, url
       (file) => file.role !== "include" && file.path === path,
     );
     if (index < 0)
-      throw fail("STALE_LINK_CHECK", "The publishing chapter is no longer in this book.");
+      throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "The publishing chapter is no longer in this book.");
     controls.selectSourceRange(index, 0, 0, stamp);
     stamp = controls.checkpoint();
-    el["links-status"].textContent =
-      `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
+    el["links-status"].textContent = parser
+      ? `Opened ${path}. Diagnostic byte ranges describe the expanded chapter and can include transcluded text. No original include range is selected.`
+      : `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
   }
   function invoke(fn) {
     try {
@@ -609,7 +620,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
         label = root.createElement("p");
       label.textContent = `${path} — ${finding.code}: ${finding.message}`;
       const destination = root.createElement("pre");
-      destination.textContent = finding.destination;
+      destination.textContent = parser ? `Expanded chapter UTF-8 bytes ${finding.start}–${finding.end}.` : finding.destination;
       // Never turn a reported destination into a clickable URL or parsed HTML.
       const button = root.createElement("button");
       button.type = "button";
@@ -618,7 +629,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
       button.addEventListener("click", () =>
         invoke(() => {
           if (report !== snapshot)
-            throw fail("STALE_LINK_CHECK", "This result belongs to an older check.");
+            throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "This result belongs to an older check.");
           open(path);
         }),
       );
@@ -626,11 +637,13 @@ export function createBookLinkControls({ root, controls, collection, worker, url
       el["links-findings"].append(row);
     }
     el["links-count"].textContent = rows.length
-      ? `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, rows.length)} of ${rows.length} navigation findings.`
-      : "No broken local chapter or anchor references were reported by this check.";
+      ? `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, rows.length)} of ${rows.length} ${parser ? "parser" : "navigation"} findings.`
+      : parser ? "No parser warnings were reported for these expanded chapters."
+        : "No broken local chapter or anchor references were reported by this check.";
     const s = report.summary;
-    el["links-summary"].textContent =
-      `${s.findings} findings in ${s.chapters} expanded chapters; ${s.checked} local link and footnote-reference checks. ${s.external} external URLs and ${s.unchecked} other local resources were NOT verified. Images, raw HTML IDs, and PDF/EPUB conformance are outside this check.`;
+    el["links-summary"].textContent = parser
+      ? `${s.diagnostics} parser diagnostics in ${s.chapters} expanded chapters. Work/depth fallbacks and malformed Markdown are shown here. Byte ranges refer to the expanded chapter; opening source selects its publishing chapter.`
+      : `${s.findings} findings in ${s.chapters} expanded chapters; ${s.checked} local link and footnote-reference checks. ${s.external} external URLs and ${s.unchecked} other local resources were NOT verified. Images, raw HTML IDs, and PDF/EPUB conformance are outside this check.`;
     buttons();
   }
   async function run() {
@@ -638,7 +651,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
     try {
       alive();
       if (controls.sourceBusy)
-        throw fail("BOOK_BUSY", "Finish importing or composing text before checking links.");
+        throw fail("BOOK_BUSY", "Finish importing or composing text before checking the book.");
       retire();
       const project = controls.captureProject(),
         captured = controls.checkpoint();
@@ -651,31 +664,33 @@ export function createBookLinkControls({ root, controls, collection, worker, url
         });
       }
       if (!files.length)
-        throw fail("EMPTY_BOOK", "Add a published chapter before checking book links.");
+        throw fail("EMPTY_BOOK", "Add a published chapter before checking the book.");
       ticket = ++generation;
       busy = true;
       buttons();
-      el["links-status"].textContent =
-        "Expanding selected sources and checking local chapter navigation in a separate worker. No images, fonts or URLs are loaded.";
-      const result = await worker.render(files, "links", { includeSources });
+      el["links-status"].textContent = parser
+        ? "Expanding selected sources and collecting parser diagnostics in a separate worker. No images, fonts or URLs are loaded."
+        : "Expanding selected sources and checking local chapter navigation in a separate worker. No images, fonts or URLs are loaded.";
+      const result = await worker.render(files, parser ? "diagnostics" : "links", { includeSources });
       if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint()) {
-        throw fail("STALE_LINK_CHECK", "The book changed while its links were being checked.");
+        throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "The book changed while it was being checked.");
       }
-      if (result.format !== "book-links")
-        throw fail("INVALID_LINK_REPORT", "The worker returned a different result type.");
-      report = parseBookLinkReport(
+      if (result.format !== (parser ? "book-diagnostics" : "book-links"))
+        throw fail(parser ? "INVALID_BOOK_SOURCE_DIAGNOSTICS" : "INVALID_LINK_REPORT", "The worker returned a different result type.");
+      report = (parser ? parseBookSourceDiagnosticsReport : parseBookLinkReport)(
         result.bytes,
         files.map((file) => file.path),
       );
       stamp = captured;
       busy = false;
       rows = report.chapters.flatMap((chapter) =>
-        chapter.findings.map((finding) => ({ path: chapter.path, finding })),
+        (parser ? chapter.diagnostics : chapter.findings).map((finding) => ({ path: chapter.path, finding })),
       );
       page = 0;
       show();
-      el["links-status"].textContent =
-        "Link checking finished. Review the findings and unchecked categories before publishing. This is not a final-format conformance verdict.";
+      el["links-status"].textContent = parser
+        ? "Parser checking finished. Review warnings before publishing, especially limits that preserve content as literal text. Findings include selected transclusions."
+        : "Link checking finished. Review the findings and unchecked categories before publishing. This is not a final-format conformance verdict.";
       return report;
     } catch (value) {
       if (!disposed && (ticket === null || ticket === generation)) {
@@ -695,8 +710,9 @@ export function createBookLinkControls({ root, controls, collection, worker, url
     if (disposed) return;
     retire();
     buttons();
-    el["links-status"].textContent =
-      "Book or editor state changed. The previous link check and its download were retired.";
+    el["links-status"].textContent = parser
+      ? "Book or editor state changed. The previous parser check and its download were retired."
+      : "Book or editor state changed. The previous link check and its download were retired.";
   }
   function save() {
     current();
@@ -704,10 +720,11 @@ export function createBookLinkControls({ root, controls, collection, worker, url
     const blob = new Blob([JSON.stringify(report) + "\n"], { type: "application/json" });
     url = urls.createObjectURL(blob);
     el["links-download"].href = url;
-    el["links-download"].download = "book-links.json";
+    el["links-download"].download = parser ? "book-source-diagnostics.json" : "book-links.json";
     el["links-download"].hidden = false;
-    el["links-status"].textContent =
-      "Report prepared. Click Download link report to save it. It contains chapter names and destinations, which may be sensitive; review it before sharing.";
+    el["links-status"].textContent = parser
+      ? "Report prepared. Click Download parser report to save the chapter names, expanded byte ranges and diagnostics."
+      : "Report prepared. Click Download link report to save it. It contains chapter names and destinations, which may be sensitive; review it before sharing.";
   }
   function on(element, type, handler) {
     element.addEventListener(type, handler);
@@ -744,8 +761,9 @@ export function createBookLinkControls({ root, controls, collection, worker, url
   on(el["links-cancel"], "click", () => {
     retire();
     buttons();
-    el["links-status"].textContent =
-      "Link check cancelled and cleared. Source and publication exports are unchanged.";
+    el["links-status"].textContent = parser
+      ? "Parser check cancelled and cleared. Source and publication exports are unchanged."
+      : "Link check cancelled and cleared. Source and publication exports are unchanged.";
   });
   for (const [id, delta] of [
     ["links-previous", -1],
@@ -765,7 +783,7 @@ export function createBookLinkControls({ root, controls, collection, worker, url
   on(el["links-download"], "click", (event) => {
     try {
       current();
-      if (!url) throw fail("STALE_LINK_CHECK", "Prepare the report again.");
+      if (!url) throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "Prepare the report again.");
     } catch (value) {
       event.preventDefault();
       error(value);
@@ -802,10 +820,20 @@ export function createBookLinkControls({ root, controls, collection, worker, url
 
 /** A separate preflight surface; does not replace or gate publication or lint. */
 export function createBookLinkPanel(root) {
-  if (root.querySelector("#links-panel")) throw new Error("Book link panel already exists.");
+  return createBookCheckPanel(root, false);
+}
+
+export function createBookSourceDiagnosticsPanel(root) {
+  return createBookCheckPanel(root, true);
+}
+
+function createBookCheckPanel(root, parser) {
+  if (root.querySelector(parser ? "#parser-panel" : "#links-panel")) throw new Error("Book link panel already exists.");
   function node(tag, attributes, ...children) {
     const element = root.createElement(tag);
-    for (const [key, value] of Object.entries(attributes ?? {})) element.setAttribute(key, value);
+    for (const [key, value] of Object.entries(attributes ?? {}))
+      element.setAttribute(key, parser && ["id", "aria-labelledby"].includes(key)
+        ? value.replace(/^links-/, "parser-") : value);
     for (const child of children)
       element.append(typeof child === "string" ? root.createTextNode(child) : child);
     return element;
@@ -815,17 +843,19 @@ export function createBookLinkPanel(root) {
   const panel = node(
     "section",
     { id: "links-panel", "aria-labelledby": "links-title" },
-    node("h2", { id: "links-title" }, "Check expanded book links"),
+    node("h2", { id: "links-title" }, parser ? "Check expanded chapter parsing" : "Check expanded book links"),
     node(
       "p",
       {},
-      "Check local chapter links and heading/footnote anchors after Rust expands the selected include sources. Missing includes, cycles, and budget failures stop the check rather than producing a partial clean report. No network requests or asset loading occur.",
+      parser
+        ? "Find parser work/depth limits, unclosed fences and malformed references in the chapters that will be published, after include expansion. The renderer retains literal text when a parser limit is reached; these warnings show where to review it."
+        : "Check local chapter links and heading/footnote anchors after Rust expands the selected include sources. Missing includes, cycles, and budget failures stop the check rather than producing a partial clean report. No network requests or asset loading occur.",
     ),
     node(
       "p",
       {},
-      button("links-run", "Check expanded book links", false),
-      button("links-cancel", "Cancel and clear link check"),
+      button("links-run", parser ? "Check expanded chapter parsing" : "Check expanded book links", false),
+      button("links-cancel", parser ? "Cancel and clear parser check" : "Cancel and clear link check"),
     ),
     node(
       "p",
@@ -841,12 +871,14 @@ export function createBookLinkPanel(root) {
       button("links-previous", "Previous 50 findings"),
       button("links-next", "Next 50 findings"),
     ),
-    node("p", {}, button("links-save", "Prepare link report")),
-    node("p", {}, node("a", { id: "links-download", hidden: "" }, "Download link report")),
+    node("p", {}, button("links-save", parser ? "Prepare parser report" : "Prepare link report")),
+    node("p", {}, node("a", { id: "links-download", hidden: "" }, parser ? "Download parser report" : "Download link report")),
     node(
       "p",
       {},
-      "Scope: safe HTML navigation from the expanded AST. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Findings identify publishing chapters, not exact original-source locations. Report destinations may contain sensitive information.",
+      parser
+        ? "Ranges are UTF-8 bytes in expanded chapters, including rewritten resource destinations. They are not original include-file or editor selection offsets. These checks do not validate links, images or final PDF/EPUB conformance."
+        : "Scope: safe HTML navigation from the expanded AST. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Findings identify publishing chapters, not exact original-source locations. Report destinations may contain sensitive information.",
     ),
   );
   const publish = root.querySelector('[aria-labelledby="publish-title"]');

@@ -18,6 +18,9 @@ use crate::{RenderError, Result};
 mod merge;
 #[path = "book/paths.rs"]
 mod paths;
+#[path = "book/diagnostics.rs"]
+mod diagnostics;
+pub use diagnostics::{BookChapterDiagnostics, BookSourceDiagnostics};
 #[path = "book/render.rs"]
 mod render;
 #[path = "book/workspace.rs"]
@@ -96,6 +99,33 @@ pub struct BookHeading {
 /// paths, duplicate normalized paths, or colliding output filenames. Output
 /// collisions are checked case-insensitively so publication is portable.
 pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
+    build_book_inner(inputs, None)
+}
+
+/// Parse a book once while preserving recoverable parser findings for every
+/// chapter. The ordinary [`Book`] representation and output bytes are unchanged.
+/// Findings use the supplied chapter text's UTF-8 byte coordinates; a host that
+/// expands includes must treat them as expanded-chapter coordinates, not original
+/// include-file locations. [`BookRenderer`] uses this builder automatically.
+///
+/// # Errors
+/// In addition to [`build_book`]'s path checks, admits at most 4096 chapters,
+/// 64 MiB of chapter text and paths, 4096 diagnostics, and 4 MiB of serialized
+/// findings. Admission failure never returns a partial or falsely clean report.
+pub fn build_book_with_diagnostics(
+    inputs: &[BookInput],
+) -> Result<(Book, BookSourceDiagnostics)> {
+    diagnostics::admit_inputs(inputs)?;
+    let mut reports = Vec::with_capacity(inputs.len());
+    let book = build_book_inner(inputs, Some(&mut reports))?;
+    let report = BookSourceDiagnostics::new(reports)?;
+    Ok((book, report))
+}
+
+fn build_book_inner(
+    inputs: &[BookInput],
+    mut diagnostics: Option<&mut Vec<BookChapterDiagnostics>>,
+) -> Result<Book> {
     if inputs.is_empty() {
         return Err(RenderError::InvalidInput(
             "book: no Markdown inputs found".to_string(),
@@ -105,7 +135,13 @@ pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
     let mut chapters = Vec::with_capacity(inputs.len());
     for (input, path) in inputs.iter().zip(paths) {
         let (frontmatter, _) = parse::split_frontmatter(&input.source);
-        let doc = parse::parse_document(&input.source);
+        let doc = if let Some(reports) = diagnostics.as_deref_mut() {
+            let (doc, report) = self::diagnostics::parse_chapter(input, &path);
+            reports.push(report);
+            doc
+        } else {
+            parse::parse_document(&input.source)
+        };
         let title = frontmatter
             .as_ref()
             .and_then(|fm| fm.title.clone())

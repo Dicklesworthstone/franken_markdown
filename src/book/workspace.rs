@@ -8,7 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
-use super::{BookChapter, BookInput, BookRenderer, first_heading_text, path_stem, paths};
+use super::{
+    BookChapter, BookChapterDiagnostics, BookInput, BookRenderer, BookSourceDiagnostics,
+    first_heading_text, path_stem, paths,
+};
 use crate::parse;
 use crate::wasm::WasmRenderOptions;
 use crate::{RenderError, Result};
@@ -262,18 +265,23 @@ impl BookWorkspace {
         let next = expanded.as_deref().unwrap_or(&chapters);
         let previous = self.expanded.as_deref().unwrap_or(&self.chapters);
         let mut replacements = Vec::with_capacity(chapters.len());
+        let mut diagnostics = Vec::with_capacity(chapters.len());
         let mut reparsed = Vec::new();
         for (index, (new, old)) in next.iter().zip(previous).enumerate() {
             if new.source == old.source {
                 replacements.push(None);
+                diagnostics.push(self.renderer.source_diagnostics().chapters()[index].clone());
             } else {
-                replacements.push(Some(parse_chapter(
-                    new,
-                    &self.renderer.book().chapters[index],
-                )));
+                let (chapter, report) =
+                    parse_chapter(new, &self.renderer.book().chapters[index]);
+                replacements.push(Some(chapter));
+                diagnostics.push(report);
                 reparsed.push(index);
             }
         }
+        // Admit the complete report before publishing either AST or source.
+        // Refused diagnostics must leave the previous usable revision intact.
+        let diagnostics = BookSourceDiagnostics::new(diagnostics)?;
         let report = BookSourceUpdate {
             revision,
             source_length,
@@ -284,7 +292,7 @@ impl BookWorkspace {
         // No fallible operation follows publication. Keep the original options
         // and asset vectors, rather than cloning large image/font payloads.
         self.renderer
-            .commit_workspace_sources(replacements, source_length);
+            .commit_workspace_sources(replacements, diagnostics, source_length);
         self.chapters = chapters;
         self.resources = resources;
         self.expanded = expanded;
@@ -331,21 +339,27 @@ fn capture(inputs: &[BookInput]) -> Result<Vec<BookInput>> {
         .collect()
 }
 
-fn parse_chapter(input: &BookInput, previous: &BookChapter) -> BookChapter {
+fn parse_chapter(
+    input: &BookInput,
+    previous: &BookChapter,
+) -> (BookChapter, BookChapterDiagnostics) {
     let (frontmatter, _) = parse::split_frontmatter(&input.source);
-    let doc = parse::parse_document(&input.source);
+    let (doc, diagnostics) = super::diagnostics::parse_chapter(input, &previous.path);
     let title = frontmatter
         .as_ref()
         .and_then(|value| value.title.clone())
         .or_else(|| first_heading_text(&doc))
         .unwrap_or_else(|| path_stem(&previous.path));
-    BookChapter {
-        path: previous.path.clone(),
-        out_name: previous.out_name.clone(),
-        title,
-        frontmatter,
-        doc,
-    }
+    (
+        BookChapter {
+            path: previous.path.clone(),
+            out_name: previous.out_name.clone(),
+            title,
+            frontmatter,
+            doc,
+        },
+        diagnostics,
+    )
 }
 
 #[cfg(test)]

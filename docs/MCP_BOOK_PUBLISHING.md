@@ -6,6 +6,13 @@ a complete HTML-site ZIP, or all three from the same parsed book. No filesystem
 or network access is performed. The native `mcp` feature is required; the core,
 WASM feature graph, existing tools and single-document output APIs are unchanged.
 
+Recoverable parser findings accompany publication in a separate
+`sourceDiagnostics` object when present. Work/depth fallbacks, malformed
+references, and unclosed fences therefore remain visible for PDF, EPUB, site,
+and combined requests. The report belongs to the same parsed revision as the
+artifacts, with explicit expanded-chapter byte coordinates; it is separate from
+link validation. See [BOOK_SOURCE_DIAGNOSTICS.md](BOOK_SOURCE_DIAGNOSTICS.md).
+
 ## Request
 
 Send this object as the `params` of an MCP `tools/call` request:

@@ -1,3 +1,5 @@
+import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
+export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
@@ -775,6 +777,31 @@ export function createBookBindings(loadBookClass) {
       parseBookChapterPreview(bytes, index, count);
       return output(bytes, "chapterPreview", raw.sourceLength, this.#fontReceipt);
     }
+    sourceDiagnostics() {
+      const raw = this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      if (typeof raw.sourceDiagnostics !== "function") {
+        throw updateError("UNSUPPORTED_BOOK_SOURCE_DIAGNOSTICS",
+          "this WASM build lacks FmdBook.sourceDiagnostics; rebuild the matching package for book parser diagnostics");
+      }
+      let json;
+      try {
+        json = raw.sourceDiagnostics();
+      } catch (error) {
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      bookTextBytes(json, BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES);
+      const bytes = new TextEncoder().encode(json);
+      const report = parseBookSourceDiagnosticsReport(bytes);
+      if (report.chapters.length !== raw.chapterCount) {
+        throw updateError("INVALID_BOOK_SOURCE_DIAGNOSTICS", "Parser diagnostics do not match the retained chapter count.");
+      }
+      return Object.freeze({ format: "book-diagnostics", mimeType: "application/json",
+        extension: "json", bytes, sourceLength: raw.sourceLength,
+        blob: () => new Blob([bytes], { type: "application/json" }),
+        filename: (baseName = "book-source-diagnostics") => `${String(baseName)}.json` });
+    }
     validateLinks() {
       const raw = this.#live();
       if (typeof raw.validateLinks !== "function") {
@@ -909,6 +936,8 @@ export function createBookBindings(loadBookClass) {
     },
     checkBookLinks: async (files, options) =>
       once(files, bookLinkOptions(options), "validateLinks"),
+    checkBookSourceDiagnostics: async (files, options) =>
+      once(files, bookLinkOptions(options), "sourceDiagnostics"),
   });
 }
 

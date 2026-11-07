@@ -22524,13 +22524,7 @@ fn serialize(
 
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
-    let (break_plan, report) = page_break_plan_and_report(lines, page, opts);
-    if opts.strict_pagination && !report.is_exact() {
-        return Err(RenderError::Pagination(report.fallback.clone().unwrap_or(
-            PdfPaginationFailure::InvalidPlan("exact page boundaries were not selected"),
-        )));
-    }
-    baseline_grid::validate_layout(lines, page, break_plan.as_ref())?;
+    let (break_plan, report) = validated_page_break_plan(lines, page, opts)?;
     // Running chrome needs `{pages}` and every page's exact text before font
     // subsetting, so it counts pages with the emitter's own pager up front.
     let mut chrome = running.map(|spec| {
@@ -30452,6 +30446,23 @@ fn page_break_plan_and_report(
             )
         }
     }
+}
+
+/// Admission is shared by publication and verification. A verifier must not
+/// certify a fallback layout when the requested PDF would refuse to emit it.
+fn validated_page_break_plan(
+    lines: &[Line],
+    page: PageGeom,
+    opts: &PdfOptions,
+) -> Result<(Option<PageBreakPlan>, PdfPageBreakReport)> {
+    let (plan, report) = page_break_plan_and_report(lines, page, opts);
+    if opts.strict_pagination && !report.is_exact() {
+        return Err(RenderError::Pagination(report.fallback.clone().unwrap_or(
+            PdfPaginationFailure::InvalidPlan("exact page boundaries were not selected"),
+        )));
+    }
+    baseline_grid::validate_layout(lines, page, plan.as_ref())?;
+    Ok((plan, report))
 }
 
 fn paginate_lines_for_options<'a>(
@@ -44290,19 +44301,48 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
     }
 }
 
-/// Build the verification text layer for a parsed document using the same
-/// layout + pagination pipeline the PDF writer runs. Returns `None` when font
-/// loading fails (never panics).
+/// Build a verification text layer from the supplied layout document.
+///
+/// This compatibility API retains the document's existing profile and note
+/// representation. Returns `None` when fonts, running content, grids, or strict
+/// pagination cannot be admitted. Use [`verification_text_layer_result`] for
+/// ordinary parsed Markdown: it applies the same document preparation as PDF
+/// publication and preserves the specific error.
 pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
-    baseline_grid::validate_options(opts).ok()?;
+    verification_text_layer_for_layout(doc, opts).ok()
+}
+
+/// Build the verification text layer while preserving the renderer's typed
+/// admission failures. Applies authoring profiles, safe HTML lowering and
+/// numbered page notes just as publication does. Strict page boundaries and
+/// running margin content are validated; no PDF is serialized or certified.
+pub fn verification_text_layer_result(
+    doc: &Document,
+    opts: &PdfOptions,
+) -> Result<VerifyTextLayer> {
+    // Preparation is idempotent for already numbered page notes.
+    let prepared = crate::transform_footnotes_for_pdf(doc, opts);
+    verification_text_layer_for_layout(&prepared, opts)
+}
+
+pub(crate) fn verification_text_layer_for_layout(
+    doc: &Document,
+    opts: &PdfOptions,
+) -> Result<VerifyTextLayer> {
+    opts.font_assets.validate()?;
+    baseline_grid::validate_options(opts)?;
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
-    let faces = Faces::load(opts).ok()?;
+    let faces = Faces::load(opts)?;
     let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
+    let running = running::resolve(doc, &effective_opts, &faces, page)?;
     let lines = layout(&doc.blocks, &effective_opts, &faces, page);
-    let plan = page_break_plan_for_options(&lines, page, &effective_opts);
-    baseline_grid::validate_layout(&lines, page, plan.as_ref()).ok()?;
+    let (plan, _) = validated_page_break_plan(&lines, page, &effective_opts)?;
     let pages = paginate_lines_with(&lines, page, plan.as_ref());
+    if let Some(running) = running {
+        let mut chrome = running.layout_pages(&faces, page, pages.len());
+        chrome.fit_positioned_ink(&faces, page)?;
+    }
     let mut out_pages = Vec::with_capacity(pages.len());
     for (idx, placed) in pages.iter().enumerate() {
         let mut runs = Vec::with_capacity(placed.len());
@@ -44332,7 +44372,8 @@ pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<Veri
             runs,
         });
     }
-    Some(VerifyTextLayer {
+    faces.cjk_load_error()?;
+    Ok(VerifyTextLayer {
         page_count: out_pages.len(),
         pages: out_pages,
     })

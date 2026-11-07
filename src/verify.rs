@@ -11,7 +11,7 @@
 use crate::PdfOptions;
 use crate::ast::Document;
 use crate::caret::{CaretStyle, render_caret};
-use crate::pdf::{RenderWarning, audit_anchors, render_warnings, verification_text_layer};
+use crate::pdf::{RenderWarning, audit_anchors, render_warnings, verification_text_layer_for_layout};
 use crate::span::{DiagnosticSeverity, SourceSpan};
 
 /// Report schema version (bump on any breaking shape change).
@@ -49,14 +49,25 @@ pub struct VerifyReport {
 }
 
 /// Verify a parsed document against the PDF rendering pipeline. Returns `None`
-/// when font validation or loading fails. Layout, anchors and render warnings
+/// when fonts or requested layout options cannot be admitted. Use
+/// [`verify_pdf_result`] to retain the renderer's specific error.
+/// Layout, anchors and render warnings
 /// inspect the prepared PDF document, including complete numbered footnotes;
 /// authoring-time accessibility checks still inspect the original source AST.
 #[must_use]
 pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
-    opts.font_assets.validate().ok()?;
-    let prepared = crate::footnotes::for_pdf_paged(doc);
-    let layer = verification_text_layer(&prepared, opts)?;
+    verify_pdf_result(doc, opts).ok()
+}
+
+/// Verify the requested PDF layout without discarding typed failures.
+///
+/// In particular, strict pagination cannot return a successful report about
+/// weaker fallback page boundaries. Running bands and baseline grids must also
+/// satisfy the same admission checks used by PDF publication. This remains a
+/// layout/authoring audit, not a PDF/A or PDF/UA conformance certification.
+pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<VerifyReport> {
+    let prepared = crate::transform_footnotes_for_pdf(doc, opts);
+    let layer = verification_text_layer_for_layout(&prepared, opts)?;
     let audit = audit_anchors(&prepared);
     let warnings = render_warnings(&prepared, opts);
 
@@ -130,7 +141,7 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
     // so any content, anchor, warning, or overflow change moves it.
     let body = to_json_body(&report);
     report.digest = fnv1a64(body.as_bytes());
-    Some(report)
+    Ok(report)
 }
 
 /// Accessibility audit (bead jqls): authoring-time findings for the render

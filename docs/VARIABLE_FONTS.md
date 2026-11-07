@@ -20,6 +20,14 @@ bold slot's effective weight (default 700).
 
 Static host faces ignore a weight pin (`FontWeightIgnoredStatic`).
 
+Each sparse `gvar` tuple infers its missing point deltas on the original
+outline coordinates before its region weight is applied. Only those completed
+tuple contributions are summed. This preserves distinct sparse regions when
+several regions are active, including mixtures with dense tuples, without
+letting one region's touched points mask another's interpolation. Scratch
+buffers are reused within each glyph, and dense/component tuples skip IUP.
+The final summed deltas use OpenType rounding, including negative half units.
+
 Composite instancing applies `gvar` component pseudo-points before the four
 phantom points, using the OpenType point-number order. An offset that outgrows
 its original signed byte is re-encoded as a signed word; its variation is not
@@ -139,8 +147,11 @@ change.
 
 This older bbox score is deterministic, has no rasterizer dependency, and
 matches the apply-then-encode pipeline. On its own it cannot catch a point
-moving inside an unchanged box. The composite fixture also compares complete outline vertices against
-independently saved FontTools instances.
+moving inside an unchanged box. The composite and sparse-tuple fixtures also
+compare complete outline vertices against independently saved FontTools
+instances. Sparse-tuple cases cover overlapping regions, dense/sparse mixtures,
+reversed tuple order, separate contours, untouched phantom points, and negative
+half-unit rounding.
 
 ## Size report (feeds smif.2)
 
@@ -182,6 +193,8 @@ and deterministic table-byte mutation, including malformed offsets and counts.
   tolerance, fvar LCG, optional `FMD_DUMP_TRIANGLE_VF` dump.
 - `fmd-font/tests/composite_variation_test.rs` — independently captured
   composite outlines, stored bounds, metrics, and subset round trips.
+- `fmd-font/tests/sparse_tuple_variation_test.rs` — independently captured
+  overlapping tuple interpolation, complete contours, and rounding.
 - `fmd-font/tests/variation_metrics_test.rs` — independent static metric
   oracle, HVAR/MVAR integration, blank glyphs, and bounded hostile inputs.
 - `tests/variable_font_e2e.rs` — library + WASM API + CLI slot.

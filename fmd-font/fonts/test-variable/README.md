@@ -133,3 +133,26 @@ Fixture SHA-256 values:
 | --- | --- |
 | `FmdMetricsVF.ttf` | `31d6f78aac84d210c504058ca9cd426f3a4765143aea1322b77226bc73b32af2` |
 | `FmdMappedMetricsVF.ttf` | `944a583ce720a539ffdb1d8d80b8a04507e8695cc4d502680c4292af0f6900e9` |
+
+## Independent sparse-tuple interpolation fixture
+
+`FmdSparseTupleVariationsVF.ttf` is a 2,096-byte original OFL fixture made
+with FontTools 4.61.1. Its five mapped glyphs exercise overlapping sparse
+regions with different reference points, reversed tuple order, dense and
+sparse regions together, separate contours, and negative half-unit deltas.
+Unreferenced phantom points have no inferred variation.
+
+`generate_sparse_tuple_variations.py` writes the font and its 25-row
+`FmdSparseTupleVariationsVF.tsv` oracle. Every coordinate, bounding box,
+advance and bearing is read from an independently instanced, saved and
+reopened FontTools font at weights 400, 525, 650, 775 and 900. In particular,
+the negative-half case distinguishes OpenType's upward rounding from
+rounding away from zero. `tests/sparse_tuple_variation_test.rs` compares
+these records with the Rust instances and checks deterministic output.
+Normal tests need neither Python nor FontTools. Regenerate with:
+
+```bash
+python fmd-font/fonts/test-variable/generate_sparse_tuple_variations.py
+```
+
+SHA-256: `c30970fd8e9536e36884af029c967ace3e3ed24a3264f190d9a42b43bf6a5d4f`.

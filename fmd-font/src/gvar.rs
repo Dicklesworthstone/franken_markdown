@@ -444,9 +444,9 @@ fn apply_tuples(
     phantom_pts: Option<&mut [(i32, i32); 4]>,
 ) {
     let n_real = points.len();
-    let mut acc_x = vec![0.0f32; n_var];
-    let mut acc_y = vec![0.0f32; n_var];
-    let mut touched = vec![false; n_var];
+    let mut acc_x = vec![0.0f64; n_var];
+    let mut acc_y = vec![0.0f64; n_var];
+    let mut interpolation: Option<TupleInterpolation> = None;
     for t in tuples {
         if t.scalar.abs() < 1e-8 {
             continue;
@@ -468,44 +468,95 @@ fn apply_tuples(
         let Some((dx, dy)) = unpack_xy_deltas(d, &mut cursor, t.data_end, idx.len()) else {
             continue;
         };
+        let scalar = f64::from(t.scalar);
+        if let Some(ends) = contours.filter(|_| idx.len() < n_var) {
+            // IUP belongs to each tuple, before scaling or combining regions.
+            // Keep the original outline coordinates and reuse scratch buffers;
+            // dense tuples and component offsets need no interpolation storage.
+            let scratch = interpolation.get_or_insert_with(|| TupleInterpolation {
+                x: vec![0.0; n_var],
+                y: vec![0.0; n_var],
+                touched: vec![false; n_var],
+                original_x: points.iter().map(|point| point.0).collect(),
+                original_y: points.iter().map(|point| point.1).collect(),
+            });
+            scratch.x.fill(0.0);
+            scratch.y.fill(0.0);
+            scratch.touched.fill(false);
+            for (k, &pi) in idx.iter().enumerate() {
+                if pi >= n_var {
+                    continue;
+                }
+                if let (Some(x), Some(&delta)) = (scratch.x.get_mut(pi), dx.get(k)) {
+                    *x = f32::from(delta);
+                }
+                if let (Some(y), Some(&delta)) = (scratch.y.get_mut(pi), dy.get(k)) {
+                    *y = f32::from(delta);
+                }
+                if let Some(touched) = scratch.touched.get_mut(pi) {
+                    *touched = true;
+                }
+            }
+            iup(
+                &mut scratch.x,
+                &scratch.touched,
+                ends,
+                n_real,
+                &scratch.original_x,
+            );
+            iup(
+                &mut scratch.y,
+                &scratch.touched,
+                ends,
+                n_real,
+                &scratch.original_y,
+            );
+            for i in 0..n_var {
+                acc_x[i] += scalar * f64::from(scratch.x[i]);
+                acc_y[i] += scalar * f64::from(scratch.y[i]);
+            }
+            continue;
+        }
         for (k, &pi) in idx.iter().enumerate() {
             if pi >= n_var {
                 continue;
             }
             if let (Some(ax), Some(&x)) = (acc_x.get_mut(pi), dx.get(k)) {
-                *ax += t.scalar * f32::from(x);
+                *ax += scalar * f64::from(x);
             }
             if let (Some(ay), Some(&y)) = (acc_y.get_mut(pi), dy.get(k)) {
-                *ay += t.scalar * f32::from(y);
-            }
-            if let Some(flag) = touched.get_mut(pi) {
-                *flag = true;
+                *ay += scalar * f64::from(y);
             }
         }
     }
-    if let Some(ends) = contours {
-        // IUP interpolates in *outline coordinate* space, not point-index
-        // space. `points` still holds default locations here.
-        let orig_x: Vec<i32> = points.iter().map(|p| p.0).collect();
-        let orig_y: Vec<i32> = points.iter().map(|p| p.1).collect();
-        iup(&mut acc_x, &touched, ends, n_real, &orig_x);
-        iup(&mut acc_y, &touched, ends, n_real, &orig_y);
-    }
     for (i, pt) in points.iter_mut().enumerate() {
-        let dx = acc_x.get(i).copied().unwrap_or(0.0).round() as i32;
-        let dy = acc_y.get(i).copied().unwrap_or(0.0).round() as i32;
+        let dx = round_delta(acc_x.get(i).copied().unwrap_or(0.0));
+        let dy = round_delta(acc_y.get(i).copied().unwrap_or(0.0));
         pt.0 = pt.0.saturating_add(dx);
         pt.1 = pt.1.saturating_add(dy);
     }
     if let Some(ph) = phantom_pts {
         let base = points.len();
         for (i, slot) in ph.iter_mut().enumerate() {
-            let dx = acc_x.get(base + i).copied().unwrap_or(0.0).round() as i32;
-            let dy = acc_y.get(base + i).copied().unwrap_or(0.0).round() as i32;
+            let dx = round_delta(acc_x.get(base + i).copied().unwrap_or(0.0));
+            let dy = round_delta(acc_y.get(base + i).copied().unwrap_or(0.0));
             slot.0 = slot.0.saturating_add(dx);
             slot.1 = slot.1.saturating_add(dy);
         }
     }
+}
+
+struct TupleInterpolation {
+    x: Vec<f32>,
+    y: Vec<f32>,
+    touched: Vec<bool>,
+    original_x: Vec<i32>,
+    original_y: Vec<i32>,
+}
+
+fn round_delta(value: f64) -> i32 {
+    // OpenType rounds ties toward positive infinity, including negative halves.
+    (value + 0.5).floor() as i32
 }
 
 struct TupleWork {

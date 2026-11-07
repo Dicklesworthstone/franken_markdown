@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::tools::resources::{self, with_svg_warnings};
-use super::tools::{ToolError, wrap_text_content};
+use super::tools::{ToolError, engine_failure, wrap_text_content};
 use super::{ERROR_INPUT_ERROR, ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED};
 use super::{JsonValue, base64_encode};
 use crate::PdfAMode;
@@ -227,13 +227,8 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
     }
     // Parse once, including for paired HTML/PDF output.
     let document = crate::parse_markdown(&source.text);
-    let render_error = |error: crate::RenderError| {
-        (
-            ERROR_RENDER_FAILED,
-            format!("Render failed: {error}"),
-            "render_failed",
-        )
-    };
+    let render_error =
+        |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     let mut artifacts = Vec::new();
     let mut svg_warnings = Vec::new();
     if matches!(target, "html" | "both") {

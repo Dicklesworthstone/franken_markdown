@@ -36,7 +36,7 @@ JSON `outputs` array; single-format output retains its existing text/base64 form
 | Target | Accepted rendering options |
 |---|---|
 | `html` | The `fmd.render_html` options, including CSS, appearance, TOC, font container and interactive HTML |
-| `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages and PDF/A |
+| `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages, baseline grid, strict pagination and PDF/A |
 | `both` | The union of HTML and PDF options; each renderer consumes its own fields |
 | `epub` | HTML theme, font scale, title, language, CSS, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
 | `svg` | `font`, `fontScale`, `maxWidthPt` (144..14400 points), and explicit resources |
@@ -53,6 +53,12 @@ from the same definitions used by execution. Unknown fields, wrong types, invali
 ranges, impossible PDF/A settings, and options with no selected-target consumer
 fail before source I/O. `unsupported_target_option` identifies the latter case,
 including a supplied `false` for a switch that the target does not implement.
+
+See [PDF layout and verification](MCP_PDF_CONFIGURATION.md) for
+`baselineGridPt`, `strictPagination`, paper, typography, and running bands.
+An enabled baseline grid and `fitToPages` are incompatible and fail before source
+I/O. Strict-pagination failures preserve their typed `pagination_*` reason and
+leave both paired destinations unchanged.
 
 The default target remains HTML. Omitted titles retain the filename-stem default;
 explicit empty titles and surrounding whitespace are preserved. Source parsing is

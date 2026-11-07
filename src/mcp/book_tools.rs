@@ -12,8 +12,8 @@ use crate::{HtmlOptions, PdfASettings, PdfOptions};
 
 use super::{
     ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS, JsonValue as Json, PDF_FIELDS,
-    ToolError, base64_encode, boolean, html_options, invalid_options, pdf_options, resources,
-    string, wrap_text_content,
+    ToolError, base64_encode, boolean, engine_failure, html_options, invalid_options, pdf_options,
+    resources, string, wrap_text_content,
 };
 
 const MAX_SOURCES: usize = 4096;
@@ -385,9 +385,9 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
             Format::Site => render_book_site(renderer.book(), &publication.html),
         }
         .map_err(|error| {
-            (
-                ERROR_RENDER_FAILED,
-                format!("Book {} render failed: {error}", format.name()),
+            engine_failure(
+                error,
+                format_args!("Book {} render failed", format.name()),
                 "render_failed",
             )
         })?;

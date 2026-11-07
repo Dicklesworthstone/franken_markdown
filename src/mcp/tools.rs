@@ -9,8 +9,8 @@ use super::{
 };
 use crate::layout::MicrotypeOptions;
 use crate::{
-    DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
-    PdfASettings, PdfOptions, Theme,
+    BaselineGrid, DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat, HtmlOptions,
+    PdfAMode, PdfASettings, PdfOptions, Theme,
 };
 
 #[path = "resources.rs"]
@@ -159,6 +159,16 @@ const PDF_FIELDS: &[Field] = &[
         "Globally optimal (Plass) PDF page breaking",
     ),
     (
+        "strictPagination",
+        "boolean",
+        "Require exact final page breaking; implies optimalPagination and refuses planner fallback",
+    ),
+    (
+        "baselineGridPt",
+        "number",
+        "PDF body baseline spacing in points (1..144, rounded to 0.001); 0 disables it; incompatible with fitToPages",
+    ),
+    (
         "codeLineNumbers",
         "boolean",
         "Render line numbers in code blocks",
@@ -253,7 +263,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.verify",
-        "Audit configured PDF layout, text, anchors, accessibility, and overflow; not a PDF/A conformance validator.",
+        "Audit configured PDF layout, text, anchors, accessibility, and overflow, including strict pagination admission; not a PDF/A conformance validator.",
         VERIFY_FIELDS,
         &["markdown"],
     ),
@@ -286,6 +296,7 @@ fn number_bounds(name: &str) -> Option<(f64, f64)> {
         "baseFontSize" => Some((6.0, 24.0)),
         "headingScale" => Some((1.05, 2.0)),
         "tableFontSize" => Some((5.0, 24.0)),
+        "baselineGridPt" => Some((0.0, 144.0)),
         _ => None,
     }
 }
@@ -300,7 +311,8 @@ fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
     if name != "fmd.verify" {
         return base.to_vec();
     }
-    // Verification uses the PDF layout settings and explicit byte resources.
+    // Verification uses the production page planner, baseline grid and explicit
+    // byte resources, so strict pagination applies to the audited layout too.
     // PDF/A is serialization/conformance, not a claim the verifier can make.
     let mut fields = BTreeMap::new();
     for &field in base.iter().chain(PDF_FIELDS) {
@@ -353,6 +365,21 @@ pub fn tools_list_result() -> JsonValue {
                         property.insert("minimum".to_string(), JsonValue::Number(min));
                         property.insert("maximum".to_string(), JsonValue::Number(max));
                     }
+                    if *name == "baselineGridPt" {
+                        property.insert(
+                            "anyOf".to_string(),
+                            JsonValue::Array(vec![
+                                JsonValue::Object(BTreeMap::from([(
+                                    "const".to_string(),
+                                    JsonValue::Number(0.0),
+                                )])),
+                                JsonValue::Object(BTreeMap::from([(
+                                    "minimum".to_string(),
+                                    JsonValue::Number(1.0),
+                                )])),
+                            ]),
+                        );
+                    }
                     if *kind == "integer" {
                         let (min, max) = integer_bounds(name);
                         property.insert("minimum".to_string(), JsonValue::Number(min as f64));
@@ -395,6 +422,20 @@ pub fn tools_list_result() -> JsonValue {
 
 fn invalid_options(message: impl Into<String>, reason: &'static str) -> ToolError {
     (ERROR_INVALID_OPTIONS, message.into(), reason)
+}
+
+/// Preserve actionable pagination failures across every MCP rendering route.
+pub(super) fn engine_failure(
+    error: crate::RenderError,
+    context: impl std::fmt::Display,
+    fallback_reason: &'static str,
+) -> ToolError {
+    let reason = if matches!(&error, crate::RenderError::Pagination(_)) {
+        error.code()
+    } else {
+        fallback_reason
+    };
+    (ERROR_RENDER_FAILED, format!("{context}: {error}"), reason)
 }
 
 fn validate_arguments(
@@ -604,6 +645,21 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
     if let Some(page) = page::parse(args.get("page"))? {
         theme.page = page;
     }
+    let baseline_grid = match args.get("baselineGridPt").and_then(JsonValue::as_f64) {
+        None | Some(0.0) => None,
+        Some(points) => Some(
+            BaselineGrid::from_points(points)
+                .map_err(|error| invalid_options(error.to_string(), "invalid_baseline_grid"))?,
+        ),
+    };
+    if baseline_grid.is_some() && fit_to_pages.is_some() {
+        return Err(invalid_options(
+            "baselineGridPt cannot be combined with fitToPages; set baselineGridPt to 0 or omit fitToPages",
+            "baseline_grid_incompatible",
+        ));
+    }
+    theme.page.baseline_grid = baseline_grid;
+    let strict_pagination = boolean(args, "strictPagination");
     Ok((
         PdfOptions {
             theme,
@@ -626,7 +682,8 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
             gradual_demerits: boolean(args, "typographyHomogeneous"),
             river_penalty: boolean(args, "typographyAntiriver"),
             pareto_line_breaking: boolean(args, "typographyPareto"),
-            optimal_pagination: boolean(args, "optimalPagination"),
+            optimal_pagination: boolean(args, "optimalPagination") || strict_pagination,
+            strict_pagination,
             code_line_numbers: boolean(args, "codeLineNumbers"),
             page_numbers: boolean(args, "pageNumbers"),
             running: running::parse(args.get("running"))?,
@@ -699,13 +756,8 @@ pub fn handle_tool_call(
 }
 
 fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolError> {
-    let render_error = |error: crate::RenderError| {
-        (
-            ERROR_RENDER_FAILED,
-            format!("Render failed: {error}"),
-            "render_failed",
-        )
-    };
+    let render_error =
+        |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     match name {
         "fmd.render_html" => {
             let source = markdown(args, limit)?;
@@ -743,13 +795,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             options.font_assets = assets.fonts;
             options.image_assets = assets.images;
             let doc = crate::parse_markdown(source);
-            let report = crate::verify::verify_pdf(&doc, &options).ok_or_else(|| {
-                (
-                    ERROR_RENDER_FAILED,
-                    "Verification failed: cannot load fonts".to_string(),
-                    "verify_failed",
-                )
-            })?;
+            let report = crate::verify::verify_pdf_result(&doc, &options)
+                .map_err(|error| engine_failure(error, "Verification failed", "verify_failed"))?;
             let report = if boolean(args, "a11y") {
                 crate::verify::filter_a11y(report)
             } else {

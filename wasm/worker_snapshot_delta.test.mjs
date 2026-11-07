@@ -239,21 +239,24 @@ async function flowFixture({ legacy = false, legacyViewport = false, corrupt = f
   const [client, worker] = endpointPair();
   const replies = [];
   const requests = [];
-  let revision = 1;
+  const revision = 1;
+  let layoutRevision = 1;
   let gate = null;
   const state = {
     supportsViewport: true,
     layoutOptions: { viewportWidth: 360, bodySize: 14, codeSize: 12, lineHeight: 20 },
-    get token() { return { revision: String(revision), layoutRevision: String(revision) }; },
+    get token() { return { revision: String(revision), layoutRevision: String(layoutRevision) }; },
     source: "# Guide",
     async snapshot(options) {
       if (gate) await gate;
-      if (options.token && options.token.revision !== String(revision)) {
-        const error = new Error("stale source revision");
+      if (options.token && (options.token.revision !== String(revision)
+          || options.token.layoutRevision !== String(layoutRevision))) {
+        const error = new Error("stale flow token");
         error.code = "REVISION_CONFLICT";
         throw error;
       }
       const current = page(32, String(revision));
+      current.layoutRevision = String(layoutRevision);
       const start = options.offset;
       current.items = current.items.slice(start, start + options.limit);
       current.offset = start;
@@ -282,8 +285,9 @@ async function flowFixture({ legacy = false, legacyViewport = false, corrupt = f
       };
     },
     reflow(options) {
+      const changed = Object.keys(options).some((key) => options[key] !== this.layoutOptions[key]);
       this.layoutOptions = { ...this.layoutOptions, ...options };
-      revision += 1;
+      if (changed) layoutRevision += 1;
       return this.token;
     },
     dispose() {},
@@ -305,8 +309,15 @@ async function flowFixture({ legacy = false, legacyViewport = false, corrupt = f
     replies.push(structuredClone(reply));
     sendReply(reply);
   };
-  const stop = installFlowWorker(worker, () => state);
-  const session = await createWorkerFlowSessionWith(() => client, "# Guide", {}, { timeoutMs: 1000 });
+  const initialLayout = { ...state.layoutOptions };
+  const stop = installFlowWorker(worker, (source, { viewportWidth, bodySize, codeSize, lineHeight }) => {
+    state.source = source;
+    state.layoutOptions = { viewportWidth, bodySize, codeSize, lineHeight };
+    return state;
+  });
+  const session = await createWorkerFlowSessionWith(
+    () => client, "# Guide", initialLayout, { timeoutMs: 1000 },
+  );
   return {
     session, replies, requests,
     block() {
@@ -321,15 +332,19 @@ async function flowFixture({ legacy = false, legacyViewport = false, corrupt = f
 test("flow sessions negotiate deltas without exposing envelopes or changing public tokens", async () => {
   const fixture = await flowFixture();
   try {
+    assert.deepEqual(fixture.session.layoutOptions,
+      { viewportWidth: 360, bodySize: 14, codeSize: 12, lineHeight: 20 });
     const first = await fixture.session.snapshot();
     first.items[0].text = "caller mutated its old snapshot";
     await fixture.session.reflow({ viewportWidth: 720 }, fixture.session.token);
     const second = await fixture.session.snapshot();
-    assert.deepEqual(second, page(32, "2"));
+    assert.deepEqual(second, { ...page(), layoutRevision: "2" });
     assert.equal(Object.hasOwn(second, "kind"), false);
     assert.equal(fixture.replies.at(-1).value.kind, "delta");
     assert.deepEqual(fixture.replies.at(-1).value.changes, []);
-    assert.deepEqual(fixture.session.token, { revision: "2", layoutRevision: "2" });
+    assert.deepEqual(fixture.session.token, { revision: "1", layoutRevision: "2" });
+    assert.deepEqual(fixture.session.layoutOptions,
+      { viewportWidth: 720, bodySize: 14, codeSize: 12, lineHeight: 20 });
   } finally { fixture.close(); }
 });
 
@@ -372,6 +387,10 @@ test("recoverable snapshot conflicts do not consume or corrupt the acknowledged 
     await fixture.session.snapshot();
     await assert.rejects(
       fixture.session.snapshot({ token: { revision: "0", layoutRevision: "0" } }),
+      { code: "REVISION_CONFLICT" },
+    );
+    await assert.rejects(
+      fixture.session.snapshot({ token: { revision: "1", layoutRevision: "0" } }),
       { code: "REVISION_CONFLICT" },
     );
     assert.equal(fixture.session.disposed, false);

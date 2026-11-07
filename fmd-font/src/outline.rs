@@ -188,6 +188,7 @@ struct RawGlyph {
 struct Budget {
     points_left: usize,
     components_left: usize,
+    work_left: usize,
 }
 
 // Component flag bits (OpenType `glyf` composite description).
@@ -226,8 +227,9 @@ impl Font {
         let mut budget = Budget {
             points_left: MAX_OUTLINE_POINTS,
             components_left: MAX_COMPONENTS,
+            work_left: usize::MAX,
         };
-        let raw = decode_raw(self, gid, 0, &mut budget)?;
+        let raw = decode_raw(&|id| self.glyph_data(id), gid, 0, &mut budget)?;
         let (advance, lsb) = resolve_metrics(self, gid, 0);
         let bbox = self.glyph_bbox(gid);
         let rsb = match bbox {
@@ -246,6 +248,45 @@ impl Font {
     }
 }
 
+/// Reuse the actual transform/point-attachment decoder while a variable font
+/// is being assembled. No temporary sfnt, second parser, or outline-to-contour
+/// allocation is needed. All referenced glyphs must already be instanced.
+/// The caller's shared work allowance additionally bounds the whole font.
+pub(crate) fn bounds_from_glyph_data<'a>(
+    gid: u16,
+    glyph_data: &impl Fn(u16) -> Option<&'a [u8]>,
+    work_left: &mut usize,
+) -> Result<[i16; 4], OutlineError> {
+    let mut budget = Budget {
+        points_left: MAX_OUTLINE_POINTS,
+        components_left: MAX_COMPONENTS,
+        work_left: *work_left,
+    };
+    let decoded = decode_raw(glyph_data, gid, 0, &mut budget);
+    *work_left = budget.work_left;
+    let raw = decoded?;
+    let Some(first) = raw.points.first() else {
+        return Ok([0; 4]);
+    };
+    let mut ext = [first.x, first.y, first.x, first.y];
+    for point in &raw.points[1..] {
+        ext[0] = ext[0].min(point.x);
+        ext[1] = ext[1].min(point.y);
+        ext[2] = ext[2].max(point.x);
+        ext[3] = ext[3].max(point.y);
+    }
+    let mut bounds = [0; 4];
+    for (value, out) in ext.into_iter().zip(&mut bounds) {
+        // OpenType rounding: nearest integer, with halves towards +infinity.
+        let rounded = (value + 0.5).floor();
+        if !rounded.is_finite() || rounded < f64::from(i16::MIN) || rounded > f64::from(i16::MAX) {
+            return Err(OutlineError::Malformed);
+        }
+        *out = rounded as i16;
+    }
+    Ok(bounds)
+}
+
 /// Metrics for `gid`, honoring `USE_MY_METRICS`: a composite flagging a
 /// component takes that component's `hmtx` advance and lsb (recursively).
 fn resolve_metrics(font: &Font, gid: u16, depth: usize) -> (u16, i16) {
@@ -259,22 +300,23 @@ fn resolve_metrics(font: &Font, gid: u16, depth: usize) -> (u16, i16) {
     (font.advance_width(gid), font.left_side_bearing(gid))
 }
 
-/// The component gid flagged `USE_MY_METRICS` in a composite glyph, if any.
+/// The last component gid flagged `USE_MY_METRICS`, as required by OpenType.
 fn use_my_metrics_component(data: &[u8]) -> Option<u16> {
     let num_contours = be_i16(data, 0)?;
     if num_contours >= 0 {
         return None;
     }
     let mut p = 10usize;
+    let mut selected = None;
     for _ in 0..MAX_COMPONENTS {
         let flags = be_u16(data, p)?;
         let comp = be_u16(data, p.checked_add(2)?)?;
         if flags & USE_MY_METRICS != 0 {
-            return Some(comp);
+            selected = Some(comp);
         }
         p = p.checked_add(component_record_len(flags))?;
         if flags & MORE_COMPONENTS == 0 {
-            return None;
+            return selected;
         }
     }
     None
@@ -302,8 +344,8 @@ fn component_record_len(flags: u16) -> usize {
 
 /// Decode `gid` (simple or composite) to raw points, recursing through
 /// composite components with transforms and anchor matching applied.
-fn decode_raw(
-    font: &Font,
+fn decode_raw<'a>(
+    glyph_data: &impl Fn(u16) -> Option<&'a [u8]>,
     gid: u16,
     depth: usize,
     budget: &mut Budget,
@@ -311,7 +353,7 @@ fn decode_raw(
     if depth > MAX_COMPOSITE_DEPTH {
         return Err(OutlineError::BudgetExceeded);
     }
-    let data = font.glyph_data(gid).ok_or(OutlineError::BadGlyphId)?;
+    let data = glyph_data(gid).ok_or(OutlineError::BadGlyphId)?;
     if data.is_empty() {
         return Ok(RawGlyph::default()); // blank glyph (space)
     }
@@ -319,7 +361,7 @@ fn decode_raw(
     if num_contours >= 0 {
         decode_simple(data, num_contours as usize, budget)
     } else {
-        decode_composite(font, data, depth, budget)
+        decode_composite(glyph_data, data, depth, budget)
     }
 }
 
@@ -351,10 +393,11 @@ fn decode_simple(
             return Ok(RawGlyph::default()); // zero contours: blank
         }
     };
-    if num_points > budget.points_left {
+    if num_points > budget.points_left || num_points > budget.work_left {
         return Err(OutlineError::BudgetExceeded);
     }
     budget.points_left -= num_points;
+    budget.work_left -= num_points;
 
     let instr_off = 10 + num_contours * 2;
     let instr_len = be_u16(data, instr_off).ok_or(OutlineError::Malformed)? as usize;
@@ -437,8 +480,8 @@ fn decode_simple(
 /// Decode a composite glyph by recursively decoding each component and
 /// appending its transformed points (anchor-point numbering stays flat
 /// across components, which is what anchor matching indexes into).
-fn decode_composite(
-    font: &Font,
+fn decode_composite<'a>(
+    glyph_data: &impl Fn(u16) -> Option<&'a [u8]>,
     data: &[u8],
     depth: usize,
     budget: &mut Budget,
@@ -446,10 +489,11 @@ fn decode_composite(
     let mut out = RawGlyph::default();
     let mut p = 10usize;
     loop {
-        if budget.components_left == 0 {
+        if budget.components_left == 0 || budget.work_left == 0 {
             return Err(OutlineError::BudgetExceeded);
         }
         budget.components_left -= 1;
+        budget.work_left -= 1;
 
         let flags = be_u16(data, p).ok_or(OutlineError::Malformed)?;
         let comp_gid = be_u16(data, p.checked_add(2).ok_or(OutlineError::Malformed)?)
@@ -512,7 +556,7 @@ fn decode_composite(
             on_curve: pt.on_curve,
         };
 
-        let child = decode_raw(font, comp_gid, depth + 1, budget)?;
+        let child = decode_raw(glyph_data, comp_gid, depth + 1, budget)?;
 
         let (dx, dy) = if flags & ARGS_ARE_XY_VALUES != 0 {
             // An (dx, dy) offset. Per the spec's dominant (Microsoft/
@@ -806,6 +850,22 @@ mod hostile_outline_tests {
         let font = font_with_glyphs(&[triangle_glyph(), composite_glyph(0, 100, -50, false)]);
         let o = font.glyph_outline(1).expect("composite decodes");
         assert_eq!(o.extents(), Some([100.0, -50.0, 600.0, 350.0]));
+    }
+
+    #[test]
+    fn instancing_bounds_charge_one_shared_allowance_across_glyphs() {
+        let font = font_with_glyphs(&[triangle_glyph(), composite_glyph(0, 100, -50, false)]);
+        let source = |gid| font.glyph_data(gid);
+        let mut work = 7;
+        assert_eq!(
+            bounds_from_glyph_data(1, &source, &mut work).unwrap(),
+            [100, -50, 600, 350], // the shared triangle is 500 by 400 units
+        );
+        assert_eq!(work, 3); // one component and three points
+        assert_eq!(
+            bounds_from_glyph_data(1, &source, &mut work),
+            Err(OutlineError::BudgetExceeded),
+        );
     }
 
     #[test]

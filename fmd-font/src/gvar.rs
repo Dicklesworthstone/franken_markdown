@@ -7,6 +7,8 @@ use crate::{
     Font, be_i16, be_u16, be_u32, find_table_full, off, off_mul, table_checksum, write_u32,
 };
 
+mod composite;
+
 const MAX_TUPLES: usize = 256;
 const MAX_GVAR_POINTS: usize = 4096;
 const PHANTOMS: usize = 4;
@@ -67,6 +69,7 @@ pub(crate) fn instance_font(font: &Font, weight: f32) -> Option<Font> {
         loca.push(u32::try_from(glyf_bytes.len()).ok()?);
         hmtx.push((aw, lsb));
     }
+    composite::refresh_bounds(&mut glyf_bytes, &loca, &mut hmtx)?;
     let loca_bytes = encode_loca(&loca);
     let assembled = rebuild_static(font, glyf_bytes, loca_bytes, Some(&hmtx))?;
     Font::parse(assembled).ok()
@@ -182,7 +185,7 @@ fn instance_glyph(
     if n_contours >= 0 {
         instance_simple(font, data, n_contours as usize, gvar, gid, location)
     } else {
-        instance_composite(font, data, gvar, gid, location)
+        composite::instance(font, data, gvar, gid, location)
     }
 }
 
@@ -294,69 +297,6 @@ fn instance_simple(
     Some((bytes, aw, lsb))
 }
 
-fn instance_composite(
-    font: &Font,
-    data: &[u8],
-    gvar: Option<&GvarHeader>,
-    gid: u16,
-    location: &[f32],
-) -> Option<(Vec<u8>, u16, i16)> {
-    let n_comp = count_components(data)?;
-    let xmin = i32::from(be_i16(data, 2).unwrap_or(0));
-    let ymin = i32::from(be_i16(data, 4).unwrap_or(0));
-    let ymax = i32::from(be_i16(data, 8).unwrap_or(0));
-    let lsb = i32::from(font.left_side_bearing(gid));
-    let aw = i32::from(font.advance_width(gid));
-    // Variation points: 4 phantoms + one (x,y) origin per component.
-    let mut pts = vec![(0i32, 0i32); PHANTOMS + n_comp];
-    pts[0] = (xmin - lsb, 0);
-    pts[1] = (xmin - lsb + aw, 0);
-    pts[2] = (0, ymax);
-    pts[3] = (0, ymin);
-    // Seed component origins from the glyph record.
-    let mut p = 10usize;
-    for slot in pts.iter_mut().skip(PHANTOMS) {
-        let flags = be_u16(data, p)?;
-        let (arg1, arg2, rec_len) = component_args(data, p, flags)?;
-        if flags & ARGS_ARE_XY != 0 {
-            *slot = (arg1, arg2);
-        }
-        p = p.checked_add(rec_len)?;
-        if flags & MORE_COMPONENTS == 0 {
-            break;
-        }
-    }
-    if let Some(gvar) = gvar {
-        // `pts` already holds 4 phantoms + per-component origins.
-        apply_store(font.raw_bytes(), gvar, gid, location, &mut pts, None, None);
-    }
-    // Rewrite XY args.
-    let mut out = data.to_vec();
-    p = 10;
-    let mut ci = 0usize;
-    loop {
-        let flags = be_u16(&out, p)?;
-        let rec_len = component_record_len(flags);
-        if flags & ARGS_ARE_XY != 0
-            && let Some(&(x, y)) = pts.get(PHANTOMS + ci)
-        {
-            write_component_xy(&mut out, p, flags, x, y)?;
-        }
-        ci += 1;
-        if flags & MORE_COMPONENTS == 0 {
-            break;
-        }
-        p = p.checked_add(rec_len)?;
-        if p >= out.len() {
-            break;
-        }
-    }
-    let xmin = i32::from(be_i16(data, 2).unwrap_or(0));
-    let dummy = [(xmin, 0)];
-    let (aw, lsb) = hmtx_from_phantoms(&dummy, &[pts[0], pts[1], pts[2], pts[3]]);
-    Some((out, aw, lsb))
-}
-
 fn default_phantoms(points: &[(i32, i32)], font: &Font, gid: u16) -> [(i32, i32); 4] {
     let (xmin, ymin, _, ymax) = bbox(points);
     let lsb = i32::from(font.left_side_bearing(gid));
@@ -429,29 +369,6 @@ fn component_args(data: &[u8], p: usize, flags: u16) -> Option<(i32, i32, usize)
     Some((a, b, rec_len))
 }
 
-fn write_component_xy(out: &mut [u8], p: usize, flags: u16, x: i32, y: i32) -> Option<()> {
-    let arg_base = p.checked_add(4)?;
-    if flags & ARG_WORDS != 0 {
-        let xb = i16::try_from(x).ok()?;
-        let yb = i16::try_from(y).ok()?;
-        write_i16(out, arg_base, xb)?;
-        write_i16(out, arg_base.checked_add(2)?, yb)?;
-    } else {
-        let xb = i8::try_from(x).ok()?;
-        let yb = i8::try_from(y).ok()?;
-        *out.get_mut(arg_base)? = xb as u8;
-        *out.get_mut(arg_base.checked_add(1)?)? = yb as u8;
-    }
-    Some(())
-}
-
-fn write_i16(d: &mut [u8], o: usize, v: i16) -> Option<()> {
-    let b = v.to_be_bytes();
-    let dst = d.get_mut(o..o.checked_add(2)?)?;
-    dst.copy_from_slice(&b);
-    Some(())
-}
-
 fn apply_store(
     font_bytes: &[u8],
     gvar: &GvarHeader,
@@ -475,7 +392,7 @@ fn apply_store(
         return;
     };
     // Simple glyphs store only on-curve points; the four phantoms live past
-    // `points.len()` (`phantom_pts` is Some). Composites already prepend
+    // `points.len()` (`phantom_pts` is Some). Composites already append
     // phantoms, so n_var is the vector length — adding PHANTOMS again makes
     // all-points tuples over-read.
     let n_var = if phantom_pts.is_some() {
@@ -2079,9 +1996,9 @@ mod tests {
         push32(&mut loca, u32::try_from(comp_off).unwrap());
         push32(&mut loca, u32::try_from(glyf.len()).unwrap());
 
-        // gvar for gid 1: 5 variation points (4 phantoms + 1 component).
+        // gvar for gid 1: 5 variation points (1 component + 4 phantoms).
         // Move the component origin +30 x at peak.
-        let mut payload = vec![1, 0, 4, 0x40];
+        let mut payload = vec![1, 0, 0, 0x40];
         payload.extend_from_slice(&30i16.to_be_bytes());
         payload.push(0x80); // y zeros
 
@@ -2149,9 +2066,9 @@ mod tests {
     }
 
     #[test]
-    fn composite_byte_xy_overflow_keeps_default_glyph() {
+    fn composite_byte_xy_promotes_to_word_offsets() {
         // Byte ARGS_ARE_XY (no ARG_WORDS): origin (100, 0) + 50 x at peak is
-        // 150, which does not fit in i8. Fail closed instead of clamping to 127.
+        // 150, which does not fit in i8. Re-encode words without dropping the delta.
         let triangle = triangle_glyph();
         let mut composite = Vec::new();
         push_i16(&mut composite, -1);
@@ -2172,7 +2089,7 @@ mod tests {
         push32(&mut loca, u32::try_from(comp_off).unwrap());
         push32(&mut loca, u32::try_from(glyf.len()).unwrap());
 
-        let mut payload = vec![1, 0, 4, 0x40];
+        let mut payload = vec![1, 0, 0, 0x40];
         payload.extend_from_slice(&50i16.to_be_bytes());
         payload.push(0x80);
 
@@ -2225,8 +2142,8 @@ mod tests {
         let data = inst.glyph_data(1).unwrap();
         log_check(
             "gk3v.gvar.comp-i8-x",
-            "overflowed byte origin stays 100, not clamped 127",
-            data.get(14).copied() == Some(100),
+            "byte origin promotes to a 150-unit word offset",
+            be_u16(data, 10).unwrap() & ARG_WORDS != 0 && be_i16(data, 14) == Some(150),
         );
     }
 
@@ -2254,11 +2171,11 @@ mod tests {
         push32(&mut loca, u32::try_from(comp_off).unwrap());
         push32(&mut loca, u32::try_from(glyf.len()).unwrap());
 
-        // 5 x-deltas (4 phantom zeros + component +30), 5 y-zeros. No packed points.
+        // 5 x-deltas (component +30 then 4 phantom zeros), 5 y-zeros. No packed points.
         let mut payload = Vec::new();
-        payload.push(0x83); // 4 zeros
         payload.push(0x40); // 1 word
         payload.extend_from_slice(&30i16.to_be_bytes());
+        payload.push(0x83); // 4 zeros
         payload.push(0x84); // 5 y zeros
 
         let mut gvd0 = Vec::new();

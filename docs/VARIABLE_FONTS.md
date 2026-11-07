@@ -18,6 +18,32 @@ bold slot's effective weight (default 700).
 
 Static host faces ignore a weight pin (`FontWeightIgnoredStatic`).
 
+Composite instancing applies `gvar` component pseudo-points before the four
+phantom points, using the OpenType point-number order. An offset that outgrows
+its original signed byte is re-encoded as a signed word; its variation is not
+discarded. Component transforms and point attachments retain their original
+meaning. After every child has been instanced, the engine recomputes composite
+glyph bounds and left side bearings from the actual resulting outlines. This
+also updates parents with no variation tuple of their own and works regardless
+of glyph order. Horizontal advances remain independent of component movement.
+Static `hmtx` values use the composite's own phantom-point deltas. The public
+outline reader separately honors the last child marked `USE_MY_METRICS`, as it
+does for static fonts; these are distinct unhinted-table and outline metrics.
+The instancer does not execute TrueType hinting programs.
+
+The bounds pass reuses the ordinary outline decoder without constructing a
+temporary font. Its existing per-glyph depth, component and point limits remain
+in force, with a shared 16-million-operation allowance for the complete font.
+A malformed, cyclic, unrepresentable or over-budget composite prevents a static
+instance from being returned. Original caller-owned font bytes are unchanged.
+
+The independently generated `FmdCompositeVariationsVF` regression compares
+complete outline vertices, stored bounds and horizontal metrics against
+FontTools' saved static instances at three weights. It includes growing byte
+offsets, a nested scaled parent, point-attached accents and subset round trips.
+This extends the synthetic bbox-only evidence described below; it does not
+claim complete validation of arbitrary retail variable fonts or hinted output.
+
 ## Outline tolerance comparison method
 
 This engine does **not** rasterize glyphs and does **not** compute a Hausdorff

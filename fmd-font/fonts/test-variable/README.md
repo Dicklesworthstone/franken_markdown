@@ -58,3 +58,28 @@ python fmd-font/fonts/test-variable/generate_packed_deltas.py
 
 FontTools is only needed to regenerate the fixture; normal Rust tests read the
 committed font without Python or third-party font libraries.
+
+## Independent composite-variation fixture
+
+`FmdCompositeVariationsVF.ttf` is a 1,964-byte original OFL test font generated
+by FontTools 4.61.1. Its composites come before their children in glyph order.
+The face includes independently varied bases and accents, component placement
+deltas, horizontal phantom-point deltas, byte offsets that must become word
+offsets, a scaled nested parent without its own variation tuple, and an accent
+attached to a parent outline point.
+
+`generate_composite_variations.py` produces the font and
+`FmdCompositeVariationsVF.json`. The JSON records every outline vertex, glyph
+bounding box and horizontal metric from independently instanced, saved and
+reparsed FontTools static fonts at weights 400, 650 and 900. Saving first makes
+the oracle include the integer-coordinate rounding of an actual TrueType font.
+
+`tests/composite_variation_test.rs` checks those coordinates and metrics, strict
+subset preservation, final checksums, immutable source bytes, deterministic
+instances, composite-cycle refusal and the OpenType last-`USE_MY_METRICS` rule.
+The original handwritten component fixtures now use the standard ordering:
+component pseudo-points first, followed by four phantom points. Regenerate with:
+
+```bash
+python fmd-font/fonts/test-variable/generate_composite_variations.py
+```

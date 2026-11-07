@@ -95,7 +95,7 @@ fn verification_returns_the_exact_shared_report_after_include_expansion() {
     ];
     let includes = [BookInput {
         path: "part.md".into(),
-        source: "[forward](../next.md#next) [bad](../next.md#absent)".into(),
+        source: "[forward](next.md#next) [bad](next.md#absent)".into(),
     }];
     let renderer = BookRenderer::from_sources(&inputs, &includes).unwrap();
     let expected = renderer.validate_links().unwrap().to_json().unwrap();

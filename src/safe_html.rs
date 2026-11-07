@@ -567,7 +567,6 @@ pub(crate) fn attribute_value(destination: &str) -> String {
     out
 }
 
-#[cfg(feature = "cli")]
 pub(crate) fn attribute_content(destination: &str) -> String {
     let mut out = String::with_capacity(destination.len());
     push_escaped(destination, &mut out);

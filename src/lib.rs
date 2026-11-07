@@ -84,6 +84,9 @@ pub mod resume;
 pub mod safe_html;
 pub mod scanner;
 pub mod source_map;
+// The origin rewriter is pure; native shells and explicit-source books share it.
+#[path = "cli/source_origins.rs"]
+pub(crate) mod source_origins;
 pub mod span;
 /// The font subsystem, factored into the `fmd-font` workspace crate
 /// (sfnt reader + glyf outline decoder). Re-exported under its historical

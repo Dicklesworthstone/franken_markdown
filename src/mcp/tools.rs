@@ -9,8 +9,8 @@ use super::{
 };
 use crate::layout::MicrotypeOptions;
 use crate::{
-    BaselineGrid, DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat, HtmlOptions,
-    PdfAMode, PdfASettings, PdfOptions, Theme,
+    BaselineGrid, DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat,
+    HtmlOptions, PdfAMode, PdfASettings, PdfOptions, Theme,
 };
 
 #[path = "resources.rs"]

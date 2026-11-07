@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use franken_markdown::book::{BookInput, BookRenderer, render_book_site};
 use franken_markdown::mcp::{
-    DEFAULT_MAX_INPUT_BYTES, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED, INVALID_PARAMS,
-    JsonValue, MAX_FRAME_BYTES, base64_encode, handle_tool_call, parse_json, serve_stdio,
-    tools_list_result,
+    DEFAULT_MAX_INPUT_BYTES, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED, INVALID_PARAMS, JsonValue,
+    MAX_FRAME_BYTES, base64_encode, handle_tool_call, parse_json, serve_stdio, tools_list_result,
 };
 use franken_markdown::{
     BaselineGrid, HtmlOptions, PageMargins, PageSize, PdfASettings, PdfOptions, parse_markdown,
@@ -24,8 +23,7 @@ const SOURCE: &str = "# A measured grid\n\nBody text follows an explicit baselin
 const GRID: &str =
     r#"{"strictPagination":true,"optimalPagination":false,"baselineGridPt":13.1254}"#;
 const INFEASIBLE: &str = "A  \nB  \nC";
-const TIGHT: &str =
-    r#"{"strictPagination":true,"baseFontSize":24,"page":{"margins":{"topPt":360,"bottomPt":360}}}"#;
+const TIGHT: &str = r#"{"strictPagination":true,"baseFontSize":24,"page":{"margins":{"topPt":360,"bottomPt":360}}}"#;
 const TALL: &str =
     r#"{"strictPagination":true,"page":{"size":{"widthPt":612,"heightPt":10200},"margins":36}}"#;
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -168,7 +166,10 @@ fn assert_refused(result: Result<JsonValue, Failure>, reason: &str) {
     let error = result.unwrap_err();
     assert_eq!(error.0, ERROR_RENDER_FAILED, "{error:?}");
     assert_eq!(error.2, reason, "{error:?}");
-    assert!(error.1.contains("strict PDF pagination failed"), "{error:?}");
+    assert!(
+        error.1.contains("strict PDF pagination failed"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -262,10 +263,18 @@ fn file_and_paired_exports_share_the_grid_without_changing_html() {
     );
     arguments.insert(
         "out".into(),
-        JsonValue::String(workspace.join("publication.pdf").to_string_lossy().into_owned()),
+        JsonValue::String(
+            workspace
+                .join("publication.pdf")
+                .to_string_lossy()
+                .into_owned(),
+        ),
     );
     call("fmd.render_file", arguments).unwrap();
-    assert_eq!(std::fs::read(workspace.join("publication.pdf")).unwrap(), pdf);
+    assert_eq!(
+        std::fs::read(workspace.join("publication.pdf")).unwrap(),
+        pdf
+    );
     assert_eq!(
         std::fs::read_to_string(workspace.join("publication.html")).unwrap(),
         html
@@ -362,9 +371,7 @@ fn strict_refusals_keep_typed_reasons_across_direct_file_and_book_routes() {
         let mut best_effort = args(config, source);
         best_effort.insert("strictPagination".into(), JsonValue::Bool(false));
         best_effort.insert("optimalPagination".into(), JsonValue::Bool(true));
-        assert!(
-            content(&call("fmd.render_pdf", best_effort).unwrap()).starts_with("JVBERi0")
-        );
+        assert!(content(&call("fmd.render_pdf", best_effort).unwrap()).starts_with("JVBERi0"));
     }
 }
 
@@ -393,12 +400,32 @@ fn malformed_controls_fail_before_source_io_or_resource_decoding() {
     let missing = scratch().join("not-created.md");
     let bad_assets = parse_json(r#"[{"destination":"bad.png","base64":"%%%"}]"#).unwrap();
     for (config, code, reason) in [
-        (r#"{"strictPagination":"true"}"#, INVALID_PARAMS, "invalid_params"),
-        (r#"{"strictPagination":null}"#, INVALID_PARAMS, "invalid_params"),
-        (r#"{"baselineGridPt":"13"}"#, INVALID_PARAMS, "invalid_params"),
-        (r#"{"baselineGridPt":null}"#, INVALID_PARAMS, "invalid_params"),
+        (
+            r#"{"strictPagination":"true"}"#,
+            INVALID_PARAMS,
+            "invalid_params",
+        ),
+        (
+            r#"{"strictPagination":null}"#,
+            INVALID_PARAMS,
+            "invalid_params",
+        ),
+        (
+            r#"{"baselineGridPt":"13"}"#,
+            INVALID_PARAMS,
+            "invalid_params",
+        ),
+        (
+            r#"{"baselineGridPt":null}"#,
+            INVALID_PARAMS,
+            "invalid_params",
+        ),
         (r#"{"baselineGridPt":-1}"#, INVALID_PARAMS, "invalid_params"),
-        (r#"{"baselineGridPt":144.001}"#, INVALID_PARAMS, "invalid_params"),
+        (
+            r#"{"baselineGridPt":144.001}"#,
+            INVALID_PARAMS,
+            "invalid_params",
+        ),
         (
             r#"{"baselineGridPt":0.5}"#,
             ERROR_INVALID_OPTIONS,
@@ -448,7 +475,10 @@ fn non_pdf_targets_reject_even_explicitly_disabled_controls() {
     ] {
         let mut html = args("{}", SOURCE);
         html.insert(field.into(), value.clone());
-        assert_eq!(call("fmd.render_html", html).unwrap_err().2, "invalid_params");
+        assert_eq!(
+            call("fmd.render_html", html).unwrap_err().2,
+            "invalid_params"
+        );
         for target in ["html", "epub", "svg"] {
             let mut request = file_args("{}", &missing, target);
             request.insert(field.into(), value.clone());
@@ -491,8 +521,7 @@ fn verification_honors_grid_and_strict_admission_before_reporting() {
         arguments.insert("optimalPagination".into(), JsonValue::Bool(true));
         options.strict_pagination = false;
         let report =
-            franken_markdown::verify::verify_pdf_result(&parse_markdown(source), &options)
-                .unwrap();
+            franken_markdown::verify::verify_pdf_result(&parse_markdown(source), &options).unwrap();
         assert_eq!(
             content(&call("fmd.verify", arguments).unwrap()),
             franken_markdown::verify::to_json(&report)
@@ -505,18 +534,17 @@ fn discovery_advertises_the_executable_grid_range_and_strict_policy() {
     let listed = tools_list_result();
     for tool in array(listed.get("tools").unwrap()) {
         let name = tool.get("name").and_then(JsonValue::as_str).unwrap();
-        let properties = tool
-            .get("inputSchema")
-            .unwrap()
-            .get("properties")
-            .unwrap();
+        let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
         let accepts_pdf = matches!(
             name,
             "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
         );
         if accepts_pdf {
             let strict = properties.get("strictPagination").unwrap();
-            assert_eq!(strict.get("type").and_then(JsonValue::as_str), Some("boolean"));
+            assert_eq!(
+                strict.get("type").and_then(JsonValue::as_str),
+                Some("boolean")
+            );
             let grid = properties.get("baselineGridPt").unwrap();
             assert_eq!(grid.get("type").and_then(JsonValue::as_str), Some("number"));
             assert_eq!(grid.get("minimum").and_then(JsonValue::as_f64), Some(0.0));
@@ -579,7 +607,10 @@ fn stdio_preserves_typed_refusals_and_remains_usable_after_errors() {
         4
     );
     let output = String::from_utf8(output).unwrap();
-    let responses: Vec<_> = output.lines().map(|line| parse_json(line).unwrap()).collect();
+    let responses: Vec<_> = output
+        .lines()
+        .map(|line| parse_json(line).unwrap())
+        .collect();
     assert_eq!(responses.len(), 4);
     for (index, response) in responses.iter().enumerate() {
         assert_eq!(
@@ -598,7 +629,11 @@ fn stdio_preserves_typed_refusals_and_remains_usable_after_errors() {
             Some(f64::from(ERROR_RENDER_FAILED))
         );
         assert_eq!(
-            error.get("data").unwrap().get("reason").and_then(JsonValue::as_str),
+            error
+                .get("data")
+                .unwrap()
+                .get("reason")
+                .and_then(JsonValue::as_str),
             Some(reason)
         );
     }

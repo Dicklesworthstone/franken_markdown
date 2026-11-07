@@ -38,6 +38,17 @@ are logical source names, not permission to read a similarly named host file.
 Missing includes, duplicate normalized paths and output collisions are errors;
 the adapter never falls back to the filesystem or returns a partial book.
 
+Links and images inside an included source resolve from that source's directory,
+including nested includes, selected lines/anchors, reference definitions and
+supported HTML URL attributes. If `guide/intro.md` includes `parts/body.md`,
+`![Plot](plot.svg)` in that fragment uses the explicit image key
+`parts/plot.svg`; `[Next](next.md#setup)` targets `parts/next.md#setup`.
+Fragment-only links such as `#setup` still address the containing chapter.
+Code examples, labels and titles retain their original text. A destination
+that escapes the defining source's logical root stays outside that root after
+expansion and cannot capture an unrelated chapter or image in the receiving
+directory. `fmd.verify_book` checks the same origin-aware expanded links.
+
 `to` is `pdf` (default), `epub`, `site`, or `all`. For `all`, output order is
 PDF, EPUB, site ZIP. Shared `images` and `fonts` use the existing MCP resource
 schema: explicit base64 payloads, book-relative image keys, canonical font slots

@@ -502,8 +502,7 @@ fn strict_toc_refusal_is_preserved_by_verification() {
     options.strict_pagination = true;
     options.theme.page.baseline_grid = Some(BaselineGrid::from_points(14.0).unwrap());
     let rendered = render_pdf_document(&document, &options)
-        .err()
-        .expect("the grid-snapped heading cannot fit this page body");
+        .expect_err("the grid-snapped heading cannot fit this page body");
     let verified = verify_pdf_result(&document, &options).unwrap_err();
     assert_eq!(rendered.code(), "pagination_infeasible");
     assert_eq!(verified.to_string(), rendered.to_string());

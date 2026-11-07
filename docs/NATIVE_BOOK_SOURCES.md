@@ -43,6 +43,12 @@ safely quoted, with all surrounding markup retained. The resulting input is shar
 and `--check-links`, so checks resolve against the same published chapter
 paths. Local resources remain subject to the existing book-root and regular-file
 policies; expansion does not authorize external filesystem or network access.
+Traversal above the defining source's logical root remains above that root
+after rebasing. For example, `../../private.svg` in `parts/shared.md` stays
+outside the book when included by `vol1/guide/start.md`; it cannot accidentally
+load an unrelated `private.svg` inside the book. Percent-encoded dot segments
+follow the same single-decoding rule. The explicit-source `BookRenderer`,
+browser book workspace and MCP book tools share this origin handling.
 
 ## Selection rules
 

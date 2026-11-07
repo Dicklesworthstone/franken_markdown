@@ -154,7 +154,6 @@ pub(crate) enum DestinationSyntax {
     HtmlAttributeContent,
 }
 
-#[cfg(feature = "cli")]
 pub(crate) fn resource_destination_spans(source: &str) -> Vec<SourceDestination> {
     if !source.contains(['[', '<']) {
         return Vec::new();
@@ -411,7 +410,9 @@ impl DestinationTracker {
     }
 
     pub(super) fn finish_diagnostics(self) -> Vec<ParseDiagnostic> {
-        let mut findings = self.diagnostics.map_or_else(Vec::new, |state| state.findings);
+        let mut findings = self
+            .diagnostics
+            .map_or_else(Vec::new, |state| state.findings);
         // Reference/fence findings come from metadata collection; resource
         // findings come from AST construction. Publish both in source order.
         findings.sort_by_key(|finding| (finding.span.start, finding.span.end, finding.code));

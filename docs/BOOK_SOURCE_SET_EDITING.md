@@ -48,6 +48,16 @@ together. The caller supplies updated references; the API never rewrites text.
 Missing or cyclic includes, invalid/duplicate paths, output-name collisions,
 source limits and stale revisions reject the entire operation.
 
+Expanded links and images keep the directory of the source that defines their
+destination. For example, `parts/example.md` containing `![Plot](plot.svg)`
+uses the image key `parts/plot.svg` even when a chapter in `guide/` includes it.
+Nested selections and reference definitions follow the same rule; a `#local`
+link still addresses the containing chapter. Both editing operations recompute
+these bindings before committing. Moving identical snippet text to another
+directory can therefore change its linked chapters and asset keys. The caller's
+captured strings stay unchanged, and failed updates preserve the previous
+publication and retained asset bytes.
+
 Chapters and resources share a 4096-source and 64 MiB raw UTF-8 text/path budget.
 The Rust constructor additionally enforces the existing expansion/resolution
 budgets. JavaScript captures strings once, refuses malformed Unicode, and uses

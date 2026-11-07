@@ -1,11 +1,12 @@
-//! Preserve file-relative resource destinations after native transclusion.
+//! Preserve source-relative resource destinations after transclusion.
 //!
 //! Include expansion records exact source origins. The parser identifies real
 //! Markdown destinations and supported HTML URL attributes in the final expanded
 //! context, so rebasing does not modify code, titles, comments, unsupported HTML
 //! attributes, or the spelling of reference labels. This
-//! module operates only on strings: the native callers retain all filesystem
-//! authorization, symlink checks, and read budgets.
+//! module operates only on strings: native callers retain all filesystem
+//! authorization, symlink checks, and read budgets; in-memory books use only
+//! their explicitly supplied source collection and asset bytes.
 
 use crate::book::resolve_book_destination;
 use crate::transclude::ExpandedDocument;
@@ -85,7 +86,7 @@ fn parent(source: &str) -> &str {
 fn rebase_url(origin: &str, output_source: &str, destination: &str) -> Option<String> {
     let destination = destination.trim();
     // These URLs have no file-relative origin. The book resolver also rejects
-    // schemes, malformed encodings, and paths outside the declared source root.
+    // schemes and malformed encodings before any path normalization.
     if destination.starts_with(['/', '#', '?']) || destination.is_empty() {
         return None;
     }
@@ -97,16 +98,30 @@ fn rebase_url(origin: &str, output_source: &str, destination: &str) -> Option<St
     }
     let directory =
         decoded.ends_with('/') || matches!(decoded.rsplit('/').next(), Some("." | ".."));
-    let (target, suffix) = if directory {
+    let with_leaf;
+    let candidate = if directory {
         // The shared resolver validates file paths. A synthetic leaf lets it
         // normalize directory aliases without changing their trailing slash,
         // which book navigation uses to choose index/README chapters.
-        let with_leaf = format!("{path}/.__fmd_origin_leaf__{}", &destination[end..]);
-        let (target, suffix) = resolve_book_destination(origin, &with_leaf)?;
-        let target = target.strip_suffix(".__fmd_origin_leaf__")?.to_owned();
-        (target, suffix)
+        with_leaf = format!("{path}/.__fmd_origin_leaf__{}", &destination[end..]);
+        with_leaf.as_str()
     } else {
-        resolve_book_destination(origin, destination)?
+        destination
+    };
+    let Some((target, suffix)) = resolve_book_destination(origin, candidate) else {
+        return rebase_escaping_url(
+            origin,
+            output_source,
+            &decoded,
+            candidate,
+            &destination[end..],
+            directory,
+        );
+    };
+    let target = if directory {
+        target.strip_suffix(".__fmd_origin_leaf__")?
+    } else {
+        &target
     };
     let from: Vec<_> = parent(output_source)
         .split('/')
@@ -125,6 +140,55 @@ fn rebase_url(origin: &str, output_source: &str, destination: &str) -> Option<St
         if path.is_empty() {
             path.push('.');
         }
+        path.push('/');
+    }
+    Some(format!("{}{suffix}", encode_path(&path)))
+}
+
+/// An unresolved traversal must remain outside the logical root after moving
+/// text to a deeper chapter. Leaving its original spelling could otherwise
+/// capture a different selected chapter or explicitly supplied image.
+fn rebase_escaping_url(
+    origin: &str,
+    output_source: &str,
+    decoded: &str,
+    candidate: &str,
+    suffix: &str,
+    directory: bool,
+) -> Option<String> {
+    let mut parts: Vec<_> = parent(origin)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut escaped = 0;
+    for part in decoded.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    escaped += 1;
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+    if escaped == 0 {
+        return None;
+    }
+    // Validate with the SAME resolver, temporarily adding just enough virtual
+    // parent levels to admit traversal. This grants no source or asset access;
+    // schemes, backslashes, controls and malformed encodings remain rejected.
+    let validation_origin = format!("{}{origin}", "_/".repeat(escaped));
+    resolve_book_destination(&validation_origin, candidate)?;
+
+    let output_depth = parent(output_source)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .count();
+    let mut relative = vec![".."; output_depth + escaped];
+    relative.extend(parts);
+    let mut path = relative.join("/");
+    if directory {
         path.push('/');
     }
     Some(format!("{}{suffix}", encode_path(&path)))
@@ -217,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn nonlocal_and_escaping_destinations_do_not_gain_native_authority() {
+    fn nonlocal_and_invalid_destinations_do_not_gain_native_authority() {
         for destination in [
             "#local",
             "?query",
@@ -228,17 +292,65 @@ mod tests {
             "custom+v1:value",
             "%2froot.md",
             "%2f%2fhost/path",
-            "../../secret.svg",
-            "%2e%2e/%2e%2e/secret.svg",
             "%68ttps%3a/remote.svg",
             "bad%ZZ.svg",
             "nul%00.svg",
             "..\\secret.svg",
+            "../../nul%00.svg",
+            "../../bad%ZZ.svg",
+            "../../bad\\name.svg",
         ] {
             assert!(
                 rebase_url("parts/snippet.md", "root.md", destination).is_none(),
                 "{destination}"
             );
+        }
+    }
+
+    #[test]
+    fn escaping_destinations_retain_their_depth_above_the_logical_root() {
+        for (origin, output, destination, expected) in [
+            (
+                "parts/body.md",
+                "root.md",
+                "../../secret.svg",
+                "../secret.svg",
+            ),
+            (
+                "parts/body.md",
+                "vol1/guide/start.md",
+                "../../secret.svg",
+                "../../../secret.svg",
+            ),
+            (
+                "parts/body.md",
+                "vol1/guide/start.md",
+                "%2e%2e/%2e%2e/secret.svg?x=1#view",
+                "../../../secret.svg?x=1#view",
+            ),
+            (
+                "body.md",
+                "a/b/c/start.md",
+                "../secret.md",
+                "../../../../secret.md",
+            ),
+            (
+                "a/b/body.md",
+                "root.md",
+                "../../../../space%20name/",
+                "../../space%20name/",
+            ),
+            (
+                "parts/body.md",
+                "a/b/start.md",
+                "../..#top",
+                "../../../#top",
+            ),
+        ] {
+            assert!(resolve_book_destination(origin, destination).is_none());
+            let rebased = rebase_url(origin, output, destination).unwrap();
+            assert_eq!(rebased, expected);
+            assert!(resolve_book_destination(output, &rebased).is_none());
         }
     }
 

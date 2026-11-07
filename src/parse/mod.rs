@@ -29,7 +29,6 @@ mod destinations;
 mod reference_labels;
 pub use destinations::DestinationSpan;
 pub(crate) use destinations::transclusion_code_ranges;
-#[cfg(feature = "cli")]
 pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
 pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
 

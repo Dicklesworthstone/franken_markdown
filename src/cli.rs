@@ -14,7 +14,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 mod font_coverage;
 pub(crate) mod protected_paths;
 pub(crate) mod remote_images;
-pub(crate) mod source_origins;
+pub(crate) use crate::source_origins;
 
 #[cfg(test)]
 use remote_images::{curl_remote_image_args, wget_remote_image_args};

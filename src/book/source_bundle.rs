@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use super::{BookInput, BookRenderer, MAX_CHAPTERS, MAX_SOURCE_BYTES, paths};
-use crate::transclude::{ResolveResult, expand_includes_with_limit, has_includes};
+use crate::transclude::{ResolveResult, expand_includes_mapped_with_limit, has_includes};
 use crate::{RenderError, Result};
 
 const MAX_BOOK_RESOLUTIONS: usize = 4096;
@@ -54,9 +54,11 @@ impl BookRenderer {
     ///
     /// Includes resolve relative to the file containing the directive. Paths
     /// are literal (not percent-decoded URLs), case-sensitive, and confined to
-    /// the logical book root. As in native textual transclusion, Markdown links
-    /// and image URLs in inserted text resolve in the containing chapter, not
-    /// the snippet's directory. Use book-root URLs where that distinction matters.
+    /// the logical book root. As in native transclusion, Markdown links and
+    /// image URLs in inserted text retain the defining source's directory.
+    /// Reference destinations use their definition's origin. Fragment-only
+    /// anchors still address the containing chapter; code examples, labels,
+    /// titles, and unrelated markup are not rewritten.
     ///
     /// The existing `new` constructor deliberately remains a parse-only API
     /// for already expanded source. `source_length()` counts the original
@@ -178,8 +180,16 @@ fn prepare(
                 copied_bytes.set(copied_bytes.get() + content.len());
                 Ok(Some((content.to_string(), key)))
             };
-            expand_includes_with_limit(&input.source, &resolve, remaining)
-                .map_err(|error| invalid(format!("{path}: {error}")))?
+            let expanded =
+                expand_includes_mapped_with_limit(&input.source, &path, &resolve, remaining)
+                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+            crate::source_origins::rebase_destinations(
+                expanded,
+                &path,
+                |origin| Some(origin.to_owned()),
+                remaining,
+            )
+            .map_err(|error| invalid(format!("{path}: {error}")))?
         } else {
             if input.source.len() > remaining {
                 return Err(invalid(
@@ -422,6 +432,25 @@ mod tests {
             .to_string();
         // The transcluder refuses in `append` before the second copy lands.
         assert!(error.contains("include_size"), "{error}");
+    }
+
+    #[test]
+    fn rebased_destination_growth_counts_toward_the_expanded_book_budget() {
+        let chapters = [file(
+            "a/b/c/d/e/f/g/h/root.md",
+            "{{#include ../../../../../../../../parts.md}}\n",
+        )];
+        let resources = [file("parts.md", &"![x](image.svg)\n".repeat(100))];
+        let error = prepare(&chapters, &resources, 4096, 64)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("include_output_budget"), "{error}");
+        let (expanded, _) = prepare(&chapters, &resources, 8192, 64).unwrap();
+        assert!(
+            expanded[0]
+                .source
+                .contains("../../../../../../../../image.svg")
+        );
     }
 
     #[test]

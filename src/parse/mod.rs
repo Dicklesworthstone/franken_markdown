@@ -2120,26 +2120,15 @@ fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char>
         if idx > 0 {
             chars.push('\n');
         }
-        chars.extend(inline_source_line(line, idx == 0, idx + 1 == lines.len()).chars());
+        let trimmed_start = line.trim_start_matches([' ', '\t']);
+        let trimmed = if idx + 1 == lines.len() {
+            trimmed_start.trim_end_matches([' ', '\t'])
+        } else {
+            trimmed_start
+        };
+        chars.extend(trimmed.chars());
     }
     chars
-}
-
-// Keep continuation indentation until the inline tokenizer knows whether it
-// belongs to a code span or to prose. Its newline branch consumes prose's
-// leading spaces; code spans consume their contents before that branch runs.
-// Source-location tracking uses this same view to keep character offsets exact.
-fn inline_source_line(line: &str, first: bool, last: bool) -> &str {
-    let line = if first {
-        line.trim_start_matches([' ', '\t'])
-    } else {
-        line
-    };
-    if last {
-        line.trim_end_matches([' ', '\t'])
-    } else {
-        line
-    }
 }
 
 fn collect_inline_chars_from_text(text: &str) -> Vec<char> {

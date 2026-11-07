@@ -751,7 +751,12 @@ impl DestinationTracker {
             if index > 0 {
                 map.push(1, None);
             }
-            let text = inline_source_line(line, index == 0, index + 1 == lines.len());
+            let text = line.trim_start_matches([' ', '\t']);
+            let text = if index + 1 == lines.len() {
+                text.trim_end_matches([' ', '\t'])
+            } else {
+                text
+            };
             self.append_chars(&mut map, text);
         }
         self.chars.push(map);

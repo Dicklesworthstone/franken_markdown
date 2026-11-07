@@ -249,6 +249,10 @@ fn assert_annotation_owners(pdf: &[u8], elements: &[Node]) -> usize {
     for node in elements {
         for reference in node.body.split("/Type /OBJR /Pg ").skip(1) {
             let id = number_after(reference, " /Obj ");
+            assert_eq!(
+                node.tag, "Link",
+                "annotation {id} needs a semantic Link owner"
+            );
             assert!(annotations.insert(id));
             let object = raw
                 .split_once(&format!("\n{id} 0 obj\n"))
@@ -419,7 +423,13 @@ fn wrapped_and_repeated_cells_keep_one_header_association_and_link_owner() {
         "the cell must actually continue across pages"
     );
     let header = children(&elements, rows[0])[0];
-    assert!(header.body.matches("/Type /OBJR").count() > 1);
+    let links: Vec<_> = elements
+        .iter()
+        .filter(|node| node.tag == "Link" && node.parent == header.id)
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert!(links[0].body.matches("/Type /OBJR").count() > 1);
+    assert!(!header.body.contains("/Type /OBJR"));
     assert!(assert_annotation_owners(&pdf, &elements) > 1);
     assert!(
         contents(&pdf)
@@ -511,10 +521,98 @@ fn image_cells_keep_alt_text_and_header_associations_without_repeated_figures() 
         "repeated visual headers must not repeat image alt text"
     );
     assert!(figures[0].body.contains("/Alt (Status heading)"));
-    assert_eq!(node_by_id(&elements, figures[0].parent).tag, "TH");
+    let header_link = node_by_id(&elements, figures[0].parent);
+    assert_eq!(header_link.tag, "Link");
+    assert_eq!(node_by_id(&elements, header_link.parent).tag, "TH");
+    assert!(header_link.body.matches("/Type /OBJR").count() > 1);
+    assert!(!figures[0].body.contains("/Type /OBJR"));
     assert!(figures[1].body.contains("/Alt (Ready)"));
     assert_eq!(node_by_id(&elements, figures[1].parent).tag, "TD");
     assert!(assert_annotation_owners(&pdf, &elements) > 1);
+}
+
+#[test]
+fn linked_table_formulas_and_images_keep_semantics_across_repeated_headers() {
+    let mut options = small_pages();
+    options.image_assets = vec![PdfImageAsset::new(
+        "status.svg",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#007ec6"/></svg>"##.to_vec(),
+    )];
+    let mut source = String::from(
+        "| [**Rule** $x^2$](#details) | [Status](https://example.com/shared) |\n|---|---|\n\
+         | [$y_1$](https://example.com/shared) | [**Ready** ![Status icon](status.svg) $z$](https://example.com/shared) |\n",
+    );
+    for row in 0..20 {
+        source.push_str(&format!("| Rule{row} | Ready |\n"));
+    }
+    source.push_str("\n# Details\n");
+    let pdf = render_pdf(&source, &options).unwrap();
+    let elements = nodes(&pdf);
+    let table = elements.iter().find(|node| node.tag == "Table").unwrap();
+    assert_grid(&elements, table, 2, 21);
+    assert_lookup_and_content_ownership(&pdf, &elements);
+    let links: Vec<_> = elements.iter().filter(|node| node.tag == "Link").collect();
+    assert_eq!(
+        links.len(),
+        4,
+        "same-target links in separate cells stay distinct"
+    );
+    for link in &links {
+        assert!(matches!(
+            node_by_id(&elements, link.parent).tag.as_str(),
+            "TH" | "TD"
+        ));
+        assert!(link.body.contains("/Type /OBJR"));
+    }
+    let formulas: Vec<_> = elements
+        .iter()
+        .filter(|node| node.tag == "Formula")
+        .collect();
+    assert_eq!(
+        formulas.len(),
+        3,
+        "repeated headers do not duplicate formula content"
+    );
+    for (formula, source) in formulas.iter().zip(["x^2", "y_1", "z"]) {
+        assert!(formula.body.contains(&format!("/Alt ({source})")));
+        assert!(formula.body.contains("/BBox ["));
+        assert!(!formula.body.contains("/Type /OBJR"));
+        assert_eq!(node_by_id(&elements, formula.parent).tag, "Link");
+    }
+    let header_link = node_by_id(&elements, formulas[0].parent);
+    assert_eq!(node_by_id(&elements, header_link.parent).tag, "TH");
+    let pages: BTreeSet<_> = header_link
+        .body
+        .split("/Type /OBJR /Pg ")
+        .skip(1)
+        .map(|tail| tail.split_whitespace().next().unwrap())
+        .collect();
+    assert!(
+        pages.len() > 1,
+        "header links remain accessible on repeated pages"
+    );
+    let figures: Vec<_> = elements
+        .iter()
+        .filter(|node| node.tag == "Figure")
+        .collect();
+    assert_eq!(figures.len(), 1);
+    assert!(figures[0].body.contains("/Alt (Status icon)"));
+    assert!(!figures[0].body.contains("/Type /OBJR"));
+    assert_eq!(
+        figures[0].parent, formulas[2].parent,
+        "mixed link shares one owner"
+    );
+    assert!(assert_annotation_owners(&pdf, &elements) > 4);
+    assert!(
+        contents(&pdf)
+            .iter()
+            .skip(1)
+            .any(|stream| stream.contains("/Artifact <</Type /Pagination /Subtype /Header>> BDC"))
+    );
+    assert_eq!(
+        pdf,
+        render_pdf_emitted(&source, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
 }
 
 #[test]

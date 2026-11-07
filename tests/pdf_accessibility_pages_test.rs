@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::{
-    PageMargins, PageSize, PdfEmitOptions, PdfOptions, PdfPageEmission, render_pdf,
+    PageMargins, PageSize, PdfEmitOptions, PdfImageAsset, PdfOptions, PdfPageEmission, render_pdf,
     render_pdf_emitted,
 };
 
@@ -101,6 +101,46 @@ fn assert_unique_content_owners(nodes: &[Node]) {
     }
 }
 
+fn assert_link_annotation_owners(pdf: &[u8], nodes: &[Node]) -> usize {
+    let raw = String::from_utf8_lossy(pdf);
+    let nums = raw
+        .split_once("/Nums [ ")
+        .unwrap()
+        .1
+        .split_once(" ] >>")
+        .unwrap()
+        .0;
+    let mut annotations = BTreeSet::new();
+    for node in nodes {
+        for reference in node.body.split("/Type /OBJR /Pg ").skip(1) {
+            let id = number_after(reference, " /Obj ");
+            assert_eq!(
+                node.tag, "Link",
+                "annotation {id} needs a semantic Link owner"
+            );
+            assert!(
+                annotations.insert(id),
+                "annotation {id} has exactly one owner"
+            );
+            let object = raw
+                .split_once(&format!("\n{id} 0 obj\n"))
+                .unwrap()
+                .1
+                .split_once("\nendobj")
+                .unwrap()
+                .0;
+            assert!(object.contains("/Subtype /Link "));
+            let key = number_after(object, " /StructParent ");
+            assert!(
+                nums.contains(&format!(" {key} {} 0 R", node.id)),
+                "annotation {id} must resolve back to its Link through the parent tree"
+            );
+        }
+    }
+    assert_eq!(annotations.len(), raw.matches("/Subtype /Link ").count());
+    annotations.len()
+}
+
 #[test]
 fn paragraphs_links_and_code_remain_single_logical_elements_across_pages() {
     let linked = "A linked paragraph with selectable words and stable reading order. ".repeat(25);
@@ -162,13 +202,126 @@ fn continued_tables_keep_source_rows_and_headers_in_one_logical_table() {
         25,
     );
     let first_header = elements.iter().find(|node| node.tag == "TH").unwrap();
+    let links: Vec<_> = elements.iter().filter(|node| node.tag == "Link").collect();
+    assert_eq!(
+        links.len(),
+        1,
+        "one logical link survives header repetition"
+    );
+    let header_link = links[0];
+    assert_eq!(header_link.parent, first_header.id);
     assert!(
-        mcr_pages(first_header).len() > 1,
+        mcr_pages(header_link).len() > 1,
         "fixture must repeat its header"
     );
-    assert!(first_header.body.matches("/Type /OBJR").count() > 1);
+    assert!(header_link.body.matches("/Type /OBJR").count() > 1);
+    assert!(!first_header.body.contains("/Type /OBJR"));
+    assert!(assert_link_annotation_owners(&pdf, &elements) > 1);
     let raw = String::from_utf8_lossy(&pdf);
     assert!(raw.contains("EMC\n/Artifact <</Type /Pagination /Subtype /Header>> BDC"));
+    assert_unique_content_owners(&elements);
+}
+
+#[test]
+fn mixed_inline_links_share_one_owner_across_pages_and_keep_object_semantics() {
+    let mut options = small_pages();
+    options.image_assets = vec![PdfImageAsset::new(
+        "status.svg",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#007ec6"/></svg>"##.to_vec(),
+    )];
+    let label = "**Ready** ![Status](status.svg) $x_1$ and more words ".repeat(18);
+    let source = format!(
+        "Before [{label}](https://example.com/mixed) after.\n\nPlain ![Unlinked](status.svg) and $u$.\n"
+    );
+    let pdf = render_pdf(&source, &options).unwrap();
+    let elements = nodes(&pdf);
+    let links: Vec<_> = elements.iter().filter(|node| node.tag == "Link").collect();
+    assert_eq!(
+        links.len(),
+        1,
+        "styled text, figures and formulas share the source link"
+    );
+    let link = links[0];
+    assert_eq!(
+        elements
+            .iter()
+            .find(|node| node.id == link.parent)
+            .unwrap()
+            .tag,
+        "P"
+    );
+    assert!(
+        mcr_pages(link).len() > 1,
+        "the mixed link actually spans pages"
+    );
+    for (tag, alt) in [("Figure", "Status"), ("Formula", "x_1")] {
+        let linked: Vec<_> = elements
+            .iter()
+            .filter(|node| node.tag == tag && node.parent == link.id)
+            .collect();
+        assert_eq!(linked.len(), 18, "each {tag} occurrence remains distinct");
+        for node in linked {
+            assert!(node.body.contains(&format!("/Alt ({alt})")));
+            assert!(node.body.contains("/BBox ["));
+            assert_eq!(mcr_pages(node).len(), 1);
+            assert!(!node.body.contains("/Type /OBJR"));
+        }
+        let unlinked: Vec<_> = elements
+            .iter()
+            .filter(|node| node.tag == tag && node.parent != link.id)
+            .collect();
+        assert_eq!(unlinked.len(), 1);
+        assert_eq!(
+            elements
+                .iter()
+                .find(|node| node.id == unlinked[0].parent)
+                .unwrap()
+                .tag,
+            "P",
+            "unlinked objects stay ordinary paragraph children"
+        );
+    }
+    assert!(assert_link_annotation_owners(&pdf, &elements) >= 36);
+    assert_unique_content_owners(&elements);
+    let monolithic = render_pdf_emitted(&source, &options, PdfEmitOptions::monolithic()).unwrap();
+    assert_eq!(pdf, monolithic);
+    assert_eq!(pdf, render_pdf(&source, &options).unwrap());
+}
+
+#[test]
+fn inline_object_links_resolve_destinations_without_reviving_missing_targets() {
+    let options = PdfOptions {
+        image_assets: vec![PdfImageAsset::new(
+            "status.svg",
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#007ec6"/></svg>"##.to_vec(),
+        )],
+        ..PdfOptions::default()
+    };
+    let source = "Read [![Jump](status.svg) $x$](#destination), and [![Missing](status.svg) $y$](#missing).\n\n# Destination\n";
+    let pdf = render_pdf(source, &options).unwrap();
+    let elements = nodes(&pdf);
+    let links: Vec<_> = elements.iter().filter(|node| node.tag == "Link").collect();
+    assert_eq!(links.len(), 2);
+    assert!(links[0].body.contains("/Type /OBJR"));
+    assert!(!links[1].body.contains("/Type /OBJR"));
+    for link in links {
+        for tag in ["Figure", "Formula"] {
+            let children: Vec<_> = elements
+                .iter()
+                .filter(|node| node.tag == tag && node.parent == link.id)
+                .collect();
+            assert_eq!(children.len(), 1);
+            assert!(!children[0].body.contains("/Type /OBJR"));
+        }
+    }
+    let count = assert_link_annotation_owners(&pdf, &elements);
+    assert!(count >= 2);
+    let raw = String::from_utf8_lossy(&pdf);
+    for annotation in raw.split("/Subtype /Link ").skip(1) {
+        let dictionary = annotation.split_once("\nendobj").unwrap().0;
+        assert!(dictionary.contains("/Dest ["));
+    }
+    assert!(!raw.contains("/S /URI"));
     assert_unique_content_owners(&elements);
 }
 

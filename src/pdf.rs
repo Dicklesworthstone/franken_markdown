@@ -23873,8 +23873,18 @@ fn generate_page_content(
                     next_column = col.saturating_add(1);
                 }
                 let mut path = table_cell_path(&prefix, line.flow.group, tbl_row, col, header);
+                let content_tag = if let Some(target) = &seg.link {
+                    path.push(SElem {
+                        key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                        tag: "Link",
+                    });
+                    "Link"
+                } else {
+                    cell_tag
+                };
                 if seg.slot == F_IMAGE {
-                    // An image in a cell is a /Figure inside its /TD.
+                    // An image retains its /Figure below the logical cell and
+                    // any /Link. Repeated headers reuse the link's owner.
                     if !repeated_header {
                         path.push(SElem {
                             key: SKey::InlineFigure(next_mcid),
@@ -23883,7 +23893,11 @@ fn generate_page_content(
                     }
                     append_table_cell_content_begin(
                         &mut body,
-                        if repeated_header { cell_tag } else { "Figure" },
+                        if repeated_header {
+                            content_tag
+                        } else {
+                            "Figure"
+                        },
                         next_mcid,
                         repeated_header,
                     );
@@ -23926,7 +23940,11 @@ fn generate_page_content(
                     }
                     append_table_cell_content_begin(
                         &mut body,
-                        if repeated_header { cell_tag } else { "Formula" },
+                        if repeated_header {
+                            content_tag
+                        } else {
+                            "Formula"
+                        },
                         next_mcid,
                         repeated_header,
                     );
@@ -23964,7 +23982,7 @@ fn generate_page_content(
                     next_mcid += 1;
                     continue;
                 }
-                append_table_cell_content_begin(&mut body, cell_tag, next_mcid, repeated_header);
+                append_table_cell_content_begin(&mut body, content_tag, next_mcid, repeated_header);
                 draw_seg(
                     &mut body,
                     &mut annots,
@@ -24144,6 +24162,12 @@ fn generate_page_content(
                             text_open = false;
                         }
                         let mut figure_path = SmallPath::from_slice(path.as_slice());
+                        if let Some(target) = &seg.link {
+                            figure_path.push(SElem {
+                                key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                                tag: "Link",
+                            });
+                        }
                         figure_path.push(SElem {
                             key: SKey::InlineFigure(next_mcid),
                             tag: "Figure",
@@ -24183,6 +24207,12 @@ fn generate_page_content(
                             text_open = false;
                         }
                         let mut formula_path = SmallPath::from_slice(path.as_slice());
+                        if let Some(target) = &seg.link {
+                            formula_path.push(SElem {
+                                key: SKey::InlineLink(line.flow.group, link_struct_key(target)),
+                                tag: "Link",
+                            });
+                        }
                         formula_path.push(SElem {
                             key: SKey::InlineFormula(next_mcid),
                             tag: "Formula",
@@ -24686,12 +24716,16 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                 .owner_mcid
                 .and_then(|m| leaf_for_mcid.get(m).copied())
                 .map(|leaf| {
-                    let parent = nodes[leaf].parent;
-                    if nodes[leaf].tag == "Figure" && nodes[parent].tag == "Link" {
-                        parent
-                    } else {
-                        leaf
+                    // Figures and formulas keep their own marked content,
+                    // while the enclosing /Link owns the clickable annotation.
+                    let mut owner = leaf;
+                    while owner != 0 {
+                        if nodes[owner].tag == "Link" {
+                            return owner;
+                        }
+                        owner = nodes[owner].parent;
                     }
+                    leaf
                 });
             if let Some(owner) = owner {
                 nodes[owner].kids.push(SKid::ObjR {
@@ -34141,6 +34175,68 @@ fn annotation_is_resolved(annot: &LinkAnnotation, dest_ids: &BTreeSet<&str>) -> 
     }
 }
 
+/// URI actions carry URI bytes, not PDF text strings (ISO 32000-1, Table 206).
+/// Encode UTF-8 and bytes outside RFC 3986's URI alphabet as percent escapes.
+/// Keep existing escapes and reserved delimiters intact, then escape literal
+/// parentheses for the surrounding PDF string. Metadata and accessible text
+/// still use the separate Unicode text-string encoder.
+fn append_pdf_uri_string_bytes(out: &mut Vec<u8>, uri: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = uri.as_bytes();
+    let mut index = 0;
+    out.push(b'(');
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%'
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
+        {
+            out.extend_from_slice(&bytes[index..index + 3]);
+            index += 3;
+            continue;
+        }
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b':'
+                    | b'/'
+                    | b'?'
+                    | b'#'
+                    | b'['
+                    | b']'
+                    | b'@'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+            )
+        {
+            if matches!(byte, b'(' | b')') {
+                out.push(b'\\');
+            }
+            out.push(byte);
+        } else {
+            out.extend_from_slice(&[
+                b'%',
+                HEX[usize::from(byte >> 4)],
+                HEX[usize::from(byte & 15)],
+            ]);
+        }
+        index += 1;
+    }
+    out.push(b')');
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_pdf_link_annotation_object(
     out: &mut Vec<u8>,
@@ -34172,7 +34268,7 @@ fn append_pdf_link_annotation_object(
             let drop_action = crate::pdfa::check_uri_action(pdf_a, uri)?;
             if !drop_action {
                 out.extend_from_slice(b" /A << /S /URI /URI ");
-                append_pdf_text_string_bytes(out, uri);
+                append_pdf_uri_string_bytes(out, uri);
                 out.extend_from_slice(b" >>");
             }
         }
@@ -34836,7 +34932,8 @@ fn slug(text: &str) -> String {
 /// as PDFDocEncoding, so pushing raw UTF-8 bytes for U+0080..=U+00FF produced
 /// mojibake (`é` → `Ã©`) and U+0100.. was silently replaced with `?`. UTF-16BE is
 /// the portable way to carry Unicode in document metadata, outline titles,
-/// `/Alt` accessibility text, and `/URI` values. The returned value INCLUDES the
+/// and `/Alt` accessibility text. URI actions use an ASCII URI byte string
+/// instead (see `append_pdf_uri_string_bytes`). The returned value INCLUDES the
 /// delimiters, so callers must not add their own.
 fn pdf_text_string(s: &str) -> String {
     if s.is_ascii() {

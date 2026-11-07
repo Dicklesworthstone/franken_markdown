@@ -126,6 +126,159 @@ fn references(dictionary: &str, key: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Inspect only annotation objects reached through the actual xref. Decode
+/// their PDF literal strings independently of the renderer's URI encoder.
+fn external_uri_targets(bytes: &[u8]) -> Vec<String> {
+    let objects = Objects::new(bytes);
+    (1..objects.offsets.len())
+        .filter_map(|id| {
+            let dictionary = objects.dictionary(id);
+            if !dictionary.contains("/Type /Annot /Subtype /Link") {
+                return None;
+            }
+            let (_, tail) = dictionary.split_once("/S /URI /URI ")?;
+            let encoded = tail.as_bytes();
+            assert_eq!(
+                encoded.first(),
+                Some(&b'('),
+                "URI actions require ASCII URI bytes, not a Unicode PDF text string: {dictionary}"
+            );
+            let mut uri = Vec::new();
+            let mut index = 1;
+            loop {
+                let byte = encoded[index];
+                index += 1;
+                match byte {
+                    b')' => break,
+                    b'\\' => {
+                        let escaped = encoded[index];
+                        index += 1;
+                        assert!(matches!(escaped, b'(' | b')' | b'\\'));
+                        uri.push(escaped);
+                    }
+                    _ => uri.push(byte),
+                }
+            }
+            assert!(uri.iter().all(|byte| (0x21..=0x7e).contains(byte)));
+            Some(String::from_utf8(uri).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn unicode_uri_actions_encode_utf8_without_changing_pdf_metadata() {
+    let source = "[Unicode](https://example.com/café/中文/😀?q=naïve&mode=read#résumé)\n\n\
+                  [Encoded](https://example.com/a%20b/%e2%82%ac?x=%25&y=%2F)\n\n\
+                  [Spaces](<https://example.com/a b?x=a&y=b>)";
+    let expected = vec![
+        "https://example.com/caf%C3%A9/%E4%B8%AD%E6%96%87/%F0%9F%98%80?q=na%C3%AFve&mode=read#r%C3%A9sum%C3%A9",
+        "https://example.com/a%20b/%e2%82%ac?x=%25&y=%2F",
+        "https://example.com/a%20b?x=a&y=b",
+    ];
+    let options = PdfOptions {
+        title: Some("Café 😺".into()),
+        author: Some("Zoë".into()),
+        metadata_epoch_seconds: Some(1_700_000_000),
+        ..PdfOptions::default()
+    };
+    let document = parse_markdown(source);
+    let chunked = render_pdf_document(&document, &options).unwrap();
+    let monolithic = render_pdf_document_emitted(
+        &document,
+        &options,
+        PdfEmitOptions {
+            emission: PdfPageEmission::Monolithic,
+            ..PdfEmitOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(chunked, monolithic);
+    for bytes in [
+        chunked,
+        franken_markdown::render_pdf_pdfa(source, &options, PdfASettings::a2b_strict()).unwrap(),
+    ] {
+        assert_eq!(external_uri_targets(&bytes), expected);
+        let objects = Objects::new(&bytes);
+        let info = (1..objects.offsets.len())
+            .map(|id| objects.dictionary(id))
+            .find(|dictionary| dictionary.contains("/Producer "))
+            .unwrap();
+        assert!(info.contains("/Title <FEFF00430061006600E90020D83DDE3A>"));
+        assert!(info.contains("/Author <FEFF005A006F00EB>"));
+    }
+    let browser = franken_markdown::wasm::render_pdf(
+        source,
+        &franken_markdown::wasm::WasmRenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(external_uri_targets(&browser.bytes), expected);
+}
+
+#[test]
+fn uri_actions_preserve_reserved_syntax_and_encode_invalid_uri_bytes() {
+    let cases = [
+        (
+            "https://[::1]/()!$&'*+,;=:@[]~._-?q=%e2%82%ac#frag",
+            "https://[::1]/()!$&'*+,;=:@[]~._-?q=%e2%82%ac#frag",
+        ),
+        (
+            "mailto:zoë@example.com?subject=café",
+            "mailto:zo%C3%AB@example.com?subject=caf%C3%A9",
+        ),
+        (
+            "guide/café.md#résumé",
+            "guide/caf%C3%A9.md#r%C3%A9sum%C3%A9",
+        ),
+        (
+            "https://example.com/%zz/%/%2",
+            "https://example.com/%25zz/%25/%252",
+        ),
+        (
+            "https://example.com/\0\t\n\r\u{7f} \\\"<>`{}|^",
+            "https://example.com/%00%09%0A%0D%7F%20%5C%22%3C%3E%60%7B%7D%7C%5E",
+        ),
+    ];
+    let document = franken_markdown::Document {
+        blocks: cases
+            .iter()
+            .map(|(uri, _)| {
+                Block::Paragraph(vec![franken_markdown::Inline::Link {
+                    dest: (*uri).into(),
+                    title: None,
+                    content: vec![franken_markdown::Inline::Text("Link".into())],
+                }])
+            })
+            .collect(),
+    };
+    let pdf = render_pdf_document(&document, &PdfOptions::default()).unwrap();
+    let expected: Vec<_> = cases.iter().map(|(_, expected)| *expected).collect();
+    assert_eq!(external_uri_targets(&pdf), expected);
+}
+
+#[test]
+fn unicode_uri_encoding_keeps_internal_destinations_and_url_policy() {
+    let source = "# Café\n\n[Inside](#caf%C3%A9) [Outside](https://example.com/café)\n\n\
+                  [Script](javascript:alert) [File](file:///tmp/café) [Data](data:text/plain,café)";
+    let bytes = render_pdf(source, &PdfOptions::default()).unwrap();
+    assert_eq!(
+        external_uri_targets(&bytes),
+        ["https://example.com/caf%C3%A9"]
+    );
+    let objects = Objects::new(&bytes);
+    let annotations: Vec<_> = (1..objects.offsets.len())
+        .map(|id| objects.dictionary(id))
+        .filter(|dictionary| dictionary.contains("/Type /Annot /Subtype /Link"))
+        .collect();
+    assert_eq!(annotations.len(), 2);
+    assert_eq!(
+        annotations
+            .iter()
+            .filter(|dictionary| dictionary.contains("/Dest ["))
+            .count(),
+        1
+    );
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Destination {
     page: usize,

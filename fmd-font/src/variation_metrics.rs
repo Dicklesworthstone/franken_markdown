@@ -105,7 +105,9 @@ impl<'a> ItemStore<'a> {
         if be_u16(data, 0)? != 1
             || location.is_empty()
             || location.len() > 64
-            || location.iter().any(|value| !value.is_finite() || !(-1.0..=1.0).contains(value))
+            || location
+                .iter()
+                .any(|value| !value.is_finite() || !(-1.0..=1.0).contains(value))
         {
             return None;
         }
@@ -127,7 +129,11 @@ impl<'a> ItemStore<'a> {
             region_offset.checked_add(4)?,
             region_count.checked_mul(region_stride)?,
         )?;
-        budget.spend(region_count.checked_mul(axis_count)?.checked_add(table_count)?)?;
+        budget.spend(
+            region_count
+                .checked_mul(axis_count)?
+                .checked_add(table_count)?,
+        )?;
         let mut scalars = Vec::with_capacity(region_count);
         for coordinates in regions.chunks_exact(region_stride) {
             scalars.push(region_scalar(coordinates, location)?);
@@ -159,7 +165,9 @@ impl<'a> ItemStore<'a> {
             budget.spend(region_count)?;
             let indexes = range(data, offset.checked_add(6)?, region_count.checked_mul(2)?)?;
             let short_width = if packed_words & 0x8000 != 0 { 2 } else { 1 };
-            let stride = region_count.checked_add(word_count)?.checked_mul(short_width)?;
+            let stride = region_count
+                .checked_add(word_count)?
+                .checked_mul(short_width)?;
             let rows = range(
                 data,
                 offset.checked_add(6)?.checked_add(indexes.len())?,
@@ -169,15 +177,31 @@ impl<'a> ItemStore<'a> {
             let mut column_offset = 0;
             for column in 0..region_count {
                 let scalar = *scalars.get(usize::from(be_u16(indexes, column * 2)?))?;
-                let width = if column < word_count { short_width * 2 } else { short_width };
+                let width = if column < word_count {
+                    short_width * 2
+                } else {
+                    short_width
+                };
                 if scalar != 0.0 {
-                    columns.push(Column { offset: column_offset, width, scalar });
+                    columns.push(Column {
+                        offset: column_offset,
+                        width,
+                        scalar,
+                    });
                 }
                 column_offset += width;
             }
-            tables.push(Some(ItemData { rows, count, stride, columns }));
+            tables.push(Some(ItemData {
+                rows,
+                count,
+                stride,
+                columns,
+            }));
         }
-        Some(Self { tables, cache: BTreeMap::new() })
+        Some(Self {
+            tables,
+            cache: BTreeMap::new(),
+        })
     }
 
     fn delta(&mut self, index: (u16, u16), budget: &mut Budget) -> Option<f64> {
@@ -246,7 +270,9 @@ impl<'a> DeltaMap<'a> {
     fn index(&self, glyph: u16) -> Option<(u16, u16)> {
         let entry = usize::from(glyph).min(self.count.checked_sub(1)?);
         let bytes = range(self.entries, entry.checked_mul(self.width)?, self.width)?;
-        let packed = bytes.iter().fold(0u32, |value, &byte| (value << 8) | u32::from(byte));
+        let packed = bytes
+            .iter()
+            .fold(0u32, |value, &byte| (value << 8) | u32::from(byte));
         let outer = u16::try_from(packed >> self.inner_bits).ok()?;
         let inner = u16::try_from(packed & ((1u32 << self.inner_bits) - 1)).ok()?;
         Some((outer, inner))
@@ -278,7 +304,10 @@ impl InstanceMetrics {
         } else {
             Vec::new()
         };
-        Some(Self { horizontal, patches })
+        Some(Self {
+            horizontal,
+            patches,
+        })
     }
 
     pub(crate) fn apply_horizontal(&self, metrics: &mut [(u16, i16)]) -> Option<()> {
@@ -298,7 +327,9 @@ impl InstanceMetrics {
 
     pub(crate) fn apply_table(&self, tag: &[u8; 4], bytes: &mut [u8]) -> Option<()> {
         for patch in self.patches.iter().filter(|patch| &patch.tag == tag) {
-            bytes.get_mut(patch.offset..patch.offset.checked_add(2)?)?.copy_from_slice(&patch.bytes);
+            bytes
+                .get_mut(patch.offset..patch.offset.checked_add(2)?)?
+                .copy_from_slice(&patch.bytes);
         }
         Some(())
     }
@@ -343,14 +374,23 @@ fn horizontal_metrics(
     let right_bearings = map(16)?;
     let mut metrics = Vec::with_capacity(usize::from(font.num_glyphs));
     for glyph in 0..font.num_glyphs {
-        let index = if let Some(map) = &advances { map.index(glyph)? } else { (0, glyph) };
+        let index = if let Some(map) = &advances {
+            map.index(glyph)?
+        } else {
+            (0, glyph)
+        };
         let advance = u16::try_from(rounded(
             f64::from(font.advance_width(glyph)) + store.delta(index, budget)?,
-        )?).ok()?;
+        )?)
+        .ok()?;
         let bearing = if let Some(map) = &bearings {
-            Some(i16::try_from(rounded(
-                f64::from(font.left_side_bearing(glyph)) + store.delta(map.index(glyph)?, budget)?,
-            )?).ok()?)
+            Some(
+                i16::try_from(rounded(
+                    f64::from(font.left_side_bearing(glyph))
+                        + store.delta(map.index(glyph)?, budget)?,
+                )?)
+                .ok()?,
+            )
         } else {
             None
         };
@@ -396,7 +436,9 @@ fn metric_target(tag: &[u8; 4]) -> Option<([u8; 4], usize, bool)> {
         b"vcof" => (*b"vhea", 22, false),
         b"undo" => (*b"post", 8, false),
         b"unds" => (*b"post", 10, false),
-        [b'g', b's', b'p', digit @ b'0'..=b'9'] => (*b"gasp", 4 + usize::from(*digit - b'0') * 4, true),
+        [b'g', b's', b'p', digit @ b'0'..=b'9'] => {
+            (*b"gasp", 4 + usize::from(*digit - b'0') * 4, true)
+        }
         _ => return None,
     };
     Some((table, offset, unsigned))
@@ -426,11 +468,16 @@ fn global_metrics(
     }
     budget.spend(count)?;
     let mut store = ItemStore::parse(data.get(store_offset..)?, location, budget)?;
-    let sync_horizontal = table(font, b"OS/2").zip(table(font, b"hhea")).is_some_and(|(os2, hhea)| {
-        [0, 2, 4].iter().all(|&offset| {
-            be_i16(os2, 68 + offset).zip(be_i16(hhea, 4 + offset)).is_some_and(|(a, b)| a == b)
-        })
-    });
+    let sync_horizontal =
+        table(font, b"OS/2")
+            .zip(table(font, b"hhea"))
+            .is_some_and(|(os2, hhea)| {
+                [0, 2, 4].iter().all(|&offset| {
+                    be_i16(os2, 68 + offset)
+                        .zip(be_i16(hhea, 4 + offset))
+                        .is_some_and(|(a, b)| a == b)
+                })
+            });
     let mut patches = Vec::new();
     let mut previous = None;
     for record in records.chunks_exact(size) {
@@ -450,15 +497,31 @@ fn global_metrics(
         if matches!(&tag, b"xhgt" | b"cpht") && be_u16(original, 0)? < 2 {
             return None;
         }
-        let base = if unsigned { i32::from(be_u16(original, offset)?) } else { i32::from(be_i16(original, offset)?) };
+        let base = if unsigned {
+            i32::from(be_u16(original, offset)?)
+        } else {
+            i32::from(be_i16(original, offset)?)
+        };
         let delta = store.delta((be_u16(record, 4)?, be_u16(record, 6)?), budget)?;
         let value = rounded(f64::from(base) + delta)?;
-        let bytes = if unsigned { u16::try_from(value).ok()?.to_be_bytes() } else { i16::try_from(value).ok()?.to_be_bytes() };
-        patches.push(MetricPatch { tag: target, offset, bytes });
+        let bytes = if unsigned {
+            u16::try_from(value).ok()?.to_be_bytes()
+        } else {
+            i16::try_from(value).ok()?.to_be_bytes()
+        };
+        patches.push(MetricPatch {
+            tag: target,
+            offset,
+            bytes,
+        });
         // Keep initially equal horizontal and typographic metrics synchronized,
         // as static FontTools instances do. Distinct hhea metrics remain intact.
         if sync_horizontal && matches!(&tag, b"hasc" | b"hdsc" | b"hlgp") {
-            patches.push(MetricPatch { tag: *b"hhea", offset: offset - 64, bytes });
+            patches.push(MetricPatch {
+                tag: *b"hhea",
+                offset: offset - 64,
+                bytes,
+            });
         }
     }
     Some(patches)
@@ -497,7 +560,11 @@ mod tests {
         for row in rows {
             assert_eq!(row.len(), regions.len());
             for (column, value) in row.iter().enumerate() {
-                let width = if column < usize::from(words & 0x7fff) { short * 2 } else { short };
+                let width = if column < usize::from(words & 0x7fff) {
+                    short * 2
+                } else {
+                    short
+                };
                 match width {
                     1 => out.extend_from_slice(&i8::try_from(*value).unwrap().to_be_bytes()),
                     2 => out.extend_from_slice(&i16::try_from(*value).unwrap().to_be_bytes()),
@@ -585,7 +652,11 @@ mod tests {
         let map = DeltaMap::parse(&[0, 0x3f, 0, 1, 255, 255, 255, 255]).unwrap();
         assert_eq!(map.index(0), Some((u16::MAX, u16::MAX)));
         let map = DeltaMap::parse(&[0, 0x0f, 0, 1, 42]).unwrap();
-        assert_eq!(map.index(0), Some((0, 42)), "narrow entries may zero-extend their inner index");
+        assert_eq!(
+            map.index(0),
+            Some((0, 42)),
+            "narrow entries may zero-extend their inner index"
+        );
     }
 
     #[test]
@@ -605,14 +676,22 @@ mod tests {
     fn truncation_counts_indices_and_work_budget_are_checked_before_use() {
         let bytes = mixed_store();
         for length in 0..bytes.len() {
-            assert!(ItemStore::parse(&bytes[..length], &[0.5, 0.25], &mut Budget(MAX_WORK)).is_none());
+            assert!(
+                ItemStore::parse(&bytes[..length], &[0.5, 0.25], &mut Budget(MAX_WORK)).is_none()
+            );
         }
         assert!(ItemStore::parse(&bytes, &[0.5, 0.25], &mut Budget(1)).is_none());
         for location in [vec![], vec![0.5], vec![f32::NAN, 0.25], vec![1.01, 0.0]] {
             assert!(ItemStore::parse(&bytes, &location, &mut Budget(MAX_WORK)).is_none());
         }
         let item = be_u32(&bytes, 8).unwrap() as usize;
-        for (offset, value) in [(item, u16::MAX), (item + 2, 4), (item + 6, 3), (12, 3), (14, 0x8000)] {
+        for (offset, value) in [
+            (item, u16::MAX),
+            (item + 2, 4),
+            (item + 6, 3),
+            (12, 3),
+            (14, 0x8000),
+        ] {
             let mut invalid = bytes.clone();
             invalid[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
             assert!(ItemStore::parse(&invalid, &[0.5, 0.25], &mut Budget(MAX_WORK)).is_none());
@@ -628,8 +707,12 @@ mod tests {
         bytes.extend_from_slice(&1u16.to_be_bytes());
         bytes.extend_from_slice(&(region_offset as u32).to_be_bytes());
         bytes.extend_from_slice(&(copies as u16).to_be_bytes());
-        for _ in 0..copies { bytes.extend_from_slice(&(item_offset as u32).to_be_bytes()); }
-        for value in [1u16, 1, 0, 16384, 16384, 0, 0, 1024] { bytes.extend_from_slice(&value.to_be_bytes()); }
+        for _ in 0..copies {
+            bytes.extend_from_slice(&(item_offset as u32).to_be_bytes());
+        }
+        for value in [1u16, 1, 0, 16384, 16384, 0, 0, 1024] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
         bytes.resize(bytes.len() + 2048, 0);
         assert!(ItemStore::parse(&bytes, &[1.0], &mut Budget(MAX_WORK)).is_none());
     }

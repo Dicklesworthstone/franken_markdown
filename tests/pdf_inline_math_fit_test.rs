@@ -288,11 +288,19 @@ fn narrow_table_formulas_have_local_bounds_tags_and_click_targets() {
     assert_eq!(outlines.len(), 4);
     assert_eq!(links.len(), 4);
     for element in objects.formula_elements() {
-        let parent = objects.dictionary(number(element, "/P "));
+        let link = objects.dictionary(number(element, "/P "));
+        assert!(
+            link.contains("/S /Link "),
+            "linked formula retains its Link: {link}"
+        );
+        assert!(link.contains("/Type /OBJR"));
+        assert!(!element.contains("/Type /OBJR"));
+        let parent = objects.dictionary(number(link, "/P "));
         assert!(
             parent.contains("/S /TD "),
-            "formula must belong to its logical cell: {parent}"
+            "formula's link must belong to its logical cell: {parent}"
         );
+        assert!(!parent.contains("/Type /OBJR"));
     }
     for ((ink, bbox), link) in outlines.iter().zip(&boxes).zip(&links) {
         assert_inside(*ink, *bbox);

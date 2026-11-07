@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use franken_markdown::text::Font;
 use franken_markdown::wasm::{self, WasmRenderOptions};
 use franken_markdown::{
-    FontAssetSlot, FontAssets, FontEmbedding, HtmlFontFormat, HtmlOptions, PdfOptions,
-    render_html, render_pdf,
+    FontAssetSlot, FontAssets, FontEmbedding, HtmlFontFormat, HtmlOptions, PdfOptions, render_html,
+    render_pdf,
 };
 
 const FIXTURES: [(&str, &[u8]); 2] = [
@@ -58,10 +58,17 @@ fn oracle(name: &str, weight: u16, table: &str, row: &str, column: usize) -> i32
 }
 
 fn assert_metrics(font: &Font, original: &Font, name: &str, weight: u16, space: bool) {
-    assert!(font.axes().is_empty(), "embedded font must be a static instance");
+    assert!(
+        font.axes().is_empty(),
+        "embedded font must be a static instance"
+    );
     assert_eq!(font.units_per_em, 1000, "fixture units");
     assert_eq!(
-        [i32::from(font.ascent), i32::from(font.descent), i32::from(font.line_gap)],
+        [
+            i32::from(font.ascent),
+            i32::from(font.descent),
+            i32::from(font.line_gap)
+        ],
         [
             oracle(name, weight, "hhea", "4", 5),
             oracle(name, weight, "hhea", "6", 5),
@@ -76,7 +83,10 @@ fn assert_metrics(font: &Font, original: &Font, name: &str, weight: u16, space: 
         assert_ne!(gid, 0, "{name} weight {weight}: missing {ch:?}");
         let row = original_gid.to_string();
         assert_eq!(
-            [i32::from(font.advance_width(gid)), i32::from(font.left_side_bearing(gid))],
+            [
+                i32::from(font.advance_width(gid)),
+                i32::from(font.left_side_bearing(gid))
+            ],
             [
                 oracle(name, weight, "hmtx", &row, 4),
                 oracle(name, weight, "hmtx", &row, 5),
@@ -90,7 +100,10 @@ fn assert_metrics(font: &Font, original: &Font, name: &str, weight: u16, space: 
 // obj/endobj delimiters, and physical object order need not equal object IDs.
 fn objects(pdf: &[u8]) -> BTreeMap<usize, &[u8]> {
     let marker = b"startxref\n";
-    let at = pdf.windows(marker.len()).rposition(|s| s == marker).unwrap();
+    let at = pdf
+        .windows(marker.len())
+        .rposition(|s| s == marker)
+        .unwrap();
     let xref: usize = std::str::from_utf8(&pdf[at + marker.len()..])
         .unwrap()
         .lines()
@@ -100,7 +113,13 @@ fn objects(pdf: &[u8]) -> BTreeMap<usize, &[u8]> {
         .unwrap();
     let mut lines = std::str::from_utf8(&pdf[xref..]).unwrap().lines();
     assert_eq!(lines.next(), Some("xref"));
-    let count: usize = lines.next().unwrap().strip_prefix("0 ").unwrap().parse().unwrap();
+    let count: usize = lines
+        .next()
+        .unwrap()
+        .strip_prefix("0 ")
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut offsets: Vec<_> = lines
         .take(count)
         .enumerate()
@@ -150,7 +169,10 @@ fn reference(dict: &str, key: &str) -> usize {
 fn stream(object: &[u8]) -> Vec<u8> {
     let dict = dictionary(object);
     let marker = b"\nstream\n";
-    let start = object.windows(marker.len()).position(|s| s == marker).unwrap()
+    let start = object
+        .windows(marker.len())
+        .position(|s| s == marker)
+        .unwrap()
         + marker.len();
     let bytes = &object[start..start + reference(dict, "/Length ")];
     if dict.contains("/FlateDecode") {
@@ -289,7 +311,13 @@ fn html_subset_and_full_fonts_preserve_variable_metrics_through_both_host_apis()
                     .collect();
                 assert_eq!(payloads.len(), 1, "only the regular face is used");
                 let font = Font::parse(payloads.into_iter().next().unwrap()).unwrap();
-                assert_metrics(&font, &original, name, weight, embedding == FontEmbedding::Full);
+                assert_metrics(
+                    &font,
+                    &original,
+                    name,
+                    weight,
+                    embedding == FontEmbedding::Full,
+                );
             }
         }
     }

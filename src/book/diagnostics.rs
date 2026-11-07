@@ -144,10 +144,7 @@ impl BookSourceDiagnostics {
 }
 
 /// Transfer the parser-owned AST and findings without cloning its block tree.
-pub(super) fn parse_chapter(
-    input: &BookInput,
-    path: &str,
-) -> (Document, BookChapterDiagnostics) {
+pub(super) fn parse_chapter(input: &BookInput, path: &str) -> (Document, BookChapterDiagnostics) {
     let mut parsed = crate::parse::parse_document_spanned(&input.source);
     let report = BookChapterDiagnostics {
         path: path.to_string(),

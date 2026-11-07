@@ -1,6 +1,6 @@
 # PDF Accessibility Ledger
 
-Date: 2026-10-23
+Date: 2026-11-07
 Scope: tagged-PDF structure semantics emitted by the clean-room PDF writer
 (`src/pdf.rs`). Beads: `qw1.9`, `6lcj`, `j36e`.
 
@@ -33,10 +33,11 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Pipe table | `/Table` → `/TR` → `/TH`\|`/TD` | Complete rectangular grid, including blank cells and entirely blank rows |
 | Table header cell | `/TH` with a stable `/ID` and `/A << /O /Table /Scope /Column >>` | Column scope; blank headers retain their column positions |
 | Table data cell | `/TD` with `/A << /O /Table /Headers [ (header-id) ] >>` | Explicit association to its column's header; `/IDTree` resolves every header ID |
-| Repeated table header | `/Artifact` with pagination/header attributes | Continued-page paint stays outside the reading order; empty marks on the original `/TH` retain ownership of clickable annotations |
+| Repeated table header | `/Artifact` with pagination/header attributes | Continued-page paint stays outside the reading order; empty marks reuse the original cell or its `/Link`, which owns each repeated clickable annotation |
 | Fenced code block | `/Code` | All lines of one block share a single `/Code` |
-| Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image |
-| Inline / autolink link | `/Link` nested in its `/P` or heading (one per link run; prose stays in the parent) with `/OBJR` to its annotation, and the annotation's reverse `/StructParent` | Fully bidirectional: the element references the annotation and the annotation maps back through the parent tree (PDF/UA) |
+| Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image; linked images retain their `/Figure` inside a `/Link`, including inline and table images |
+| Inline math | `/Formula` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Source math and bounds stay on the formula; linked formulas are children of their `/Link` |
+| Inline / autolink link | `/Link` nested in its `/P`, heading, `/TH`, or `/TD`, with `/OBJR` to its annotations and each annotation's reverse `/StructParent` | Styled text, inline images, and formulas share the enclosing link across wrapping and page boundaries; links in separate cells retain distinct owners |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
 | Running header/footer and page numbers (`PdfOptions.running`, `page_numbers`) | `/Artifact <</Type /Pagination /Subtype /Header\|/Footer>> BDC … EMC` | One pagination artifact per band, text and rule together; never in the reading order and never given an `/MCID` |
 
@@ -51,8 +52,10 @@ Cross-cutting guarantees, all asserted by tests:
   requirement.
 - **Bidirectional links.** Each OBJR-referenced link annotation carries a
   `/StructParent` whose key maps, through the parent tree, back to its owning
-  structure element (a `/Link` in prose, or its cell/figure in a table);
-  the `/StructTreeRoot` advertises `/ParentTreeNextKey`.
+  `/Link` element, including links in table cells and linked inline objects.
+  A linked figure or formula still owns its content `/MCID`, alt text, and
+  bounds; its enclosing `/Link` owns the annotation `/OBJR`.
+  The `/StructTreeRoot` advertises `/ParentTreeNextKey`.
 - **Parent tree integrity.** Each page declares `/StructParents`, and the
   `/ParentTree` `/Nums` maps every content `/MCID`, in order, to the structure
   element that owns it. Each content-stream `/MCID` is referenced by exactly one
@@ -63,10 +66,10 @@ Cross-cutting guarantees, all asserted by tests:
   page continuations, and footnotes. Empty cells add no glyphs or invented labels.
 - **Selectable text preserved.** `/ToUnicode` maps (including ligature glyphs)
   are unchanged, so copy/search still work over the tagged content.
-- **Logical elements span pages.** A source paragraph, code block, quote, list,
+- **Logical elements span pages.** A source paragraph, link, code block, quote, list,
   list item, table, row or cell retains one structure element as it continues
-  onto later pages. Repeated header paint does not repeat its text or image alt
-  in the logical reading order. Independently laid-out footnote containers and
+  onto later pages. Repeated header paint does not repeat its text, image alt,
+  or formula source in the logical reading order. Independently laid-out footnote containers and
   page-local inline formulas/images keep distinct identities.
 - **Determinism.** Given fixed input/theme/fonts/options the tagged bytes are
   stable across runs and `SOURCE_DATE_EPOCH` values
@@ -88,6 +91,9 @@ nesting even when a footnote is laid out in a separate temporary vector. Table
 rows retain their original source indices through wrapping and pagination.
 Inline formulas and figures use a page-qualified occurrence key because their
 MCIDs restart on each page. Both PDF emission modes use this same hierarchy.
+Linked content adds a `/Link` below its text or cell container, with any
+`/Figure` or `/Formula` below the link. Annotation ownership follows that
+enclosing link without changing the content's marked owner or geometry.
 
 A table header ID is derived from the document-wide table identity and source
 column. Each data cell's `/Headers` array names that ID, and `/StructTreeRoot`
@@ -124,14 +130,19 @@ They are safe (they never corrupt the tree) and are candidates for future beads.
 logical element per source block/cell, nested list/quote ownership, header
 artifacts with preserved annotations, unique dense MCID owners, separately
 laid-out footnotes, inline formula identity, deterministic output, and equality
-between monolithic and chunked emission. It also exercises adaptive table
+between monolithic and chunked emission. Mixed text/image/formula links retain
+one `/Link` across pages, unlinked objects keep ordinary paragraph ownership,
+and missing internal destinations create no clickable annotations.
+It also exercises adaptive table
 scaling below the ordinary body-table floor inside a small-type footnote.
 
 `tests/pdf_table_accessibility_test.rs` verifies complete sparse and blank
 matrices, normalized ragged host tables, sorted ID lookup and column-specific
 header associations, distinct cached tables, wrapping and repeated headers,
 list/footnote ownership, linked images with preserved alt text, PDF/A output,
-annotation back-references, deterministic bytes, and parity between emitters.
+annotation back-references to `/Link` owners, linked formulas and images under
+repeated headers, distinct same-target links in separate cells, deterministic
+bytes, and parity between emitters.
 
 Closing `qw1.9` cited:
 

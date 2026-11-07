@@ -14,12 +14,12 @@ use crate::ast::{Block, Document, Inline};
 use crate::parse::{self, Frontmatter};
 use crate::{RenderError, Result};
 
+#[path = "book/diagnostics.rs"]
+mod diagnostics;
 #[path = "book/merge.rs"]
 mod merge;
 #[path = "book/paths.rs"]
 mod paths;
-#[path = "book/diagnostics.rs"]
-mod diagnostics;
 pub use diagnostics::{BookChapterDiagnostics, BookSourceDiagnostics};
 #[path = "book/render.rs"]
 mod render;
@@ -112,9 +112,7 @@ pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
 /// In addition to [`build_book`]'s path checks, admits at most 4096 chapters,
 /// 64 MiB of chapter text and paths, 4096 diagnostics, and 4 MiB of serialized
 /// findings. Admission failure never returns a partial or falsely clean report.
-pub fn build_book_with_diagnostics(
-    inputs: &[BookInput],
-) -> Result<(Book, BookSourceDiagnostics)> {
+pub fn build_book_with_diagnostics(inputs: &[BookInput]) -> Result<(Book, BookSourceDiagnostics)> {
     diagnostics::admit_inputs(inputs)?;
     let mut reports = Vec::with_capacity(inputs.len());
     let book = build_book_inner(inputs, Some(&mut reports))?;

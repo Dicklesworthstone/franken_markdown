@@ -272,8 +272,7 @@ impl BookWorkspace {
                 replacements.push(None);
                 diagnostics.push(self.renderer.source_diagnostics().chapters()[index].clone());
             } else {
-                let (chapter, report) =
-                    parse_chapter(new, &self.renderer.book().chapters[index]);
+                let (chapter, report) = parse_chapter(new, &self.renderer.book().chapters[index]);
                 replacements.push(Some(chapter));
                 diagnostics.push(report);
                 reparsed.push(index);

@@ -191,7 +191,14 @@ fn all_wide_columns_keep_content_links_and_panel_header_associations() {
     assert!(pdf_text.contains("https://example.com/header"));
     assert!(pdf_text.contains("https://example.com/last"));
     let final_header = nodes.iter().rfind(|node| node.tag == "TH").unwrap();
-    assert!(final_header.body.contains("/Type /OBJR"));
+    let links: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.tag == "Link" && node.parent == final_header.id)
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].parent, final_header.id);
+    assert!(links[0].body.contains("/Type /OBJR"));
+    assert!(!final_header.body.contains("/Type /OBJR"));
     assert_eq!(pdf, render_pdf(&source, &options).unwrap());
     assert_eq!(
         pdf,
@@ -227,10 +234,17 @@ fn panel_pagination_repeats_headers_without_duplicating_logical_rows() {
     let nodes = nodes(&pdf);
     assert_grids(&nodes, &[14, 11], 45);
     let last_header = nodes.iter().rfind(|node| node.tag == "TH").unwrap();
+    let links: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.tag == "Link" && node.parent == last_header.id)
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].parent, last_header.id);
     assert!(
-        last_header.body.matches("/Type /OBJR").count() > 1,
+        links[0].body.matches("/Type /OBJR").count() > 1,
         "the late-column linked header must repeat across pages"
     );
+    assert!(!last_header.body.contains("/Type /OBJR"));
 }
 
 #[test]

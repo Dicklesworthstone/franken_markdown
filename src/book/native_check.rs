@@ -6,8 +6,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use super::{BookArgs, Failure, error, failure, inputs, json_string, stdout_line};
-use crate::book::{Book, BookSourceDiagnostics};
 use crate::book::validation::{LinkReport, check_book_links};
+use crate::book::{Book, BookSourceDiagnostics};
 
 /// Serialize the complete report before emitting anything. A validator or
 /// report-budget failure must never look like a successful partial check.
@@ -48,19 +48,13 @@ pub(super) fn run(args: &BookArgs, json_requested: bool) -> ExitCode {
         // schema on stdout. They cannot be mistaken for navigation findings.
         write_warnings(&loaded.warnings, true, &mut io::stderr().lock())
             .and_then(|()| {
-                write_source_diagnostics(
-                    &loaded.source_diagnostics,
-                    true,
-                    &mut io::stderr().lock(),
-                )
+                write_source_diagnostics(&loaded.source_diagnostics, true, &mut io::stderr().lock())
             })
             .and_then(|()| stdout_line(&json))
     } else {
         let mut stderr = io::stderr().lock();
         write_warnings(&loaded.warnings, false, &mut stderr)
-            .and_then(|()| {
-                write_source_diagnostics(&loaded.source_diagnostics, false, &mut stderr)
-            })
+            .and_then(|()| write_source_diagnostics(&loaded.source_diagnostics, false, &mut stderr))
             .and_then(|()| write_human(&report, &mut stderr))
             .and_then(|()| stderr.flush())
     };

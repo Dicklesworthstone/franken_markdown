@@ -439,15 +439,10 @@ mod native {
         let root = workspace(&over_diagnostic_limit());
         fs::create_dir(root.join("site")).unwrap();
         fs::write(root.join("site/chapter.html"), "last good publication").unwrap();
-        let output = invoke(
-            &root,
-            &["--to", "html", "--out-dir", "site", "--json"],
-        );
+        let output = invoke(&root, &["--to", "html", "--out-dir", "site", "--json"]);
         assert_eq!(output.status.code(), Some(66));
         assert!(output.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("book_source_diagnostics")
-        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("book_source_diagnostics"));
         assert_eq!(
             fs::read_to_string(root.join("site/chapter.html")).unwrap(),
             "last good publication"
@@ -470,11 +465,7 @@ fn browser_binding_returns_diagnostics_from_the_current_native_capture() {
         expected.source_diagnostics().to_json()
     );
     browser
-        .update_sources(
-            vec!["start.md".into()],
-            vec!["# Repaired\n".into()],
-            0.0,
-        )
+        .update_sources(vec!["start.md".into()], vec!["# Repaired\n".into()], 0.0)
         .unwrap();
     let repaired = BookRenderer::new(&[source("start.md", "# Repaired\n")]).unwrap();
     assert_eq!(

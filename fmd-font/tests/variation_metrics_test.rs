@@ -52,7 +52,10 @@ fn reference_cases() -> BTreeMap<(&'static str, &'static str), Vec<Vec<&'static 
     for line in REFERENCE.lines().filter(|line| !line.starts_with('#')) {
         let row: Vec<_> = line.split('\t').collect();
         assert_eq!(row.len(), 6);
-        result.entry((row[0], row[1])).or_insert_with(Vec::new).push(row);
+        result
+            .entry((row[0], row[1]))
+            .or_insert_with(Vec::new)
+            .push(row);
     }
     result
 }
@@ -61,11 +64,16 @@ fn reference_cases() -> BTreeMap<(&'static str, &'static str), Vec<Vec<&'static 
 fn fonttools_horizontal_metrics_match_implicit_and_mapped_hvar() {
     for ((name, weight), rows) in reference_cases() {
         let original = Font::parse(fixture(name).to_vec()).unwrap();
-        let instance = original.instance(weight.parse().unwrap()).expect("static metric instance");
+        let instance = original
+            .instance(weight.parse().unwrap())
+            .expect("static metric instance");
         for row in rows.into_iter().filter(|row| row[2] == "hmtx") {
             let glyph = row[3].parse().unwrap();
             assert_eq!(
-                (instance.advance_width(glyph), instance.left_side_bearing(glyph)),
+                (
+                    instance.advance_width(glyph),
+                    instance.left_side_bearing(glyph)
+                ),
                 (row[4].parse().unwrap(), row[5].parse().unwrap()),
                 "{name} wght={weight} glyph={glyph}: FontTools hmtx oracle",
             );
@@ -77,14 +85,17 @@ fn fonttools_horizontal_metrics_match_implicit_and_mapped_hvar() {
 fn fonttools_global_metrics_and_outline_summaries_match_static_instances() {
     for ((name, weight), rows) in reference_cases() {
         let original = Font::parse(fixture(name).to_vec()).unwrap();
-        let instance = original.instance(weight.parse().unwrap()).expect("static metric instance");
+        let instance = original
+            .instance(weight.parse().unwrap())
+            .expect("static metric instance");
         for row in rows.into_iter().filter(|row| row[2] != "hmtx") {
             let tag: &[u8; 4] = row[2].as_bytes().try_into().unwrap();
             let offset = row[3].parse().unwrap();
             assert_eq!(
                 value(table(instance.as_sfnt(), tag), offset, row[4]),
                 row[5].parse::<i32>().unwrap(),
-                "{name} wght={weight} {} offset={offset}: FontTools global metric oracle", row[2],
+                "{name} wght={weight} {} offset={offset}: FontTools global metric oracle",
+                row[2],
             );
         }
     }
@@ -112,8 +123,16 @@ fn gasp_range_variations_follow_the_spec_and_preserve_the_terminal_range() {
             let gasp = table(instance.as_sfnt(), b"gasp");
             assert_eq!(value(gasp, 2, "u16"), 3);
             for (index, maximum) in expected.into_iter().enumerate() {
-                assert_eq!(value(gasp, 4 + 4 * index, "u16"), maximum, "gasp range {index}, weight {weight}");
-                assert_eq!(value(gasp, 6 + 4 * index, "u16"), [2, 1, 3][index], "range behavior is unchanged");
+                assert_eq!(
+                    value(gasp, 4 + 4 * index, "u16"),
+                    maximum,
+                    "gasp range {index}, weight {weight}"
+                );
+                assert_eq!(
+                    value(gasp, 6 + 4 * index, "u16"),
+                    [2, 1, 3][index],
+                    "range behavior is unchanged"
+                );
             }
         }
     }
@@ -132,7 +151,10 @@ fn gvar_phantoms_keep_empty_and_outlined_metrics_correct_without_hvar() {
         for row in rows.into_iter().filter(|row| row[2] == "hmtx") {
             let glyph = row[3].parse().unwrap();
             assert_eq!(
-                (instance.advance_width(glyph), instance.left_side_bearing(glyph)),
+                (
+                    instance.advance_width(glyph),
+                    instance.left_side_bearing(glyph)
+                ),
                 (row[4].parse().unwrap(), row[5].parse().unwrap()),
                 "{name} weight {weight}, glyph {glyph}: gvar-only metrics",
             );
@@ -161,7 +183,11 @@ fn hvar_advances_replace_original_metrics_without_reapplying_gvar_deltas() {
         let glyph = original.glyph_index('A');
         let heavy = original.instance(900.0).unwrap();
         assert_eq!(original.advance_width(glyph), 600);
-        assert_eq!(heavy.advance_width(glyph), 720, "120-unit advance delta is applied once");
+        assert_eq!(
+            heavy.advance_width(glyph),
+            720,
+            "120-unit advance delta is applied once"
+        );
         assert_eq!(heavy.left_side_bearing(glyph), 74);
     }
 }
@@ -174,7 +200,10 @@ fn mvar_preserves_intentionally_independent_hhea_vertical_metrics() {
         data[hhea + offset..hhea + offset + 2].copy_from_slice(&number.to_be_bytes());
     }
     let instance = Font::parse(data).unwrap().instance(900.0).unwrap();
-    assert_eq!((instance.ascent, instance.descent, instance.line_gap), (830, -205, 110));
+    assert_eq!(
+        (instance.ascent, instance.descent, instance.line_gap),
+        (830, -205, 110)
+    );
     assert_eq!(value(table(instance.as_sfnt(), b"OS/2"), 68, "i16"), 900);
     assert_eq!(value(table(instance.as_sfnt(), b"OS/2"), 70, "i16"), -230);
 }
@@ -191,7 +220,11 @@ fn variable_metric_tables_are_consumed_and_instance_bytes_are_deterministic() {
         let tag = &first.as_sfnt()[12 + index * 16..16 + index * 16];
         assert!(![b"HVAR".as_slice(), b"MVAR", b"fvar", b"gvar", b"avar"].contains(&tag));
     }
-    assert_eq!(original.as_sfnt(), MAPPED, "instancing never mutates the variable source");
+    assert_eq!(
+        original.as_sfnt(),
+        MAPPED,
+        "instancing never mutates the variable source"
+    );
 }
 
 #[test]
@@ -199,23 +232,47 @@ fn malformed_metric_headers_and_indices_do_not_silently_become_static_defaults()
     let (hvar, _) = table_range(MAPPED, b"HVAR");
     let (mvar, _) = table_range(MAPPED, b"MVAR");
     let store = hvar + u32::from_be_bytes(MAPPED[hvar + 4..hvar + 8].try_into().unwrap()) as usize;
-    let regions = store + u32::from_be_bytes(MAPPED[store + 2..store + 6].try_into().unwrap()) as usize;
+    let regions =
+        store + u32::from_be_bytes(MAPPED[store + 2..store + 6].try_into().unwrap()) as usize;
     let map = hvar + u32::from_be_bytes(MAPPED[hvar + 8..hvar + 12].try_into().unwrap()) as usize;
     let cases: Vec<(&str, usize, Vec<u8>)> = vec![
         ("HVAR version", hvar, 2u16.to_be_bytes().to_vec()),
-        ("HVAR store outside table", hvar + 4, u32::MAX.to_be_bytes().to_vec()),
+        (
+            "HVAR store outside table",
+            hvar + 4,
+            u32::MAX.to_be_bytes().to_vec(),
+        ),
         ("HVAR axis mismatch", regions, 3u16.to_be_bytes().to_vec()),
-        ("HVAR empty explicit map", map + 2, 0u16.to_be_bytes().to_vec()),
+        (
+            "HVAR empty explicit map",
+            map + 2,
+            0u16.to_be_bytes().to_vec(),
+        ),
         ("HVAR reserved map flags", map + 1, vec![0xc0]),
-        ("MVAR record too short", mvar + 6, 7u16.to_be_bytes().to_vec()),
-        ("MVAR missing required store", mvar + 10, 0u16.to_be_bytes().to_vec()),
-        ("MVAR invalid known record index", mvar + 16, 0xfffeu16.to_be_bytes().to_vec()),
+        (
+            "MVAR record too short",
+            mvar + 6,
+            7u16.to_be_bytes().to_vec(),
+        ),
+        (
+            "MVAR missing required store",
+            mvar + 10,
+            0u16.to_be_bytes().to_vec(),
+        ),
+        (
+            "MVAR invalid known record index",
+            mvar + 16,
+            0xfffeu16.to_be_bytes().to_vec(),
+        ),
     ];
     for (name, offset, bytes) in cases {
         let mut data = MAPPED.to_vec();
         data[offset..offset + bytes.len()].copy_from_slice(&bytes);
         let font = Font::parse(data).expect("other sfnt tables remain valid");
-        assert!(font.instance(650.0).is_none(), "{name} must refuse metric instancing");
+        assert!(
+            font.instance(650.0).is_none(),
+            "{name} must refuse metric instancing"
+        );
     }
 }
 
@@ -226,7 +283,10 @@ fn metrics_never_read_beyond_the_declared_table_extent() {
         let record = table_record(&data, &tag);
         data[record + 12..record + 16].copy_from_slice(&length.to_be_bytes());
         let font = Font::parse(data).unwrap();
-        assert!(font.instance(650.0).is_none(), "{tag:?} must respect its own table length");
+        assert!(
+            font.instance(650.0).is_none(),
+            "{tag:?} must respect its own table length"
+        );
     }
     let mut data = MAPPED.to_vec();
     let record = table_record(&data, b"MVAR");
@@ -255,7 +315,10 @@ fn instance_metrics_follow_avar_and_keep_the_other_axis_at_its_default() {
     let instance = font.instance(650.0).unwrap();
     assert_eq!(instance.advance_width(font.glyph_index(' ')), 368);
     assert_eq!(instance.ascent, 875);
-    assert_eq!(instance.descent, -222, "negative half ties round toward +infinity");
+    assert_eq!(
+        instance.descent, -222,
+        "negative half ties round toward +infinity"
+    );
 }
 
 #[test]
@@ -279,8 +342,14 @@ fn static_subset_preserves_varied_horizontal_and_face_metrics() {
             let expected = instance.glyph_index(ch);
             let actual = subset.glyph_index(ch);
             assert_ne!(actual, 0);
-            assert_eq!(subset.advance_width(actual), instance.advance_width(expected));
-            assert_eq!(subset.left_side_bearing(actual), instance.left_side_bearing(expected));
+            assert_eq!(
+                subset.advance_width(actual),
+                instance.advance_width(expected)
+            );
+            assert_eq!(
+                subset.left_side_bearing(actual),
+                instance.left_side_bearing(expected)
+            );
             assert_eq!(subset.glyph_bbox(actual), instance.glyph_bbox(expected));
         }
     }
@@ -299,7 +368,10 @@ fn wide_empty_glyph_affects_maximum_advance_but_never_ink_or_bearing_extrema() {
         data[hmtx + 6..hmtx + 8].copy_from_slice(&bearing.to_be_bytes());
         let font = Font::parse(data).unwrap().instance(900.0).unwrap();
         let space = font.glyph_index(' ');
-        assert_eq!((font.advance_width(space), font.left_side_bearing(space)), (1090, bearing));
+        assert_eq!(
+            (font.advance_width(space), font.left_side_bearing(space)),
+            (1090, bearing)
+        );
         assert!(font.glyph_bbox(space).is_none());
         let hhea = table(font.as_sfnt(), b"hhea");
         assert_eq!(value(hhea, 10, "u16"), 1090);
@@ -327,7 +399,10 @@ fn signed_and_unsigned_metric_overflow_is_refused_without_wrapping() {
         let (start, _) = table_range(&data, &tag);
         data[start + offset..start + offset + 2].copy_from_slice(&bytes);
         let font = Font::parse(data).unwrap();
-        assert!(font.instance(900.0).is_none(), "{tag:?} offset {offset}: metric overflow");
+        assert!(
+            font.instance(900.0).is_none(),
+            "{tag:?} offset {offset}: metric overflow"
+        );
     }
 }
 

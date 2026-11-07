@@ -88,7 +88,10 @@ fn links(bytes: &[u8]) -> Vec<Option<Destination>> {
         .map(|object| dictionary(object))
         .filter(|dict| contains(dict, b"/Subtype /Link"))
         .map(|dict| {
-            assert!(!contains(dict, b"/S /URI"), "local links cannot leak as URLs");
+            assert!(
+                !contains(dict, b"/S /URI"),
+                "local links cannot leak as URLs"
+            );
             let start = dict.windows(7).position(|part| part == b"/Dest [")? + 7;
             let end = start + dict[start..].iter().position(|&byte| byte == b']').unwrap();
             let values: Vec<_> = std::str::from_utf8(&dict[start..end])
@@ -125,7 +128,9 @@ fn chapter_scoped_note_links_bind_to_the_actual_citation_destinations() {
                 toc,
                 ..Default::default()
             };
-            let bytes = renderer.render_pdf_with_options(&options, settings).unwrap();
+            let bytes = renderer
+                .render_pdf_with_options(&options, settings)
+                .unwrap();
             let annotations = links(&bytes);
             let body_start = if toc {
                 // TOC titles, dot leaders and page numbers can each carry
@@ -213,9 +218,15 @@ fn missing_unreferenced_and_ambiguous_note_ids_do_not_capture_other_targets() {
     let bytes = renderer.render_pdf().unwrap();
     let annotations = links(&bytes);
     assert_eq!(annotations.len(), 5);
-    assert!(annotations[0].is_some(), "the ordinary citation still works");
+    assert!(
+        annotations[0].is_some(),
+        "the ordinary citation still works"
+    );
     assert_eq!(&annotations[1..4], &[None, None, None]);
-    assert!(annotations[4].is_some(), "prefixes do not reserve heading IDs");
+    assert!(
+        annotations[4].is_some(),
+        "prefixes do not reserve heading IDs"
+    );
     assert_ne!(annotations[0], annotations[4]);
 }
 

@@ -2280,6 +2280,125 @@ fn wide_hats_match_independent_tex_boxes() {
 }
 
 #[test]
+fn wide_tildes_match_independent_tex_boxes() {
+    // fm-ifgjb: the 10pt ruled-Reference table was captured before editing
+    // production. Cover the CMEX/MSBM successor chains, all three optical
+    // sizes, and amsfonts' strict two-TEXT-em boundary. Independent TeX
+    // captures prove the supported hspace forms have exactly the same
+    // boxes as the original kern forms, retained as named errors below.
+    let e = engine();
+    for (source, expected) in [
+        (r"\widetilde{P}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widetilde{8}", [0.500_002, 0.936_113, 0.0]),
+        (r"\widetilde{x}", [0.571_527, 0.722_223, 0.0]),
+        (r"\widetilde{y}", [0.526_160, 0.722_223, 0.194_444]),
+        (r"\widetilde{f}", [0.597_226, 0.986_113, 0.194_444]),
+        (r"\widetilde{M}", [1.079_166, 1.002_777, 0.0]),
+        (r"\widetilde{xy}", [1.097_687, 0.750_000, 0.194_444]),
+        (r"\widetilde{AB}", [1.558_682, 1.002_777, 0.0]),
+        (r"\widetilde{xyz}", [1.606_717, 0.750_000, 0.194_444]),
+        (r"\widetilde{ABC}", [2.344_931, 1.120_366, 0.0]),
+        (r"\widetilde{wxyz}", [2.349_542, 0.899_998, 0.194_444]),
+        (r"\widetilde{ABCD}", [3.200_626, 1.120_366, 0.0]),
+        (r"\widetilde{}", [0.0, 0.722_223, 0.0]),
+        (
+            r"\widetilde{\frac{a}{b}}",
+            [0.768_588, 1.398_730, 0.685_951],
+        ),
+        (r"\widetilde{\widetilde{x}}", [0.571_527, 1.013_892, 0.0]),
+        (r"\widetilde{\text{P}}", [0.680_390, 0.980_390, 0.0]),
+        (r"\widetilde{{P}}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widetilde{P}^2", [1.229_517, 0.975_000, 0.0]),
+        (r"\widetilde{y}_1", [0.938_895, 0.722_223, 0.194_444]),
+        (r"\scriptstyle\widetilde{P}", [0.616_771, 0.682_500, 0.0]),
+        (
+            r"\scriptstyle\widetilde{xy}",
+            [0.884_148, 0.525_000, 0.136_110],
+        ),
+        (r"\scriptstyle\widetilde{ABC}", [1.862_290, 0.784_262, 0.0]),
+        (r"\scriptstyle\widetilde{ABCD}", [2.537_666, 0.784_262, 0.0]),
+        (
+            r"\scriptscriptstyle\widetilde{P}",
+            [0.524_484, 0.487_500, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{xy}",
+            [0.779_056, 0.375_000, 0.097_221],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{ABC}",
+            [1.591_930, 0.561_388, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{ABCD}",
+            [2.164_229, 0.561_388, 0.0],
+        ),
+        (
+            r"\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.750_000, 0.0],
+        ),
+        (r"\widetilde{\hspace{2em}}", [1.999_512, 0.750_000, 0.0]),
+        (
+            r"\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.825_005, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{2em}}",
+            [1.999_512, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.629_999, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{2em}}",
+            [1.999_512, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.451_196, 0.0],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                got.is_finite() && (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+    for source in [
+        r"\kern2em",
+        r"\widetilde{\kern1.9999em}",
+        r"\widetilde{\kern2em}",
+        r"\widetilde{\kern2.0001em}",
+        r"\scriptstyle\widetilde{\kern1.9999em}",
+        r"\scriptstyle\widetilde{\kern2em}",
+        r"\scriptstyle\widetilde{\kern2.0001em}",
+        r"\scriptscriptstyle\widetilde{\kern1.9999em}",
+        r"\scriptscriptstyle\widetilde{\kern2em}",
+        r"\scriptscriptstyle\widetilde{\kern2.0001em}",
+    ] {
+        assert!(
+            matches!(
+                e.typeset(source, Style::Display),
+                Err(fmd_math::MathError::UnsupportedCommand { name, .. }) if name == r"\kern"
+            ),
+            "{source}: unsupported primitive must retain its precise error"
+        );
+    }
+}
+
+#[test]
 fn nested_wide_hats_reuse_text_style_measurements() {
     let e = engine();
     let mut source = String::from("x");

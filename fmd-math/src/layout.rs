@@ -3770,7 +3770,6 @@ impl Engine {
         span: Span,
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
-        let theta = self.consts_at(&ctx).rule_thickness * size;
         let is_arrow = matches!(kind, AccentKind::OverRightArrow | AccentKind::OverLeftArrow);
         // Primitive accents cramp their base (rule 12); amsmath's
         // overarrow@ alignment starts a fresh $style nucleus$ formula,
@@ -3813,37 +3812,35 @@ impl Engine {
             .width
             .max(arrow_metrics.map_or(0.25 * size, |(minimum, _)| minimum));
         let band = crate::drawn::stretch(stretch_kind, width, size);
-        let height = if kind == AccentKind::WideHat {
+        let height = if let Some((_, row_height)) = arrow_metrics {
+            inner.height + row_height
+        } else {
             let text_width = self.wide_accent_text_width(base, ctx)?;
             let text_em = self.interword_font(ctx).param(6) * ctx.text_size();
             let (accent_height, x_height) =
-                wide_hat_metrics(inner.width, text_width > 2.0 * text_em, ctx).ok_or(
+                wide_accent_metrics(kind, inner.width, text_width > 2.0 * text_em, ctx).ok_or(
                     MathError::UnmappedChar {
-                        ch: '\u{0302}',
+                        ch: if kind == AccentKind::WideHat {
+                            '\u{0302}'
+                        } else {
+                            '\u{0303}'
+                        },
                         span,
                     },
                 )?;
             inner
                 .height
                 .max(inner.height + accent_height - inner.height.min(x_height))
-        } else if let Some((_, row_height)) = arrow_metrics {
-            inner.height + row_height
-        } else {
-            inner.height + theta + band.height
         };
-        let band_dy = if kind == AccentKind::WideHat || is_arrow {
-            height - band.height
-        } else {
-            inner.height + theta
-        };
+        let band_dy = height - band.height;
         let depth = inner.depth;
         let inner_width = inner.width;
         Ok(Laid {
             boxx: MBox {
                 kind: BoxKind::Horizontal,
-                // A wide hat has zero accent advance, even over an empty
+                // Primitive accents have zero advance, even over an empty
                 // nucleus; arrows keep their alignment's minimum width.
-                width: if kind == AccentKind::WideHat {
+                width: if !is_arrow {
                     inner_width
                 } else {
                     inner_width.max(width)
@@ -3852,7 +3849,7 @@ impl Engine {
                 depth,
                 children: vec![
                     Positioned {
-                        dx: if kind == AccentKind::WideHat {
+                        dx: if !is_arrow {
                             (inner_width - width) / 2.0
                         } else {
                             0.0
@@ -4883,10 +4880,20 @@ fn over_arrow_metrics(kind: AccentKind, ctx: LayCtx) -> Option<(f64, f64)> {
     ))
 }
 
-/// TeX's wide-hat successor chain, including amsfonts' branch to MSBM
+/// TeX's wide-hat/tilde successor chains, including amsfonts' branch to MSBM
 /// above two text-style ems. Drawing remains ADR-0005's calibrated band;
 /// its top follows make_math_accent's height and x-height overlap.
-fn wide_hat_metrics(width: f64, use_ams: bool, ctx: LayCtx) -> Option<(f64, f64)> {
+fn wide_accent_metrics(
+    kind: AccentKind,
+    width: f64,
+    use_ams: bool,
+    ctx: LayCtx,
+) -> Option<(f64, f64)> {
+    let (cmex_start, ams_start) = match kind {
+        AccentKind::WideHat => (0x62, 0x5B),
+        AccentKind::WideTilde => (0x65, 0x5D),
+        _ => return None,
+    };
     let size = ctx.size();
     let points = 10.0 * size;
     let (font, accent) = if use_ams {
@@ -4895,16 +4902,16 @@ fn wide_hat_metrics(width: f64, use_ams: bool, ctx: LayCtx) -> Option<(f64, f64)
             p if p < 8.0 => &crate::tfm::MSBM7,
             _ => &crate::tfm::MSBM10,
         };
-        let mut accent = font.char(0x5B)?;
-        let larger = font.char(0x5C)?;
+        let mut accent = font.char(ams_start)?;
+        let larger = font.char(ams_start + 1)?;
         if larger.width * size <= width {
             accent = larger;
         }
         (font, accent)
     } else {
         let font = crate::metrics::size_fonts(points).1;
-        let mut accent = font.char(0x62)?;
-        for code in [0x63, 0x64] {
+        let mut accent = font.char(cmex_start)?;
+        for code in [cmex_start + 1, cmex_start + 2] {
             let larger = font.char(code)?;
             if larger.width * size > width {
                 break;

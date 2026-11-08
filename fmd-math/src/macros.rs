@@ -124,7 +124,15 @@ impl MacroSet {
                     line_width: Some(345 * 65_536),
                 })
             }
-            "fmd-math/pack/basic" | "basic" | "fmd-math/pack/empty" | "empty" => Some(Self::new()),
+            "fmd-math/pack/basic" | "basic" | "fmd-math/pack/empty" | "empty" => {
+                // Every Reference template uses standalone/10pt, not only
+                // the default preamble. These packs keep ordinary ligatures
+                // and no physics macros, but share its document linewidth.
+                Some(Self {
+                    line_width: Some(345 * 65_536),
+                    ..Self::new()
+                })
+            }
             _ => None,
         }
     }
@@ -235,8 +243,9 @@ impl MacroSet {
     }
 
     /// The width, ems, past which TexText paragraph lines break (the
-    /// document's `\linewidth`): 34.5 under the default pack, as in the
-    /// Reference's document; `None` (one line per `\\`) otherwise.
+    /// document's linewidth): 34.5 under every built-in document pack,
+    /// as in the Reference's standalone document; None (one line per
+    /// explicit break) for caller-defined sets without a document pack.
     #[must_use]
     pub fn line_width(&self) -> Option<f64> {
         #[allow(clippy::cast_precision_loss)]

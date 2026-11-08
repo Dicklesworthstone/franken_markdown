@@ -4111,16 +4111,21 @@ fn a_tie_is_not_a_line_break() {
 }
 
 #[test]
-fn packs_without_a_line_width_never_break() {
+fn bare_macro_sets_never_break_and_document_packs_have_the_reference_width() {
     use fmd_math::MacroSet;
     let text = r"\begin{center}Every paragraph that is wider than its line breaks where the line breaker of TeX would break it.\end{center}";
-    for pack in ["empty", "basic"] {
+    let bare = MacroSet::new();
+    assert_eq!(bare.line_width(), None);
+    let layout = engine().typeset_text_with_macros(text, &bare).unwrap();
+    assert_eq!(text_lines(&layout).len(), 1);
+    // The pinned basic/empty standalone templates have the same 345pt
+    // document width as default; only a bare generic set is unbounded.
+    for pack in ["empty", "basic", "default"] {
         let pack = MacroSet::pack(pack).unwrap();
-        assert_eq!(pack.line_width(), None);
+        assert_eq!(pack.line_width(), Some(34.5));
         let layout = engine().typeset_text_with_macros(text, &pack).unwrap();
-        assert_eq!(text_lines(&layout).len(), 1);
+        assert_eq!(text_lines(&layout).len(), 2);
     }
-    assert_eq!(MacroSet::pack("default").unwrap().line_width(), Some(34.5));
 }
 
 #[test]

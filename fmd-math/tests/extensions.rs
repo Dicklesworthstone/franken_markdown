@@ -15,6 +15,31 @@ fn engine() -> Engine {
 }
 
 #[test]
+fn basic_and_empty_packs_use_the_reference_standalone_paragraph_width() {
+    let e = engine();
+    let source = std::iter::repeat_n("a", 100).collect::<Vec<_>>().join(" ");
+    for name in ["basic", "empty"] {
+        let pack = MacroSet::pack(name).unwrap();
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        let mut baselines: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.y).collect();
+        baselines.sort_by(f64::total_cmp);
+        baselines.dedup();
+        // Independent pinned-template standalone/10pt showbox: 345pt
+        // linewidth and three lines for these one hundred ordinary words.
+        assert_eq!(baselines, vec![-2.4, -1.2, 0.0], "{name}: {layout:?}");
+        assert_eq!(layout.glyphs.len(), 100, "{name}: no lost text");
+        assert!(layout.width <= 34.5, "{name}: overfull native paragraph");
+    }
+    // Generic fmd callers without a document pack retain explicit unbounded
+    // layout; setting a pack's document width must not change this path.
+    let bare = e
+        .typeset_text_with_macros(&source, &MacroSet::new())
+        .unwrap();
+    assert!(bare.glyphs.iter().all(|glyph| glyph.y == 0.0));
+    assert!(bare.width > 34.5);
+}
+
+#[test]
 fn text_underlining_keeps_glyph_faces_positions_and_explicit_overrides() {
     let e = engine();
     for (plain, underlined) in [

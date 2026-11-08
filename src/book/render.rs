@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use super::build_book;
 use super::{
-    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics, inject_book_nav, merge,
-    out_name, paths,
+    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics_and_profile,
+    inject_book_nav, merge, out_name, paths,
 };
 use crate::wasm::WasmRenderOptions;
 use crate::{
@@ -54,9 +54,12 @@ pub struct BookPdfRenderReport {
 /// Assets are supplied as bytes, keyed by book-relative source paths. No
 /// filesystem, network, environment, or native runtime is accessed.
 ///
-/// Render options can change without reparsing source documents. They do not
-/// retroactively change the parsed Markdown dialect. Each render validates
-/// asset budgets; direct changes through `options_mut` cannot bypass checks.
+/// Render options can change without reparsing source documents. Select the
+/// source dialect with [`Self::new_with_profile`] or
+/// [`Self::from_sources_with_profile`]. Later `options_mut().profile` changes
+/// apply only the AST compatibility transform; use [`super::BookWorkspace`]
+/// to change source dialects without losing original inline syntax. Each render
+/// validates asset budgets; `options_mut` cannot bypass those checks.
 #[derive(Debug, Clone)]
 pub struct BookRenderer {
     book: Book,
@@ -72,6 +75,16 @@ impl BookRenderer {
     /// Rejects invalid book paths, collisions, more than 4096 chapters, or
     /// more than 64 MiB of source text and logical path bytes before parsing.
     pub fn new(inputs: &[BookInput]) -> Result<Self> {
+        Self::new_with_profile(inputs, None)
+    }
+
+    /// Parse source and diagnostics under an explicit authoring profile once.
+    /// The selected profile also configures every subsequent publication.
+    /// Source strings are not retained; use a `BookWorkspace` to switch dialects.
+    ///
+    /// # Errors
+    /// Same bounded source/path/diagnostic admission as [`Self::new`].
+    pub fn new_with_profile(inputs: &[BookInput], profile: Option<crate::Profile>) -> Result<Self> {
         if inputs.is_empty() || inputs.len() > MAX_CHAPTERS {
             return Err(invalid("expected between 1 and 4096 chapters"));
         }
@@ -90,11 +103,14 @@ impl BookRenderer {
                 }
             }
         }
-        let (book, source_diagnostics) = build_book_with_diagnostics(inputs)?;
+        let (book, source_diagnostics) = build_book_with_diagnostics_and_profile(inputs, profile)?;
         Ok(Self {
             book,
             source_diagnostics,
-            options: WasmRenderOptions::default(),
+            options: WasmRenderOptions {
+                profile,
+                ..WasmRenderOptions::default()
+            },
             source_length,
         })
     }

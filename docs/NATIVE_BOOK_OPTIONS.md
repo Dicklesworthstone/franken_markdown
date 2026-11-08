@@ -43,11 +43,13 @@ fmd book ./manual --to epub --out ./manual.epub --profile gfm-plus
 fmd book ./manual --check-links --profile commonmark-gfm --json
 ```
 
-The selected profile applies to every chapter, including expanded includes,
-for HTML, PDF, combined output, and EPUB. Profiles share the parsed source,
-chapter identities, link targets, and source diagnostics; the read-only link
-check and `--deny-broken-links` keep the same navigation guarantees. Invalid
-profiles fail with exit 64 before reading configuration, chapters, or assets.
+The selected profile applies before source parsing, include protection and
+included-resource URL rebasing for HTML, PDF, combined output, and EPUB.
+CommonMark emphasis, code spans, and links can therefore cross a line beginning
+with `: ` without losing their inline structure. The read-only link check and
+`--deny-broken-links` inspect the selected dialect's actual links. Diagnostics
+retain the exact expanded/rebased source byte coordinates. Invalid profiles
+fail with exit 64 before reading configuration, chapters, or assets.
 
 ## Paper, margins, and contents
 

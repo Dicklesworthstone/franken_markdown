@@ -313,8 +313,8 @@ pub fn render_book_pdf_configured_profiled(
     options
         .apply_typography_tokens(typography.as_deref())
         .map_err(|error| JsValue::from_str(&error))?;
-    let mut renderer =
-        crate::book::BookRenderer::from_sources(&inputs, &[]).map_err(render_error_to_js)?;
+    let mut renderer = crate::book::BookRenderer::from_sources_with_profile(&inputs, &[], profile)
+        .map_err(render_error_to_js)?;
     *renderer.options_mut() = options;
     let report = renderer.render_pdf_reported().map_err(render_error_to_js)?;
     Ok(super::super::book_pdf_artifact_result(

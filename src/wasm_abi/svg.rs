@@ -232,7 +232,7 @@ pub(super) fn render_with_options(
         theme: theme_options.html_options().theme,
         max_width_pt: width,
     };
-    let parsed = crate::parse_markdown_spanned(markdown);
+    let parsed = crate::parse_markdown_spanned_with_profile(markdown, options.profile);
     let mut diagnostics = String::from("[");
     for diagnostic in &parsed.diagnostics {
         let severity = match diagnostic.severity {

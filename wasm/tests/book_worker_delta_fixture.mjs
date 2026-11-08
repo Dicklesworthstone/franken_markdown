@@ -6,18 +6,27 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createBookBindings } from "../book_session.mjs";
 import { createRetainedBook, installBookWorker } from "../book_worker.mjs";
 
-export function nativeFixture({ counters, old = false, oldProfile = false } = {}) {
+export function nativeFixture({ counters, old = false, oldProfile = false, oldProfileConstruction = false } = {}) {
   const stats = { creates: 0, updates: 0, exports: 0, frees: 0 };
+  const constructions = [];
   const bump = (key, index) => { stats[key]++; if (counters) Atomics.add(counters, index, 1); };
   const asset = bytes => ({ size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
   class NativeBook {
-    constructor(paths, sources) {
+    constructor(paths, sources, profile, expanded = false) {
       this.files = paths.map((path, i) => ({ path, source: sources[i] }));
       this.includes = []; this.settings = {}; this.images = []; this.fonts = [];
       this.sourceRevision = 0; this.dead = false; bump("creates", 0);
+      constructions.push({ profile, expanded });
+      if (profile !== undefined) this.settings.profile = profile;
     }
     static fromSources(paths, sources, includedPaths, includedSources) {
-      const book = new NativeBook(paths, sources);
+      return NativeBook.fromSourcesProfiled(paths, sources, includedPaths, includedSources);
+    }
+    static newWithProfile(paths, sources, profile) {
+      return new NativeBook(paths, sources, profile);
+    }
+    static fromSourcesProfiled(paths, sources, includedPaths, includedSources, profile) {
+      const book = new NativeBook(paths, sources, profile, true);
       book.includes = includedPaths.map((path, i) => ({ path, source: includedSources[i] }));
       return book;
     }
@@ -68,10 +77,19 @@ export function nativeFixture({ counters, old = false, oldProfile = false } = {}
   }
   if (old) NativeBook.prototype.updateSources = undefined;
   if (oldProfile) NativeBook.prototype.setAuthoringProfile = undefined;
+  if (oldProfileConstruction) {
+    NativeBook.newWithProfile = undefined;
+    NativeBook.fromSourcesProfiled = undefined;
+    NativeBook.fromSources = (paths, sources, includedPaths, includedSources) => {
+      const book = new NativeBook(paths, sources, undefined, true);
+      book.includes = includedPaths.map((path, i) => ({ path, source: includedSources[i] }));
+      return book;
+    };
+  }
   const engine = createBookBindings(async () => NativeBook);
   const preview = async api => api.renderBookSite(); // Routing double, not the HTML preview codec.
   const retained = createRetainedBook(engine, preview);
-  return { stats, engine: { ...engine,
+  return { stats, constructions, engine: { ...engine,
     renderBookPreview: (files, options) => preview({ renderBookSite: () => engine.renderBookSite(files, options) }),
     renderRetainedBook: retained.render, clearRetainedBook: retained.clear,
     renderRetainedBookPreview: (files, options) => retained.render(files, options, "preview"),

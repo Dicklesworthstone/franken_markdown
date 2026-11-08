@@ -5,7 +5,9 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use super::{BookInput, BookRenderer, MAX_CHAPTERS, MAX_SOURCE_BYTES, paths};
-use crate::transclude::{ResolveResult, expand_includes_mapped_with_limit, has_includes};
+use crate::transclude::{
+    ResolveResult, expand_includes_mapped_with_limit_and_profile, has_includes,
+};
 use crate::{RenderError, Result};
 
 const MAX_BOOK_RESOLUTIONS: usize = 4096;
@@ -16,15 +18,23 @@ impl BookRenderer {
     pub(crate) fn prepare_workspace_sources(
         chapters: &[BookInput],
         resources: &[BookInput],
+        profile: Option<crate::Profile>,
     ) -> Result<(Vec<BookInput>, usize)> {
-        prepare(chapters, resources, MAX_SOURCE_BYTES, MAX_BOOK_RESOLUTIONS)
+        prepare_with_profile(
+            chapters,
+            resources,
+            MAX_SOURCE_BYTES,
+            MAX_BOOK_RESOLUTIONS,
+            profile,
+        )
     }
 
     pub(crate) fn from_workspace_sources(
         expanded: &[BookInput],
         source_length: usize,
+        profile: Option<crate::Profile>,
     ) -> Result<Self> {
-        let mut renderer = Self::new(expanded)?;
+        let mut renderer = Self::new_with_profile(expanded, profile)?;
         renderer.source_length = source_length;
         Ok(renderer)
     }
@@ -74,13 +84,28 @@ impl BookRenderer {
     /// chapter text/paths, and original text plus resolver copies. All source
     /// validation and expansion finish before parsing; no partial book escapes.
     pub fn from_sources(chapters: &[BookInput], include_sources: &[BookInput]) -> Result<Self> {
-        let (expanded, source_length) = prepare(
+        Self::from_sources_with_profile(chapters, include_sources, None)
+    }
+
+    /// Expand, rebase included resource URLs, and parse with one authoring
+    /// dialect. Literal-code protection and destination-token discovery use
+    /// that same profile, so inline syntax across lines keeps its source origin.
+    ///
+    /// # Errors
+    /// Same source/expansion/diagnostic limits as [`Self::from_sources`].
+    pub fn from_sources_with_profile(
+        chapters: &[BookInput],
+        include_sources: &[BookInput],
+        profile: Option<crate::Profile>,
+    ) -> Result<Self> {
+        let (expanded, source_length) = prepare_with_profile(
             chapters,
             include_sources,
             MAX_SOURCE_BYTES,
             MAX_BOOK_RESOLUTIONS,
+            profile,
         )?;
-        let mut renderer = Self::new(&expanded)?;
+        let mut renderer = Self::new_with_profile(&expanded, profile)?;
         renderer.source_length = source_length;
         Ok(renderer)
     }
@@ -98,11 +123,22 @@ fn add(total: &mut usize, bytes: usize, limit: usize, label: &str) -> Result<()>
     Ok(())
 }
 
+#[cfg(test)]
 fn prepare(
     chapters: &[BookInput],
     include_sources: &[BookInput],
     max_bytes: usize,
     max_resolutions: usize,
+) -> Result<(Vec<BookInput>, usize)> {
+    prepare_with_profile(chapters, include_sources, max_bytes, max_resolutions, None)
+}
+
+fn prepare_with_profile(
+    chapters: &[BookInput],
+    include_sources: &[BookInput],
+    max_bytes: usize,
+    max_resolutions: usize,
+    profile: Option<crate::Profile>,
 ) -> Result<(Vec<BookInput>, usize)> {
     if chapters.is_empty()
         || chapters.len() > MAX_CHAPTERS
@@ -182,14 +218,20 @@ fn prepare(
                 copied_bytes.set(copied_bytes.get() + content.len());
                 Ok(Some((content.to_string(), key)))
             };
-            let expanded =
-                expand_includes_mapped_with_limit(&input.source, &path, &resolve, remaining)
-                    .map_err(|error| invalid(format!("{path}: {error}")))?;
-            crate::source_origins::rebase_destinations(
+            let expanded = expand_includes_mapped_with_limit_and_profile(
+                &input.source,
+                &path,
+                &resolve,
+                remaining,
+                profile,
+            )
+            .map_err(|error| invalid(format!("{path}: {error}")))?;
+            crate::source_origins::rebase_destinations_with_profile(
                 expanded,
                 &path,
                 |origin| Some(origin.to_owned()),
                 remaining,
+                profile,
             )
             .map_err(|error| invalid(format!("{path}: {error}")))?
         } else {

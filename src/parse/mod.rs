@@ -30,8 +30,10 @@ pub(crate) use page_breaks::{PAGE_BREAK_MARKER, is_page_break_marker};
 mod destinations;
 mod reference_labels;
 pub use destinations::DestinationSpan;
-pub(crate) use destinations::transclusion_code_ranges;
-pub(crate) use destinations::{DestinationSyntax, resource_destination_spans};
+pub(crate) use destinations::{
+    DestinationSyntax, resource_destination_spans, resource_destination_spans_with_profile,
+};
+pub(crate) use destinations::{transclusion_code_ranges, transclusion_code_ranges_with_profile};
 pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
 
 /// Exact source tokens for parsed inline link/image destinations and accepted
@@ -49,6 +51,17 @@ pub fn destination_spans(source: &str) -> Vec<DestinationSpan> {
     destinations::destination_spans(source)
 }
 
+/// [`destination_spans`] using the selected authoring grammar. Source rewrites
+/// must use the same profile as the document they will render, including links
+/// whose labels cross a definition-list-shaped line.
+#[must_use]
+pub fn destination_spans_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Vec<DestinationSpan> {
+    destinations::destination_spans_with_profile(source, profile)
+}
+
 /// Source labels for accepted reference definitions and resolved reference
 /// links/images, using the ordinary parser's grammar and Unicode identity.
 /// Unused and shadowed definitions are included. Literal text, inline URLs,
@@ -61,6 +74,15 @@ pub fn destination_spans(source: &str) -> Vec<DestinationSpan> {
 #[must_use]
 pub fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
     destinations::reference_label_spans(source)
+}
+
+/// [`reference_label_spans`] using the selected authoring grammar.
+#[must_use]
+pub fn reference_label_spans_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Vec<ReferenceLabelSpan> {
+    destinations::reference_label_spans_with_profile(source, profile)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -317,6 +339,10 @@ impl LazyLinePadding {
 struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
+    // Select source grammar before block ownership and inline parsing. An
+    // already-parsed definition list cannot recover delimiters spanning its
+    // separately parsed terms/definitions when a render profile changes.
+    definition_lists: bool,
     // Reuse only outer inline handoffs. Recursive link/image/strike text is
     // parsed in place on the parent's char buffer and participates in
     // link-containment checks, so it intentionally bypasses this per-parse
@@ -344,6 +370,7 @@ impl ParseProfiler {
         Self {
             enabled: false,
             stages: Vec::new(),
+            definition_lists: true,
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
@@ -359,6 +386,7 @@ impl ParseProfiler {
         Self {
             enabled: true,
             stages: Vec::new(),
+            definition_lists: true,
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
@@ -368,6 +396,11 @@ impl ParseProfiler {
             lazy_line_padding: LazyLinePadding::default(),
             block_spans: None,
         }
+    }
+
+    fn with_profile(mut self, profile: Option<crate::Profile>) -> Self {
+        self.definition_lists = profile != Some(crate::Profile::CommonMarkGfm);
+        self
     }
 
     fn checkpoint(&self) -> Option<ParseStageStart> {
@@ -444,7 +477,15 @@ fn parse_stage_elapsed_ns(_started: Option<ParseStageStart>) -> u128 {
 /// Parse a full Markdown document.
 #[must_use]
 pub fn parse_document(src: &str) -> Document {
-    let mut profiler = ParseProfiler::disabled();
+    parse_document_with_profile(src, None)
+}
+
+/// Parse source using the selected authoring grammar. `None` and GFM-Plus
+/// retain all extensions; CommonMark-GFM leaves definition-list-shaped text
+/// in its original paragraph so inline syntax can span physical lines.
+#[must_use]
+pub fn parse_document_with_profile(src: &str, profile: Option<crate::Profile>) -> Document {
+    let mut profiler = ParseProfiler::disabled().with_profile(profile);
     let source = normalized::NormalizedSource::new(src);
     parse_document_inner(source.as_str(), &mut profiler)
 }
@@ -452,7 +493,16 @@ pub fn parse_document(src: &str) -> Document {
 /// Parse a full Markdown document and collect parser stage attribution.
 #[must_use]
 pub fn parse_document_profiled(src: &str) -> ParseProfile {
-    let mut profiler = ParseProfiler::enabled();
+    parse_document_profiled_with_profile(src, None)
+}
+
+/// Parse with an authoring profile and collect parser stage attribution.
+#[must_use]
+pub fn parse_document_profiled_with_profile(
+    src: &str,
+    profile: Option<crate::Profile>,
+) -> ParseProfile {
+    let mut profiler = ParseProfiler::enabled().with_profile(profile);
     let source = normalized::NormalizedSource::new(src);
     let document = parse_document_inner(source.as_str(), &mut profiler);
     ParseProfile {
@@ -536,7 +586,11 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // and unclosed-fence diagnostics, even when no reference candidate exists.
     let has_reference_candidate = src.contains("]:") || profiler.diagnostics_enabled();
     let (lines, refs, _, consumed_references) = if has_reference_candidate {
-        collect_link_references_tracked(lines, profiler.destinations.as_mut())
+        collect_link_references_tracked(
+            lines,
+            profiler.destinations.as_mut(),
+            profiler.definition_lists,
+        )
     } else {
         (lines, ReferenceMap::new(), false, Vec::new())
     };
@@ -621,17 +675,36 @@ fn logical_line_capacity_hint(byte_len: usize) -> usize {
 /// span-free.
 #[must_use]
 pub fn parse_document_spanned(src: &str) -> SpannedDocument {
+    parse_document_spanned_with_profile(src, None)
+}
+
+/// Parse with an authoring profile and retain exact source spans and matching
+/// diagnostics. All nested containers use the same selected source grammar.
+#[must_use]
+pub fn parse_document_spanned_with_profile(
+    src: &str,
+    profile: Option<crate::Profile>,
+) -> SpannedDocument {
     let source = normalized::NormalizedSource::new(src);
     source.restore_spanned(parse_document_spanned_inner(
         source.as_str(),
-        &mut ParseProfiler::disabled(),
+        &mut ParseProfiler::disabled().with_profile(profile),
     ))
 }
 
 /// Parse a spanned document and collect parser stage attribution.
 #[must_use]
 pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
-    let mut profiler = ParseProfiler::enabled();
+    parse_document_spanned_profiled_with_profile(src, None)
+}
+
+/// Parse with an authoring profile, exact spans, diagnostics and stage timing.
+#[must_use]
+pub fn parse_document_spanned_profiled_with_profile(
+    src: &str,
+    profile: Option<crate::Profile>,
+) -> SpannedParseProfile {
+    let mut profiler = ParseProfiler::enabled().with_profile(profile);
     let source = normalized::NormalizedSource::new(src);
     let document =
         source.restore_spanned(parse_document_spanned_inner(source.as_str(), &mut profiler));
@@ -745,7 +818,7 @@ fn looks_like_reference_definition(line: &str) -> bool {
 #[cfg(test)]
 fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
     let (lines, refs, kept_reference_candidate, consumed) =
-        collect_link_references_tracked(lines, None);
+        collect_link_references_tracked(lines, None, true);
     let rebuilt_lines = !consumed.is_empty();
     let kept = if rebuilt_lines {
         strip_consumed_references(&lines, &consumed)
@@ -758,6 +831,7 @@ fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, 
 fn collect_link_references_tracked<'a>(
     lines: Vec<&'a str>,
     tracker: Option<&mut destinations::DestinationTracker>,
+    definition_lists: bool,
 ) -> (Vec<&'a str>, ReferenceMap, bool, ConsumedReferenceLines) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
@@ -766,6 +840,7 @@ fn collect_link_references_tracked<'a>(
         Some(&mut consumed),
         &mut refs,
         tracker,
+        definition_lists,
     );
     (lines, refs, kept_reference_candidate, consumed)
 }
@@ -828,10 +903,13 @@ fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
     start < lines.len() && is_table_row_source(lines[start])
 }
 
-fn collect_link_reference_metadata(lines: &[&str]) -> (ConsumedReferenceLines, ReferenceMap) {
+fn collect_link_reference_metadata(
+    lines: &[&str],
+    definition_lists: bool,
+) -> (ConsumedReferenceLines, ReferenceMap) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
-    collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs);
+    collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs, definition_lists);
     (consumed, refs)
 }
 
@@ -956,8 +1034,9 @@ fn collect_link_reference_metadata_into(
     lines: &[&str],
     consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
+    definition_lists: bool,
 ) -> bool {
-    collect_link_reference_metadata_into_tracked(lines, consumed, refs, None)
+    collect_link_reference_metadata_into_tracked(lines, consumed, refs, None, definition_lists)
 }
 
 fn collect_link_reference_metadata_into_tracked(
@@ -965,8 +1044,9 @@ fn collect_link_reference_metadata_into_tracked(
     consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
     tracker: Option<&mut destinations::DestinationTracker>,
+    definition_lists: bool,
 ) -> bool {
-    collect_link_reference_metadata_at_depth(lines, consumed, refs, tracker, 0)
+    collect_link_reference_metadata_at_depth(lines, consumed, refs, tracker, definition_lists, 0)
 }
 
 fn collect_link_reference_metadata_at_depth(
@@ -974,6 +1054,7 @@ fn collect_link_reference_metadata_at_depth(
     mut consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
     mut tracker: Option<&mut destinations::DestinationTracker>,
+    definition_lists: bool,
     depth: usize,
 ) -> bool {
     let mut i = 0usize;
@@ -1069,6 +1150,7 @@ fn collect_link_reference_metadata_at_depth(
                     None,
                     refs,
                     tracker.as_deref_mut(),
+                    definition_lists,
                     depth + 1,
                 );
             }
@@ -1105,6 +1187,7 @@ fn collect_link_reference_metadata_at_depth(
                     None,
                     refs,
                     tracker.as_deref_mut(),
+                    definition_lists,
                     depth + 1,
                 );
             }
@@ -1158,6 +1241,7 @@ fn collect_link_reference_metadata_at_depth(
                         None,
                         refs,
                         tracker.as_deref_mut(),
+                        definition_lists,
                         depth + 1,
                     );
                 }
@@ -1196,7 +1280,7 @@ fn collect_link_reference_metadata_at_depth(
                 // After reference parsing rejects it, the same source may be
                 // a valid definition-list term. Share that parser's boundary
                 // scan rather than diagnosing syntax another block owns.
-                && definition_list_term_line_count(&lines[i..]).is_none()
+                && (!definition_lists || definition_list_term_line_count(&lines[i..]).is_none())
             {
                 tracker.malformed_reference(line);
             }
@@ -1467,7 +1551,7 @@ fn parse_blocks_bounded(
     profiler: &mut ParseProfiler,
 ) -> Vec<Block> {
     let consumed = if lines.iter().any(|line| line.contains("]:")) {
-        collect_link_reference_metadata(lines).0
+        collect_link_reference_metadata(lines, profiler.definition_lists).0
     } else {
         Vec::new()
     };
@@ -1957,6 +2041,7 @@ fn parse_blocks_with_refs_profiled(
             continue;
         }
         if !force_paragraph
+            && profiler.definition_lists
             && let Some((dl, used)) = parse_definition_list_profiled(&lines[i..], refs, profiler)
         {
             let started = profiler.checkpoint();

@@ -94,10 +94,17 @@ impl DestinationSpan {
 }
 
 pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
+    destination_spans_with_profile(source, None)
+}
+
+pub(crate) fn destination_spans_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Vec<DestinationSpan> {
     if !source.contains('[') {
         return Vec::new();
     }
-    tracked_destinations(source, false)
+    tracked_destinations(source, false, profile)
         .into_iter()
         .filter(|span| span.syntax == DestinationSyntax::Markdown)
         .map(|span| span.token)
@@ -105,12 +112,19 @@ pub(crate) fn destination_spans(source: &str) -> Vec<DestinationSpan> {
 }
 
 pub(crate) fn reference_label_spans(source: &str) -> Vec<ReferenceLabelSpan> {
+    reference_label_spans_with_profile(source, None)
+}
+
+pub(crate) fn reference_label_spans_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Vec<ReferenceLabelSpan> {
     if !source.contains('[') {
         return Vec::new();
     }
     let normalized = normalized::NormalizedSource::new(source);
     let source = normalized.as_str();
-    let mut profiler = ParseProfiler::disabled();
+    let mut profiler = ParseProfiler::disabled().with_profile(profile);
     let mut tracker = DestinationTracker::new(source);
     tracker.labels = Some(Vec::new());
     profiler.destinations = Some(tracker);
@@ -155,16 +169,27 @@ pub(crate) enum DestinationSyntax {
 }
 
 pub(crate) fn resource_destination_spans(source: &str) -> Vec<SourceDestination> {
+    resource_destination_spans_with_profile(source, None)
+}
+
+pub(crate) fn resource_destination_spans_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Vec<SourceDestination> {
     if !source.contains(['[', '<']) {
         return Vec::new();
     }
-    tracked_destinations(source, true)
+    tracked_destinations(source, true, profile)
 }
 
-fn tracked_destinations(source: &str, html: bool) -> Vec<SourceDestination> {
+fn tracked_destinations(
+    source: &str,
+    html: bool,
+    profile: Option<crate::Profile>,
+) -> Vec<SourceDestination> {
     let normalized = normalized::NormalizedSource::new(source);
     let source = normalized.as_str();
-    let mut profiler = ParseProfiler::disabled();
+    let mut profiler = ParseProfiler::disabled().with_profile(profile);
     let mut tracker = DestinationTracker::new(source);
     tracker.html = html;
     profiler.destinations = Some(tracker);
@@ -190,6 +215,18 @@ pub(crate) fn transclusion_code_ranges(
     source: &str,
     skip_line: impl Fn(&str) -> bool,
     directive_line: impl Fn(&str) -> bool,
+) -> Vec<Range<usize>> {
+    transclusion_code_ranges_with_profile(source, skip_line, directive_line, None)
+}
+
+/// Protect literal code according to the same authoring grammar that will
+/// parse the expanded source. A directive inside an accepted multiline code
+/// span must never acquire include authority from a different dialect.
+pub(crate) fn transclusion_code_ranges_with_profile(
+    source: &str,
+    skip_line: impl Fn(&str) -> bool,
+    directive_line: impl Fn(&str) -> bool,
+    profile: Option<crate::Profile>,
 ) -> Vec<Range<usize>> {
     if !source.contains(['`', '~']) {
         return Vec::new();
@@ -227,8 +264,9 @@ pub(crate) fn transclusion_code_ranges(
     } else {
         originals
     };
-    let (lines, refs, _, consumed) = collect_link_references_tracked(lines, Some(&mut tracker));
-    let mut profiler = ParseProfiler::disabled();
+    let mut profiler = ParseProfiler::disabled().with_profile(profile);
+    let (lines, refs, _, consumed) =
+        collect_link_references_tracked(lines, Some(&mut tracker), profiler.definition_lists);
     profiler.destinations = Some(tracker);
     if source.contains('`') {
         // Use the same paragraph/container boundaries and speculative-work
@@ -1077,6 +1115,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_rebasing_tracks_commonmark_links_across_colon_lines() {
+        let source = "[Term\n: definition](relative.md)\n\n<img src='figure.svg'>\n";
+        let spans =
+            resource_destination_spans_with_profile(source, Some(crate::Profile::CommonMarkGfm));
+        let tokens: Vec<_> = spans
+            .iter()
+            .map(|span| (&source[span.token.range.clone()], span.token.dest.as_str()))
+            .collect();
+        assert_eq!(
+            tokens,
+            [
+                ("relative.md", "relative.md"),
+                ("'figure.svg'", "figure.svg")
+            ]
+        );
+    }
+
+    #[test]
+    fn commonmark_multiline_code_keeps_include_directives_literal() {
+        let source = "`Term\n: definition\n{{#include secret.md}}\ntail`\n";
+        let ranges = transclusion_code_ranges_with_profile(
+            source,
+            |_| false,
+            |line| line.starts_with("{{#include"),
+            Some(crate::Profile::CommonMarkGfm),
+        );
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], 0..source.len() - 1);
+        for profile in [None, Some(crate::Profile::GfmPlus)] {
+            assert!(
+                transclusion_code_ranges_with_profile(
+                    source,
+                    |_| false,
+                    |line| line.starts_with("{{#include"),
+                    profile,
+                )
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn diagnostic_tracking_keeps_cache_reasons_without_editable_character_maps()
     -> Result<(), &'static str> {
         let hostile = format!("{}leaf{}", "[".repeat(32), "](/target)".repeat(32));
@@ -1135,7 +1215,7 @@ mod tests {
     #[test]
     fn resource_spans_follow_real_html_nodes_and_preserve_markdown_only_api() {
         let source = "`<img src='code.svg'>`\n\n```html\n<a href='fenced.md'>x</a>\n```\n\n> 中 <img src='same.svg'> <a href='next.md?x=1&amp;y=2'>next</a>\n\n<div>\n<!-- <img src='comment.svg'> -->\n<img src=\"same.svg\" title=\"<a href='title.md'>\">\n<a href='block.md'>block</a>\n</div>\n\n[Markdown](real.md) ![<img src='alt.svg'>](image.svg)\n";
-        let spans = tracked_destinations(source, true);
+        let spans = tracked_destinations(source, true, None);
         let actual: Vec<_> = spans
             .iter()
             .map(|span| {
@@ -1167,7 +1247,7 @@ mod tests {
     #[test]
     fn html_block_spans_keep_container_and_crlf_coordinates() {
         let source = "> <div>\r\n> <img src='one.svg'>\r\n> <a\r\n> href=\"next.md#target\">Next</a>\r\n> </div>\r\n\r\n- <img src='two.svg'>\r\n";
-        let spans = tracked_destinations(source, true);
+        let spans = tracked_destinations(source, true, None);
         let values: Vec<_> = spans
             .iter()
             .map(|span| &source[span.token.range.clone()])

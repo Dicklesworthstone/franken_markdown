@@ -40,8 +40,24 @@ impl FmdBook {
     /// or the source limits enforced by the pure book renderer.
     #[wasm_bindgen(constructor)]
     pub fn new(paths: Vec<String>, sources: Vec<String>) -> Result<FmdBook, JsValue> {
+        Self::new_with_profile(paths, sources, None)
+    }
+
+    /// Parse already-expanded chapters in the selected source dialect.
+    /// Include directives remain literal, as with the original constructor.
+    ///
+    /// # Errors
+    /// Rejects invalid profiles before parsing and the same inputs as `new`.
+    #[wasm_bindgen(js_name = newWithProfile)]
+    pub fn new_with_profile(
+        paths: Vec<String>,
+        sources: Vec<String>,
+        authoring_profile: Option<String>,
+    ) -> Result<FmdBook, JsValue> {
+        let profile = crate::wasm_abi::parse_authoring_profile(authoring_profile.as_deref())
+            .map_err(JsValue::from_str)?;
         let inputs = book_inputs(paths, sources).map_err(JsValue::from_str)?;
-        let renderer = BookWorkspace::new(&inputs).map_err(to_js)?;
+        let renderer = BookWorkspace::new_with_profile(&inputs, profile).map_err(to_js)?;
         Ok(Self { renderer })
     }
 
@@ -60,13 +76,34 @@ impl FmdBook {
         include_paths: Vec<String>,
         include_sources: Vec<String>,
     ) -> Result<FmdBook, JsValue> {
+        Self::from_sources_profiled(paths, sources, include_paths, include_sources, None)
+    }
+
+    /// Select the source dialect before include protection, URL rebasing and
+    /// parsing. This preserves CommonMark inline syntax spanning colon lines,
+    /// including literal code examples that contain include directives.
+    ///
+    /// # Errors
+    /// Rejects invalid profiles before source construction, and the same
+    /// source/expansion/diagnostic failures as `fromSources`.
+    #[wasm_bindgen(js_name = fromSourcesProfiled)]
+    pub fn from_sources_profiled(
+        paths: Vec<String>,
+        sources: Vec<String>,
+        include_paths: Vec<String>,
+        include_sources: Vec<String>,
+        authoring_profile: Option<String>,
+    ) -> Result<FmdBook, JsValue> {
+        let profile = crate::wasm_abi::parse_authoring_profile(authoring_profile.as_deref())
+            .map_err(JsValue::from_str)?;
         let chapters = book_inputs(paths, sources).map_err(JsValue::from_str)?;
         let resources = if include_paths.is_empty() && include_sources.is_empty() {
             Vec::new()
         } else {
             book_inputs(include_paths, include_sources).map_err(JsValue::from_str)?
         };
-        let renderer = BookWorkspace::from_sources(&chapters, &resources).map_err(to_js)?;
+        let renderer = BookWorkspace::from_sources_with_profile(&chapters, &resources, profile)
+            .map_err(to_js)?;
         Ok(Self { renderer })
     }
 
@@ -174,15 +211,16 @@ impl FmdBook {
     }
 
     /// Select the Markdown authoring dialect shared by every book export.
-    /// `undefined` restores the historical extension-enabled default. This does
-    /// not reparse sources, change their revision, or clear host assets.
+    /// `undefined` restores the historical extension-enabled default. A changed
+    /// dialect reparses the retained source and diagnostics atomically; selecting
+    /// the same dialect reuses cached ASTs. Source revision and assets survive.
     ///
     /// # Errors
-    /// Unknown or blank dialects leave the retained settings unchanged.
+    /// Invalid dialects or failed include/diagnostic admission leave the entire
+    /// previous usable source capture and renderer settings unchanged.
     #[wasm_bindgen(js_name = setAuthoringProfile)]
     pub fn set_authoring_profile(&mut self, profile: Option<String>) -> Result<(), JsValue> {
-        authoring_profile(self.renderer.options_mut(), profile.as_deref())
-            .map_err(JsValue::from_str)
+        authoring_profile(&mut self.renderer, profile.as_deref()).map_err(to_js)
     }
 
     /// Replace HTML/EPUB CSS. `undefined` restores the built-in stylesheet;
@@ -563,13 +601,10 @@ fn font_scale(scale: f64) -> Result<f32, &'static str> {
 }
 
 // Validate before mutation so invalid direct ABI calls preserve retained state.
-fn authoring_profile(
-    options: &mut crate::wasm::WasmRenderOptions,
-    value: Option<&str>,
-) -> Result<(), &'static str> {
-    let profile = crate::wasm_abi::parse_authoring_profile(value)?;
-    options.profile = profile;
-    Ok(())
+fn authoring_profile(workspace: &mut BookWorkspace, value: Option<&str>) -> crate::Result<()> {
+    let profile = crate::wasm_abi::parse_authoring_profile(value)
+        .map_err(|message| RenderError::InvalidInput(message.into()))?;
+    workspace.set_authoring_profile(profile)
 }
 
 #[cfg(test)]
@@ -819,13 +854,20 @@ mod tests {
 
     #[test]
     fn invalid_authoring_profiles_leave_retained_options_unchanged() {
-        let mut options = crate::wasm::WasmRenderOptions::default();
-        authoring_profile(&mut options, Some("commonmark-gfm")).unwrap();
+        let mut workspace = BookWorkspace::new(&[BookInput {
+            path: "one.md".into(),
+            source: "# One".into(),
+        }])
+        .unwrap();
+        authoring_profile(&mut workspace, Some("commonmark-gfm")).unwrap();
         for value in ["", " ", "gfm", "CommonMark-GFM", " gfm-plus "] {
-            assert!(authoring_profile(&mut options, Some(value)).is_err());
-            assert_eq!(options.profile, Some(crate::Profile::CommonMarkGfm));
+            assert!(authoring_profile(&mut workspace, Some(value)).is_err());
+            assert_eq!(
+                workspace.options().profile,
+                Some(crate::Profile::CommonMarkGfm)
+            );
         }
-        authoring_profile(&mut options, None).unwrap();
-        assert_eq!(options.profile, None);
+        authoring_profile(&mut workspace, None).unwrap();
+        assert_eq!(workspace.options().profile, None);
     }
 }

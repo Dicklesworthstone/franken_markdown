@@ -29,9 +29,11 @@ use crate::cli::protected_paths::{
     ProtectedInputs, normalize_lexical_path, output_keys_are_case_folded,
 };
 use crate::file_write::{OutputFile, write_outputs_staged};
+#[cfg(test)]
+use crate::parse_markdown;
 use crate::{
-    Document, HtmlOptions, PdfASettings, PdfImageAsset, PdfOptions, parse_markdown,
-    render_html_document, render_pdf_document, render_pdf_document_pdfa,
+    Document, HtmlOptions, PdfASettings, PdfImageAsset, PdfOptions, render_html_document,
+    render_pdf_document, render_pdf_document_pdfa,
 };
 
 /// Conservative default per-job peak RSS estimate (bytes) for the memory
@@ -177,6 +179,8 @@ pub struct BatchPlan {
 
 /// Render + scheduling options for a batch run.
 pub struct BatchOptions {
+    /// HTML/EPUB authoring options. Combined HTML/PDF output requires the same
+    /// effective dialect in both option sets; `None` and GFM-Plus are equivalent.
     pub html: HtmlOptions,
     pub pdf: PdfOptions,
     pub mode: BatchMode,
@@ -677,12 +681,14 @@ fn read_expanded_input(
     input: &Path,
     max_bytes: u64,
     input_paths: &mut Vec<PathBuf>,
+    profile: Option<crate::Profile>,
 ) -> Result<String, String> {
     let source = read_input_limited(input, max_bytes)?;
     if !crate::transclude::has_includes(&source) {
         return Ok(source);
     }
-    let expansion = crate::watch::expand_file_includes(&source, input, max_bytes);
+    let expansion =
+        crate::watch::expand_file_includes_with_profile(&source, input, max_bytes, profile);
     input_paths.extend(expansion.input_paths().map(Path::to_path_buf));
     expansion.result
 }
@@ -956,6 +962,7 @@ fn source_overwrite_errors(
     host_inputs: &[PathBuf],
     cx: &Cx,
     cancelled: &AtomicBool,
+    profile: Option<crate::Profile>,
 ) -> Vec<Option<String>> {
     let extensions: &[&str] = match plan.format {
         OutputFormat::Html => &["html"],
@@ -993,8 +1000,9 @@ fn source_overwrite_errors(
         // remains an input even if a later include is missing or malformed.
         let mut include_paths = Vec::new();
         let resources = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let md = read_expanded_input(input, opts.max_input_bytes, &mut include_paths).ok()?;
-            let doc = parse_markdown(&md);
+            let md = read_expanded_input(input, opts.max_input_bytes, &mut include_paths, profile)
+                .ok()?;
+            let doc = crate::parse_markdown_with_profile(&md, profile);
             Some(auto_image_inputs(input, &doc))
         }));
         for path in include_paths {
@@ -1032,6 +1040,7 @@ fn source_overwrite_errors(
 /// Each worker keeps immutable shared options. Per-file metadata is merged
 /// into fresh options, so one input cannot change the next input's defaults.
 struct BatchRenderOptions {
+    profile: Option<crate::Profile>,
     html: HtmlOptions,
     pdf: PdfOptions,
     pdf_a: PdfASettings,
@@ -1095,7 +1104,12 @@ fn render_one(
     warnings: &mut Vec<BatchWarning>,
 ) -> FileEntry {
     let mut input_paths = vec![input.to_path_buf()];
-    let md = match read_expanded_input(input, options.max_input_bytes, &mut input_paths) {
+    let md = match read_expanded_input(
+        input,
+        options.max_input_bytes,
+        &mut input_paths,
+        options.profile,
+    ) {
         Ok(text) => text,
         Err(e) => return failed(input, FileErrorKind::Input, e),
     };
@@ -1103,7 +1117,7 @@ fn render_one(
     // interpreted. The AST parser skips that block; the render options must
     // separately receive its title, author, language and TOC settings.
     let frontmatter = crate::parse::split_frontmatter(&md).0;
-    let doc = parse_markdown(&md);
+    let doc = crate::parse_markdown_with_profile(&md, options.profile);
     if let Some(dir) = out_dir
         && let Err(e) = std::fs::create_dir_all(dir)
     {
@@ -1319,8 +1333,9 @@ fn render_one(
         if let Some(width) = options.shell.as_ref().and_then(|shell| shell.svg_width_pt) {
             svg_opts.max_width_pt = width;
         }
+        let document = crate::apply_profile(&doc, options.profile);
         match crate::svg::render_svg_with_resources(
-            &doc,
+            &document,
             &svg_opts,
             &options.pdf.font_assets,
             &images,
@@ -1533,6 +1548,23 @@ pub async fn render_batch_pdfa(
     }
 }
 
+fn authoring_profile(
+    format: OutputFormat,
+    html: Option<crate::Profile>,
+    pdf: Option<crate::Profile>,
+) -> Result<Option<crate::Profile>, &'static str> {
+    match format {
+        OutputFormat::Both
+            if (html == Some(crate::Profile::CommonMarkGfm))
+                != (pdf == Some(crate::Profile::CommonMarkGfm)) =>
+        {
+            Err("HTML and PDF authoring profiles must select the same dialect for combined output")
+        }
+        OutputFormat::Html | OutputFormat::Epub | OutputFormat::Both => Ok(html),
+        OutputFormat::Pdf | OutputFormat::Svg => Ok(pdf),
+    }
+}
+
 async fn render_batch_with_protected_inputs(
     cx: &Cx,
     plan: BatchPlan,
@@ -1540,6 +1572,26 @@ async fn render_batch_with_protected_inputs(
     budget: WorkerBudget,
     host: BatchHost<'_>,
 ) -> Outcome<BatchReceipt, BatchError> {
+    // One expansion and AST supplies both outputs. Refuse conflicting source
+    // grammars before discovery, resource reads or publication; keep the public
+    // error enum and per-file receipt contract unchanged.
+    let profile = match authoring_profile(plan.format, opts.html.profile, opts.pdf.profile) {
+        Ok(profile) => profile,
+        Err(message) => {
+            return Outcome::Ok(BatchReceipt {
+                format: plan.format,
+                mode: opts.mode,
+                workers: budget.workers.max(1),
+                queue_depth: budget.queue_depth,
+                files: plan
+                    .inputs
+                    .iter()
+                    .map(|input| failed(input, FileErrorKind::Render, message.to_owned()))
+                    .collect(),
+                cancelled: false,
+            });
+        }
+    };
     // Cooperative cancellation/budget observation at the batch boundary.
     if cx.checkpoint().is_err() {
         let files = plan
@@ -1598,6 +1650,7 @@ async fn render_batch_with_protected_inputs(
         host.inputs,
         cx,
         &cancelled,
+        profile,
     ));
     let inputs = Arc::new(plan.inputs);
 
@@ -1616,6 +1669,7 @@ async fn render_batch_with_protected_inputs(
         let collisions = Arc::clone(&collisions);
         let overwrite_errors = Arc::clone(&overwrite_errors);
         let options = BatchRenderOptions {
+            profile,
             html: opts.html.clone(),
             pdf: opts.pdf.clone(),
             pdf_a: host.pdf_a,

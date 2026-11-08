@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use super::manifest::{self, Manifest};
 use crate::book::{
-    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics, resolve_book_destination,
+    Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics_and_profile,
+    resolve_book_destination,
 };
 use crate::{Block, Inline, PdfImageAsset};
 
@@ -38,15 +39,20 @@ pub(super) fn load(
     input: &Path,
     max_input_bytes: u64,
     max_image_bytes: u64,
+    profile: Option<crate::Profile>,
 ) -> Result<LoadedBook, String> {
-    let mut loaded = load_sources(input, max_input_bytes)?;
+    let mut loaded = load_sources(input, max_input_bytes, profile)?;
     load_images(&mut loaded, max_image_bytes)?;
     Ok(loaded)
 }
 
 /// Discovery, role selection and expansion only. The check command never
 /// calls the image phase or inspects presentation configuration.
-pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedBook, String> {
+pub(super) fn load_sources(
+    input: &Path,
+    max_input_bytes: u64,
+    profile: Option<crate::Profile>,
+) -> Result<LoadedBook, String> {
     let root = input
         .canonicalize()
         .map_err(|error| format!("opening {}: {error}", input.display()))?;
@@ -118,15 +124,16 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
                 Ok(Some((content, requested)))
             };
             let remaining = (MAX_TOTAL_SOURCE_BYTES - expanded_bytes).min(per_file) as usize;
-            let expanded = crate::transclude::expand_includes_mapped_with_limit(
-                &raw, &relative, &resolve, remaining,
+            let expanded = crate::transclude::expand_includes_mapped_with_limit_and_profile(
+                &raw, &relative, &resolve, remaining, profile,
             )
             .map_err(|error| format!("{relative}: {error}"))?;
-            crate::cli::source_origins::rebase_destinations(
+            crate::cli::source_origins::rebase_destinations_with_profile(
                 expanded,
                 &relative,
                 |origin| Some(origin.to_owned()),
                 remaining,
+                profile,
             )
             .map_err(|error| format!("{relative}: {error}"))?
         } else {
@@ -144,8 +151,8 @@ pub(super) fn load_sources(input: &Path, max_input_bytes: u64) -> Result<LoadedB
         });
     }
     protected_paths.extend(include_paths.into_inner());
-    let (book, source_diagnostics) =
-        build_book_with_diagnostics(&inputs).map_err(|error| error.to_string())?;
+    let (book, source_diagnostics) = build_book_with_diagnostics_and_profile(&inputs, profile)
+        .map_err(|error| error.to_string())?;
     warnings.sort();
     warnings.dedup();
     Ok(LoadedBook {

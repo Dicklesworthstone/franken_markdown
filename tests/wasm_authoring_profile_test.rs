@@ -5,7 +5,7 @@
 use franken_markdown::wasm_abi::*;
 use franken_markdown::{HtmlOptions, PdfOptions, Profile, SvgOptions};
 
-const SOURCE: &str = "# Profiles\n\nTerm\n: A **definition** with a [link](https://example.com).\n\n> Nested term\n> : Nested definition.\n\nA note[^n].\n\n[^n]: Note term\n    : A definition in the note.\n\n<script>alert('unsafe')</script>\n";
+const SOURCE: &str = "# Profiles\n\nTerm\n: A **definition** with a [link](https://example.com).\n\n*Cross-line\n: emphasis*\n\n[Cross-line\n: link](https://example.com/target)\n\n`Cross-line\n: code`\n\n> Nested term\n> : Nested definition.\n\nA note[^n].\n\n[^n]: Note term\n    : A definition in the note.\n\n<script>alert('unsafe')</script>\n";
 
 fn html(profile: Option<Profile>) -> FmdRenderResult {
     render_html_configured_profiled(
@@ -146,6 +146,13 @@ fn html_profiles_match_native_structure_without_changing_html_safety() {
         );
         assert!(!expected.contains("<script>"));
         assert!(expected.contains("<strong>definition</strong>"));
+        if profile == Some(Profile::CommonMarkGfm) {
+            assert!(expected.contains("<em>Cross-line\n: emphasis</em>"));
+            assert!(expected.contains("<code>Cross-line : code</code>"));
+            assert!(
+                expected.contains("href=\"https://example.com/target\">Cross-line\n: link</a>")
+            );
+        }
     }
     assert_eq!(html(None).bytes(), html(Some(Profile::GfmPlus)).bytes());
     assert_ne!(
@@ -198,8 +205,8 @@ fn pdf_authoring_profile_and_archival_profile_remain_independent() {
 
 #[test]
 fn svg_profiles_reach_the_shared_ast_and_keep_source_diagnostics() {
-    let document = franken_markdown::parse_markdown(SOURCE);
     for profile in [None, Some(Profile::CommonMarkGfm), Some(Profile::GfmPlus)] {
+        let document = franken_markdown::parse_markdown_with_profile(SOURCE, profile);
         let document = franken_markdown::apply_profile(&document, profile);
         let expected = franken_markdown::render_svg(
             &document,
@@ -219,8 +226,8 @@ fn svg_profiles_reach_the_shared_ast_and_keep_source_diagnostics() {
 
 #[test]
 fn epub_profiles_match_the_native_publication_without_dropping_source_text() {
-    let document = franken_markdown::parse_markdown(SOURCE);
     for profile in [None, Some(Profile::CommonMarkGfm), Some(Profile::GfmPlus)] {
+        let document = franken_markdown::parse_markdown_with_profile(SOURCE, profile);
         let options = HtmlOptions {
             profile,
             custom_css: Some(String::new()),

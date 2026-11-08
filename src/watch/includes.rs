@@ -24,7 +24,14 @@ impl Expansion {
 /// Resolve through the same include engine used for rendering, including code
 /// fences, selectors, recursive paths, cycles and output budgets. Dependencies
 /// discovered before an error remain available so watch can recover on save.
-pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> Expansion {
+/// Expand and rebase using the same source grammar as the publication. In
+/// particular, include-shaped lines inside multiline code remain literal.
+pub(crate) fn expand_file_includes_with_profile(
+    src: &str,
+    input: &Path,
+    max_bytes: u64,
+    profile: Option<crate::Profile>,
+) -> Expansion {
     let dependencies = RefCell::new(BTreeMap::new());
     let entries = RefCell::new(BTreeMap::new());
     let result = (|| {
@@ -126,10 +133,11 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
         let budget = usize::try_from(max_bytes)
             .unwrap_or(usize::MAX)
             .min(crate::transclude::DEFAULT_MAX_EXPANDED_BYTES);
-        let expanded =
-            crate::transclude::expand_includes_mapped_with_limit(src, "<input>", &resolver, budget)
-                .map_err(|e| e.to_string())?;
-        crate::cli::source_origins::rebase_destinations(
+        let expanded = crate::transclude::expand_includes_mapped_with_limit_and_profile(
+            src, "<input>", &resolver, budget, profile,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::cli::source_origins::rebase_destinations_with_profile(
             expanded,
             "__fmd_input__.md",
             |origin| {
@@ -144,6 +152,7 @@ pub(crate) fn expand_file_includes(src: &str, input: &Path, max_bytes: u64) -> E
                     .map(|parts| parts.join("/"))
             },
             budget,
+            profile,
         )
     })();
     Expansion {

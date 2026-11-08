@@ -900,6 +900,11 @@ export function createBookBindings(loadBookClass) {
       (typeof BookClass.prototype?.updateSources === "function" ||
         settings.includeSources.length > 0 ||
         normalized.sources.some((source) => source.includes("{{#include")));
+    const profiledConstructor = expand ? "fromSourcesProfiled" : "newWithProfile";
+    if (settings.profile !== undefined && typeof BookClass[profiledConstructor] !== "function") {
+      throw updateError("UNSUPPORTED_BOOK_PROFILE",
+        `this WASM build lacks FmdBook.${profiledConstructor}; rebuild the matching package to select the authoring dialect before source parsing`);
+    }
     let raw;
     try {
       if (expand) {
@@ -908,14 +913,18 @@ export function createBookBindings(loadBookClass) {
             "this WASM build lacks FmdBook.fromSources; rebuild the matching package for book includes",
           );
         }
-        raw = BookClass.fromSources(
+        const constructor = settings.profile === undefined ? "fromSources" : "fromSourcesProfiled";
+        raw = BookClass[constructor](
           normalized.paths,
           normalized.sources,
           settings.includeSources.map((file) => file.path),
           settings.includeSources.map((file) => file.source),
+          settings.profile,
         );
       } else {
-        raw = new BookClass(normalized.paths, normalized.sources);
+        raw = settings.profile === undefined
+          ? new BookClass(normalized.paths, normalized.sources)
+          : BookClass.newWithProfile(normalized.paths, normalized.sources, settings.profile);
       }
     } catch (error) {
       // wasm-bindgen may throw plain Rust strings. Preserve a bounded reason

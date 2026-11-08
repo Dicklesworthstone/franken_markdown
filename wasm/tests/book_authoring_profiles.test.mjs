@@ -70,6 +70,29 @@ test("explicit profiles refuse old native books before construction while defaul
   assert.equal(f.stats.creates, 1); assert.equal(f.stats.frees, 1);
 });
 
+test("source dialect is selected before either native constructor parses or expands", async () => {
+  for (const expandIncludes of [false, true]) {
+    const f = nativeFixture();
+    const session = await f.engine.createBook(files, { profile: "commonmark-gfm", expandIncludes });
+    try {
+      assert.deepEqual(f.constructions, [{ profile: "commonmark-gfm", expanded: expandIncludes }]);
+      assert.equal(decode(session.renderSite()).settings.profile, "commonmark-gfm");
+      assert.equal(f.stats.creates, 1);
+    } finally { session.dispose(); }
+  }
+});
+
+test("legacy profile setters cannot substitute for source-aware construction", async () => {
+  for (const expandIncludes of [false, true]) {
+    const f = nativeFixture({ oldProfileConstruction: true });
+    await assert.rejects(f.engine.createBook(files, { profile: "commonmark-gfm", expandIncludes }), unsupported);
+    assert.equal(f.stats.creates, 0);
+    const ordinary = await f.engine.createBook(files, { expandIncludes });
+    ordinary.dispose();
+    assert.equal(f.stats.creates, 1);
+  }
+});
+
 test("retained native books and output caches cannot reuse a different authoring dialect", async () => {
   const f = nativeFixture();
   const cached = createCachedBookRenderer(f.retained, api => api.renderBookSite());

@@ -295,16 +295,21 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     let publication = publishing::prepare(&args.publishing, args.to, &config.render)?;
     let typography = options::prepare(&args, theme, &config.render)?;
     let (mut loaded, link_check) = if args.deny_broken_links {
-        let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes)
+        let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes, args.profile)
             .map_err(|e| error(66, "book_error", e))?;
-        let report = preflight::require_clean(&loaded.book)?;
+        let report = preflight::require_clean(&loaded.book, args.profile)?;
         inputs::load_images(&mut loaded, args.max_pdf_image_bytes)
             .map_err(|e| error(66, "book_error", e))?;
         (loaded, format!(",\"link_check\":{report}"))
     } else {
         (
-            inputs::load(&args.input, args.max_input_bytes, args.max_pdf_image_bytes)
-                .map_err(|e| error(66, "book_error", e))?,
+            inputs::load(
+                &args.input,
+                args.max_input_bytes,
+                args.max_pdf_image_bytes,
+                args.profile,
+            )
+            .map_err(|e| error(66, "book_error", e))?,
             String::new(),
         )
     };
@@ -995,7 +1000,7 @@ mod tests {
         let dir = fixture();
         let input = dir.0.join("chapters");
         let output = dir.0.join("book.pdf");
-        let loaded = inputs::load(&input, 64 * 1024 * 1024, 32 * 1024 * 1024)
+        let loaded = inputs::load(&input, 64 * 1024 * 1024, 32 * 1024 * 1024, None)
             .unwrap_or_else(|e| panic!("{e}"));
         let options = PdfOptions {
             theme: FmdConfig::default().to_theme(),

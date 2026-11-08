@@ -18,7 +18,7 @@ mod dependencies;
 #[path = "watch/includes.rs"]
 mod includes;
 
-pub(crate) use includes::expand_file_includes;
+pub(crate) use includes::expand_file_includes_with_profile;
 
 /// Default poll/debounce window in milliseconds (`--interval`).
 pub const DEFAULT_INTERVAL_MS: u64 = 300;
@@ -123,13 +123,26 @@ impl<C: Clock> PollWatcher<C> {
     /// on the first [`poll`].
     #[must_use]
     pub fn new(paths: Vec<PathBuf>, debounce: Duration, clock: C) -> Self {
+        Self::new_with_profile(paths, debounce, clock, None)
+    }
+
+    /// Prime source and dependency fingerprints using the publication's
+    /// authoring grammar for includes, links and images. The profile remains
+    /// fixed for this watch session; source changes retain ordinary debounce.
+    #[must_use]
+    pub fn new_with_profile(
+        paths: Vec<PathBuf>,
+        debounce: Duration,
+        clock: C,
+        profile: Option<crate::Profile>,
+    ) -> Self {
         let mut seen = BTreeSet::new();
         let paths: Vec<_> = paths
             .into_iter()
             .filter(|path| seen.insert(path.clone()))
             .collect();
         let mut watcher = Self {
-            dependencies: dependencies::Graph::new(&paths),
+            dependencies: dependencies::Graph::new(&paths, profile),
             paths,
             debounce,
             clock,

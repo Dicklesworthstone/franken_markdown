@@ -255,3 +255,54 @@ fn invalid_profiles_fail_before_configuration_sources_or_assets_are_opened() {
         assert!(output.stdout.is_empty());
     }
 }
+
+#[test]
+fn commonmark_source_parsing_controls_included_links_and_literal_include_examples() {
+    let root = workspace();
+    fs::write(
+        root.join("book/start.md"),
+        "# Start\n\n{{#include parts/shared.md}}\n",
+    )
+    .unwrap();
+    fs::write(root.join("book/end.md"), "# End\n").unwrap();
+    fs::write(
+        root.join("book/book.toml"),
+        "include_only=['parts/shared.md']\n",
+    )
+    .unwrap();
+    let shared = "*Term\n: definition*\n\n[Term\n: definition](../end.md#end)\n\n`Term\n: definition\n{{#include missing.md}}\ntail`\n";
+    fs::write(root.join("book/parts/shared.md"), shared).unwrap();
+    let args = [
+        "--to",
+        "html",
+        "--out-dir",
+        "site",
+        "--profile",
+        "commonmark-gfm",
+        "--deny-broken-links",
+    ];
+    let output = fmd(&root, &args);
+    status(&output, 0);
+    let page = fs::read_to_string(root.join("site/start.html")).unwrap();
+    assert!(page.contains("<em>Term\n: definition</em>"));
+    assert!(page.contains("href=\"end.html#end\""));
+    assert!(page.contains("<code>Term : definition {{#include missing.md}} tail</code>"));
+    fs::write(
+        root.join("book/parts/shared.md"),
+        shared.replace("#end)", "#missing)"),
+    )
+    .unwrap();
+    let checked = fmd(&root, &["--check-links", "--profile", "commonmark-gfm"]);
+    status(&checked, 65);
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("missing_anchor"));
+    let denied = fmd(&root, &args);
+    status(&denied, 65);
+    assert!(
+        String::from_utf8_lossy(&denied.stderr)
+            .contains("--check-links --json --profile commonmark-gfm")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("site/start.html")).unwrap(),
+        page
+    );
+}

@@ -103,7 +103,21 @@ pub struct BookHeading {
 /// paths, duplicate normalized paths, or colliding output filenames. Output
 /// collisions are checked case-insensitively so publication is portable.
 pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
-    build_book_inner(inputs, None)
+    build_book_with_profile(inputs, None)
+}
+
+/// Parse chapters using an authoring dialect before deriving titles and links.
+/// `None` retains the historical extension-enabled parser. Source-aware callers
+/// should select the same profile here and in their render options; rendering
+/// an already parsed AST cannot recover source delimiters that were consumed.
+///
+/// # Errors
+/// Same path, output collision and empty-book errors as [`build_book`].
+pub fn build_book_with_profile(
+    inputs: &[BookInput],
+    profile: Option<crate::Profile>,
+) -> Result<Book> {
+    build_book_inner(inputs, None, profile)
 }
 
 /// Parse a book once while preserving recoverable parser findings for every
@@ -117,9 +131,22 @@ pub fn build_book(inputs: &[BookInput]) -> Result<Book> {
 /// 64 MiB of chapter text and paths, 4096 diagnostics, and 4 MiB of serialized
 /// findings. Admission failure never returns a partial or falsely clean report.
 pub fn build_book_with_diagnostics(inputs: &[BookInput]) -> Result<(Book, BookSourceDiagnostics)> {
+    build_book_with_diagnostics_and_profile(inputs, None)
+}
+
+/// Parse source and its diagnostics in one selected authoring dialect.
+/// Findings retain the exact expanded/rebased source byte coordinates supplied
+/// by the host. No post-parse reconstruction of definition syntax is required.
+///
+/// # Errors
+/// Same complete-book admission as [`build_book_with_diagnostics`].
+pub fn build_book_with_diagnostics_and_profile(
+    inputs: &[BookInput],
+    profile: Option<crate::Profile>,
+) -> Result<(Book, BookSourceDiagnostics)> {
     diagnostics::admit_inputs(inputs)?;
     let mut reports = Vec::with_capacity(inputs.len());
-    let book = build_book_inner(inputs, Some(&mut reports))?;
+    let book = build_book_inner(inputs, Some(&mut reports), profile)?;
     let report = BookSourceDiagnostics::new(reports)?;
     Ok((book, report))
 }
@@ -127,6 +154,7 @@ pub fn build_book_with_diagnostics(inputs: &[BookInput]) -> Result<(Book, BookSo
 fn build_book_inner(
     inputs: &[BookInput],
     mut diagnostics: Option<&mut Vec<BookChapterDiagnostics>>,
+    profile: Option<crate::Profile>,
 ) -> Result<Book> {
     if inputs.is_empty() {
         return Err(RenderError::InvalidInput(
@@ -138,11 +166,11 @@ fn build_book_inner(
     for (input, path) in inputs.iter().zip(paths) {
         let (frontmatter, _) = parse::split_frontmatter(&input.source);
         let doc = if let Some(reports) = diagnostics.as_deref_mut() {
-            let (doc, report) = self::diagnostics::parse_chapter(input, &path);
+            let (doc, report) = self::diagnostics::parse_chapter(input, &path, profile);
             reports.push(report);
             doc
         } else {
-            parse::parse_document(&input.source)
+            crate::parse_markdown_with_profile(&input.source, profile)
         };
         let title = frontmatter
             .as_ref()

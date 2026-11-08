@@ -17,6 +17,8 @@ pub(crate) mod remote_images;
 pub(crate) use crate::source_origins;
 
 #[cfg(test)]
+use crate::parse_markdown;
+#[cfg(test)]
 use remote_images::{curl_remote_image_args, wget_remote_image_args};
 use remote_images::{fetch_remote_image, remote_image_url};
 
@@ -28,7 +30,7 @@ use crate::watch::{
 };
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
-    PdfASettings, PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme, parse_markdown,
+    PdfASettings, PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme,
     render_html_document, render_pdf_document, render_pdf_document_pdfa, render_warnings,
 };
 
@@ -846,6 +848,10 @@ fn render_watched_file(
 
 fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
+    let profile = match parse_profile_arg(&args.style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
@@ -930,7 +936,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 json,
             );
         }
-        return run_watch_directory(args, md_files, extras, interval, json, no_config);
+        return run_watch_directory(args, md_files, extras, interval, json, no_config, profile);
     }
     let paths = collect_watch_paths(&args.input, &extras);
     let debounce = if args.measure.is_some() {
@@ -938,7 +944,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     } else {
         interval
     };
-    let mut watcher = PollWatcher::new(paths, debounce, SystemClock);
+    let mut watcher = PollWatcher::new_with_profile(paths, debounce, SystemClock, profile);
     let (_, initial_html) = render_watched_file(&args, json, no_config);
     let preview = if args.serve {
         match start_watch_preview() {
@@ -1019,6 +1025,7 @@ fn run_watch_directory(
     interval: Duration,
     json: bool,
     no_config: bool,
+    profile: Option<crate::Profile>,
 ) -> ExitCode {
     if args.measure.is_some() {
         return fail_json(
@@ -1040,7 +1047,7 @@ fn run_watch_directory(
         return fail_json(64, "usage_error", &error, json);
     }
     let paths = md_files.iter().chain(&extras).cloned().collect();
-    let mut watcher = PollWatcher::new(paths, interval, SystemClock);
+    let mut watcher = PollWatcher::new_with_profile(paths, interval, SystemClock, profile);
     let protected = watch_directory_inputs(&watcher, no_config);
     for input in &md_files {
         if let Err(error) = validate_watch_directory_input(&args, input, &protected) {
@@ -1590,6 +1597,12 @@ fn run_render_with_preview(
     };
     // lang/toc/toc_depth merge below frontmatter, so they wait for it.
     apply_config_render_defaults(&mut args.style, &config.render);
+    // Source grammar also controls include protection and resource rebasing;
+    // selecting it after expansion or AST parsing loses that ownership.
+    let profile = match parse_profile_arg(&args.style, json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
 
     let mut input_paths = Vec::new();
     if !no_config {
@@ -1631,18 +1644,30 @@ fn run_render_with_preview(
     let src = if crate::transclude::has_includes(&src) {
         match args.input.as_deref() {
             Some("-") | None => {
-                return fail_json(
-                    64,
-                    "usage_error",
-                    "{{#include}} needs a file input (stdin/--text have no base directory)",
-                    json,
-                );
+                let budget = usize::try_from(args.max_input_bytes)
+                    .unwrap_or(usize::MAX)
+                    .min(crate::transclude::DEFAULT_MAX_EXPANDED_BYTES);
+                match crate::transclude::expand_includes_with_limit_and_profile(
+                    &src,
+                    &|_, _| {
+                        Err(
+                            "{{#include}} needs a file input (stdin/--text have no base directory)"
+                                .to_owned(),
+                        )
+                    },
+                    budget,
+                    profile,
+                ) {
+                    Ok(expanded) => expanded,
+                    Err(error) => return fail_json(64, "usage_error", &error.to_string(), json),
+                }
             }
             Some(input_path) => {
-                let expansion = crate::watch::expand_file_includes(
+                let expansion = crate::watch::expand_file_includes_with_profile(
                     &src,
                     Path::new(input_path),
                     args.max_input_bytes,
+                    profile,
                 );
                 input_paths.extend(expansion.input_paths().map(Path::to_path_buf));
                 match expansion.result {
@@ -1788,7 +1813,7 @@ fn run_render_with_preview(
         .as_ref()
         .and_then(|fm| fm.toc_depth)
         .or(config.render.toc_depth);
-    let doc = parse_markdown(&src);
+    let doc = crate::parse_markdown_with_profile(&src, profile);
     let mut image_destinations = Vec::new();
     let lowered_doc = crate::safe_html::lower(&doc);
     collect_image_destinations(&lowered_doc.blocks, &mut image_destinations);
@@ -1891,10 +1916,6 @@ fn run_render_with_preview(
         }
     }
 
-    let profile = match parse_profile_arg(&args.style, json) {
-        Ok(profile) => profile,
-        Err(code) => return code,
-    };
     // `--to both` run whose PDF render fails never leaves a stale HTML file on
     // disk (previously HTML was written, then a PDF failure returned exit 70
     // with the HTML already committed).
@@ -2066,7 +2087,13 @@ fn run_render_with_preview(
         }
         // Same host fonts and image bytes (auto-loaded, --pdf-image, remote)
         // as PDF; recoverable problems surface like PDF render warnings.
-        match crate::svg::render_svg_with_resources(&doc, &opts, &font_assets, &pdf_image_assets) {
+        let document = crate::apply_profile(&doc, profile);
+        match crate::svg::render_svg_with_resources(
+            &document,
+            &opts,
+            &font_assets,
+            &pdf_image_assets,
+        ) {
             Ok((bytes, _report, warnings)) => {
                 for warning in warnings {
                     if json {

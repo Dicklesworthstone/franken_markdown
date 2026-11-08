@@ -308,7 +308,7 @@ fn render_archival(
     if settings == PdfASettings::OFF {
         return wasm::render_pdf(source, options);
     }
-    let parsed = crate::parse_markdown_spanned(source);
+    let parsed = crate::parse_markdown_spanned_with_profile(source, options.profile);
     let mut diagnostics: Vec<WasmDiagnostic> = parsed
         .diagnostics
         .iter()

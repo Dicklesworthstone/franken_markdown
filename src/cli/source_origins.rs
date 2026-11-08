@@ -20,9 +20,50 @@ pub(crate) fn rebase_destinations(
     logical_origin: impl Fn(&str) -> Option<String>,
     max_output_bytes: usize,
 ) -> Result<String, String> {
+    rebase_destinations_inner(
+        expanded,
+        output_source,
+        logical_origin,
+        max_output_bytes,
+        None,
+    )
+}
+
+/// Identify resource tokens using the same dialect that will parse the rebased
+/// chapter, including links and images spanning a definition-looking line.
+pub(crate) fn rebase_destinations_with_profile(
+    expanded: ExpandedDocument,
+    output_source: &str,
+    logical_origin: impl Fn(&str) -> Option<String>,
+    max_output_bytes: usize,
+    profile: Option<crate::Profile>,
+) -> Result<String, String> {
+    if profile.is_none() {
+        return rebase_destinations(expanded, output_source, logical_origin, max_output_bytes);
+    }
+    rebase_destinations_inner(
+        expanded,
+        output_source,
+        logical_origin,
+        max_output_bytes,
+        profile,
+    )
+}
+
+fn rebase_destinations_inner(
+    expanded: ExpandedDocument,
+    output_source: &str,
+    logical_origin: impl Fn(&str) -> Option<String>,
+    max_output_bytes: usize,
+    profile: Option<crate::Profile>,
+) -> Result<String, String> {
     let mut edits = Vec::new();
     let mut output_len = expanded.text.len();
-    for source in crate::parse::resource_destination_spans(&expanded.text) {
+    let destinations = match profile {
+        None => crate::parse::resource_destination_spans(&expanded.text),
+        Some(_) => crate::parse::resource_destination_spans_with_profile(&expanded.text, profile),
+    };
+    for source in destinations {
         let destination = source.token;
         let Some(location) = expanded.source_at(destination.range.start) else {
             continue;

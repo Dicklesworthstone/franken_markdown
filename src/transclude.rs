@@ -94,6 +94,21 @@ pub fn expand_includes_with_limit(
     resolver: &dyn Fn(&str, &str) -> ResolveResult,
     max_output_bytes: usize,
 ) -> Result<String> {
+    expand_includes_with_limit_and_profile(src, resolver, max_output_bytes, None)
+}
+
+/// Expand with the selected authoring dialect's literal-code boundaries.
+/// A directive inside a multiline CommonMark code span remains literal even
+/// when an extension-enabled parser would recognize a definition list there.
+///
+/// # Errors
+/// Same bounded expansion and resolver errors as [`expand_includes_with_limit`].
+pub fn expand_includes_with_limit_and_profile(
+    src: &str,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
+    max_output_bytes: usize,
+    profile: Option<crate::Profile>,
+) -> Result<String> {
     let mut expansion = Expansion {
         resolver,
         output: String::with_capacity(src.len().min(max_output_bytes)),
@@ -101,6 +116,7 @@ pub fn expand_includes_with_limit(
         resolutions: 0,
         max_output_bytes,
         mapping: None,
+        profile,
     };
     expansion.expand(src, 0, "<input>", false, 0)?;
     Ok(expansion.output)
@@ -201,6 +217,27 @@ pub fn expand_includes_mapped_with_limit(
     resolver: &dyn Fn(&str, &str) -> ResolveResult,
     max_output_bytes: usize,
 ) -> Result<ExpandedDocument> {
+    expand_includes_mapped_with_limit_and_profile(
+        src,
+        root_origin,
+        resolver,
+        max_output_bytes,
+        None,
+    )
+}
+
+/// Expand and map source using the selected authoring dialect's code spans.
+/// The profile is shared by every recursively selected include fragment.
+///
+/// # Errors
+/// Same errors and source-map bounds as [`expand_includes_mapped_with_limit`].
+pub fn expand_includes_mapped_with_limit_and_profile(
+    src: &str,
+    root_origin: &str,
+    resolver: &dyn Fn(&str, &str) -> ResolveResult,
+    max_output_bytes: usize,
+    profile: Option<crate::Profile>,
+) -> Result<ExpandedDocument> {
     let mut expansion = Expansion {
         resolver,
         output: String::with_capacity(src.len().min(max_output_bytes)),
@@ -208,6 +245,7 @@ pub fn expand_includes_mapped_with_limit(
         resolutions: 0,
         max_output_bytes,
         mapping: Some(ExpansionMapping::default()),
+        profile,
     };
     expansion.expand(src, 0, root_origin, false, 0)?;
     let mapping = expansion.mapping.unwrap_or_default();
@@ -286,6 +324,7 @@ struct Expansion<'a> {
     resolutions: usize,
     max_output_bytes: usize,
     mapping: Option<ExpansionMapping>,
+    profile: Option<crate::Profile>,
 }
 
 struct ActiveInclude {
@@ -354,11 +393,18 @@ impl Expansion<'_> {
         // The same inline parser recognizes multiline code spans. Only this
         // selected source participates: included text cannot supply a closer.
         let literal_code = if has_includes(src) {
-            crate::parse::transclusion_code_ranges(
-                src,
-                |line| strip_anchors && anchor_marker(line).is_some(),
-                |line| !indented_code(line) && include_directive_rest(line.trim()).is_some(),
-            )
+            let skip_line = |line: &str| strip_anchors && anchor_marker(line).is_some();
+            let directive_line =
+                |line: &str| !indented_code(line) && include_directive_rest(line.trim()).is_some();
+            match self.profile {
+                None => crate::parse::transclusion_code_ranges(src, skip_line, directive_line),
+                Some(_) => crate::parse::transclusion_code_ranges_with_profile(
+                    src,
+                    skip_line,
+                    directive_line,
+                    self.profile,
+                ),
+            }
         } else {
             Vec::new()
         };

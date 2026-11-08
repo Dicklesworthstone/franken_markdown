@@ -8,8 +8,9 @@
 
 use crate::{
     DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlFontFormat,
-    HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, Theme, parse_markdown_spanned,
-    render_html_document, render_pdf_document, render_warnings,
+    HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, Theme,
+    parse_markdown_spanned_with_profile, render_html_document, render_pdf_document,
+    render_warnings,
 };
 
 mod source_metadata;
@@ -609,7 +610,7 @@ impl WasmRenderOutput {
 /// [`WasmRenderOptions::with_custom_css_bytes`] to validate byte-supplied CSS
 /// before rendering.
 pub fn render_html(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRenderOutput> {
-    let parsed = parse_markdown_spanned(markdown);
+    let parsed = parse_markdown_spanned_with_profile(markdown, options.profile);
     let diagnostics = wasm_diagnostics(&parsed.diagnostics);
     let doc = parsed.into_document();
     let html = render_html_document(&doc, &options.html_options())?;
@@ -628,7 +629,7 @@ pub fn render_html(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRe
 /// # Errors
 /// Propagates renderer errors.
 pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRenderOutput> {
-    let parsed = parse_markdown_spanned(markdown);
+    let parsed = parse_markdown_spanned_with_profile(markdown, options.profile);
     let mut diagnostics = wasm_diagnostics(&parsed.diagnostics);
     let doc = parsed.into_document();
     let pdf_options = options.pdf_options();

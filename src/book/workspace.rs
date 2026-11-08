@@ -72,6 +72,8 @@ pub struct BookWorkspace {
     resources: Vec<BookInput>,
     /// None preserves the parse-only constructor, including literal directives.
     expanded: Option<Vec<BookInput>>,
+    /// Actual source-parser dialect, independent of legacy AST-only option edits.
+    parse_profile: Option<crate::Profile>,
     revision: u32,
 }
 
@@ -89,12 +91,24 @@ impl BookWorkspace {
     /// # Errors
     /// Uses the ordinary renderer's path, count, collision and source budgets.
     pub fn new(chapters: &[BookInput]) -> Result<Self> {
-        let renderer = BookRenderer::new(chapters)?;
+        Self::new_with_profile(chapters, None)
+    }
+
+    /// Capture already-expanded source using the selected authoring dialect.
+    ///
+    /// # Errors
+    /// Same source and diagnostic admission as [`Self::new`].
+    pub fn new_with_profile(
+        chapters: &[BookInput],
+        profile: Option<crate::Profile>,
+    ) -> Result<Self> {
+        let renderer = BookRenderer::new_with_profile(chapters, profile)?;
         Ok(Self {
             renderer,
             chapters: capture(chapters)?,
             resources: Vec::new(),
             expanded: None,
+            parse_profile: profile,
             revision: 0,
         })
     }
@@ -108,14 +122,27 @@ impl BookWorkspace {
     /// Rejects invalid source sets and any include-expansion or parsing ingress
     /// failure. No partially initialized workspace escapes.
     pub fn from_sources(chapters: &[BookInput], resources: &[BookInput]) -> Result<Self> {
+        Self::from_sources_with_profile(chapters, resources, None)
+    }
+
+    /// Capture, expand and parse one source collection in the selected dialect.
+    ///
+    /// # Errors
+    /// Same atomic source/expansion admission as [`Self::from_sources`].
+    pub fn from_sources_with_profile(
+        chapters: &[BookInput],
+        resources: &[BookInput],
+        profile: Option<crate::Profile>,
+    ) -> Result<Self> {
         let (expanded, source_length) =
-            BookRenderer::prepare_workspace_sources(chapters, resources)?;
-        let renderer = BookRenderer::from_workspace_sources(&expanded, source_length)?;
+            BookRenderer::prepare_workspace_sources(chapters, resources, profile)?;
+        let renderer = BookRenderer::from_workspace_sources(&expanded, source_length, profile)?;
         Ok(Self {
             renderer,
             chapters: capture(chapters)?,
             resources: capture(resources)?,
             expanded: Some(expanded),
+            parse_profile: profile,
             revision: 0,
         })
     }
@@ -128,8 +155,51 @@ impl BookWorkspace {
     }
 
     /// Change presentation without invalidating the captured source or AST.
+    /// For authoring dialects use [`Self::set_authoring_profile`], which parses
+    /// the retained source instead of applying an AST compatibility transform.
     pub fn options_mut(&mut self) -> &mut WasmRenderOptions {
         self.renderer.options_mut()
+    }
+
+    /// Atomically change the source dialect while retaining source identity,
+    /// reading order, metadata, and host assets. Repeated exports do no parser
+    /// work; selecting the same effective dialect preserves cached ASTs.
+    /// `None` and `GfmPlus` share the historical extension-enabled parser.
+    ///
+    /// A dialect change re-expands captured includes under the new literal-code
+    /// rules, rebases actual resource tokens, then builds ASTs and diagnostics
+    /// together. The source revision does not advance because source bytes have
+    /// not changed. No host I/O or image/font payload cloning occurs.
+    ///
+    /// # Errors
+    /// Include, source-budget or diagnostic-budget failures preserve the entire
+    /// previous usable renderer, profile and source capture.
+    pub fn set_authoring_profile(&mut self, profile: Option<crate::Profile>) -> Result<()> {
+        let commonmark = |value| value == Some(crate::Profile::CommonMarkGfm);
+        if commonmark(profile) == commonmark(self.parse_profile) {
+            self.renderer.options_mut().profile = profile;
+            self.parse_profile = profile;
+            return Ok(());
+        }
+        let (expanded, mut renderer) = if self.expanded.is_some() {
+            let (expanded, source_length) =
+                BookRenderer::prepare_workspace_sources(&self.chapters, &self.resources, profile)?;
+            let renderer = BookRenderer::from_workspace_sources(&expanded, source_length, profile)?;
+            (Some(expanded), renderer)
+        } else {
+            (
+                None,
+                BookRenderer::new_with_profile(&self.chapters, profile)?,
+            )
+        };
+        // All fallible work is finished. Preserve host resources by moving the
+        // complete options object, then publish the newly parsed dialect.
+        std::mem::swap(self.renderer.options_mut(), renderer.options_mut());
+        renderer.options_mut().profile = profile;
+        self.renderer = renderer;
+        self.expanded = expanded;
+        self.parse_profile = profile;
+        Ok(())
     }
 
     /// Delegate atomic image admission to the ordinary renderer.
@@ -257,7 +327,8 @@ impl BookWorkspace {
             source.clone_into(&mut target.source);
         }
         let expanded = if self.expanded.is_some() {
-            let (expanded, _) = BookRenderer::prepare_workspace_sources(&chapters, &resources)?;
+            let (expanded, _) =
+                BookRenderer::prepare_workspace_sources(&chapters, &resources, self.parse_profile)?;
             Some(expanded)
         } else {
             None
@@ -272,7 +343,11 @@ impl BookWorkspace {
                 replacements.push(None);
                 diagnostics.push(self.renderer.source_diagnostics().chapters()[index].clone());
             } else {
-                let (chapter, report) = parse_chapter(new, &self.renderer.book().chapters[index]);
+                let (chapter, report) = parse_chapter(
+                    new,
+                    &self.renderer.book().chapters[index],
+                    self.parse_profile,
+                );
                 replacements.push(Some(chapter));
                 diagnostics.push(report);
                 reparsed.push(index);
@@ -341,9 +416,10 @@ fn capture(inputs: &[BookInput]) -> Result<Vec<BookInput>> {
 fn parse_chapter(
     input: &BookInput,
     previous: &BookChapter,
+    profile: Option<crate::Profile>,
 ) -> (BookChapter, BookChapterDiagnostics) {
     let (frontmatter, _) = parse::split_frontmatter(&input.source);
-    let (doc, diagnostics) = super::diagnostics::parse_chapter(input, &previous.path);
+    let (doc, diagnostics) = super::diagnostics::parse_chapter(input, &previous.path, profile);
     let title = frontmatter
         .as_ref()
         .and_then(|value| value.title.clone())

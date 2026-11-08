@@ -45,7 +45,8 @@ export interface BookRunningContent {
 
 export interface BookOptions {
   /** Authoring dialect for PDF, EPUB, site and previews. Omitted preserves the
-   * extension-enabled default. Explicit values require FmdBook.setAuthoringProfile. */
+   * extension-enabled default. Selected before includes and source parsing;
+   * explicit values require matching FmdBook source-profile constructors. */
   profile?: FmdAuthoringProfile;
   /** Expand includes in Rust (default true). False preserves literal source. */
   expandIncludes?: boolean;

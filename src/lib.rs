@@ -137,7 +137,8 @@ pub use block_flow::{
     ScrollAnchor,
 };
 pub use book::{
-    Book, BookChapter, BookHeading, BookInput, book_pdf_document, build_book, chapter_headings,
+    Book, BookChapter, BookHeading, BookInput, book_pdf_document, build_book,
+    build_book_with_diagnostics_and_profile, build_book_with_profile, chapter_headings,
     inject_book_nav, out_name, rewrite_links_for_site,
 };
 pub use caret::{CaretStyle, ColorMode, render_caret, render_parse_diagnostic};
@@ -641,6 +642,10 @@ pub enum Profile {
 /// definition lists back into paragraphs (`Term` then `: definition` lines).
 /// Host-created page breaks are retained in every profile. The source AST
 /// stays unchanged, and the result is borrowed when nothing changes.
+///
+/// This AST-only fallback cannot reconstruct source delimiters that crossed
+/// definition-list terms and definitions. When source is available, use
+/// [`parse_markdown_with_profile`] to select the grammar before parsing.
 #[must_use]
 pub fn apply_profile(doc: &Document, profile: Option<Profile>) -> std::borrow::Cow<'_, Document> {
     match apply_profile_to_blocks(&doc.blocks, profile) {
@@ -1059,10 +1064,29 @@ pub fn parse_markdown(src: &str) -> Document {
     parse::parse_document(src)
 }
 
+/// Parse source using an authoring profile before assigning block ownership or
+/// resolving inline delimiters. `None` and [`Profile::GfmPlus`] retain the
+/// default extensions. [`Profile::CommonMarkGfm`] leaves definition-list-shaped
+/// text in ordinary paragraphs, including emphasis, code and links spanning
+/// physical lines. All nested containers share the same grammar.
+///
+/// Page-break comments remain source HTML blocks; renderers promote them using
+/// [`apply_profile`]. The returned AST remains renderer-independent.
+#[must_use]
+pub fn parse_markdown_with_profile(src: &str, profile: Option<Profile>) -> Document {
+    parse::parse_document_with_profile(src, profile)
+}
+
 /// Parse Markdown source into the document AST and collect parser stage timing.
 #[must_use]
 pub fn parse_markdown_profiled(src: &str) -> ParseProfile {
     parse::parse_document_profiled(src)
+}
+
+/// [`parse_markdown_with_profile`] with parser stage timing.
+#[must_use]
+pub fn parse_markdown_profiled_with_profile(src: &str, profile: Option<Profile>) -> ParseProfile {
+    parse::parse_document_profiled_with_profile(src, profile)
 }
 
 /// Parse Markdown source into a spanned document with recoverable diagnostics.
@@ -1074,10 +1098,26 @@ pub fn parse_markdown_spanned(src: &str) -> SpannedDocument {
     parse::parse_document_spanned(src)
 }
 
+/// [`parse_markdown_with_profile`] with exact source spans and recoverable
+/// diagnostics from the selected grammar.
+#[must_use]
+pub fn parse_markdown_spanned_with_profile(src: &str, profile: Option<Profile>) -> SpannedDocument {
+    parse::parse_document_spanned_with_profile(src, profile)
+}
+
 /// Parse Markdown source into a spanned document and collect parser stage timing.
 #[must_use]
 pub fn parse_markdown_spanned_profiled(src: &str) -> SpannedParseProfile {
     parse::parse_document_spanned_profiled(src)
+}
+
+/// [`parse_markdown_spanned_with_profile`] with parser stage timing.
+#[must_use]
+pub fn parse_markdown_spanned_profiled_with_profile(
+    src: &str,
+    profile: Option<Profile>,
+) -> SpannedParseProfile {
+    parse::parse_document_spanned_profiled_with_profile(src, profile)
 }
 
 /// Render an already-parsed document to a complete, self-contained HTML string.
@@ -1184,20 +1224,26 @@ pub fn render_pdf_document_reported(
     pdf::render_reported(&doc, opts, PdfASettings::OFF, emit)
 }
 
-/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_reported`].
+/// Convenience wrapper over [`parse_markdown_with_profile`] +
+/// [`render_pdf_document_reported`], using the render options' authoring profile.
 ///
 /// # Errors
 /// See [`render_pdf_document_reported`].
 pub fn render_pdf_reported(src: &str, opts: &PdfOptions) -> Result<PdfRenderReport> {
-    render_pdf_document_reported(&parse_markdown(src), opts, PdfEmitOptions::default())
+    render_pdf_document_reported(
+        &parse_markdown_with_profile(src, opts.profile),
+        opts,
+        PdfEmitOptions::default(),
+    )
 }
 
-/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_emitted`].
+/// Convenience wrapper over [`parse_markdown_with_profile`] +
+/// [`render_pdf_document_emitted`], using the render options' authoring profile.
 ///
 /// # Errors
 /// See [`render_pdf_document_emitted`].
 pub fn render_pdf_emitted(src: &str, opts: &PdfOptions, emit: PdfEmitOptions) -> Result<Vec<u8>> {
-    render_pdf_document_emitted(&parse_markdown(src), opts, emit)
+    render_pdf_document_emitted(&parse_markdown_with_profile(src, opts.profile), opts, emit)
 }
 
 /// Render a document to PDF with PDF/A-2b identification (XMP + sRGB
@@ -1288,12 +1334,13 @@ fn validate_doc_pdfa_strict(doc: &Document) -> Result<()> {
     check_blocks(&doc.blocks)
 }
 
-/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document_pdfa`].
+/// Convenience wrapper over [`parse_markdown_with_profile`] +
+/// [`render_pdf_document_pdfa`], using the render options' authoring profile.
 ///
 /// # Errors
 /// See [`render_pdf_document_pdfa`].
 pub fn render_pdf_pdfa(src: &str, opts: &PdfOptions, pdf_a: PdfASettings) -> Result<Vec<u8>> {
-    render_pdf_document_pdfa(&parse_markdown(src), opts, pdf_a)
+    render_pdf_document_pdfa(&parse_markdown_with_profile(src, opts.profile), opts, pdf_a)
 }
 
 /// Prepare complete footnote bodies and numbered references for PDF layout.
@@ -1349,22 +1396,24 @@ pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result
 
 /// Render Markdown source to a complete, self-contained HTML document string.
 ///
-/// Convenience wrapper over [`parse_markdown`] + [`render_html_document`].
+/// Convenience wrapper over [`parse_markdown_with_profile`] +
+/// [`render_html_document`], using the render options' authoring profile.
 ///
 /// # Errors
 /// See [`render_html_document`].
 pub fn render_html(src: &str, opts: &HtmlOptions) -> Result<String> {
-    render_html_document(&parse_markdown(src), opts)
+    render_html_document(&parse_markdown_with_profile(src, opts.profile), opts)
 }
 
 /// Render Markdown source to optimized PDF bytes.
 ///
-/// Convenience wrapper over [`parse_markdown`] + [`render_pdf_document`].
+/// Convenience wrapper over [`parse_markdown_with_profile`] +
+/// [`render_pdf_document`], using the render options' authoring profile.
 ///
 /// # Errors
 /// See [`render_pdf_document`].
 pub fn render_pdf(src: &str, opts: &PdfOptions) -> Result<Vec<u8>> {
-    render_pdf_document(&parse_markdown(src), opts)
+    render_pdf_document(&parse_markdown_with_profile(src, opts.profile), opts)
 }
 
 #[cfg(test)]

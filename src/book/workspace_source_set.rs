@@ -106,9 +106,9 @@ impl BookWorkspace {
             .checked_add(1)
             .ok_or_else(|| invalid("source revision exhausted; create a new workspace"))?;
         let mut next = if self.expanded.is_some() {
-            Self::from_sources(chapters, resources)?
+            Self::from_sources_with_profile(chapters, resources, self.parse_profile)?
         } else {
-            Self::new(chapters)?
+            Self::new_with_profile(chapters, self.parse_profile)?
         };
         next.revision = revision;
         let report = next.source_set_report(true);

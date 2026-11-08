@@ -19,8 +19,8 @@ struct DocumentPaths {
     images: BTreeSet<PathBuf>,
 }
 
-fn render_paths(markdown: &str, base_dir: &Path) -> DocumentPaths {
-    let document = crate::parse_markdown(markdown);
+fn render_paths(markdown: &str, base_dir: &Path, profile: Option<crate::Profile>) -> DocumentPaths {
+    let document = crate::parse_markdown_with_profile(markdown, profile);
     let mut paths = document_paths(&document, base_dir);
     // Native asset loaders lower the supported safe-HTML subset before
     // collecting images. Those images are render inputs too, even though the
@@ -172,6 +172,7 @@ fn hex(byte: u8) -> Option<u8> {
 /// An unreadable/unstable source retains its last successful dependency set.
 #[derive(Default)]
 pub(super) struct Graph {
+    profile: Option<crate::Profile>,
     roots: BTreeSet<PathBuf>,
     documents: std::collections::BTreeMap<PathBuf, Snapshot>,
     failures: BTreeSet<PathBuf>,
@@ -190,8 +191,9 @@ struct Snapshot {
 const MAX_DISCOVERY_BYTES: u64 = 64 * 1024 * 1024;
 
 impl Graph {
-    pub(super) fn new(roots: &[PathBuf]) -> Self {
+    pub(super) fn new(roots: &[PathBuf], profile: Option<crate::Profile>) -> Self {
         Self {
+            profile,
             roots: roots.iter().cloned().collect(),
             ..Self::default()
         }
@@ -279,11 +281,20 @@ impl Graph {
                 continue;
             };
             let base = root.parent().unwrap_or_else(|| Path::new("."));
-            let mut expansion = super::expand_file_includes(&source, root, MAX_DISCOVERY_BYTES);
+            let mut expansion = super::expand_file_includes_with_profile(
+                &source,
+                root,
+                MAX_DISCOVERY_BYTES,
+                self.profile,
+            );
             let mut entries: BTreeSet<_> = expansion.entries.keys().cloned().collect();
             expansion.dependencies.extend(expansion.entries);
             let complete = expansion.result.is_ok();
-            let discovered = render_paths(expansion.result.as_deref().unwrap_or(&source), base);
+            let discovered = render_paths(
+                expansion.result.as_deref().unwrap_or(&source),
+                base,
+                self.profile,
+            );
             let mut paths = discovered.watched;
             let mut inputs = discovered.images;
             if !complete {
@@ -419,7 +430,7 @@ mod tests {
         let source = Source::new(b"![p](p.png)");
         let expected = source.fingerprint();
         let observed = std::collections::BTreeMap::from([(source.0.clone(), Some(expected))]);
-        let mut graph = Graph::new(std::slice::from_ref(&source.0));
+        let mut graph = Graph::new(std::slice::from_ref(&source.0), None);
         std::fs::write(&source.0, b"different source").unwrap();
         graph.refresh(&observed, &BTreeSet::new());
         assert!(graph.documents.is_empty());

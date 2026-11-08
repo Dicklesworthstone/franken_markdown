@@ -357,9 +357,9 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
     let chapters = source_inputs(request.paths, request.sources, &mut total)?;
     let resources = source_inputs(request.include_paths, request.include_sources, &mut total)?;
     let mut renderer = if request.expand_includes {
-        BookRenderer::from_sources(&chapters, &resources)?
+        BookRenderer::from_sources_with_profile(&chapters, &resources, profile)?
     } else {
-        BookRenderer::new(&chapters)?
+        BookRenderer::new_with_profile(&chapters, profile)?
     };
     let mut offset = 0usize;
     for (destination, len) in request

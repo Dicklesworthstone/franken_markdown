@@ -19,15 +19,21 @@ fn inspect(book: &Book) -> Result<(LinkReport, String), Failure> {
     Ok((report, json))
 }
 
-pub(super) fn require_clean(book: &Book) -> Result<String, Failure> {
+pub(super) fn require_clean(
+    book: &Book,
+    profile: Option<crate::Profile>,
+) -> Result<String, Failure> {
     let (report, json) = inspect(book)?;
     let findings = report.finding_count();
     if findings != 0 {
+        let profile_flag = profile.map_or_else(String::new, |profile| {
+            format!(" --profile {}", profile.as_str())
+        });
         return Err(error(
             65,
             "book_link_findings",
             format!(
-                "{findings} broken expanded-book navigation reference(s); no publication was written. Run fmd book <DIR> --check-links --json for the complete report. This checks HTML navigation, not final PDF/EPUB conformance.",
+                "{findings} broken expanded-book navigation reference(s); no publication was written. Run fmd book <DIR> --check-links --json{profile_flag} for the complete report. This checks HTML navigation, not final PDF/EPUB conformance.",
             ),
         ));
     }
@@ -35,7 +41,7 @@ pub(super) fn require_clean(book: &Book) -> Result<String, Failure> {
 }
 
 pub(super) fn run(args: &BookArgs, json_requested: bool) -> ExitCode {
-    let loaded = match inputs::load_sources(&args.input, args.max_input_bytes) {
+    let loaded = match inputs::load_sources(&args.input, args.max_input_bytes, args.profile) {
         Ok(loaded) => loaded,
         Err(message) => return failure(66, "book_error", &message, json_requested),
     };
@@ -179,7 +185,7 @@ mod tests {
         );
         let expected = check_book_links(&book).unwrap().to_json().unwrap();
         assert_eq!(
-            require_clean(&book).unwrap_or_else(|e| panic!("{}", e.message)),
+            require_clean(&book, None).unwrap_or_else(|e| panic!("{}", e.message)),
             expected
         );
         assert!(expected.contains("\"external\":1"));
@@ -188,7 +194,7 @@ mod tests {
 
     #[test]
     fn strict_check_distinguishes_findings_from_an_incomplete_check() {
-        let e = require_clean(&book("# Start\n\n[Broken](#missing)\n"))
+        let e = require_clean(&book("# Start\n\n[Broken](#missing)\n"), None)
             .err()
             .unwrap();
         assert_eq!(e.code, 65);

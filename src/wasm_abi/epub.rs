@@ -202,7 +202,7 @@ fn render_publication(
     markdown: &str,
     options: &WasmRenderOptions,
 ) -> crate::Result<FmdRenderResult> {
-    let parsed = crate::parse_markdown_spanned(markdown);
+    let parsed = crate::parse_markdown_spanned_with_profile(markdown, options.profile);
     let mut diagnostics = String::from("[");
     for (index, diagnostic) in parsed.diagnostics.iter().enumerate() {
         if index > 0 {

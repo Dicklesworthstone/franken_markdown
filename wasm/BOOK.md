@@ -37,8 +37,10 @@ try {
 }
 ```
 
-The dialect applies after Rust expands includes and remains attached to retained
-source updates and source-set replacements. It also reaches ordinary and archival
+The dialect applies before Rust expands includes, identifies resource URLs, and
+parses chapters, preserving emphasis, links and code spans across colon-prefixed
+lines. It remains attached to retained source updates and source-set replacements.
+It also reaches ordinary and archival
 PDF exports with paper overrides, while image/font ownership, typography and
 `pdfA` emission policy keep their existing contracts. Workers and multi-format
 publication accept the same `BookOptions.profile`. They verify both the captured
@@ -46,7 +48,12 @@ dialect and each rendered output, so mixed renderer/worker versions cannot
 silently publish another dialect. Source-only link and parser diagnostics remain
 source reports and do not claim a rendered dialect.
 
-Explicit selection requires the additive `FmdBook.setAuthoringProfile` method.
+Explicit selection requires the additive `FmdBook.newWithProfile` and
+`FmdBook.fromSourcesProfiled` constructors for parse-only and expanding captures,
+respectively. `FmdBook.setAuthoringProfile` changes an existing capture atomically:
+a changed dialect rebuilds source parsing and diagnostics, while unchanged
+dialects reuse the cached AST. Source revision, metadata, images and fonts survive;
+a failed include or diagnostic check retains the previous usable capture.
 An older native package fails with `UNSUPPORTED_BOOK_PROFILE` before constructing
 or configuring a retained book. The root `renderBookPdf` and `renderBookSite`
 helpers support the same option through the new 39-argument

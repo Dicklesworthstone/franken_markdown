@@ -608,6 +608,7 @@ fmd --text '<markdown>' --out out.html
 | `--pdf-optimal-pagination` | Choose page breaks with a document-wide dynamic program (Plass) instead of greedy page filling |
 | `--pdf-strict-pagination[=true\|false]` | Require the supported hard pagination rules or return a typed refusal; implies optimal pagination. See [the pagination contract](docs/JOINT_PAGINATION.md#require-the-supported-hard-pagination-rules) |
 | `--pdf-baseline-grid-pt <POINTS>` | Opt-in body baseline grid, `1`..`144` pt (rounded once to `0.001` pt); `0` disables a configured grid. Applies to render, watch, batch and book PDF output. Incompatible with `--fit-to-pages` |
+| `--pdf-theme-spacing[=true\|false]` | Apply shared theme body leading and per-side table-cell padding to PDF output. Default off; `=false` overrides `pdf_theme_spacing=true` in config. Available in render, watch, batch and book |
 | `--toc`, `--toc-depth <N>` | Insert a table of contents (HTML nav; PDF with dot leaders and page numbers). A `[[_TOC_]]` marker places it explicitly |
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
 | `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
@@ -905,14 +906,16 @@ Resolution order for the config path:
 | `microtype` | `off`, `protrusion`, `expansion` | `off` |
 | `pdf_page_numbers`, `pdf_optimal_pagination` | `true`/`false` | `false` |
 | `pdf_strict_pagination` | `true`/`false`; applies to PDF render, watch, batch and book | `false` |
+| `pdf_theme_spacing` | `true`/`false`; use shared theme spacing in PDF render, watch, batch and book | `false` |
 | `pdf_baseline_grid_pt` | `0` (disabled), or finite spacing `1`..`144` points | `0` |
 | `typography_homogeneous`, `typography_antiriver`, `typography_pareto` | `true`/`false` | `false` |
 
 The render-default keys apply to `fmd render`, `watch` and `batch`. A flag
 always wins; for `lang`, `toc` and `toc_depth`, document frontmatter also beats
 the config. Most switches set to `true` here require `--no-config` to disable
-them for a run. Strict pagination also supports an explicit
-`--pdf-strict-pagination=false` override. The numeric `pdf_baseline_grid_pt`
+them for a run. Strict pagination and theme spacing also support explicit
+`--pdf-strict-pagination=false` and `--pdf-theme-spacing=false` overrides.
+The numeric `pdf_baseline_grid_pt`
 setting also applies to `book`; an explicit `--pdf-baseline-grid-pt 0` disables
 it for one invocation.
 

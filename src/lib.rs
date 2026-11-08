@@ -788,6 +788,11 @@ pub struct HtmlOptions {
 pub struct PdfOptions {
     /// Typography + colour theme.
     pub theme: Theme,
+    /// Use the shared theme's literal line height and table-cell padding in PDF
+    /// measurement, pagination and painting. Disabled by default to preserve the
+    /// established compact print layout. When enabled, line height must be
+    /// finite and in `1..=4`, and each padding value in `0..=8` em.
+    pub use_theme_spacing: bool,
     /// Optional document title metadata.
     pub title: Option<String>,
     /// Optional document author metadata.

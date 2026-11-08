@@ -107,7 +107,12 @@ pub(super) fn attach_footing(
     starts: &[f32],
     widths: &[f32],
 ) {
-    let below = line.size * 0.4 + super::inline_math_extents(line).1 + 1.0;
+    let padding = if line.spacing.leading.is_some() {
+        super::spacing::baseline_lift(line)
+    } else {
+        line.size * 0.4
+    };
+    let below = padding + super::inline_math_extents(line).1 + 1.0;
     for ((rule, &x1), &width) in rules.iter().zip(starts).zip(widths) {
         if matches!(rule, FootingRule::None) {
             continue;
@@ -141,7 +146,7 @@ pub(super) fn footing_depth(line: &Line) -> f32 {
         // Inline formulas/images already reserve their additional descent.
         // Extend that reserved depth to the stroke rather than counting the
         // formula's descent for a second time.
-        (bottom - super::inline_math_extents(line).1).max(0.0)
+        (bottom - super::inline_math_extents(line).1 - super::spacing::baseline_lift(line)).max(0.0)
     }
 }
 

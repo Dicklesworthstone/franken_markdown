@@ -51,6 +51,55 @@ async function fixture(advanced = true, complete = advanced, grid = complete, sh
 const chapters = () => [{ path: "guide/one.md", source: "# One" }, { path: "two.md", source: "# Two" }];
 const page = () => ({ size: { widthPt: 720, heightPt: 540 }, margins: { topPt: 18, rightPt: 24, bottomPt: 30, leftPt: 36 } });
 
+test("root book spacing uses complete tokens and rejects truncating ABIs before assets", async () => {
+  const current = await fixture();
+  for (const baselineGridPt of [undefined, 12]) {
+    await current.api.renderBookPdf(chapters(), { baselineGridPt,
+      typography: { lineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.5 } });
+    assert.equal(current.state.calls.at(-1).args[36],
+      "theme-spacing,line-height=2,table-padding-x=0,table-padding-y=0.5");
+    const old = await fixture(true, true, true, true);
+    const assets = [null]; let reads = 0;
+    Object.defineProperty(assets, "0", { get() { reads++; throw Error("assets read before ABI admission"); } });
+    await assert.rejects(old.api.renderBookPdf(chapters(), { baselineGridPt,
+      typography: { themeSpacing: true }, pdfImages: assets }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(reads, 0); assert.equal(old.state.loads, 0); assert.equal(old.state.calls.length, 0);
+  }
+});
+
+test("profiled-only book bindings preserve numeric spacing with and without a grid", async () => {
+  const { api, state } = await fixture(false, false, false, false, true);
+  for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+    for (const baselineGridPt of [undefined, 12]) {
+      const output = await api.renderBookPdf(chapters(), { profile, baselineGridPt,
+        typography: { lineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.5 } });
+      const call = state.calls.at(-1);
+      assert.equal(call.kind, "book-profiled");
+      assert.equal(call.args.length, 39);
+      assert.equal(call.args[36], "theme-spacing,line-height=2,table-padding-x=0,table-padding-y=0.5");
+      assert.deepEqual(call.args.slice(37), [baselineGridPt ?? 0, profile]);
+      assert.equal(output.profile, profile);
+    }
+  }
+  assert.equal(state.calls.length, 4);
+});
+
+test("short profiled book spacing bindings reject before reading assets or initializing", async () => {
+  for (const baselineGridPt of [undefined, 12]) {
+    const { api, state } = await fixture(false, false, false, true, true);
+    let reads = 0;
+    const options = { profile: "commonmark-gfm", baselineGridPt,
+      typography: { lineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.5 },
+      get pdfImages() { reads++; throw Error("profiled ABI admission must precede image access"); },
+      get fontAssets() { reads++; throw Error("profiled ABI admission must precede font access"); } };
+    await assert.rejects(api.renderBookPdf(chapters(), options),
+      { code: "UNSUPPORTED_WASM_PACKAGE", message: /authoring profiles/ });
+    assert.equal(reads, 0);
+    assert.equal(state.loads, 0);
+    assert.equal(state.calls.length, 0);
+  }
+});
+
 test("root book backlinks are captured by complete and grid bindings without changing false/default ABIs", async () => {
   const { api, state } = await fixture();
   for (const extra of [{}, { page: page() }, { running: { footer: { center: "{page}" } } }, { baselineGridPt: 12 }]) {

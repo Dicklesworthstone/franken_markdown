@@ -1,4 +1,4 @@
-import type { FmdPdfPage, FmdPdfRunning } from "./franken_markdown.js";
+import type { FmdPdfPage, FmdPdfRunning, FmdPdfTypography } from "./franken_markdown.js";
 export type {
   FmdPdfPage as FlowPdfPage,
   FmdPdfRunning as FlowPdfRunning,
@@ -532,8 +532,8 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   tableFontSize?: number;
   fitToPages?: number;
   microtype?: "disabled" | "protrusion" | "expansion";
-  /** Optional native line-breaking refinements, captured before queueing. */
-  typography?: { homogeneous?: boolean; antiriver?: boolean; pareto?: boolean };
+  /** Native line breaking and spacing, captured before queueing. */
+  typography?: FmdPdfTypography;
   /** Opt into native global page breaking; omitted/false keeps the default. */
   optimalPagination?: boolean;
   /** Require exact final PDF page breaking; implies optimalPagination.

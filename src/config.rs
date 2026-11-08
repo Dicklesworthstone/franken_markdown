@@ -40,6 +40,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "microtype",
     "pdf_page_numbers",
     "pdf_footnote_backlinks",
+    "pdf_theme_spacing",
     "typography_homogeneous",
     "typography_antiriver",
     "typography_pareto",
@@ -66,6 +67,8 @@ pub struct RenderDefaults {
     pub pdf_page_numbers: Option<bool>,
     /// Link PDF note numbers back to their first citation.
     pub pdf_footnote_backlinks: Option<bool>,
+    /// Apply shared theme body leading and per-side table-cell padding to PDF.
+    pub pdf_theme_spacing: Option<bool>,
     pub typography_homogeneous: Option<bool>,
     pub typography_antiriver: Option<bool>,
     pub typography_pareto: Option<bool>,
@@ -82,6 +85,7 @@ impl RenderDefaults {
             "toc" => &mut self.toc,
             "pdf_page_numbers" => &mut self.pdf_page_numbers,
             "pdf_footnote_backlinks" => &mut self.pdf_footnote_backlinks,
+            "pdf_theme_spacing" => &mut self.pdf_theme_spacing,
             "typography_homogeneous" => &mut self.typography_homogeneous,
             "typography_antiriver" => &mut self.typography_antiriver,
             "typography_pareto" => &mut self.typography_pareto,
@@ -104,6 +108,7 @@ impl RenderDefaults {
             ("microtype", self.microtype.clone()),
             ("pdf_page_numbers", flag(self.pdf_page_numbers)),
             ("pdf_footnote_backlinks", flag(self.pdf_footnote_backlinks)),
+            ("pdf_theme_spacing", flag(self.pdf_theme_spacing)),
             ("typography_homogeneous", flag(self.typography_homogeneous)),
             ("typography_antiriver", flag(self.typography_antiriver)),
             ("typography_pareto", flag(self.typography_pareto)),
@@ -197,6 +202,7 @@ impl RenderDefaults {
                 "toc"
                 | "pdf_page_numbers"
                 | "pdf_footnote_backlinks"
+                | "pdf_theme_spacing"
                 | "typography_homogeneous"
                 | "typography_antiriver"
                 | "typography_pareto"

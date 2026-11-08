@@ -56,6 +56,37 @@ fn individual_typography_switches_match_independently_configured_native_pdf() {
 }
 
 #[test]
+fn retained_spacing_matches_native_pdf_and_resets_without_mutating_shared_theme() {
+    let mut book = book();
+    let before = book.render_pdf().unwrap();
+    let shared_spacing = book.options_mut().theme.spacing;
+    settings(Some(
+        "line-height=2,table-padding-x=1.25,table-padding-y=0.75",
+    ))
+    .apply(book.options_mut());
+    assert_eq!(book.options_mut().theme.spacing, shared_spacing);
+    let mut native = PdfOptions {
+        use_theme_spacing: true,
+        ..Default::default()
+    };
+    native.theme.spacing.line_height = 2.0;
+    native.theme.spacing.table_cell_padding_x_em = 1.25;
+    native.theme.spacing.table_cell_padding_y_em = 0.75;
+    let spaced = book.render_pdf().unwrap();
+    assert_ne!(before, spaced);
+    assert_eq!(
+        spaced,
+        crate::book::render_book_pdf(book.book(), &native).unwrap()
+    );
+    settings(None).apply(book.options_mut());
+    assert!(!book.options_mut().use_theme_spacing);
+    assert!(book.options_mut().pdf_line_height.is_none());
+    assert!(book.options_mut().pdf_table_cell_padding_x_em.is_none());
+    assert!(book.options_mut().pdf_table_cell_padding_y_em.is_none());
+    assert_eq!(book.render_pdf().unwrap(), before);
+}
+
+#[test]
 fn full_configuration_with_running_chrome_uses_the_native_book_pipeline() {
     let mut book = book();
     let source = book.book().chapters[0].doc.clone();
@@ -186,6 +217,8 @@ fn invalid_tokens_do_not_partially_mutate_the_last_valid_profile() {
         "pareto,unknown",
         "optimal-pagination,unknown",
         "strict-pagination,unknown",
+        "line-height=2,table-padding-y=9",
+        "theme-spacing,line-height=4.000000000000001",
     ] {
         let result = PdfSettings::new(
             Some(token),

@@ -49,6 +49,43 @@ function saved(output) {
   return JSON.parse(output.text().split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
 }
 
+test('spacing survives project round trips and serialized workspace factories', () => {
+  const typography = {themeSpacing: true, lineHeight: 2, tableCellPaddingXEm: 1.25, tableCellPaddingYEm: 0};
+  const options = {typography};
+  for (const codec of [createNativeSourceProjectCodec(), vm.runInNewContext(
+    '(' + createNativeSourceProjectCodec.toString() + ')()', {TextEncoder, TextDecoder, Blob, atob})]) {
+    const restored = codec.decode(codec.encode({source, options, images: [], fonts: []}).bytes);
+    assert.deepEqual(plain(restored.options.typography), typography);
+  }
+  for (const factory of [createNativeWorkspaceRenderer, vm.runInNewContext(
+    '(' + createNativeWorkspaceRenderer.toString() + ')', {TextEncoder, TextDecoder, Uint8Array, Uint32Array, atob})]) {
+    const f = fixture();
+    const renderer = factory(f.bindings, payload(options));
+    renderer.pdf(source);
+    assert.equal(f.calls.at(-1)[1][27], 'theme-spacing,line-height=2,table-padding-x=1.25,table-padding-y=0');
+    const patch = {typography: {lineHeight: 3}};
+    const tx = renderer.stageSettings(patch); patch.typography.lineHeight = 4;
+    tx.commit(); renderer.pdf(source);
+    assert.equal(f.calls.at(-1)[1][27], 'theme-spacing,line-height=3');
+    tx.rollback(); renderer.pdf(source);
+    assert.equal(f.calls.at(-1)[1][27], 'theme-spacing,line-height=2,table-padding-x=1.25,table-padding-y=0');
+  }
+});
+
+test('saved source and runtime reject invalid spacing without invoking accessors', () => {
+  let reads = 0;
+  const accessor = Object.defineProperty({}, 'lineHeight', {get() { reads++; return 2; }});
+  const codec = createNativeSourceProjectCodec();
+  for (const typography of [accessor, {lineHeight: '2'}, {lineHeight: NaN}, {lineHeight: 4.000000000000001},
+    {tableCellPaddingXEm: -1}, {tableCellPaddingYEm: Infinity}, {themeSpacing: false, lineHeight: 2}]) {
+    assert.throws(() => codec.encode({source, options: {typography}, images: [], fonts: []}));
+    const f = fixture();
+    assert.throws(() => createNativeWorkspaceRenderer(f.bindings, payload({typography})));
+    assert.equal(f.calls.length, 0);
+  }
+  assert.equal(reads, 0);
+});
+
 test('grid and exact pagination reach the complete native ABI with paper and owned resources', () => {
   const f = fixture(), p = payload({...all, pageGeometry: geometry});
   const renderer = createNativeWorkspaceRenderer(f.bindings, p);

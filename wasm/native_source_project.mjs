@@ -77,11 +77,18 @@ export function createNativeSourceProjectCodec(overrides = {}) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') invalid(key + ' must be boolean');
     }
     if (value.typography !== undefined) {
-      const typography = record(value.typography, ['homogeneous', 'antiriver', 'pareto']);
+      const typography = record(value.typography, ['homogeneous', 'antiriver', 'pareto',
+        'themeSpacing', 'lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm']);
       for (const [key, enabled] of Object.entries(typography)) {
         if (enabled === undefined) delete typography[key];
-        else if (typeof enabled !== 'boolean') invalid('typography.' + key + ' must be boolean');
+        else if (['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm'].includes(key)) {
+          const [min, max] = key === 'lineHeight' ? [1, 4] : [0, 8];
+          if (!Number.isFinite(enabled) || enabled < min || enabled > max)
+            invalid('typography.' + key + ' must be finite and in ' + min + '..' + max);
+        } else if (typeof enabled !== 'boolean') invalid('typography.' + key + ' must be boolean');
       }
+      if (typography.themeSpacing === false && ['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm']
+          .some(key => typography[key] !== undefined)) invalid('Typography spacing values require themeSpacing');
       value.typography = Object.freeze(typography);
     }
     if (value.microtype !== undefined && !['disabled', 'protrusion', 'expansion'].includes(value.microtype)) invalid('Invalid microtype');

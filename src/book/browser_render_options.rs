@@ -141,6 +141,10 @@ impl PdfSettings {
         options.optimal_pagination = candidate.optimal_pagination;
         options.strict_pagination = candidate.strict_pagination;
         options.footnote_backlinks = candidate.footnote_backlinks;
+        options.use_theme_spacing = candidate.use_theme_spacing;
+        options.pdf_line_height = candidate.pdf_line_height;
+        options.pdf_table_cell_padding_x_em = candidate.pdf_table_cell_padding_x_em;
+        options.pdf_table_cell_padding_y_em = candidate.pdf_table_cell_padding_y_em;
         options.microtype = candidate.microtype;
         options.base_font_size = candidate.base_font_size;
         options.heading_scale = candidate.heading_scale;

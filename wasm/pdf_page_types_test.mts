@@ -1,10 +1,12 @@
 // Compile-only public entry-point contract; no native renderer is executed.
 import { renderPdf, renderHtml, renderEpub, renderBookPdf, createRenderer,
-  type FmdPdfPage, type FmdPdfRenderOptions } from "@franken-suite/franken-markdown";
+  type FmdPdfPage, type FmdPdfRenderOptions, type FmdPdfTypography } from "@franken-suite/franken-markdown";
 
 const page: FmdPdfPage = { size: "a4", orientation: "landscape",
   margins: { leftPt: 24, rightPt: 36, topPt: 18, bottomPt: 30 } };
-const options: FmdPdfRenderOptions = { strictPagination: true, baselineGridPt: 13.125, page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
+const typography: FmdPdfTypography = { themeSpacing: true, lineHeight: 2,
+  tableCellPaddingXEm: 1.25, tableCellPaddingYEm: 0.75 };
+const options: FmdPdfRenderOptions = { typography, strictPagination: true, baselineGridPt: 13.125, page, font: "serif", pageNumbers: true, metadataEpochSeconds: 0 };
 for (const size of ["a5", "legal", "tabloid"] as const) {
   await renderPdf("# Paper", { page: { size } });
   await renderBookPdf([{ path: "one.md", source: "# One" }], { page: { size } });
@@ -33,3 +35,5 @@ await renderHtml("x", { baselineGridPt: 14 });
 await renderPdf("x", { strictPagination: "true" });
 // @ts-expect-error HTML cannot request strict PDF pagination.
 await renderHtml("x", { strictPagination: true });
+// @ts-expect-error Literal leading is numeric, without CSS units.
+await renderPdf("x", { typography: { lineHeight: "2em" } });

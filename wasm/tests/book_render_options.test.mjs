@@ -67,6 +67,23 @@ if (!isMainThread) {
     postMessage(data, transfer) { parentPort.postMessage(data, transfer); },
   }, api);
 } else {
+  test("book spacing tokens are validated, captured and passed through retained publishing", async () => {
+    const options = { typography: "theme-spacing,line-height=2e0,table-padding-x=1.25,table-padding-y=0" };
+    const prepared = prepareBookInput(FILES, options);
+    const expected = "theme-spacing,line-height=2,table-padding-x=1.25,table-padding-y=0";
+    assert.equal(prepared.options.typography, expected);
+    const session = await api.createBook(FILES, options);
+    options.typography = "line-height=3";
+    assert.equal(decoded(session.renderPdf()).pdf[0], expected);
+    session.dispose();
+    for (const typography of ["line-height=4.000000000000001", "line-height=NaN",
+      "table-padding-x=-1", "table-padding-y=8.000000000000002", "line-height=0x2", "line-height="]) {
+      const before = state.created;
+      assert.throws(() => prepareBookInput(FILES, { typography }), /Unknown typography token/);
+      assert.equal(state.created, before);
+    }
+  });
+
   test("book logos use the additive settings transaction and retain exact host assets", async () => {
     let ready;
     const delayed = createBookBindings(() => new Promise(resolve => { ready = resolve; }));

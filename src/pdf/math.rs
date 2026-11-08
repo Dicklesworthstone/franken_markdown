@@ -534,6 +534,7 @@ pub(super) fn layout_block(
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: Default::default(),
         grid: None,
         hyphenated: false,
         segs: Vec::new(),

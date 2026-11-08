@@ -198,13 +198,15 @@ pub(super) fn fit_heights<'a>(
     size: f32,
     max_height: f32,
     faces: &Faces,
+    leading: Option<f32>,
 ) {
     if !max_height.is_finite() || max_height <= 0.0 {
         return;
     }
     let mut formulas = Vec::new();
     let (mut above, mut below) = (0.0_f32, 0.0_f32);
-    let (mut fixed_above, mut fixed_below) = (size, size * 0.3);
+    let (mut fixed_above, mut fixed_below) = super::spacing::rooms(size, leading);
+    let mut scratch = super::ShapeScratch::default();
     for tok in tokens {
         if tok.slot == F_IMAGE {
             if let Some(image) = inline_image::image_box(&tok.text, size) {
@@ -214,6 +216,10 @@ pub(super) fn fit_heights<'a>(
             continue;
         }
         if !is_inline_math(tok.slot) {
+            if leading.is_some() && tok.slot == super::F_MONO && !tok.text.trim().is_empty() {
+                fixed_above = fixed_above.max(size * 0.74);
+                fixed_below = fixed_below.max(size * 0.26);
+            }
             // Pagination reserves actual positioned mark ink, which can rise
             // far above one em. Keep that same fixed envelope when a deep
             // formula shares its baseline; nominal text metrics alone would
@@ -222,6 +228,15 @@ pub(super) fn fit_heights<'a>(
                 let (above, below) = run.ink(font_size_of(size));
                 fixed_above = fixed_above.max(above);
                 fixed_below = fixed_below.max(below);
+            } else if leading.is_some() {
+                let face = faces.face(tok.slot);
+                let scale = size / f32::from(face.font.units_per_em.max(1));
+                for glyph in super::shape_run_with_scratch(face, &tok.text, &mut scratch).glyphs {
+                    if let Some(bounds) = face.font.glyph_bbox(glyph) {
+                        fixed_above = fixed_above.max(f32::from(bounds[3]).max(0.0) * scale);
+                        fixed_below = fixed_below.max((-f32::from(bounds[1])).max(0.0) * scale);
+                    }
+                }
             }
             continue;
         }
@@ -240,7 +255,13 @@ pub(super) fn fit_heights<'a>(
     // For a row at the top of a page, the baseline is 1.32em below
     // the cursor, plus ascent beyond 1em. Its lowest ink therefore occupies
     // 0.32em + max(above, fixed_above) + max(below, fixed_below).
-    let available_ink = (max_height - size * 0.32).max(0.0);
+    // The explicit theme line box includes its ordinary descent. The legacy
+    // layout keeps the historical extra cursor-to-ink allowance unchanged.
+    let available_ink = if leading.is_some() {
+        max_height
+    } else {
+        (max_height - size * 0.32).max(0.0)
+    };
     if formulas.is_empty() || above.max(fixed_above) + below.max(fixed_below) <= available_ink {
         return;
     }
@@ -366,7 +387,7 @@ mod tests {
         let before = placement(&tokens[0].text, 11.0, false).unwrap();
         let dimensions = (before.size, before.advance, before.ascent, before.descent);
         let faces = Faces::load(&crate::PdfOptions::default()).unwrap();
-        fit_heights(&mut tokens, 11.0, 140.0, &faces);
+        fit_heights(&mut tokens, 11.0, 140.0, &faces, None);
         assert_eq!(tokens[0].text, "x^2");
         let after = placement(&tokens[0].text, 11.0, false).unwrap();
         assert_eq!(

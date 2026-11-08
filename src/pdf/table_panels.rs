@@ -6,12 +6,12 @@
 //! individual inline formulas and images are fitted to their final cell measure
 //! by the shared inline-object placement path.
 
-use super::{TABLE_COL_GUTTER, TABLE_MIN_COL_WIDTH};
+use super::TABLE_MIN_COL_WIDTH;
 
 /// Keep ordinary indentation. Only reclaim it when even one minimum-width
 /// column and its gutter would otherwise extend beyond the body measure.
-pub(super) fn geometry(content_width: f32, indent: f32) -> (f32, usize) {
-    let column_width = TABLE_MIN_COL_WIDTH + TABLE_COL_GUTTER;
+pub(super) fn geometry(content_width: f32, indent: f32, gutter: f32) -> (f32, usize) {
+    let column_width = TABLE_MIN_COL_WIDTH + gutter;
     let indent = indent.max(0.0).min((content_width - column_width).max(0.0));
     let available = content_width - indent;
     // This is deliberately conservative: a panel must fit at the nominal
@@ -62,6 +62,7 @@ impl Iterator for Columns {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::pdf::TABLE_COL_GUTTER;
     use crate::pdf::{Faces, FlowKind, Line, PageGeom, effective_pdf_options, layout};
     use crate::{Align, Block, Document, Inline, PdfOptions, Table};
     use std::collections::{BTreeMap, BTreeSet};
@@ -176,10 +177,10 @@ mod tests {
 
     #[test]
     fn geometry_uses_real_measure_and_only_reclaims_pathological_indentation() {
-        assert_eq!(geometry(468.0, 18.0), (18.0, 14));
-        assert_eq!(geometry(40.0, 0.0), (0.0, 1));
-        assert_eq!(geometry(40.0, 200.0), (8.0, 1));
-        assert_eq!(geometry(468.0, 500.0), (436.0, 1));
+        assert_eq!(geometry(468.0, 18.0, TABLE_COL_GUTTER), (18.0, 14));
+        assert_eq!(geometry(40.0, 0.0, TABLE_COL_GUTTER), (0.0, 1));
+        assert_eq!(geometry(40.0, 200.0, TABLE_COL_GUTTER), (8.0, 1));
+        assert_eq!(geometry(468.0, 500.0, TABLE_COL_GUTTER), (436.0, 1));
     }
 
     #[test]

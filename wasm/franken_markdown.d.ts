@@ -48,6 +48,24 @@ export interface FmdFontAsset {
   weight?: number;
 }
 
+/** PDF typography; omitted controls preserve the compact print layout. */
+export interface FmdPdfTypography {
+  /** Gradual adjacent-line demerits for more homogeneous spacing. */
+  homogeneous?: boolean;
+  /** Penalize white rivers through justified paragraphs. */
+  antiriver?: boolean;
+  /** Retain a bounded Pareto front of paragraph alternatives. */
+  pareto?: boolean;
+  /** Use literal theme leading and table padding. Default false. */
+  themeSpacing?: boolean;
+  /** Body leading multiplier, finite 1..4; implies themeSpacing. */
+  lineHeight?: number;
+  /** Horizontal padding per cell side in em, finite 0..8; implies themeSpacing. */
+  tableCellPaddingXEm?: number;
+  /** Vertical padding per cell side in em, finite 0..8; implies themeSpacing. */
+  tableCellPaddingYEm?: number;
+}
+
 export type FmdAuthoringProfile = "commonmark-gfm" | "gfm-plus";
 
 export interface FmdRenderOptions {
@@ -103,15 +121,8 @@ export interface FmdRenderOptions {
    * including bundled fonts. Default subset keeps compact document-specific fonts.
    * Requires matching WASM bindings; PDF/SVG font policies are independent. */
   fontEmbedding?: "subset" | "full";
-  /** Opt-in PDF line-breaking refinements (all off by default). */
-  typography?: {
-    /** Gradual adjacent-line demerits for more homogeneous spacing. */
-    homogeneous?: boolean;
-    /** Penalize white "rivers" through justified paragraphs. */
-    antiriver?: boolean;
-    /** Pareto-front line breaking safety net. */
-    pareto?: boolean;
-  };
+  /** Opt-in PDF line breaking and literal theme spacing. */
+  typography?: FmdPdfTypography;
   /** Globally optimal (Plass) PDF page breaking instead of greedy. */
   optimalPagination?: boolean;
   /** Host-supplied image bytes for HTML, PDF, EPUB and SVG; each export enforces resource limits. */

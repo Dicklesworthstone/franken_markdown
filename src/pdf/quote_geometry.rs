@@ -283,7 +283,8 @@ fn plan_block(block: &Block, cx: &LayoutCx<'_>, state: &mut State, in_list: bool
             for inlines in table.rows.iter().flatten() {
                 cell = cell.max(inline_minimum(inlines, cx.type_scale.table, false, cx));
             }
-            Width::new(TABLE_COL_GUTTER + cell)
+            let spacing = spacing::Policy::new(cx.opts);
+            Width::new(spacing.table_gutter(cx.type_scale.table, cx.type_scale.table) + cell)
         }
         Block::DefinitionList(items) => Width::new(items.iter().fold(1.0_f32, |minimum, item| {
             let terms = item

@@ -8,7 +8,7 @@ import test from "node:test";
 // Execute the exact public wrapper with only the generated WASM binding doubled.
 // This tests ABI selection, argument order and ownership, not native PDF output.
 async function fixture({ pageBinding = true, blocked = false, runningBinding = true, imageBinding = true,
-  typographyBindings = true, gridBinding = true, strictTokens = true, fullFonts = true } = {}) {
+  typographyBindings = true, gridBinding = true, strictTokens = true, spacingTokens = true, fullFonts = true } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-pdf-page-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -31,6 +31,8 @@ async function fixture({ pageBinding = true, blocked = false, runningBinding = t
       if (failure !== null) throw failure;
       if (!${strictTokens} && args.some(value => typeof value === "string" && value.includes("strict-pagination")))
         throw "unknown typography option 'strict-pagination'";
+      if (!${spacingTokens} && args.some(value => typeof value === "string" && value.includes("theme-spacing")))
+        throw "unknown typography option 'theme-spacing'";
       return { format: kind === "html" ? "html" : "pdf",
         mimeType: kind === "html" ? "text/html; charset=utf-8" : "application/pdf",
         extension: kind === "html" ? "html" : "pdf",
@@ -121,6 +123,44 @@ test("strict pagination occupies the existing typography slot for every PDF bind
   assert.equal(delayed.bindings.calls[0].args[27], "strict-pagination");
   for (const strictPagination of ["true", 1, null, {}])
     await assert.rejects(api.renderPdf("x", { strictPagination }), /strictPagination must be a boolean/);
+});
+
+test("literal theme spacing reaches every PDF path and is captured before initialization", async () => {
+  const { api, bindings } = await fixture();
+  const typography = { lineHeight: 2, tableCellPaddingXEm: 1.25, tableCellPaddingYEm: 0 };
+  const expected = "theme-spacing,line-height=2,table-padding-x=1.25,table-padding-y=0";
+  for (const [settings, slot] of [[{}, 27], [{ page: { size: "a4" } }, 28],
+    [{ running: { footer: { center: "{page}" } } }, 32],
+    [{ running: { header: { image: { dest: "logo" } } } }, 35], [{ baselineGridPt: 14 }, 35]]) {
+    await api.renderPdf("Measured", { ...settings, typography });
+    assert.equal(bindings.calls.at(-1).args[slot], expected);
+  }
+  const delayed = await fixture({ blocked: true });
+  const captured = { ...typography };
+  const pending = delayed.api.renderPdf("Owned", { typography: captured });
+  captured.lineHeight = 3; captured.tableCellPaddingXEm = 8;
+  delayed.bindings.finishInit(); await pending;
+  assert.equal(delayed.bindings.calls[0].args[27], expected);
+  const old = await fixture({ spacingTokens: false });
+  await assert.rejects(old.api.renderPdf("Literal", { typography }),
+    error => error === "unknown typography option 'theme-spacing'");
+  assert.equal(old.bindings.calls.length, 1, "unsupported spacing must not retry with compact defaults");
+});
+
+test("invalid spacing fails before initialization, getters and asset copying", async () => {
+  const { api, bindings } = await fixture();
+  let reads = 0;
+  const getter = Object.defineProperty({}, "lineHeight", { get() { reads++; return 2; } });
+  for (const typography of [getter, { lineHeight: "2" }, { lineHeight: NaN },
+    { lineHeight: 4.000000000000001 }, { lineHeight: 0.99 }, { tableCellPaddingXEm: -1 },
+    { tableCellPaddingYEm: Infinity }, { tableCellPaddingYEm: 8.000000000000002 },
+    { themeSpacing: null }, { themeSpacing: false, lineHeight: 2 }]) {
+    await assert.rejects(api.renderPdf("Source", { typography,
+      get pdfImages() { reads++; throw Error("assets read before admission"); } }), { code: "INVALID_OPTIONS" });
+  }
+  assert.equal(reads, 0); assert.equal(bindings.initCount, 0); assert.equal(bindings.calls.length, 0);
+  await api.renderPdf("Legacy", { typography: { themeSpacing: false } });
+  assert.equal(bindings.calls.at(-1).args.length, 27);
 });
 
 test("older native token parsers refuse strict policy and typed refusals keep native codes", async () => {

@@ -392,6 +392,7 @@ fn cost_context(line: &Line) -> Line {
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: line.spacing,
         grid: line.grid,
         hyphenated: line.hyphenated,
         segs: Vec::new(),

@@ -77,7 +77,9 @@ export interface BookOptions {
    * Independent of publication strictLinks. Failures never downgrade to PDF. */
   pdfAStrict?: boolean;
   /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
-   * strict-pagination, footnote-backlinks, protrusion or expansion. Unknown tokens fail before WASM initialization.
+   * strict-pagination, footnote-backlinks, theme-spacing, protrusion or expansion.
+   * line-height=1..4 and table-padding-x/table-padding-y=0..8 set literal PDF
+   * spacing and imply theme-spacing. Unknown/invalid tokens fail before WASM initialization.
    * Requires FmdBook.setPdfOptions; old packages fail explicitly.
    */
   typography?: string;

@@ -3,7 +3,7 @@ export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs"
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
-import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, normalizePdfTypographyToken, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -182,10 +182,7 @@ function bookRenderOptions(options) {
     if (typeof typography !== "string") throw new TypeError("typography must be a comma-separated string");
     bookTextBytes(typography, 256);
     for (const token of typography.split(",").map(token => token.trim()).filter(Boolean)) {
-      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination", "footnote-backlinks", "protrusion", "expansion"].includes(token)) {
-        throw new TypeError(`Unknown typography token: '${token}'`);
-      }
-      tokens.push(token);
+      tokens.push(normalizePdfTypographyToken(token));
     }
   }
   if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");

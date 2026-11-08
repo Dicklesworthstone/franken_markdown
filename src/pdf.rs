@@ -60,6 +60,7 @@ mod list_geometry;
 mod native_compression;
 mod page_note_grid;
 mod pagination_report;
+mod spacing;
 pub use pagination_report::{
     PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
     PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfRenderReport,
@@ -405,6 +406,8 @@ struct Line {
     /// Actual ink above/below the baseline for strictly positioned text.
     /// Zero preserves the historical ordinary/composable-text line box.
     text_ink: (f32, f32),
+    /// Explicit shared-theme line boxes and logical table-row padding.
+    spacing: spacing::LineSpacing,
     /// Admitted fixed-point vertical metrics; absent on the unchanged default path.
     grid: Option<baseline_grid::LineGrid>,
     /// A chosen intra-word break ends in a hyphen (inserted by the dictionary
@@ -3061,6 +3064,7 @@ fn render_inner(
 ) -> Result<RenderedPdf> {
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
+    spacing::validate_options(opts)?;
     let mut profiler = if profiled {
         PdfProfiler::enabled()
     } else {
@@ -3530,6 +3534,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs,
@@ -3620,6 +3625,8 @@ fn layout_with_pagination_report(
     faces: &Faces,
     page: PageGeom,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
+    spacing::validate_options(opts)?;
+    spacing::validate_tables(blocks, opts, page)?;
     inline_image::prepare(blocks, &opts.image_assets, faces);
     let markers = crate::toc::markers(blocks);
     let has_toc = opts.toc || markers.any();
@@ -4010,6 +4017,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: Default::default(),
         grid: None,
         hyphenated: false,
         segs: Vec::new(),
@@ -4402,6 +4410,8 @@ struct TableLayoutKey {
     page_content_w_bits: u32,
     font_size_bits: u32,
     col_gutter_bits: u32,
+    leading_bits: Option<u32>,
+    cell_padding_bits: u32,
     min_col_width_bits: u32,
     alloc_min_unit_bits: u32,
     alloc_max_extra_states: usize,
@@ -4413,7 +4423,13 @@ struct TableLayoutKey {
 }
 
 impl TableLayoutKey {
-    fn new(table: &Table, indent: f32, page: PageGeom, font_size: f32) -> Option<Self> {
+    fn new(
+        table: &Table,
+        indent: f32,
+        page: PageGeom,
+        font_size: f32,
+        spacing: spacing::Policy,
+    ) -> Option<Self> {
         let cell_count = table
             .head
             .len()
@@ -4446,7 +4462,9 @@ impl TableLayoutKey {
             page_bottom_bits: page.bottom.to_bits(),
             page_content_w_bits: page.content_w.to_bits(),
             font_size_bits: font_size.to_bits(),
-            col_gutter_bits: TABLE_COL_GUTTER.to_bits(),
+            col_gutter_bits: spacing.table_gutter(font_size, font_size).to_bits(),
+            leading_bits: spacing.leading().map(f32::to_bits),
+            cell_padding_bits: spacing.table_padding(font_size).to_bits(),
             min_col_width_bits: TABLE_MIN_COL_WIDTH.to_bits(),
             alloc_min_unit_bits: TABLE_ALLOC_MIN_UNIT_PT.to_bits(),
             alloc_max_extra_states: TABLE_ALLOC_MAX_EXTRA_STATES,
@@ -4785,6 +4803,7 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
     let start = out.len();
     layout_block_content(block, indent, out, cx);
     apply_incoming_page_break(incoming, start, out, &mut cx.pending_page_break);
+    spacing::apply(&mut out[start..], cx.opts);
 }
 
 fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
@@ -4967,6 +4986,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                         table_footing: Vec::new(),
                         heading_source: None,
                         text_ink: (0.0, 0.0),
+                        spacing: Default::default(),
                         grid: None,
                         hyphenated: false,
                         segs,
@@ -5017,6 +5037,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     table_footing: Vec::new(),
                     heading_source: None,
                     text_ink: (0.0, 0.0),
+                    spacing: Default::default(),
                     grid: None,
                     hyphenated: false,
                     segs,
@@ -5061,6 +5082,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs: Vec::new(),
@@ -5261,6 +5283,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: Default::default(),
         grid: None,
         hyphenated: false,
         segs: Vec::new(),
@@ -5356,6 +5379,7 @@ fn push_figure_line(
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: Default::default(),
         grid: None,
         hyphenated: false,
         segs: Vec::new(),
@@ -18018,6 +18042,7 @@ struct TableLayoutSpec<'a> {
     page: PageGeom,
     group: u32,
     nominal_size: f32,
+    spacing: spacing::Policy,
     /// A horizontal panel selects source columns without changing the source
     /// table's financial-row semantics. `None` keeps the ordinary cached path.
     columns: Option<&'a [usize]>,
@@ -18162,6 +18187,7 @@ fn layout_table(
 ) {
     let page = cx.page;
     let nominal_size = cx.type_scale.table;
+    let spacing = spacing::Policy::new(cx.opts);
     let financial_rows = crate::table_format::financial_rows(table);
     let ncol = table
         .head
@@ -18171,7 +18197,11 @@ fn layout_table(
             || table.rows.iter().map(Vec::len).max().unwrap_or(0),
             |rows| rows.iter().map(|row| row.cells.len()).max().unwrap_or(0),
         ));
-    let (indent, capacity) = table_panels::geometry(page.content_w, indent);
+    let (indent, capacity) = table_panels::geometry(
+        page.content_w,
+        indent,
+        spacing.table_gutter(nominal_size, nominal_size),
+    );
     if ncol > capacity {
         // A panel keeps readable cell widths and gutters instead of letting the
         // minimum grid extend outside the page. Each panel is its own table
@@ -18185,6 +18215,7 @@ fn layout_table(
                 page,
                 group: panel_group,
                 nominal_size,
+                spacing,
                 columns: Some(&columns),
                 financial_rows: financial_rows.as_deref(),
                 faces: cx.faces,
@@ -18200,13 +18231,14 @@ fn layout_table(
         page,
         group,
         nominal_size,
+        spacing,
         columns: None,
         financial_rows: financial_rows.as_deref(),
         faces: cx.faces,
         width_cache: &cx.width_cache,
         links: &mut cx.links,
     };
-    let Some(key) = TableLayoutKey::new(table, indent, page, nominal_size) else {
+    let Some(key) = TableLayoutKey::new(table, indent, page, nominal_size, spacing) else {
         layout_table_uncached(table, spec, out);
         return;
     };
@@ -18310,6 +18342,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         financial_rows.map_or(table.rows[index].as_slice(), |rows| rows[index].cells)
     };
     let mut size = spec.nominal_size;
+    let spacing = spec.spacing;
     let ncol = spec.columns.map_or_else(
         || {
             table.head.len().max(table.align.len()).max(
@@ -18332,7 +18365,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     let indent = spec.indent;
     let left = page.left + indent;
     let avail = page.content_w - indent;
-    let mut pad = TABLE_COL_GUTTER; // inter-column gutter (half on each side of a column)
+    // Inter-column gutter: one physical cell's padding on each side.
+    let mut pad = spacing.table_gutter(size, spec.nominal_size);
 
     // Tokenize each cell once. Measurement and wrapping use the same styled
     // token stream, so table layout avoids repeating inline/style work while
@@ -18462,7 +18496,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             let min_size =
                 (nominal * 0.75).max(crate::theme::TABLE_FONT_SIZE_FLOOR_PT.min(nominal));
             size = (nominal * scale).clamp(min_size, nominal);
-            pad = (TABLE_COL_GUTTER * (size / nominal)).max(8.0);
+            pad = spacing.table_gutter(size, nominal);
             gutters = pad * ncol as f32;
             target = (avail - gutters).max(ncol as f32 * TABLE_MIN_COL_WIDTH);
 
@@ -18582,8 +18616,11 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             inline_math_fit::fit_heights(
                 cells.iter_mut().flatten(),
                 size,
-                page.inline_math_height(reserved_height + heading_keep_height),
+                page.inline_math_height(
+                    reserved_height + heading_keep_height + 2.0 * spacing.table_padding(size),
+                ),
                 faces,
+                spacing.leading(),
             );
         }
         let cells = prepared.as_ref();
@@ -18691,7 +18728,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             }
             lines.push(Line {
                 size,
-                gap_after: if row_idx + 1 == depth { gap_after } else { 1.0 },
+                gap_after: spacing.table_gap(if row_idx + 1 == depth { gap_after } else { 1.0 }),
                 rule: false,
                 // Reuse `rule_x` (unused on non-rule lines) to carry the stripe's
                 // left edge so PASS 2 can draw a full-measure tint to the right.
@@ -18725,6 +18762,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: spacing.table_line(size, row_idx, depth),
                 grid: None,
                 hyphenated: false,
                 segs,
@@ -18761,6 +18799,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         table_footing: Vec::new(),
         heading_source: None,
         text_ink: (0.0, 0.0),
+        spacing: Default::default(),
         grid: None,
         hyphenated: false,
         segs: Vec::new(),
@@ -18771,8 +18810,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
     let header_start = out.len();
     // A repeated header must leave room for its separator and at least one
     // ordinary body row. Larger body formulas then fit the remaining space.
-    let minimum_body = size * 1.32
-        + 3.0
+    let minimum_body = spacing.minimum_row_height(size)
+        + spacing.table_gap(3.0)
         + natural_line_leading(&rule(3.0))
         + 3.0
         + page.grid.map_or(0.0, |grid| 4.0 * grid.spacing());
@@ -19133,18 +19172,28 @@ const INLINE_MATH_DESCENT_ROOM: f32 = 0.3;
 /// text leading: `(above, below)` in points. Their actual ink grows the line
 /// the way TeX's box heights and depths do; ordinary text keeps zero extras.
 fn inline_math_extents(line: &Line) -> (f32, f32) {
-    let mut above = (line.text_ink.0 - INLINE_MATH_ASCENT_ROOM * line.size).max(0.0);
-    let mut below = (line.text_ink.1 - INLINE_MATH_DESCENT_ROOM * line.size).max(0.0);
+    let (ascent_room, descent_room) = spacing::rooms(line.size, line.spacing.leading);
+    let mut above = (line.text_ink.0 - ascent_room).max(0.0);
+    let mut below = (line.text_ink.1 - descent_room).max(0.0);
     for seg in &line.segs {
+        if line.spacing.leading.is_some()
+            && line.bg == 0
+            && !line.rule
+            && seg.slot == F_MONO
+            && !seg.text.trim().is_empty()
+        {
+            // Inline code paints a chip beyond its glyph ink. Keep that box
+            // inside tightly led rows just as grid admission already does.
+            above = above.max(line.size * 0.74 - ascent_room);
+            below = below.max(line.size * 0.26 - descent_room);
+        }
         if is_inline_math(seg.slot)
             && let Some(formula) =
                 inline_math_fit::placement(&seg.text, line.size, seg.slot == F_DISPLAY_MATH)
         {
-            let (extra_ascent, extra_descent) = if formula.fitted {
-                (
-                    formula.ascent - INLINE_MATH_ASCENT_ROOM * line.size,
-                    formula.descent - INLINE_MATH_DESCENT_ROOM * line.size,
-                )
+            let (extra_ascent, extra_descent) = if formula.fitted || line.spacing.leading.is_some()
+            {
+                (formula.ascent - ascent_room, formula.descent - descent_room)
             } else {
                 // Keep the historical operation order for ordinary formulas:
                 // floating-point regrouping can move a pagination boundary.
@@ -19160,8 +19209,8 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
         {
             // Inline images grow their line exactly like tall formulas.
             let ascent = image.height - image.descent;
-            above = above.max(ascent - INLINE_MATH_ASCENT_ROOM * line.size);
-            below = below.max(image.descent - INLINE_MATH_DESCENT_ROOM * line.size);
+            above = above.max(ascent - ascent_room);
+            below = below.max(image.descent - descent_room);
         }
     }
     (above, below)
@@ -20421,6 +20470,7 @@ fn layout_inlines(
     let content_w = inline_paragraph_measure(&toks, cx.page, indent);
     inline_image::fit_tokens(&mut toks, size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, size, content_w.to_points_f32());
+    let leading = spacing::Policy::new(cx.opts).flow_leading(flow.kind);
     if toks.iter().any(|tok| is_inline_math(tok.slot)) {
         inline_math_fit::fit_heights(
             &mut toks,
@@ -20428,6 +20478,7 @@ fn layout_inlines(
             cx.page
                 .inline_math_height(cx.page.preceding_heading_height(out)),
             cx.faces,
+            leading,
         );
     }
     let mut policy = ParagraphPolicy::for_flow(flow.kind);
@@ -20475,6 +20526,7 @@ fn layout_inlines(
             cx.faces,
             cx.page,
             &cx.links.targets,
+            leading,
             out,
         );
         mark_flow(out, start, flow.group, flow.kind);
@@ -20641,6 +20693,7 @@ fn emit_broken_paragraph(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
             segs,
@@ -20656,6 +20709,7 @@ fn emit_broken_paragraph(
         );
     }
     mark_flow(out, start, flow.group, flow.kind);
+    spacing::apply(&mut out[start..], cx.opts);
     text_positioning::stamp_lines(&mut out[start..], cx.faces);
 }
 
@@ -20683,6 +20737,7 @@ fn layout_prefixed_inlines(
     let content_w = inline_paragraph_measure(&toks, cx.page, spec.content_indent);
     inline_image::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
     inline_math_fit::fit_tokens(&mut toks, spec.size, content_w.to_points_f32());
+    let leading = spacing::Policy::new(cx.opts).flow_leading(spec.flow.kind);
     if toks.iter().any(|tok| is_inline_math(tok.slot)) {
         inline_math_fit::fit_heights(
             &mut toks,
@@ -20690,6 +20745,7 @@ fn layout_prefixed_inlines(
             cx.page
                 .inline_math_height(cx.page.preceding_heading_height(out)),
             cx.faces,
+            leading,
         );
     }
     let mut policy = ParagraphPolicy::for_flow(spec.flow.kind);
@@ -20724,6 +20780,7 @@ fn layout_prefixed_inlines(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: vec![marker],
@@ -20744,6 +20801,7 @@ fn layout_prefixed_inlines(
             cx.faces,
             cx.page,
             &cx.links.targets,
+            leading,
             out,
         );
         if let Some(first) = out.get_mut(before) {
@@ -20899,6 +20957,7 @@ fn emit_broken_prefixed_paragraph(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
             segs,
@@ -20914,6 +20973,7 @@ fn emit_broken_prefixed_paragraph(
         }
     }
     mark_flow(out, start, flow.group, flow.kind);
+    spacing::apply(&mut out[start..], cx.opts);
 }
 
 /// The original greedy wrapper, kept as an emergency fallback (and as a
@@ -20927,6 +20987,7 @@ fn layout_inlines_greedy(
     faces: &Faces,
     page: PageGeom,
     links: &[LinkTarget],
+    leading: Option<f32>,
     out: &mut Vec<Line>,
 ) {
     let left = page.left + indent;
@@ -20939,6 +21000,7 @@ fn layout_inlines_greedy(
             size,
             page.inline_math_height(page.preceding_heading_height(out)),
             faces,
+            leading,
         );
     }
     let mut lines: Vec<Vec<Tok>> = Vec::new();
@@ -20988,6 +21050,7 @@ fn layout_inlines_greedy(
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs,
@@ -23375,7 +23438,7 @@ fn place_page_notes<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
+            y: placed_line_baseline(y, line),
         });
         y -= line.gap_after;
     }
@@ -23784,9 +23847,9 @@ fn generate_page_content(
         if !p.line.shade {
             continue;
         }
-        let size = p.line.size;
-        let top_y = p.y + (size * 0.92).max(p.line.text_ink.0);
-        let bot_y = p.y - (size * 0.40).max(p.line.text_ink.1);
+        let (above, below) = spacing::table_bounds(p.line);
+        let top_y = p.y + above;
+        let bot_y = p.y - below;
         append_page_background_rounded_rect_fill(
             &mut bg,
             p.line.rule_x,
@@ -25434,6 +25497,7 @@ mod font_slot_text_refs_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs,
@@ -30673,6 +30737,7 @@ fn validated_page_break_plan(
     page: PageGeom,
     opts: &PdfOptions,
 ) -> Result<(Option<PageBreakPlan>, PdfPageBreakReport)> {
+    spacing::validate_layout(lines, opts, page)?;
     let (plan, report) = page_break_plan_and_report(lines, page, opts);
     if opts.strict_pagination && !report.is_exact() {
         return Err(RenderError::Pagination(report.fallback.clone().unwrap_or(
@@ -31543,6 +31608,7 @@ mod keep_with_next_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: Vec::new(),
@@ -31805,6 +31871,7 @@ mod void_budget_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: Vec::new(),
@@ -31889,7 +31956,29 @@ fn line_leading(line: &Line) -> f32 {
 
 fn natural_line_leading(line: &Line) -> f32 {
     let (above, below) = inline_math_extents(line);
-    line.size * 1.32 + above + below + financial_tables::footing_depth(line)
+    spacing::nominal_leading(line)
+        + above
+        + below
+        + financial_tables::footing_depth(line)
+        + line.spacing.padding_top
+        + line.spacing.padding_bottom
+}
+
+/// Non-discardable depth below the text baseline, shared by ordinary and grid
+/// placement, page-foot reservations and table cells.
+fn line_baseline_lift(line: &Line) -> f32 {
+    inline_math_extents(line).1
+        + financial_tables::footing_depth(line)
+        + spacing::baseline_lift(line)
+}
+
+fn placed_line_baseline(cursor: f32, line: &Line) -> f32 {
+    if line.spacing.leading.is_some() {
+        cursor + line_baseline_lift(line)
+    } else {
+        // Keep the historical f32 operation order for default output bytes.
+        cursor + inline_math_extents(line).1 + financial_tables::footing_depth(line)
+    }
 }
 
 /// Text on an image row is the list marker, aligned to the first normal text
@@ -31936,7 +32025,7 @@ fn place_lines_shrunk<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
+            y: placed_line_baseline(y, line),
         });
         y -= line.gap_after;
     }
@@ -31944,7 +32033,7 @@ fn place_lines_shrunk<'a>(
         y -= line_leading(line);
         placed.push(Placed {
             line,
-            y: y + inline_math_extents(line).1 + financial_tables::footing_depth(line),
+            y: placed_line_baseline(y, line),
         });
         let gap = match shrink_from {
             Some(from) if idx >= from && is_block_boundary(lines, idx) => {
@@ -32067,6 +32156,9 @@ fn quote_extents(placed: &[Placed<'_>]) -> BTreeMap<usize, QuoteExtent> {
                     bottom = bottom.min(y - size * 0.20);
                 }
                 (top, bottom)
+            } else if p.line.spacing.leading.is_some() {
+                let (above, below) = spacing::table_bounds(p.line);
+                (p.y + above, p.y - below)
             } else {
                 (
                     p.y + (p.line.size * 0.85).max(p.line.text_ink.0),
@@ -35343,6 +35435,7 @@ mod pdf_writer_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: texts
@@ -35677,7 +35770,7 @@ mod pdf_writer_tests {
         .collect();
         let mut out = Vec::new();
 
-        layout_inlines_greedy(toks, 0.0, 12.0, 3.0, &faces, page, &[], &mut out);
+        layout_inlines_greedy(toks, 0.0, 12.0, 3.0, &faces, page, &[], None, &mut out);
 
         assert!(
             out.len() >= 2,
@@ -36259,6 +36352,7 @@ mod pdf_writer_tests {
             page: cx.page,
             group,
             nominal_size: cx.type_scale.table,
+            spacing: super::spacing::Policy::new(cx.opts),
             columns: None,
             financial_rows: financial_rows.as_deref(),
             faces: cx.faces,
@@ -36610,7 +36704,7 @@ mod pdf_writer_tests {
         };
 
         assert!(
-            TableLayoutKey::new(&table, 0.0, test_page_geom(), 10.0).is_none(),
+            TableLayoutKey::new(&table, 0.0, test_page_geom(), 10.0, Default::default()).is_none(),
             "the table cache key must bound inline node count, not just text bytes"
         );
     }
@@ -37230,6 +37324,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs,
@@ -37400,6 +37495,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs: Vec::new(),
@@ -37543,6 +37639,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs: Vec::new(),
@@ -37666,6 +37763,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs: vec![
@@ -37770,6 +37868,7 @@ mod pdf_writer_tests {
                 table_footing: Vec::new(),
                 heading_source: None,
                 text_ink: (0.0, 0.0),
+                spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
                 segs: Vec::new(),
@@ -42805,6 +42904,7 @@ mod coverage_gap_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: Vec::new(),
@@ -44619,6 +44719,7 @@ pub(crate) fn verification_text_layer_for_layout(
 ) -> Result<VerifyTextLayer> {
     opts.font_assets.validate()?;
     baseline_grid::validate_options(opts)?;
+    spacing::validate_options(opts)?;
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
     let faces = Faces::load(opts)?;
@@ -44887,6 +44988,7 @@ mod plass_pagination_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: None,
             hyphenated: false,
             segs: Vec::new(),

@@ -399,6 +399,7 @@ fn append_legacy(face: &Face, source: &str, run: &mut Run) {
 /// Stamp actual positioned glyph ink before any note admission/page planning.
 /// Cached/alternate lines retain these metrics along with their source text.
 pub(super) fn stamp_lines(lines: &mut [Line], faces: &super::Faces) {
+    let mut scratch = super::ShapeScratch::default();
     for line in lines {
         line.text_ink = (0.0, 0.0);
         for seg in &line.segs {
@@ -409,6 +410,22 @@ pub(super) fn stamp_lines(lines: &mut [Line], faces: &super::Faces) {
                 let (above, below) = run.ink(super::font_size_of(line.size));
                 line.text_ink.0 = line.text_ink.0.max(above);
                 line.text_ink.1 = line.text_ink.1.max(below);
+            } else if line.spacing.leading.is_some() {
+                // Explicit leading can be tighter than the historical print
+                // box. Measure ordinary glyphs too, so actual text can enlarge
+                // that nominal box instead of colliding with the next row.
+                let face = faces.face(seg.slot);
+                let scale = line.size / f32::from(face.font.units_per_em.max(1));
+                for glyph in super::shape_run_with_scratch(face, &seg.text, &mut scratch).glyphs {
+                    if let Some(bounds) = face.font.glyph_bbox(glyph) {
+                        line.text_ink.0 =
+                            line.text_ink.0.max(f32::from(bounds[3]).max(0.0) * scale);
+                        line.text_ink.1 = line
+                            .text_ink
+                            .1
+                            .max((-f32::from(bounds[1])).max(0.0) * scale);
+                    }
+                }
             }
         }
     }

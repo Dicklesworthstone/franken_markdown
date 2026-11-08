@@ -51,6 +51,10 @@ pub(super) struct PublishingArgs {
     /// Link PDF note numbers back to their first citation; accepts =false.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_footnote_backlinks: Option<bool>,
+    /// Apply shared theme body leading and per-side table-cell padding to PDF.
+    /// Default off; accepts =false to override config.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pdf_theme_spacing: Option<bool>,
     /// Fit the assembled PDF, including contents and chapter breaks, to N pages.
     #[arg(long, visible_alias = "target-pages", value_name = "PAGES")]
     pub(super) fit_to_pages: Option<usize>,
@@ -176,6 +180,7 @@ pub(super) fn prepare(
             || args.pdf_optimal_pagination.is_some()
             || args.pdf_strict_pagination.is_some()
             || args.pdf_footnote_backlinks.is_some()
+            || args.pdf_theme_spacing.is_some()
             || args.fit_to_pages.is_some()
             || args.pdf_base_font_size.is_some()
             || args.pdf_heading_scale.is_some()
@@ -269,6 +274,10 @@ pub(super) fn prepare(
         footnote_backlinks: args
             .pdf_footnote_backlinks
             .or(defaults.pdf_footnote_backlinks)
+            .unwrap_or(false),
+        use_theme_spacing: args
+            .pdf_theme_spacing
+            .or(defaults.pdf_theme_spacing)
             .unwrap_or(false),
         page_numbers: args
             .pdf_page_numbers
@@ -414,6 +423,7 @@ impl Publishing {
         options.optimal_pagination = self.pdf.optimal_pagination;
         options.strict_pagination = self.pdf.strict_pagination;
         options.footnote_backlinks = self.pdf.footnote_backlinks;
+        options.use_theme_spacing = self.pdf.use_theme_spacing;
         options.page_numbers = self.pdf.page_numbers;
         options.fit_to_pages = self.pdf.fit_to_pages;
         options.base_font_size = self.pdf.base_font_size.or(options.base_font_size);

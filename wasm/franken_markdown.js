@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfTypographyTokens, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -292,11 +292,7 @@ function admitArchivalPdfAssets(images, fonts) {
 // Opt-in typography, pagination and navigation as the comma-separated tokens the
 // core accepts; undefined keeps the default (all off).
 function typographyOption(options) {
-  const tokens = [];
-  const typography = options.typography ?? {};
-  if (typography.homogeneous === true) tokens.push("homogeneous");
-  if (typography.antiriver === true) tokens.push("antiriver");
-  if (typography.pareto === true) tokens.push("pareto");
+  const tokens = pdfTypographyTokens(options.typography);
   if (options.optimalPagination === true) tokens.push("optimal-pagination");
   const strict = options.strictPagination;
   if (strict !== undefined && typeof strict !== "boolean")
@@ -1024,6 +1020,13 @@ function bookPdfArguments(files, options) {
     footnoteBacklinks,
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
+  // The profiled path already admitted its complete 39-argument binding above;
+  // it must not require an additional unprofiled advanced/grid export.
+  if (profile === undefined && typesetting?.split(",").includes("theme-spacing")) {
+    const binding = requireBrowserBinding(grid > 0 ? "renderBookPdfConfiguredGrid"
+      : "renderBookPdfConfiguredAdvanced", "wasm-book with theme spacing");
+    requireBindingArguments(binding, grid > 0 ? 38 : 37, "PDF theme spacing");
+  }
   const bands = pdfRunningOption(normalizePdfRunning(running));
   const complete = profile !== undefined || typesetting !== undefined || bands !== null || grid > 0;
   const geometry = pdfPageGeometry(page);

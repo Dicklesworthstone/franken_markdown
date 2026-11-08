@@ -205,8 +205,14 @@ fn measure(line: &Line, faces: &Faces, scratch: &mut ShapeScratch) -> LineGrid {
         below = below.max((line.size * PANEL_DESCENT_FRAC).max(line.text_ink.1) + PANEL_PAD_V);
     }
     if line.shade {
-        above = above.max((line.size * 0.92).max(line.text_ink.0));
-        below = below.max((line.size * 0.40).max(line.text_ink.1));
+        let (top, bottom) = spacing::table_bounds(line);
+        above = above.max(top);
+        below = below.max(bottom);
+    } else if line.spacing.leading.is_some() {
+        // Header rows have no tint, but their physical cell padding has the
+        // same page and baseline constraints as a shaded body row.
+        above += line.spacing.padding_top;
+        below += line.spacing.padding_bottom;
     }
     if !line.quote_bars.is_empty() {
         if line.image.is_none() {
@@ -243,7 +249,7 @@ fn measure(line: &Line, faces: &Faces, scratch: &mut ShapeScratch) -> LineGrid {
 }
 
 fn lift(line: &Line) -> i64 {
-    outward(inline_math_extents(line).1 + financial_tables::footing_depth(line))
+    outward(line_baseline_lift(line))
 }
 
 /// Row-local requirements used to choose the document-wide grid context.
@@ -556,6 +562,7 @@ mod alternative_tests {
             table_footing: Vec::new(),
             heading_source: None,
             text_ink: (0.0, 0.0),
+            spacing: Default::default(),
             grid: Some(LineGrid {
                 pitch: 14_000,
                 advance: 14_000,

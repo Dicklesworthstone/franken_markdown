@@ -59,6 +59,16 @@ pub struct WasmRenderOptions {
     /// Shared theme, including font family, dark-mode policy, spacing, colors,
     /// and page contract.
     pub theme: Theme,
+    /// Apply the shared theme's literal leading and table-cell padding to PDF.
+    /// Disabled by default; see [`crate::PdfOptions::use_theme_spacing`].
+    pub use_theme_spacing: bool,
+    /// Optional PDF-only override of the shared leading token (`1..=4`).
+    /// Used when `use_theme_spacing` is enabled; HTML retains the shared theme.
+    pub pdf_line_height: Option<f32>,
+    /// Optional PDF-only horizontal cell padding override (`0..=8` em per side).
+    pub pdf_table_cell_padding_x_em: Option<f32>,
+    /// Optional PDF-only vertical cell padding override (`0..=8` em per side).
+    pub pdf_table_cell_padding_y_em: Option<f32>,
     /// Optional document title.
     pub title: Option<String>,
     /// Optional PDF author metadata.
@@ -416,6 +426,15 @@ impl WasmRenderOptions {
 
     pub(crate) fn pdf_options(&self) -> PdfOptions {
         let mut theme = self.theme.clone();
+        if let Some(value) = self.pdf_line_height {
+            theme.spacing.line_height = value;
+        }
+        if let Some(value) = self.pdf_table_cell_padding_x_em {
+            theme.spacing.table_cell_padding_x_em = value;
+        }
+        if let Some(value) = self.pdf_table_cell_padding_y_em {
+            theme.spacing.table_cell_padding_y_em = value;
+        }
         let mut base_font_size = self.base_font_size;
         if let Some(scale) = self.font_scale {
             let fs = crate::FontScale::from_factor(scale);
@@ -426,6 +445,7 @@ impl WasmRenderOptions {
         }
         PdfOptions {
             theme,
+            use_theme_spacing: self.use_theme_spacing,
             title: self.title.clone(),
             author: self.author.clone(),
             metadata_epoch_seconds: self.metadata_epoch_seconds,
@@ -456,9 +476,13 @@ impl WasmRenderOptions {
     /// Apply comma-separated typography tokens from a browser host:
     /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`,
     /// `strict-pagination` (which also enables optimal pagination),
-    /// `footnote-backlinks` (return navigation from PDF notes), and the
+    /// `footnote-backlinks` (return navigation from PDF notes), `theme-spacing`
+    /// (literal shared leading and table padding in PDF), and the
     /// microtype modes `protrusion` (with the expansion budget, like the CLI)
     /// or `expansion` (glyph expansion only). Empty or absent is a no-op.
+    /// `line-height=1..4`, `table-padding-x=0..8` and `table-padding-y=0..8`
+    /// override PDF spacing and imply `theme-spacing`. Numbers are admitted at
+    /// host precision before conversion to the renderer's `f32` tokens.
     ///
     /// # Errors
     /// Names the first unknown token.
@@ -467,6 +491,22 @@ impl WasmRenderOptions {
         tokens: Option<&str>,
     ) -> std::result::Result<(), String> {
         for token in tokens.unwrap_or_default().split(',').map(str::trim) {
+            if let Some((name, value)) = token.split_once('=') {
+                let (destination, min, max) = match name {
+                    "line-height" => (&mut self.pdf_line_height, 1.0, 4.0),
+                    "table-padding-x" => (&mut self.pdf_table_cell_padding_x_em, 0.0, 8.0),
+                    "table-padding-y" => (&mut self.pdf_table_cell_padding_y_em, 0.0, 8.0),
+                    _ => return Err(format!("unknown typography option '{token}'")),
+                };
+                let number = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite() && (min..=max).contains(value))
+                    .ok_or_else(|| format!("{name} must be finite and in {min}..={max}"))?;
+                *destination = Some(number as f32);
+                self.use_theme_spacing = true;
+                continue;
+            }
             match token {
                 "" => {}
                 "homogeneous" => self.gradual_demerits = true,
@@ -474,6 +514,7 @@ impl WasmRenderOptions {
                 "pareto" => self.pareto_line_breaking = true,
                 "optimal-pagination" => self.optimal_pagination = true,
                 "footnote-backlinks" => self.footnote_backlinks = true,
+                "theme-spacing" => self.use_theme_spacing = true,
                 "strict-pagination" => {
                     self.strict_pagination = true;
                     self.optimal_pagination = true;
@@ -488,7 +529,7 @@ impl WasmRenderOptions {
                 other => {
                     return Err(format!(
                         "unknown typography option '{other}'; expected homogeneous, antiriver, \
-                         pareto, optimal-pagination, strict-pagination, footnote-backlinks, protrusion or expansion"
+                         pareto, optimal-pagination, strict-pagination, footnote-backlinks, theme-spacing, protrusion or expansion"
                     ));
                 }
             }

@@ -91,11 +91,18 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
     }
     if (value.typography !== undefined) {
-      const typography = settingData(value.typography, ['homogeneous', 'antiriver', 'pareto']);
+      const typography = settingData(value.typography, ['homogeneous', 'antiriver', 'pareto',
+        'themeSpacing', 'lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm']);
       for (const [key, enabled] of Object.entries(typography)) {
         if (enabled === undefined) delete typography[key];
-        else if (typeof enabled !== 'boolean') throw new TypeError('typography.' + key + ' must be boolean');
+        else if (['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm'].includes(key)) {
+          const [min, max] = key === 'lineHeight' ? [1, 4] : [0, 8];
+          if (!Number.isFinite(enabled) || enabled < min || enabled > max)
+            throw new RangeError('typography.' + key + ' must be finite and in ' + min + '..' + max);
+        } else if (typeof enabled !== 'boolean') throw new TypeError('typography.' + key + ' must be boolean');
       }
+      if (typography.themeSpacing === false && ['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm']
+          .some(key => typography[key] !== undefined)) throw new TypeError('Typography spacing values require themeSpacing');
       value.typography = Object.freeze(typography);
     }
     if (value.microtype !== undefined && !['disabled', 'protrusion', 'expansion'].includes(value.microtype)) {
@@ -142,6 +149,10 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   function typographyTokens(settings) {
     const tokens = [];
     for (const key of ['homogeneous', 'antiriver', 'pareto']) if (settings.typography?.[key]) tokens.push(key);
+    const spacing = [['lineHeight', 'line-height'], ['tableCellPaddingXEm', 'table-padding-x'],
+      ['tableCellPaddingYEm', 'table-padding-y']];
+    if (settings.typography?.themeSpacing || spacing.some(([key]) => settings.typography?.[key] !== undefined)) tokens.push('theme-spacing');
+    for (const [key, token] of spacing) if (settings.typography?.[key] !== undefined) tokens.push(token + '=' + settings.typography[key]);
     if (settings.optimalPagination) tokens.push('optimal-pagination');
     if (settings.strictPagination) tokens.push('strict-pagination');
     if (settings.footnoteBacklinks) tokens.push('footnote-backlinks');

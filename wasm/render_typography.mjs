@@ -13,7 +13,7 @@ export function normalizeAuthoringProfile(value) {
   return value;
 }
 
-/** Capture only the three native switches, without retaining caller objects or
+/** Capture native typography controls, without retaining caller objects or
  * invoking accessors. Missing and explicit false values keep their spelling. */
 export function normalizePdfTypography(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
@@ -22,14 +22,46 @@ export function normalizePdfTypography(value) {
   const result = {};
   for (const key of Reflect.ownKeys(value)) {
     const field = Object.getOwnPropertyDescriptor(value, key);
-    if (!["homogeneous", "antiriver", "pareto"].includes(key)
+    if (!["homogeneous", "antiriver", "pareto", "themeSpacing", "lineHeight", "tableCellPaddingXEm", "tableCellPaddingYEm"].includes(key)
         || !field || !Object.hasOwn(field, "value"))
       invalid("typography has an unsupported field or accessor");
     if (field.value === undefined) continue;
-    if (typeof field.value !== "boolean") invalid(`typography.${key} must be boolean`);
+    if (["lineHeight", "tableCellPaddingXEm", "tableCellPaddingYEm"].includes(key)) {
+      const [min, max] = key === "lineHeight" ? [1, 4] : [0, 8];
+      if (typeof field.value !== "number" || !Number.isFinite(field.value)
+          || field.value < min || field.value > max)
+        invalid(`typography.${key} must be finite and in ${min}..${max}`);
+    } else if (typeof field.value !== "boolean") invalid(`typography.${key} must be boolean`);
     result[key] = field.value;
   }
+  if (result.themeSpacing === false && ["lineHeight", "tableCellPaddingXEm", "tableCellPaddingYEm"]
+      .some(key => result[key] !== undefined))
+    invalid("typography spacing values require themeSpacing to be enabled");
   return Object.freeze(result);
+}
+
+/** Canonical tokens use the existing native ABI; older engines reject them. */
+export function pdfTypographyTokens(value) {
+  const options = value === undefined ? {} : normalizePdfTypography(value);
+  const tokens = [];
+  for (const key of ["homogeneous", "antiriver", "pareto"]) if (options[key]) tokens.push(key);
+  const spacing = [["lineHeight", "line-height"], ["tableCellPaddingXEm", "table-padding-x"],
+    ["tableCellPaddingYEm", "table-padding-y"]];
+  if (options.themeSpacing || spacing.some(([key]) => options[key] !== undefined)) tokens.push("theme-spacing");
+  for (const [key, token] of spacing) if (options[key] !== undefined) tokens.push(`${token}=${options[key]}`);
+  return tokens;
+}
+
+/** Retained books accept the same bounded token grammar as the native core. */
+export function normalizePdfTypographyToken(token) {
+  if (["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination",
+    "footnote-backlinks", "theme-spacing", "protrusion", "expansion"].includes(token)) return token;
+  const match = /^(line-height|table-padding-x|table-padding-y)=([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/.exec(token);
+  if (match) {
+    const value = Number(match[2]), [min, max] = match[1] === "line-height" ? [1, 4] : [0, 8];
+    if (Number.isFinite(value) && value >= min && value <= max) return `${match[1]}=${value}`;
+  }
+  invalid(`Unknown typography token: '${token}'`);
 }
 
 export function normalizeMicrotype(value) {

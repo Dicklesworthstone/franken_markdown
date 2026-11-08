@@ -367,9 +367,10 @@ impl FontAssetSlot {
 /// Optional caller-supplied OpenType font bytes for renderer font slots.
 ///
 /// Missing slots use the bundled deterministic fonts. Supplied slots may have
-/// TrueType `glyf` outlines or supported name-keyed CFF1 cubic outlines. HTML,
+/// TrueType `glyf` outlines or supported name-keyed/CID-keyed CFF1 cubic outlines. HTML,
 /// PDF, SVG and EPUB use the same bytes without filesystem, fontconfig, or
-/// global mutable state. CFF2 and CID-keyed CFF input remain unsupported;
+/// global mutable state. CFF2 and noncanonical CFF font matrices remain unsupported;
+/// TTC/OTC collections require prior extraction to a standalone OpenType face.
 /// unsupported CFF glyph programs are rejected when needed for a subset.
 ///
 /// Per-slot `*_weight` pins CSS `font-weight` for **variable** host faces
@@ -752,6 +753,9 @@ pub struct HtmlOptions {
     pub theme: Theme,
     /// Optional `<title>`; falls back to the first heading, then "Document".
     pub title: Option<String>,
+    /// Optional publication author, emitted as HTML metadata and EPUB creator.
+    /// The value is preserved verbatim and escaped for the output format.
+    pub author: Option<String>,
     /// A complete replacement stylesheet. When `Some`, it is used verbatim
     /// instead of the generated default theme CSS (user-supplied stylesheets).
     pub custom_css: Option<String>,

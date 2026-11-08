@@ -7,7 +7,7 @@ import test from "node:test";
 
 // Execute the real public wrapper with a generated-binding double. This proves
 // ABI marshalling/ownership, not native font subsetting or EPUB rendering.
-async function fixture({ advanced = true, blocked = false, fullFonts = true } = {}) {
+async function fixture({ advanced = true, blocked = false, fullFonts = true, metadata = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-epub-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -32,12 +32,49 @@ async function fixture({ advanced = true, blocked = false, fullFonts = true } = 
     export const renderEpubConfigured = (...args) => result("legacy", args);
     ${advanced ? 'export const renderEpubConfiguredAdvanced = (...args) => result("advanced", args);' : ""}
     ${advanced ? `Object.defineProperty(renderEpubConfiguredAdvanced, "length", { value: ${fullFonts ? 19 : 18} });` : ""}
+    ${metadata ? 'export const renderEpubConfiguredMetadata = (...args) => result("metadata", args);' : ""}
+    ${metadata ? 'Object.defineProperty(renderEpubConfiguredMetadata, "length", { value: 21 });' : ""}
     ${unused.map((name) => `export const ${name} = () => { throw new Error("unexpected ${name}"); };`).join("\n")}
   `);
   const bindings = await import(pathToFileURL(join(dir, "pkg/franken_markdown.js")));
   const api = await import(pathToFileURL(join(dir, "franken_markdown.js")));
   return { api, bindings };
 }
+
+test("EPUB author metadata preserves text, profile and owned assets across initialization", async () => {
+  const { api, bindings } = await fixture({ metadata: true, blocked: true });
+  const bytes = new Uint8Array([1, 2]);
+  const options = { author: "  É中 & <Research>  ", profile: "commonmark-gfm", fontEmbedding: "full",
+    pdfImages: [{ destination: "figure.png", bytes }] };
+  const pending = api.renderEpub("# Book", options);
+  options.author = "Later"; bytes.fill(9);
+  bindings.finishInit(); await pending;
+  const { kind, args } = bindings.calls[0];
+  assert.equal(kind, "metadata");
+  assert.equal(args.length, 21);
+  assert.equal(args[18], "full");
+  assert.equal(args[19], "commonmark-gfm");
+  assert.equal(args[20], "  É中 & <Research>  ");
+  assert.deepEqual([...args[10]], [1, 2]);
+  assert.equal(bindings.frees, 1);
+});
+
+test("older EPUB bindings cannot silently discard an explicitly requested author", async () => {
+  for (const advanced of [true, false]) {
+    const { api, bindings } = await fixture({ advanced });
+    await assert.rejects(api.renderEpub("# Book", { author: "Ada" }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(bindings.calls.length, 0);
+  }
+});
+
+test("EPUB author admission rejects excessive and invalid Unicode before initialization", async () => {
+  for (const author of ["é".repeat(32769), "broken\ud800"]) {
+    const { api, bindings } = await fixture({ metadata: true });
+    await assert.rejects(api.renderEpub("# Book", { author }), /author/);
+    assert.equal(bindings.initCount, 0);
+    assert.equal(bindings.calls.length, 0);
+  }
+});
 
 test("EPUB forwards exact image views, all font slots, weights, CSS and navigation", async () => {
   const { api, bindings } = await fixture();

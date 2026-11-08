@@ -261,13 +261,7 @@ impl Metadata {
                 }
                 (Block::List(source), Block::List(prepared)) => {
                     for (source, prepared) in source.items.iter().zip(&prepared.items) {
-                        self.blocks(
-                            &source.blocks,
-                            &prepared.blocks,
-                            notes,
-                            numbering,
-                            false,
-                        );
+                        self.blocks(&source.blocks, &prepared.blocks, notes, numbering, false);
                     }
                 }
                 (Block::Table(source), Block::Table(prepared)) => {
@@ -351,12 +345,12 @@ fn visit_inlines(blocks: &[Block], visit: &mut impl FnMut(&Inline)) {
     }
     for block in blocks {
         match block {
-            Block::Paragraph(items)
-            | Block::Heading {
-                inlines: items, ..
-            } => inlines(items, visit),
-            Block::BlockQuote(inner)
-            | Block::FootnoteDefinition { blocks: inner, .. } => visit_inlines(inner, visit),
+            Block::Paragraph(items) | Block::Heading { inlines: items, .. } => {
+                inlines(items, visit)
+            }
+            Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                visit_inlines(inner, visit)
+            }
             Block::List(list) => {
                 for item in &list.items {
                     visit_inlines(&item.blocks, visit);

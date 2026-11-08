@@ -75,7 +75,13 @@ fn start_document<'a>(
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     html.push_str("<title>");
     html.push_str(&escaped_title);
-    html.push_str("</title>\n<style>\n");
+    html.push_str("</title>\n");
+    if let Some(author) = &opts.author {
+        html.push_str("<meta name=\"author\" content=\"");
+        push_escaped_attr(author, html);
+        html.push_str("\">\n");
+    }
+    html.push_str("<style>\n");
     html.push_str(&css);
     html.push_str("</style>\n</head>\n<body>\n<main class=\"fmd\">\n");
     let markers = crate::toc::markers(&doc.blocks);

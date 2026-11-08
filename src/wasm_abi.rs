@@ -29,7 +29,10 @@ pub use pdf_page::{
 };
 
 mod epub;
-pub use epub::{render_epub_configured_advanced, render_epub_configured_profiled};
+pub use epub::{
+    render_epub_configured_advanced, render_epub_configured_metadata,
+    render_epub_configured_profiled,
+};
 
 #[cfg(test)]
 mod font_embedding_tests;

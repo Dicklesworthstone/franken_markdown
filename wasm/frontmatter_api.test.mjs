@@ -13,7 +13,7 @@ const routes = [
   { method: "renderHtml", name: "html", options: {}, slots: { title: 3, lang: 16, toc: 17, tocDepth: 18 } },
   { method: "renderPdf", name: "pdf", options: {}, slots: { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 } },
   { method: "renderPdf", name: "archival", options: { pdfA: "2b", pdfAStrict: true }, slots: { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 } },
-  { method: "renderEpub", name: "epub", options: {}, slots: { title: 3, lang: 4, toc: 7, tocDepth: 8 } },
+  { method: "renderEpub", name: "epub", options: {}, slots: { title: 3, author: 20, lang: 4, toc: 7, tocDepth: 8 } },
 ];
 
 function gate() {
@@ -46,7 +46,10 @@ async function fixture({ metadata = () => DEFAULTS, advancedEpub = true, hold } 
     renderSvgConfigured() {}, accessibilityAudit() {}, capabilities() {},
     documentStats() {}, renderSemanticDiffHtml() {}, searchIndex() {}, semanticDiff() {},
   };
-  if (advancedEpub) bindings.renderEpubConfiguredAdvanced = render("epub", "epub");
+  if (advancedEpub) {
+    bindings.renderEpubConfiguredAdvanced = render("epub", "epub");
+    bindings.renderEpubConfiguredMetadata = render("epub", "epub");
+  }
   if (metadata !== null) bindings.sourceMetadata = source => {
     sources.push(source);
     return JSON.stringify(metadata(source));

@@ -80,7 +80,9 @@ export interface FmdRenderOptions {
   /** Ordinary HTML/EPUB replacement stylesheet. Empty explicitly disables defaults. */
   customCss?: string;
   allowRawHtml?: boolean;
-  /** PDF author; omitted values inherit source frontmatter with matching WASM bindings. */
+  /** PDF/EPUB author; omitted values inherit source frontmatter with matching WASM bindings.
+   * EPUB authors require renderEpubConfiguredMetadata; older packages fail explicitly
+   * instead of dropping metadata. EPUB author text is limited to 64 KiB of UTF-8. */
   author?: string;
   /** Finite non-negative integer seconds, <= Number.MAX_SAFE_INTEGER. */
   metadataEpochSeconds?: number;

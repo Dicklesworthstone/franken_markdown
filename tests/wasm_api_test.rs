@@ -707,6 +707,7 @@ fn wasm_source_metadata_drives_real_html_pdf_and_publication_options() {
     // from this fixture. The source remains whole, preserving byte offsets.
     let native_html = HtmlOptions {
         title: Some("Metadata title".into()),
+        author: Some("Source author".into()),
         lang: Some("de".into()),
         toc: true,
         toc_depth: Some(2),
@@ -725,6 +726,7 @@ fn wasm_source_metadata_drives_real_html_pdf_and_publication_options() {
     assert_eq!(html.source_len, SOURCE_METADATA_DOCUMENT.len());
     let text = html.html().unwrap();
     assert!(text.contains("<title>Metadata title</title>"));
+    assert!(text.contains("<meta name=\"author\" content=\"Source author\">"));
     assert!(text.contains("<html lang=\"de\">"));
     let toc = text
         .split_once("<nav class=\"toc\">")
@@ -757,6 +759,7 @@ fn wasm_source_metadata_drives_real_html_pdf_and_publication_options() {
     let doc = franken_markdown::parse_markdown(SOURCE_METADATA_DOCUMENT);
     let resolved_html = HtmlOptions {
         title: options.title.clone(),
+        author: options.author.clone(),
         lang: options.lang.clone(),
         toc: options.toc,
         toc_depth: options.toc_depth,

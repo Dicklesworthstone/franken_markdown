@@ -119,7 +119,8 @@ fn findings_use_chapter_assets_and_published_notes_without_changing_navigation_o
         br#"<svg width="20" height="10"><rect width="20" height="10"/></svg>"#.to_vec(),
     )
     .unwrap();
-    book.set_image("guide/broken.png", vec![0, 1, 2, 3]).unwrap();
+    book.set_image("guide/broken.png", vec![0, 1, 2, 3])
+        .unwrap();
     let report = book.render_pdf_reported().unwrap();
     assert_eq!(report.bytes, book.render_pdf().unwrap());
     assert_bound_navigation(&report.bytes, 2);
@@ -222,11 +223,7 @@ fn strict_reports_refuse_the_same_failure_and_export_options_are_local() {
 
 #[test]
 fn archival_and_fitted_reports_keep_the_actual_writer_provenance() {
-    let book = BookRenderer::new(&[input(
-        "one.md",
-        "A[^n]  \nB  \nC\n\n[^n]: Note.",
-    )])
-    .unwrap();
+    let book = BookRenderer::new(&[input("one.md", "A[^n]  \nB  \nC\n\n[^n]: Note.")]).unwrap();
     let mut options = small_page(40.0);
     options.fit_to_pages = Some(1);
     for settings in [
@@ -275,11 +272,9 @@ fn clean_audited_books_have_no_fabricated_render_findings() {
 #[test]
 fn retained_reported_abi_uses_the_owned_result_and_truthful_unlocated_findings() {
     let source = "# One\n\n![missing](missing.png)";
-    let book = franken_markdown::book::browser::FmdBook::new(
-        vec!["one.md".into()],
-        vec![source.into()],
-    )
-    .unwrap();
+    let book =
+        franken_markdown::book::browser::FmdBook::new(vec!["one.md".into()], vec![source.into()])
+            .unwrap();
     let ordinary = book.render_pdf_reported().unwrap();
     assert_eq!(ordinary.format(), "pdf");
     assert_eq!(ordinary.mime_type(), "application/pdf");
@@ -289,7 +284,9 @@ fn retained_reported_abi_uses_the_owned_result_and_truthful_unlocated_findings()
     assert!(findings.contains("\"code\":\"unresolved_image\""));
     assert!(findings.contains("\"start\":0,\"end\":0"));
     let geometry = vec![540.0, 720.0, 36.0, 30.0, 24.0, 18.0];
-    let page = book.render_pdf_with_page_reported(geometry.clone()).unwrap();
+    let page = book
+        .render_pdf_with_page_reported(geometry.clone())
+        .unwrap();
     assert_eq!(
         page.bytes(),
         book.render_pdf_with_page(geometry.clone()).unwrap()

@@ -256,7 +256,7 @@ Editable interactive HTML does not accept this option.
 
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
 (including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and
-`tocDepth` settings from leading document frontmatter; PDF also inherits
+`tocDepth` settings from leading document frontmatter; PDF and EPUB also inherit
 `author`. Explicit options take precedence, including `toc: false`. The source
 key is `toc_depth`. The same Rust parser used by the CLI handles `key=value`,
 YAML-style scalars, block scalars, BOMs and CR/CRLF source. Source bytes and
@@ -270,6 +270,15 @@ Existing browser string conventions remain: empty title/author options mean
 unset and language strings are trimmed. The dependency-free Rust
 `wasm::source_metadata` helper exposes typed optional defaults for hosts to
 merge; existing Rust render APIs continue to take already-resolved options.
+
+EPUB author metadata uses the additive `renderEpubConfiguredMetadata` binding.
+It preserves the submitted author text in the escaped `dc:creator` package
+element, and author changes produce a different deterministic publication
+identifier. Authors are limited to 64 KiB of UTF-8 at the browser boundary.
+Explicit or inherited authors fail with `UNSUPPORTED_WASM_PACKAGE` on older
+packages that cannot carry them. Existing author-free calls retain their old
+bindings and argument shape. Retained book sessions and standalone interactive
+workspaces also carry their saved author into EPUB exports.
 
 `documentStats`, `searchIndex`, `accessibilityAudit`, `semanticDiff` and
 `renderSemanticDiff` also capture source strings before initialization yields;

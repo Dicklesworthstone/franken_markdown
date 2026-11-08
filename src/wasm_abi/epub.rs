@@ -100,6 +100,67 @@ pub fn render_epub_configured_profiled(
     font_embedding: Option<String>,
     authoring_profile: Option<String>,
 ) -> Result<FmdRenderResult, JsValue> {
+    render_epub_configured_metadata(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        lang,
+        font_scale,
+        custom_css,
+        toc,
+        toc_depth,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        font_embedding,
+        authoring_profile,
+        None,
+    )
+}
+
+/// Render an EPUB with author metadata and all existing profile/resource options.
+/// Older configured bindings keep their signatures and default output bytes.
+/// Author text is preserved verbatim, XML-escaped, and included in the package's
+/// deterministic identifier. No author means no creator element.
+///
+/// # Errors
+/// Rejects author text over 64 KiB and the same invalid options, assets and
+/// publications as [`render_epub_configured_profiled`].
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderEpubConfiguredMetadata)]
+pub fn render_epub_configured_metadata(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    lang: Option<String>,
+    font_scale: Option<f64>,
+    custom_css: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    font_embedding: Option<String>,
+    authoring_profile: Option<String>,
+    author: Option<String>,
+) -> Result<FmdRenderResult, JsValue> {
+    if author.as_ref().is_some_and(|value| value.len() > 64 * 1024) {
+        return Err(JsValue::from_str("EPUB author exceeds 64 KiB"));
+    }
     let authoring_profile =
         super::parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     admit_assets(
@@ -128,6 +189,7 @@ pub fn render_epub_configured_profiled(
         .transpose()?
         .unwrap_or_default();
     options.title = nonempty_verbatim(title);
+    options.author = nonempty_verbatim(author);
     options.lang = empty_to_none(lang);
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     // An explicitly empty stylesheet is different from an absent stylesheet.
@@ -241,6 +303,62 @@ fn render_publication(
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn metadata_binding_matches_resolved_native_options_and_legacy_defaults() {
+        let source = "# Publication\n\nThe full body.";
+        let configured = |author: Option<String>| {
+            render_epub_configured_metadata(
+                source,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+                author,
+            )
+            .unwrap()
+            .bytes()
+        };
+        let plain = configured(None);
+        assert_eq!(
+            plain,
+            crate::render_epub(
+                &crate::parse_markdown(source),
+                &crate::HtmlOptions::default()
+            )
+            .unwrap()
+        );
+        let author = "  É中 & <Research>  ";
+        let authored = configured(Some(author.into()));
+        assert_ne!(authored, plain);
+        assert_eq!(
+            authored,
+            crate::render_epub(
+                &crate::parse_markdown(source),
+                &crate::HtmlOptions {
+                    author: Some(author.into()),
+                    ..crate::HtmlOptions::default()
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(authored, configured(Some(author.into())));
+    }
 
     #[test]
     fn default_epub_bytes_match_the_original_native_export() {

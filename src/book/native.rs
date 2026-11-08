@@ -81,7 +81,7 @@ pub(crate) struct BookArgs {
     /// Override the book title from book.toml or the first chapter.
     #[arg(long)]
     title: Option<String>,
-    /// PDF author metadata, overriding book.toml/frontmatter.
+    /// Publication author metadata, overriding book.toml/frontmatter.
     #[arg(long)]
     author: Option<String>,
     /// Default language; chapter frontmatter may override HTML/EPUB language.
@@ -383,6 +383,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     let mut html_options = HtmlOptions {
         theme: typography.theme,
         title,
+        author: author.clone(),
         lang,
         custom_css: css,
         image_assets: std::mem::take(&mut loaded.images),

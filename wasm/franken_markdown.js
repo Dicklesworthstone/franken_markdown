@@ -523,8 +523,12 @@ function svgTextBytes(text, maximum, label) {
 
 export async function renderEpub(markdown, options = {}) {
   const profile = normalizeAuthoringProfile(options.profile);
-  const render = profile === undefined ? wasmBindings.renderEpubConfiguredAdvanced
-    : requireBrowserBinding("renderEpubConfiguredProfiled", "Markdown authoring profiles");
+  const metadataBinding = wasmBindings.renderEpubConfiguredMetadata;
+  const hasMetadata = typeof metadataBinding === "function";
+  if (hasMetadata) requireBindingArguments(metadataBinding, 21, "EPUB author metadata");
+  const render = hasMetadata ? metadataBinding
+    : profile === undefined ? wasmBindings.renderEpubConfiguredAdvanced
+      : requireBrowserBinding("renderEpubConfiguredProfiled", "Markdown authoring profiles");
   if (profile !== undefined) requireBindingArguments(render, 20, "Markdown authoring profiles");
   const requestedEmbedding = options.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
@@ -535,8 +539,24 @@ export async function renderEpub(markdown, options = {}) {
   // Capture source, settings and exact asset views before the initialization
   // await. Later host edits cannot silently change the publication being built.
   const prepared = epubArguments(markdown, options, fontEmbedding, profile);
+  const legacyArgumentCount = prepared.args.length;
+  prepared.args[20] = prepared.author;
   await init();
-  applySourceMetadata(prepared.args, { title: 3, lang: 4, toc: 7, tocDepth: 8 }, prepared.inheritToc);
+  applySourceMetadata(prepared.args, { title: 3, author: 20, lang: 4, toc: 7, tocDepth: 8 }, prepared.inheritToc);
+  if (prepared.args[20] !== undefined) {
+    epubTextBytes(prepared.args[20], 65536, "author");
+    if (!hasMetadata) {
+      const error = new Error("EPUB author metadata requires a WASM package rebuilt from matching source");
+      error.code = "UNSUPPORTED_WASM_PACKAGE";
+      throw error;
+    }
+  }
+  if (hasMetadata) {
+    prepared.args[18] = fontEmbedding;
+    prepared.args[19] = profile;
+  } else {
+    prepared.args.length = legacyArgumentCount;
+  }
   if (typeof render === "function") {
     return normalizeResult(render(...prepared.args));
   }
@@ -551,15 +571,17 @@ export async function renderEpub(markdown, options = {}) {
 
 function epubArguments(markdown, options, fontEmbedding, profile) {
   const {
-    font, darkMode, title, lang, fontScale, typeSize, customCss,
+    font, darkMode, title, author, lang, fontScale, typeSize, customCss,
     toc, tocDepth, pdfImages, fontAssets,
   } = options;
   const source = String(markdown);
   const base = [source, stringOption(font), darkModeOption(darkMode),
     verbatimOption(title), stringOption(lang), fontScaleOption(fontScale ?? typeSize)];
   const css = customCss == null ? undefined : String(customCss);
+  const capturedAuthor = verbatimOption(author);
   epubTextBytes(source, 32 * 1024 * 1024, "source");
   epubTextBytes(css ?? "", 4 * 1024 * 1024, "stylesheet");
+  epubTextBytes(capturedAuthor ?? "", 65536, "author");
   if (toc !== undefined && typeof toc !== "boolean") throw new TypeError("toc must be a boolean");
   const depth = integerOption(tocDepth, "tocDepth");
   if (depth !== undefined && depth > 6) throw new RangeError("tocDepth must be 1..6");
@@ -597,6 +619,7 @@ function epubArguments(markdown, options, fontEmbedding, profile) {
   }
   const ownedFonts = fonts.map((asset) => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
+    author: capturedAuthor,
     requiresAdvanced: fontEmbedding === "full" || images.length > 0 || fonts.length > 0 || css !== undefined || Boolean(toc) || depth !== undefined,
     inheritToc: toc === undefined,
     args: [...base, css, Boolean(toc), depth, images.map((image) => image.destination), flat, lengths,

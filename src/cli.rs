@@ -333,7 +333,7 @@ struct RenderStyleArgs {
     /// Document title (defaults to the first heading).
     #[arg(long)]
     title: Option<String>,
-    /// Document author metadata for PDF output.
+    /// Document author metadata for HTML, PDF, and EPUB output.
     #[arg(long)]
     author: Option<String>,
     /// Document language tag for hyphenation and HTML lang attribute (e.g. "en", "de", "fr", "es", "nl").
@@ -1928,6 +1928,11 @@ fn run_render_with_preview(
                 .title
                 .clone()
                 .or_else(|| frontmatter_title.clone()),
+            author: args
+                .style
+                .author
+                .clone()
+                .or_else(|| frontmatter_author.clone()),
             custom_css: custom_css.clone(),
             allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
@@ -2052,6 +2057,11 @@ fn run_render_with_preview(
                 .title
                 .clone()
                 .or_else(|| frontmatter_title.clone()),
+            author: args
+                .style
+                .author
+                .clone()
+                .or_else(|| frontmatter_author.clone()),
             custom_css,
             allow_raw_html: args.style.allow_html,
             font_assets: font_assets.clone(),
@@ -2814,6 +2824,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     let html = HtmlOptions {
         theme: theme.clone(),
         title: style.title.clone(),
+        author: style.author.clone(),
         custom_css,
         allow_raw_html: style.allow_html,
         font_assets: font_assets.clone(),

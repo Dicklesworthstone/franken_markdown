@@ -7,6 +7,8 @@
 mod epub_data_images;
 #[path = "epub/gif.rs"]
 mod epub_gif;
+#[path = "epub/metadata.rs"]
+mod epub_metadata;
 #[path = "epub/theme.rs"]
 mod epub_theme;
 #[path = "../src/zip.rs"]

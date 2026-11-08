@@ -109,6 +109,12 @@ impl BookRenderer {
         resolve_images(&mut doc.blocks, source, &keys);
         let mut options = self.options.html_options();
         options.title = Some(chapter.title.clone());
+        options.author = options.author.clone().or_else(|| {
+            chapter
+                .frontmatter
+                .as_ref()
+                .and_then(|frontmatter| frontmatter.author.clone())
+        });
         options.lang = chapter
             .frontmatter
             .as_ref()

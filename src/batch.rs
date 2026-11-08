@@ -1056,6 +1056,9 @@ impl BatchRenderOptions {
         options.title = options
             .title
             .or_else(|| frontmatter.and_then(|fm| fm.title.clone()));
+        options.author = options
+            .author
+            .or_else(|| frontmatter.and_then(|fm| fm.author.clone()));
         options.lang = options
             .lang
             .or_else(|| frontmatter.and_then(|fm| fm.lang.clone()))

@@ -11,7 +11,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   // Optional publication bindings must not make older HTML/PDF workspaces
   // unopenable. Require the resource-capable ABI: never drop embedded assets.
   const publications = {
-    epub: 'renderEpubConfiguredAdvanced', svg: 'renderSvgConfiguredResources',
+    epub: typeof bindings.renderEpubConfiguredMetadata === 'function'
+      ? 'renderEpubConfiguredMetadata' : 'renderEpubConfiguredAdvanced',
+    svg: 'renderSvgConfiguredResources',
   };
   const exportFormats = Object.freeze(['html', 'pdf', ...Object.keys(publications)
     .filter(format => typeof bindings[publications[format]] === 'function')]);
@@ -669,10 +671,15 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     html(markdown, display) { return renderHtml(markdown, display); },
     epub(markdown) {
       const render = publicationBinding('epub');
+      const hasMetadata = publications.epub === 'renderEpubConfiguredMetadata';
+      if (options.author !== undefined && !hasMetadata) throw Object.assign(new Error(
+        'EPUB author metadata requires matching WASM bindings',
+      ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
       return take(render(
         source(markdown), options.font, options.darkMode, options.title, options.lang,
         options.fontScale, undefined, options.toc, options.tocDepth,
         images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+        ...(hasMetadata ? [undefined, undefined, options.author] : []),
       ), 'application/epub+zip');
     },
     svg(markdown) {

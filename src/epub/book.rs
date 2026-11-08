@@ -138,6 +138,12 @@ fn prepare_book_with_budget(
 
     let title = opts.title.as_deref().unwrap_or("Book");
     let lang = opts.lang.as_deref().unwrap_or("en");
+    let author = opts.author.as_deref().or_else(|| {
+        book.chapters
+            .first()
+            .and_then(|chapter| chapter.frontmatter.as_ref())
+            .and_then(|frontmatter| frontmatter.author.as_deref())
+    });
     let css = theme::stylesheet(opts);
     repertoire.add(title)?;
     repertoire.add(&css)?;
@@ -148,6 +154,10 @@ fn prepare_book_with_budget(
     let mut identity = Identity::new();
     for text in ["franken_markdown/epub-book/v1", title, lang, css.as_ref()] {
         identity.part(text);
+    }
+    if let Some(author) = author {
+        identity.part("epub-author-v1");
+        identity.part(author);
     }
     let mut images = shared_images::SharedImages::default();
     let mut chapters = Vec::with_capacity(book.chapters.len());
@@ -238,7 +248,7 @@ fn prepare_book_with_budget(
         fonts.link(&mut chapter.xhtml, opts.custom_css.is_some())?;
         validate_xml_characters(&chapter.xhtml, &chapter.file)?;
     }
-    let mut opf = package(title, lang, &identity.finish(), &chapters);
+    let mut opf = package(title, lang, author, &identity.finish(), &chapters);
     let mut nav = navigation(title, lang, &chapters);
     fonts.manifest(&mut opf)?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;
@@ -449,7 +459,13 @@ impl Identity {
     }
 }
 
-fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> String {
+fn package(
+    title: &str,
+    lang: &str,
+    author: Option<&str>,
+    identifier: &str,
+    chapters: &[Chapter],
+) -> String {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">",
     );
@@ -458,7 +474,9 @@ fn package(title: &str, lang: &str, identifier: &str, chapters: &[Chapter]) -> S
     escape_xml_text(title, &mut out);
     out.push_str("</dc:title>\n<dc:language>");
     escape_xml_text(lang, &mut out);
-    out.push_str("</dc:language>\n<meta property=\"dcterms:modified\">");
+    out.push_str("</dc:language>\n");
+    super::push_creator(author, &mut out);
+    out.push_str("<meta property=\"dcterms:modified\">");
     out.push_str(DCTERMS_MODIFIED);
     out.push_str("</meta>\n</metadata>\n<manifest>\n<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n");
     for (index, chapter) in chapters.iter().enumerate() {

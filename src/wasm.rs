@@ -72,7 +72,7 @@ pub struct WasmRenderOptions {
     pub pdf_table_cell_padding_y_em: Option<f32>,
     /// Optional document title.
     pub title: Option<String>,
-    /// Optional PDF author metadata.
+    /// Optional publication author metadata for HTML, PDF, and EPUB.
     pub author: Option<String>,
     /// Optional UTC Unix timestamp for deterministic PDF metadata.
     pub metadata_epoch_seconds: Option<u64>,
@@ -305,7 +305,7 @@ impl WasmRenderOptions {
         self
     }
 
-    /// Return a copy with the given PDF author metadata.
+    /// Return a copy with the given publication author metadata.
     #[must_use]
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.author = Some(author.into());
@@ -412,6 +412,7 @@ impl WasmRenderOptions {
         HtmlOptions {
             theme,
             title: self.title.clone(),
+            author: self.author.clone(),
             custom_css: self.custom_css.clone(),
             allow_raw_html: self.allow_raw_html,
             font_assets: self.font_assets.clone(),

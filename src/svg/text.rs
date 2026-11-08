@@ -176,11 +176,7 @@ impl Poster {
                 if let Some(number) = word.style.note_reference {
                     navigation.note_reference(number, bounds);
                 }
-                navigation.record(
-                    word.style.link,
-                    Some(bounds),
-                    &mut previous_link,
-                );
+                navigation.record(word.style.link, Some(bounds), &mut previous_link);
             } else {
                 previous_link = None;
             }

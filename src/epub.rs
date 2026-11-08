@@ -168,6 +168,9 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     // mistaken for the same edition by reading systems that cache identifiers.
     let mut identifier = content_identifier(&title, &lang, &chapter_body);
     identifier = content_identifier(&identifier, "epub-stylesheet-v1", &css);
+    if let Some(author) = &opts.author {
+        identifier = content_identifier(&identifier, "epub-author-v1", author);
+    }
 
     if let Some(fingerprint) = fonts.fingerprint() {
         identifier = content_identifier(&identifier, "epub-fonts-v1", &fingerprint);
@@ -179,7 +182,13 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     } else {
         chapter_xhtml(&title, &lang, &prepared.body)
     };
-    let mut opf = content_opf(&title, &lang, &identifier, &prepared);
+    let mut opf = content_opf(
+        &title,
+        &lang,
+        opts.author.as_deref(),
+        &identifier,
+        &prepared,
+    );
     fonts.link(&mut chapter, opts.custom_css.is_some())?;
     fonts.link(&mut nav, opts.custom_css.is_some())?;
     fonts.manifest(&mut opf)?;
@@ -476,7 +485,13 @@ fn push_nav_headings(headings: &[NavHeading], file: &str, out: &mut String) {
     }
 }
 
-fn content_opf(title: &str, lang: &str, identifier: &str, chapter: &resources::Chapter) -> String {
+fn content_opf(
+    title: &str,
+    lang: &str,
+    author: Option<&str>,
+    identifier: &str,
+    chapter: &resources::Chapter,
+) -> String {
     let mut s = String::with_capacity(1024);
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n");
@@ -487,7 +502,9 @@ fn content_opf(title: &str, lang: &str, identifier: &str, chapter: &resources::C
     escape_xml_text(title, &mut s);
     s.push_str("</dc:title>\n<dc:language>");
     escape_xml_text(lang, &mut s);
-    s.push_str("</dc:language>\n<meta property=\"dcterms:modified\">");
+    s.push_str("</dc:language>\n");
+    push_creator(author, &mut s);
+    s.push_str("<meta property=\"dcterms:modified\">");
     s.push_str(DCTERMS_MODIFIED);
     s.push_str("</meta>\n</metadata>\n<manifest>\n");
     s.push_str("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
@@ -520,6 +537,16 @@ fn content_opf(title: &str, lang: &str, identifier: &str, chapter: &resources::C
     }
     s.push_str("</manifest>\n<spine>\n<itemref idref=\"chapter-1\"/>\n</spine>\n</package>\n");
     s
+}
+
+/// Dublin Core creator metadata is shared by single-document and book EPUBs.
+/// Validate XML scalars with the finished package before publishing the ZIP.
+fn push_creator(author: Option<&str>, out: &mut String) {
+    if let Some(author) = author {
+        out.push_str("<dc:creator>");
+        escape_xml_text(author, out);
+        out.push_str("</dc:creator>\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -727,14 +754,14 @@ mod tests {
         let chapter = resources::prepare(
             "<math><mi>x</mi></math><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"/>",
         )?;
-        let opf = content_opf("Images & math", "en", "urn:test", &chapter);
+        let opf = content_opf("Images & math", "en", None, "urn:test", &chapter);
         assert!(opf.contains("properties=\"mathml svg\""));
         assert!(
             opf.contains("id=\"image-1\" href=\"assets/image-1.svg\" media-type=\"image/svg+xml\"")
         );
         assert!(opf.contains("Images &amp; math"));
         let plain = resources::prepare("<p>Text</p>")?;
-        let opf = content_opf("Text", "en", "urn:test", &plain);
+        let opf = content_opf("Text", "en", None, "urn:test", &plain);
         assert!(opf.contains("href=\"chapter-1.xhtml\" media-type=\"application/xhtml+xml\"/>"));
         assert!(!opf.contains("image-1"));
         Ok(())

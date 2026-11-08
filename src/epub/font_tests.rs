@@ -63,7 +63,7 @@ fn no_explicit_fonts_keeps_the_archive_font_free_with_themed_css() {
     old.add_deflated("META-INF/container.xml", epub::CONTAINER_XML.as_bytes());
     old.add_deflated(
         "OEBPS/content.opf",
-        epub::content_opf("Legacy", "en", &id, &prepared).as_bytes(),
+        epub::content_opf("Legacy", "en", None, &id, &prepared).as_bytes(),
     );
     old.add_deflated(
         "OEBPS/nav.xhtml",
@@ -833,7 +833,7 @@ fn single_document_writes_actual_subsets_css_and_manifest_into_the_archive() {
         &epub::theme::stylesheet(&opts),
     );
     let id = epub::content_identifier(&base_id, "epub-fonts-v1", &package.fingerprint().unwrap());
-    let mut opf = epub::content_opf("Résumé", "en", &id, &prepared);
+    let mut opf = epub::content_opf("Résumé", "en", None, &id, &prepared);
     package.manifest(&mut opf).unwrap();
     assert_payload(&entries, "OEBPS/content.opf", opf.as_bytes());
     let mut chapter = epub::chapter_xhtml("Résumé", "en", &prepared.body);

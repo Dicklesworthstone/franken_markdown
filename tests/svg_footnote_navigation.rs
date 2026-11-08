@@ -24,9 +24,7 @@ fn attr<'a>(element: &'a str, name: &str) -> &'a str {
 }
 
 fn anchors(svg: &str) -> Vec<&str> {
-    svg.lines()
-        .filter(|line| line.starts_with("<a "))
-        .collect()
+    svg.lines().filter(|line| line.starts_with("<a ")).collect()
 }
 
 fn named_link<'a>(svg: &'a str, label: &str) -> &'a str {
@@ -85,7 +83,10 @@ fn assert_unchanged_paint(svg: &str, legacy: &str) {
         "paint or preexisting navigation changed: actual {} bytes, expected {} bytes; first differing byte {:?}",
         actual.len(),
         expected.len(),
-        actual.bytes().zip(expected.bytes()).position(|(a, b)| a != b)
+        actual
+            .bytes()
+            .zip(expected.bytes())
+            .position(|(a, b)| a != b)
     );
 }
 
@@ -98,7 +99,11 @@ fn assert_destinations_exist(svg: &str) {
     let mut unique = views.clone();
     unique.sort_unstable();
     unique.dedup();
-    assert_eq!(unique.len(), views.len(), "duplicate emitted view identifiers");
+    assert_eq!(
+        unique.len(),
+        views.len(),
+        "duplicate emitted view identifiers"
+    );
     for anchor in anchors(svg) {
         if let Some(id) = attr(anchor, "href").strip_prefix('#') {
             assert!(views.contains(&id), "dangling navigation: {anchor}");
@@ -139,7 +144,10 @@ fn svg_footnotes_resolve_first_use_order_source_links_and_actual_return_position
     let (svg, warnings) = render(&doc);
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(attr(named_link(&svg, "Beta note"), "href"), "#fmd-note-1");
-    assert_eq!(attr(named_link(&svg, "Beta return"), "href"), "#fmd-note-ref-1");
+    assert_eq!(
+        attr(named_link(&svg, "Beta return"), "href"),
+        "#fmd-note-ref-1"
+    );
     let references: Vec<_> = anchors(&svg)
         .into_iter()
         .filter(|anchor| attr(anchor, "aria-label") == "Footnote 1")
@@ -167,14 +175,10 @@ fn svg_footnotes_resolve_first_use_order_source_links_and_actual_return_position
     .unwrap();
     assert_unchanged_paint(&svg, &legacy);
     assert_eq!(render(&doc).0, svg);
-    let resource_bytes = render_svg_with_resources(
-        &doc,
-        &SvgOptions::default(),
-        &FontAssets::default(),
-        &[],
-    )
-    .unwrap()
-    .0;
+    let resource_bytes =
+        render_svg_with_resources(&doc, &SvgOptions::default(), &FontAssets::default(), &[])
+            .unwrap()
+            .0;
     assert_eq!(resource_bytes, svg.as_bytes());
 }
 
@@ -216,7 +220,11 @@ fn svg_footnote_provenance_survives_moves_and_does_not_guess_from_visible_text()
     );
     let (svg, warnings) = render(&doc);
     assert!(warnings.is_empty());
-    assert_eq!(anchors(&svg).len(), 2, "literal superscripts acquired navigation");
+    assert_eq!(
+        anchors(&svg).len(),
+        2,
+        "literal superscripts acquired navigation"
+    );
 }
 
 #[test]
@@ -298,7 +306,10 @@ fn svg_footnote_source_fragments_decode_once_and_never_target_private_svg_ids() 
         ],
     };
     let (svg, warnings) = render(&doc);
-    assert_eq!(attr(named_link(&svg, "Literal percent"), "href"), "#fmd-note-1");
+    assert_eq!(
+        attr(named_link(&svg, "Literal percent"), "href"),
+        "#fmd-note-1"
+    );
     assert_eq!(attr(named_link(&svg, "Decoded one"), "href"), "#fmd-note-2");
     assert!(!has_link(&svg, "Private view"));
     assert!(!has_link(&svg, "Malformed"));
@@ -326,10 +337,8 @@ fn svg_footnote_cycles_rich_leading_blocks_and_orphan_notes_keep_complete_layout
             paragraph("Complete orphan"),
         ],
     ));
-    doc.blocks.insert(
-        1,
-        Block::Paragraph(vec![link("Orphan body", "#fn-orphan")]),
-    );
+    doc.blocks
+        .insert(1, Block::Paragraph(vec![link("Orphan body", "#fn-orphan")]));
     let (svg, warnings) = render(&doc);
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(svg.contains("<image "));

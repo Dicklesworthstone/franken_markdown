@@ -354,6 +354,12 @@ fn site_archive(book: &Book, options: &HtmlOptions) -> Result<(ZipWriter, usize)
         resolve_site_links(&mut chapter.doc.blocks, &sources[index], &known);
         resolve_images(&mut chapter.doc.blocks, &sources[index], &keys);
         page_options.title = Some(chapter.title.clone());
+        page_options.author = options.author.clone().or_else(|| {
+            chapter
+                .frontmatter
+                .as_ref()
+                .and_then(|frontmatter| frontmatter.author.clone())
+        });
         page_options.lang = chapter
             .frontmatter
             .as_ref()

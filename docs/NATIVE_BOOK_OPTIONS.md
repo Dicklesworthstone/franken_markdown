@@ -28,6 +28,12 @@ cannot honor a pin. Font scale accepts the shared presets, positive
 multipliers, percentages, and CSS `px`/`pt` sizes, with the renderer's existing
 scale bounds.
 
+`--author` supplies publication metadata for HTML, PDF, and EPUB. It overrides
+`book.toml` author metadata, which overrides the first chapter's frontmatter.
+HTML pages include an escaped author meta element; EPUB packages include an
+escaped Dublin Core creator. The author participates in the EPUB's deterministic
+identifier, so changing authorship cannot reuse an earlier edition's identifier.
+
 ## Markdown authoring profiles
 
 `--profile commonmark-gfm` selects the same authoring profile as the

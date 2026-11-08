@@ -170,7 +170,7 @@ fn single_document_packages_host_png_once_with_matching_manifest() {
     assert_entry(
         &records,
         "OEBPS/content.opf",
-        content_opf("Pictures", "en", &id, &prepared).as_bytes(),
+        content_opf("Pictures", "en", None, &id, &prepared).as_bytes(),
     );
     assert_eq!(archive, render_epub(&doc, &opts).expect("repeat EPUB"));
 }

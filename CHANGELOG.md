@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Authors can place `<!-- pagebreak -->` on its own line to request an
+  explicit PDF page boundary, including in books, includes and nested
+  containers. HTML/EPUB preserve the print boundary, Flow shows its source
+  location, and continuous SVG omits the control. The default and GFM+ profiles
+  enable it; explicit CommonMark/GFM keeps ordinary comment behavior. Parser
+  ASTs and source spans stay unchanged; see [Page breaks](docs/PAGE_BREAKS.md).
 - Standalone equations accept explicit `\tag{...}` and `\tag*{...}` labels in
   HTML, EPUB, PDF, SVG and Flow. Labels retain text styling and math islands,
   stay beside the centered equation within its containing column, and fit or

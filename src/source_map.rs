@@ -640,6 +640,9 @@ impl SourceMapBuilder {
             Block::Table(table) => {
                 self.build_table(block_idx, table, block_span, source, &mut block_children)?;
             }
+            Block::HtmlBlock(html) if crate::parse::is_page_break_marker(html) => {
+                self.append_rendered_str("\n--- PAGE BREAK ---\n\n");
+            }
             Block::HtmlBlock(html) => {
                 let start_rendered = self.rendered_text.len();
                 self.append_rendered_str(html);
@@ -887,6 +890,17 @@ impl SourceMapBuilder {
                     block_children,
                     search_cursor,
                 )?;
+            }
+            Block::HtmlBlock(html) if crate::parse::is_page_break_marker(html) => {
+                self.append_rendered_str("\n--- PAGE BREAK ---\n\n");
+                // The separator is generated, not editable comment text. Still
+                // consume this child's source before mapping following prose,
+                // so a later literal "pagebreak" cannot match inside it. This
+                // advances the private search cursor; it publishes no guessed
+                // inline span for a nested comment's container indentation.
+                *search_cursor =
+                    Self::source_page_break_end(source, *search_cursor, block_span.end)
+                        .unwrap_or(block_span.end);
             }
             Block::HtmlBlock(html) => {
                 let start_rendered = self.rendered_text.len();
@@ -1520,6 +1534,66 @@ impl SourceMapBuilder {
         let start = cursor + rel_pos;
         let end = start + needle.len();
         Some(SourceSpan::new(start, end))
+    }
+
+    /// Consume a complete source line, not a marker substring in an image title
+    /// or other unread inline syntax. Container prefixes are absent from the
+    /// nested AST, so admit their source spelling without publishing a span.
+    fn source_page_break_end(source: &str, cursor: usize, max_end: usize) -> Option<usize> {
+        fn container_prefix(mut prefix: &str) -> bool {
+            loop {
+                prefix = prefix.trim_start_matches([' ', '\t']);
+                if prefix.is_empty() {
+                    return true;
+                }
+                if let Some(rest) = prefix.strip_prefix('>') {
+                    prefix = rest;
+                    continue;
+                }
+                let marker_end = if prefix.starts_with(['-', '+', '*']) {
+                    1
+                } else if prefix.starts_with("[ ]")
+                    || prefix.starts_with("[x]")
+                    || prefix.starts_with("[X]")
+                {
+                    3
+                } else if prefix.starts_with("[^") {
+                    let Some(end) = prefix.find("]:") else {
+                        return false;
+                    };
+                    end + 2
+                } else {
+                    let digits = prefix.bytes().take_while(u8::is_ascii_digit).count();
+                    if !(1..=9).contains(&digits)
+                        || !matches!(prefix.as_bytes().get(digits), Some(b'.' | b')'))
+                    {
+                        return false;
+                    }
+                    digits + 1
+                };
+                if !matches!(prefix.as_bytes().get(marker_end), Some(b' ' | b'\t')) {
+                    return false;
+                }
+                prefix = &prefix[marker_end..];
+            }
+        }
+
+        let line_start = source
+            .get(..cursor)?
+            .rfind(['\r', '\n'])
+            .map_or(0, |offset| offset + 1);
+        let mut offset = line_start;
+        for line in crate::parse::logical_lines_inclusive(source.get(line_start..max_end)?) {
+            if let Some(marker) = line.find(crate::parse::PAGE_BREAK_MARKER)
+                && offset + marker >= cursor
+                && crate::parse::is_page_break_marker(&line[marker..])
+                && container_prefix(&line[..marker])
+            {
+                return Some(offset + line.len());
+            }
+            offset += line.len();
+        }
+        None
     }
 
     fn append_rendered_str(&mut self, s: &str) {

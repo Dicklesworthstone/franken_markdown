@@ -327,6 +327,63 @@ assert.equal(archivedProfile.pdfAStrict, true);
 assert.ok(Buffer.from(archivedProfile.bytes).includes("/OutputIntents"));
 console.log("smoke: authoring profiles, native structure, resources and independent PDF/A ok");
 
+// Author-requested boundaries must survive the real source -> WASM -> exporter
+// path. Inspect PDF page objects independently; compare continuous SVG with
+// ordinary prose and with a literal code panel, rather than trusting a flag.
+console.log("smoke: generated page-break authoring");
+const pageBreakSource = "ALPHAPROOF.\r\n\r\n<!-- pagebreak -->\r\n\r\nBETAPROOF.\r\n";
+const continuousSource = "ALPHAPROOF.\n\nBETAPROOF.\n";
+const literalControlSource = "ALPHAPROOF.\n\n```\n<!-- pagebreak -->\n```\n\nBETAPROOF.\n";
+const continuousPdf = await mod.renderPdf(continuousSource, { metadataEpochSeconds: epoch });
+const continuousSvg = await mod.renderSvg(continuousSource);
+const literalControlSvg = await mod.renderSvg(literalControlSource);
+assert.ok(!bytesEqual(continuousSvg.bytes, literalControlSvg.bytes),
+  "SVG keeps the marker visible when it is a literal code example");
+const pageBreakOutputs = new Map();
+for (const profile of [undefined, "gfm-plus", "commonmark-gfm"]) {
+  const options = profile === undefined ? {} : { profile };
+  const label = profile ?? "default", extended = profile !== "commonmark-gfm";
+  const html = await mod.renderHtml(pageBreakSource, options);
+  const htmlText = dec.decode(html.bytes);
+  assert.equal((htmlText.match(/class="fmd-pagebreak"/gu) ?? []).length, extended ? 1 : 0,
+    `HTML ${label}: only extended authoring inserts the boundary`);
+  assert.ok(!htmlText.includes("<!-- pagebreak -->"), `HTML ${label}: comment source is not displayed`);
+  const pdf = await mod.renderPdf(pageBreakSource, { ...options, metadataEpochSeconds: epoch });
+  const pages = [...pdfObjects(pdf.bytes).values()].filter(object =>
+    /\/Type\s+\/Page(?:\s|\/|>>)/u.test(object.subarray(0, 160).toString("ascii")));
+  assert.equal(pages.length, extended ? 2 : 1, `PDF ${label}: actual page boundary`);
+  if (!extended) assert.ok(bytesEqual(pdf.bytes, continuousPdf.bytes),
+    "CommonMark PDF keeps ordinary comment behavior without hidden content");
+  const svg = await mod.renderSvg(pageBreakSource, options);
+  assert.ok(bytesEqual(svg.bytes, continuousSvg.bytes),
+    `SVG ${label}: boundaries and ordinary comments preserve continuous output`);
+  for (const result of [html, pdf, svg]) {
+    assert.equal(result.sourceLength, Buffer.byteLength(pageBreakSource), "original CRLF source ownership");
+  }
+  pageBreakOutputs.set(label, { html, pdf, svg });
+}
+for (const target of ["html", "pdf", "svg"]) {
+  assert.ok(bytesEqual(pageBreakOutputs.get("default")[target].bytes,
+    pageBreakOutputs.get("gfm-plus")[target].bytes), `${target}: default page breaks match explicit GFM-plus`);
+}
+const trustedComment = await mod.renderHtml(pageBreakSource, {
+  profile: "commonmark-gfm", allowRawHtml: true,
+});
+assert.ok(dec.decode(trustedComment.bytes).includes("<!-- pagebreak -->"),
+  "CommonMark trusted HTML retains the original comment");
+const literalComment = await mod.renderHtml("`<!-- pagebreak -->`\n\nBefore <!-- pagebreak --> after.");
+assert.ok(!dec.decode(literalComment.bytes).includes('class="fmd-pagebreak"'),
+  "inline/code comments never become page boundaries");
+console.log("smoke: generated page breaks, profile isolation and continuous SVG ok");
+
+const conditionSource = "$$\nx=1\\text{ if $n_1>0$ and $m^2=4$}\n$$\n";
+const conditionHtml = dec.decode((await mod.renderHtml(conditionSource)).bytes);
+for (const token of ["<mtext> if </mtext>", "<msub><mi>n</mi><mn>1</mn></msub>",
+  "<mo>&gt;</mo><mn>0</mn>", "<mtext> and </mtext>", "<msup><mi>m</mi><mn>2</mn></msup>"]) {
+  assert.ok(conditionHtml.includes(token), `MathML retains text and embedded formula: ${token}`);
+}
+assert.ok(!conditionHtml.includes("<mtext> if  and </mtext>"), "MathML conditions cannot silently lose formulas");
+
 // Exercise the other newly shipped render paths through generated WASM too.
 const taggedSource = "$$\nx\\tag*{Energy}\n$$\n";
 const taggedHtml = dec.decode((await mod.renderHtml(taggedSource)).bytes);

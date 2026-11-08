@@ -295,6 +295,7 @@ fn chapter_ranges(book: &Book, document: &Document) -> Result<Vec<Range<usize>>>
 fn normalize_chapters(
     document: Document,
     ranges: &[Range<usize>],
+    profile: Option<crate::Profile>,
 ) -> Result<(Document, Vec<Range<usize>>)> {
     let mut original = document.blocks.into_iter();
     let mut blocks = Vec::with_capacity(original.len());
@@ -313,6 +314,13 @@ fn normalize_chapters(
         if chapter.blocks.len() != range.len() {
             return Err(invalid("missing chapter block"));
         }
+        // Interpret authored page boundaries before HTML comments disappear.
+        // Original chapter ranges still index the source blocks consumed above;
+        // profile changes cannot move a boundary into another chapter.
+        let chapter = match crate::apply_profile(&chapter, profile) {
+            Cow::Borrowed(_) => chapter,
+            Cow::Owned(profiled) => profiled,
+        };
         let normalized = match crate::safe_html::lower(&chapter) {
             Cow::Borrowed(_) => chapter,
             Cow::Owned(lowered) => lowered,
@@ -384,7 +392,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         return Err(invalid("duplicate chapter path"));
     }
     let original_ranges = chapter_ranges(book, &document)?;
-    let (mut document, ranges) = normalize_chapters(document, &original_ranges)?;
+    let (mut document, ranges) = normalize_chapters(document, &original_ranges, options.profile)?;
     let mut starts = BTreeSet::new();
     let mut note_chapters = BTreeSet::new();
     let mut reserved = BTreeSet::new();

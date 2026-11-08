@@ -173,7 +173,8 @@ fn prepare_book_with_budget(
             .unwrap_or(lang);
         html_opts.title = Some(source.title.clone());
         html_opts.lang = Some(chapter_lang.to_string());
-        let lowered = franken_markdown::safe_html::lower(&doc);
+        let profiled = franken_markdown::apply_profile(&doc, opts.profile);
+        let lowered = franken_markdown::safe_html::lower(&profiled);
         let headings = collect_headings(&lowered.blocks);
         let page = franken_markdown::html::render(&lowered, &html_opts);
         drop(lowered);

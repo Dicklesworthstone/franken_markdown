@@ -115,6 +115,10 @@ const CONTAINER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 /// XML 1.0-forbidden characters in emitted text or metadata also return
 /// [`RenderError::InvalidInput`], with the affected member and byte offset.
 pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
+    // Authoring directives must survive long enough to become native blocks;
+    // HTML lowering below intentionally discards ordinary comments.
+    let profiled = franken_markdown::apply_profile(doc, opts.profile);
+    let doc = profiled.as_ref();
     let mut repertoire = embedded_fonts::Repertoire::new(embedded_fonts::enabled(opts)?);
     let title = opts
         .title

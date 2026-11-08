@@ -620,40 +620,59 @@ pub(crate) fn instance_host_font(
 ///
 /// Without an explicit profile every supported syntax renders. An explicit
 /// [`Profile::CommonMarkGfm`] renders exactly the dialect GitHub renders:
-/// syntax GitHub does not support (definition lists) keeps its literal
-/// paragraph text instead of becoming structure.
+/// definition lists keep their literal paragraph text instead of becoming
+/// structure, and page-break comments retain ordinary HTML-comment behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// CommonMark + GitHub Flavored Markdown as GitHub renders it: tables,
     /// task lists, strikethrough, autolinks, footnotes and alerts.
     #[default]
     CommonMarkGfm,
-    /// GFM-Plus: GitHub's dialect plus definition lists.
+    /// GFM-Plus: GitHub's dialect plus definition lists and standalone
+    /// `<!-- pagebreak -->` comments that request a printed page boundary.
     GfmPlus,
 }
 
-/// Apply an explicit authoring profile to a parsed document. `None` and
-/// [`Profile::GfmPlus`] keep every construct; [`Profile::CommonMarkGfm`]
-/// turns definition lists back into the paragraphs GitHub shows for them
-/// (`Term` then `: definition` lines). Borrowed when nothing changes.
+/// Apply an authoring profile to a parsed document. `None` and
+/// [`Profile::GfmPlus`] retain extensions and promote standalone
+/// `<!-- pagebreak -->` HTML comment blocks to [`Block::PageBreak`].
+/// [`Profile::CommonMarkGfm`] preserves ordinary comment behavior and turns
+/// definition lists back into paragraphs (`Term` then `: definition` lines).
+/// Host-created page breaks are retained in every profile. The source AST
+/// stays unchanged, and the result is borrowed when nothing changes.
 #[must_use]
 pub fn apply_profile(doc: &Document, profile: Option<Profile>) -> std::borrow::Cow<'_, Document> {
+    match apply_profile_to_blocks(&doc.blocks, profile) {
+        std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(doc),
+        std::borrow::Cow::Owned(blocks) => std::borrow::Cow::Owned(Document { blocks }),
+    }
+}
+
+/// The same borrowed authoring pass for hosts rendering an HTML block slice.
+pub(crate) fn apply_profile_to_blocks(
+    blocks: &[Block],
+    profile: Option<Profile>,
+) -> std::borrow::Cow<'_, [Block]> {
     use crate::ast::{Block, Inline};
-    fn has_extensions(blocks: &[Block]) -> bool {
+    fn has_changes(blocks: &[Block], commonmark: bool) -> bool {
         blocks.iter().any(|block| match block {
-            Block::DefinitionList(_) => true,
+            Block::DefinitionList(_) => commonmark,
+            Block::HtmlBlock(html) => !commonmark && parse::is_page_break_marker(html),
             Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-                has_extensions(inner)
+                has_changes(inner, commonmark)
             }
-            Block::List(list) => list.items.iter().any(|item| has_extensions(&item.blocks)),
+            Block::List(list) => list
+                .items
+                .iter()
+                .any(|item| has_changes(&item.blocks, commonmark)),
             _ => false,
         })
     }
-    fn demote(blocks: &[Block]) -> Vec<Block> {
+    fn transform(blocks: &[Block], commonmark: bool) -> Vec<Block> {
         let mut out = Vec::with_capacity(blocks.len());
         for block in blocks {
             match block {
-                Block::DefinitionList(items) => {
+                Block::DefinitionList(items) if commonmark => {
                     for item in items {
                         let mut inlines = Vec::new();
                         for (index, term) in item.terms.iter().enumerate() {
@@ -670,15 +689,20 @@ pub fn apply_profile(doc: &Document, profile: Option<Profile>) -> std::borrow::C
                         out.push(Block::Paragraph(inlines));
                     }
                 }
-                Block::BlockQuote(inner) => out.push(Block::BlockQuote(demote(inner))),
+                Block::HtmlBlock(html) if !commonmark && parse::is_page_break_marker(html) => {
+                    out.push(Block::PageBreak);
+                }
+                Block::BlockQuote(inner) => {
+                    out.push(Block::BlockQuote(transform(inner, commonmark)))
+                }
                 Block::FootnoteDefinition { id, blocks } => out.push(Block::FootnoteDefinition {
                     id: id.clone(),
-                    blocks: demote(blocks),
+                    blocks: transform(blocks, commonmark),
                 }),
                 Block::List(list) => {
                     let mut list = list.clone();
                     for item in &mut list.items {
-                        item.blocks = demote(&item.blocks);
+                        item.blocks = transform(&item.blocks, commonmark);
                     }
                     out.push(Block::List(list));
                 }
@@ -687,12 +711,11 @@ pub fn apply_profile(doc: &Document, profile: Option<Profile>) -> std::borrow::C
         }
         out
     }
-    if profile != Some(Profile::CommonMarkGfm) || !has_extensions(&doc.blocks) {
-        return std::borrow::Cow::Borrowed(doc);
+    let commonmark = profile == Some(Profile::CommonMarkGfm);
+    if !has_changes(blocks, commonmark) {
+        return std::borrow::Cow::Borrowed(blocks);
     }
-    std::borrow::Cow::Owned(Document {
-        blocks: demote(&doc.blocks),
-    })
+    std::borrow::Cow::Owned(transform(blocks, commonmark))
 }
 
 impl Profile {

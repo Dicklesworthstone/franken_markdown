@@ -64,8 +64,9 @@ pub enum Block {
     DefinitionList(Vec<DefinitionItem>),
     /// A forced page/chapter break (book builder, bead j0o4). Renders as a
     /// zero-content boundary: a `break-after: page` div in HTML, a new page in
-    /// PDF. Not produced by the Markdown parser — hosts insert it between
-    /// merged chapters.
+    /// PDF. Hosts insert it between merged chapters. The parser retains a
+    /// source `<!-- pagebreak -->` as an HTML comment; the extended authoring
+    /// profile promotes that standalone comment to a page break before export.
     PageBreak,
 }
 

@@ -1157,6 +1157,12 @@ fn prepare_document(
                     block: DisplayBlock::Rule,
                     meta,
                 })?,
+                Block::HtmlBlock(html) if crate::parse::is_page_break_marker(html) => {
+                    output.push_back(PreparedBlock {
+                        block: DisplayBlock::Rule,
+                        meta,
+                    })?;
+                }
                 Block::MathBlock(source) => output.push_back(PreparedBlock {
                     block: DisplayBlock::MathBlock {
                         source: source.clone(),

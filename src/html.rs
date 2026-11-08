@@ -95,6 +95,8 @@ fn start_document<'a>(
 /// Render a fragment of blocks without the HTML document shell or style tag.
 #[must_use]
 pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
+    let profiled = crate::apply_profile_to_blocks(blocks, opts.profile);
+    let blocks = profiled.as_ref();
     let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
     let markers = crate::toc::markers(blocks);
     let needs_toc = opts.toc || markers.any();

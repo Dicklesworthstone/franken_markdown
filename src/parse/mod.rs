@@ -20,10 +20,12 @@ pub(crate) mod entities;
 mod frontmatter;
 mod html_blocks;
 mod normalized;
+mod page_breaks;
 mod unicode_casefold;
 mod unicode_punct;
 
 pub use frontmatter::{Frontmatter, split_frontmatter};
+pub(crate) use page_breaks::{PAGE_BREAK_MARKER, is_page_break_marker};
 
 mod destinations;
 mod reference_labels;

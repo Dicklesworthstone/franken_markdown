@@ -394,6 +394,9 @@ pub(crate) struct TocEntry {
 struct RenderState<'a> {
     /// Namespace for renderer-owned anchors when composing complete documents.
     id_prefix: &'a str,
+    /// A Markdown link owns its complete label, including nested note marks.
+    /// HTML forbids another anchor inside that label.
+    in_link: bool,
     /// Keys are every emitted heading id. Values are the next suffix to try
     /// when that same id text later appears as a heading's base slug.
     heading_id_suffixes: HashMap<String, usize>,
@@ -802,16 +805,22 @@ fn push_sanitized_html(
 ) {
     let mut sanitizer = std::mem::take(&mut state.raw_html);
     let base = state.raw_html_base;
-    sanitizer.feed(raw, base, out, &mut |url, kind, out| match kind {
-        crate::safe_html::UrlKind::Link => match state.safe_url_cached(url, UrlContext::Link) {
-            Some(href) => {
-                push_escaped_url(href, out);
-                true
-            }
-            None => false,
+    sanitizer.feed_with_link_context(
+        raw,
+        base,
+        state.in_link,
+        out,
+        &mut |url, kind, out| match kind {
+            crate::safe_html::UrlKind::Link => match state.safe_url_cached(url, UrlContext::Link) {
+                Some(href) => {
+                    push_escaped_url(href, out);
+                    true
+                }
+                None => false,
+            },
+            crate::safe_html::UrlKind::Image => state.push_image_source(url, opts, out),
         },
-        crate::safe_html::UrlKind::Image => state.push_image_source(url, opts, out),
-    });
+    );
     state.raw_html = sanitizer;
 }
 
@@ -1112,6 +1121,9 @@ fn render_link_open(
     out: &mut String,
     state: &mut RenderState<'_>,
 ) -> bool {
+    if state.in_link || state.raw_html.has_open_link() {
+        return false;
+    }
     let prefix = state.id_prefix;
     let Some(href) = state.safe_url_cached(dest, UrlContext::Link) else {
         return false;
@@ -1131,6 +1143,7 @@ fn render_link_open(
         out.push('"');
     }
     out.push('>');
+    state.in_link = true;
     true
 }
 
@@ -1175,6 +1188,7 @@ fn render_inlines_body(
                 render_inlines(content, out, opts, state);
                 if linked {
                     out.push_str("</a>");
+                    state.in_link = false;
                 }
             }
             Inline::Image { dest, title, alt } => {
@@ -1937,9 +1951,10 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
     out.push_str("\">\u{21a9}</a>\n</li>\n");
 }
 
-/// Render one footnote reference: superscript number linked to the notes
-/// section entry. The first reference to a footnote carries the backref
-/// anchor id. References without definitions stay literal text (GFM).
+/// Render one footnote reference. Outside links, its superscript number links
+/// to the notes entry; inside links, the enclosing anchor keeps its destination.
+/// The first reference always carries the return anchor, and undefined notes
+/// stay literal text.
 fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) {
     let Some((number, first)) = state.footnote_number(id) else {
         out.push_str("[^");
@@ -1955,13 +1970,20 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
         push_u64(out, number as u64);
         out.push('"');
     }
-    out.push_str("><a href=\"#");
-    push_fragment_identifier(state.id_prefix, out);
-    out.push_str("fn-");
-    push_fragment_identifier(id, out);
-    out.push_str("\">");
+    out.push('>');
+    let linked = !state.in_link && !state.raw_html.has_open_link();
+    if linked {
+        out.push_str("<a href=\"#");
+        push_fragment_identifier(state.id_prefix, out);
+        out.push_str("fn-");
+        push_fragment_identifier(id, out);
+        out.push_str("\">");
+    }
     push_u64(out, number as u64);
-    out.push_str("</a></sup>");
+    if linked {
+        out.push_str("</a>");
+    }
+    out.push_str("</sup>");
 }
 
 /// Emit highlighted code: one `<span class="tok-...">` per classified token;

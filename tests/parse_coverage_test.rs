@@ -1093,9 +1093,18 @@ fn indented_code_extends_across_multiple_blank_lines_and_ends_at_eof() {
 
 #[test]
 fn a_nested_ordered_sublist_keeps_its_non_one_start_in_one_list() {
+    // CommonMark 0.31.2 section 5.2, rule 1's first exception applies inside
+    // list items too: an ordered list starting at 2 cannot interrupt prose.
+    let uninterrupted = html("1. a\n   2. b\n   3. c");
+    assert!(
+        uninterrupted.contains("<ol>\n<li>a\n2. b\n3. c</li>\n</ol>"),
+        "{uninterrupted}"
+    );
+
     // The 2nd/3rd items of an indented ordered sublist (start 2, 3) must not be
-    // split into separate lists even though their start is not 1.
-    let out = html("1. a\n   2. b\n   3. c");
+    // split into separate lists even though their start is not 1. The blank
+    // ends the preceding paragraph so the non-1 sublist can begin.
+    let out = html("1. a\n\n   2. b\n   3. c");
     assert!(
         out.contains("<ol start=\"2\">\n<li>b</li>\n<li>c</li>\n</ol>"),
         "{out}"

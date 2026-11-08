@@ -1642,7 +1642,9 @@ fn push_escaped(text: &str, out: &mut String) {
 /// renderer itself opened.
 #[derive(Debug, Default)]
 pub(crate) struct Sanitizer {
-    open: Vec<&'static str>,
+    // Suppressed nested anchors still occupy a stack slot, so their closing
+    // tag cannot close the real outer anchor or steal its following content.
+    open: Vec<(&'static str, bool)>,
 }
 
 impl Sanitizer {
@@ -1651,10 +1653,16 @@ impl Sanitizer {
         self.open.len()
     }
 
+    /// Whether sanitized markup currently owns an anchor. Generated Markdown
+    /// links and note marks must not open another anchor inside it.
+    pub(crate) fn has_open_link(&self) -> bool {
+        self.open.iter().any(|&(name, _)| name == "a")
+    }
+
     /// Close every element opened above `base`.
     pub(crate) fn close_to(&mut self, base: usize, out: &mut String) {
         while self.open.len() > base {
-            if let Some(name) = self.open.pop() {
+            if let Some((name, true)) = self.open.pop() {
                 out.push_str("</");
                 out.push_str(name);
                 out.push('>');
@@ -1679,11 +1687,24 @@ impl Sanitizer {
         out: &mut String,
         url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
     ) {
+        self.feed_with_link_context(raw, base, false, out, url);
+    }
+
+    /// Preserve an enclosing renderer-owned link while retaining the contents
+    /// and balanced closing tags of sanitized markup inside its label.
+    pub(crate) fn feed_with_link_context(
+        &mut self,
+        raw: &str,
+        base: usize,
+        in_link: bool,
+        out: &mut String,
+        url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
+    ) {
         for piece in pieces(raw) {
             match piece {
                 Piece::Ignorable => {}
                 Piece::Text(text) => push_escaped_text(&decode_entities(text), out),
-                Piece::Tag(tag, source) => self.tag(&tag, source, base, out, url),
+                Piece::Tag(tag, source) => self.tag(&tag, source, base, in_link, out, url),
             }
         }
     }
@@ -1693,6 +1714,7 @@ impl Sanitizer {
         tag: &Tag,
         source: &str,
         base: usize,
+        in_link: bool,
         out: &mut String,
         url: &mut dyn FnMut(&str, UrlKind, &mut String) -> bool,
     ) {
@@ -1708,7 +1730,10 @@ impl Sanitizer {
                 return;
             }
             let floor = base.min(self.open.len());
-            if let Some(pos) = self.open[floor..].iter().rposition(|&open| open == name) {
+            if let Some(pos) = self.open[floor..]
+                .iter()
+                .rposition(|&(open, _)| open == name)
+            {
                 self.close_to(floor + pos, out);
             }
             return;
@@ -1737,6 +1762,12 @@ impl Sanitizer {
         if !void && self.open.len() >= MAX_HTML_NESTING {
             return; // Too deep: keep the content, add no level.
         }
+        if name == "a" && (in_link || self.has_open_link()) {
+            if !tag.self_closing {
+                self.open.push((name, false));
+            }
+            return;
+        }
         out.push('<');
         out.push_str(name);
         self.push_attrs(tag, name, out, url);
@@ -1747,7 +1778,7 @@ impl Sanitizer {
                 out.push_str(name);
                 out.push('>');
             } else {
-                self.open.push(name);
+                self.open.push((name, true));
             }
         }
     }

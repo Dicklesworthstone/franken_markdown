@@ -315,6 +315,7 @@ fn inlines<W: Write + ?Sized>(
                 inlines(content, out, opts, state)?;
                 if linked {
                     out.text("</a>")?;
+                    state.in_link = false;
                 }
             }
             Inline::SoftBreak => out.text("\n")?,

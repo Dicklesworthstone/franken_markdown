@@ -9011,12 +9011,14 @@ mod code_span_normalize_tests {
     use super::normalize_code_span;
     use crate::{HtmlOptions, render_html};
 
-    // The pre-single-collect implementation, kept verbatim as the oracle:
-    // replace every '\n' with one space, then strip a single leading/trailing
-    // space when the span is not all whitespace.
+    // CommonMark 0.31.2 section 6.1: replace line endings with spaces, then
+    // strip one outer space on each side unless the result is entirely spaces.
+    // Space means U+0020; tabs and Unicode whitespace remain code content.
+    // https://spec.commonmark.org/0.31.2/#code-spans
     fn oracle(s: &str) -> String {
         let s = s.replace('\n', " ");
-        if s.len() >= 2 && s.starts_with(' ') && s.ends_with(' ') && s.trim() != "" {
+        if s.len() >= 2 && s.starts_with(' ') && s.ends_with(' ') && !s.trim_matches(' ').is_empty()
+        {
             s[1..s.len() - 1].to_string()
         } else {
             s
@@ -9026,6 +9028,26 @@ mod code_span_normalize_tests {
     fn check(s: &str) {
         let chars: Vec<char> = s.chars().collect();
         assert_eq!(normalize_code_span(&chars), oracle(s), "input {s:?}");
+    }
+
+    #[test]
+    fn normalize_code_span_distinguishes_spaces_from_literal_whitespace() {
+        for (source, expected) in [
+            (" \t ", "\t"),
+            (" \u{00a0} ", "\u{00a0}"),
+            (" \u{2003} ", "\u{2003}"),
+            (" \u{2028} ", "\u{2028}"),
+            ("  \t  ", " \t "),
+            ("\n\t\n", "\t"),
+            (" \n ", "   "),
+            ("  ", "  "),
+            ("\t ", "\t "),
+            ("\u{00a0} \u{00a0}", "\u{00a0} \u{00a0}"),
+        ] {
+            assert_eq!(oracle(source), expected, "oracle input {source:?}");
+            let chars: Vec<char> = source.chars().collect();
+            assert_eq!(normalize_code_span(&chars), expected, "input {source:?}");
+        }
     }
 
     #[test]
@@ -9095,7 +9117,7 @@ mod code_span_normalize_tests {
 
         // Exhaustive sweep over a small alphabet (letters, space, newline,
         // multibyte, tab): every string of length 0..=6 hits every shape class
-        // boundary (clean / newline / strip / newline+strip / all-whitespace,
+        // boundary (clean / newline / strip / newline+strip / all-spaces,
         // including multibyte and tab adjacency at both strip edges).
         let alphabet = ['a', ' ', '\n', 'é', '\t'];
         let mut count = 0usize;

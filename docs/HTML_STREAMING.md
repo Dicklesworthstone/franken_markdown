@@ -48,6 +48,15 @@ and options. The tests compare exact bytes across all 24 repository Markdown
 fixtures and additional combinations of profiles, raw HTML, TOCs and nested
 notes. Existing HTML/PDF goldens are unchanged.
 
+Footnote marks inside a Markdown link or a sanitized HTML anchor retain the
+enclosing destination. They remain numbered superscripts, and the note's
+return link still reaches its first mark, but no nested anchor is emitted.
+A repeated mark outside that link can navigate to the note normally. This
+behavior is shared by string, fragment, streaming HTML and EPUB output.
+Literal percent sequences in note identifiers remain literal identifiers;
+generated citation URLs encode their percent signs instead of navigating to
+a decoded, different note.
+
 Ordinary inline escaping, prose, nested lists and quotes, table rows/cells,
 code text and footnote bodies now stream inside each block. Every writer call
 is at most 64 KiB, including a single huge text node or highlighted token.

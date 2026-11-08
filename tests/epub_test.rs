@@ -15,6 +15,45 @@ mod zip;
 use franken_markdown::{HtmlOptions, epub, parse_markdown, zlib_decompress};
 use zip::{ZipWriter, crc32};
 
+#[test]
+fn epub_note_marks_keep_link_ownership_and_literal_fragment_identifiers() {
+    let document = parse_markdown(
+        "[Claim[^x%41] after](/source) outside[^x%41].\n\n\
+         [^x%41]: Supporting evidence.\n",
+    );
+    let bytes = epub::render_epub(
+        &document,
+        &HtmlOptions {
+            custom_css: Some(String::new()),
+            ..HtmlOptions::default()
+        },
+    )
+    .unwrap();
+    let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+    assert_well_formed_xml(&chapter);
+    assert!(chapter.contains(
+        "<a href=\"/source\">Claim<sup class=\"footnote-ref\" id=\"fnref-1\">1</sup> after</a>",
+    ));
+    assert!(chapter.contains("href=\"#fn-x%2541\""));
+    assert!(chapter.contains("id=\"fn-x%41\""));
+    assert!(chapter.contains("href=\"#fnref-1\""));
+    assert_eq!(chapter.matches("Supporting evidence.").count(), 1);
+    let mut anchor_open = false;
+    for tag in chapter.split('<').skip(1) {
+        if tag.starts_with("a ") || tag.starts_with("a>") {
+            assert!(!anchor_open, "EPUB must not contain nested anchors");
+            anchor_open = true;
+        } else if tag.starts_with("/a>") {
+            assert!(
+                anchor_open,
+                "EPUB must not contain unmatched closing anchors"
+            );
+            anchor_open = false;
+        }
+    }
+    assert!(!anchor_open);
+}
+
 // ---------------------------------------------------------------------------
 // Byte helpers.
 

@@ -10,7 +10,7 @@
 //! zero-dependency, and free of `unsafe`/`unwrap`/`panic` — every read is
 //! bounds-checked.
 //!
-//! Additive strict subset APIs also support name-keyed CFF1 with explicit
+//! Additive strict subset APIs also support name-keyed and CID-keyed CFF1 with explicit
 //! embedding metadata; see [`cff`]. [`shaping`] provides bounded Latin/Arabic
 //! shaping with UTF-8 source clusters and typed unsupported/malformed errors.
 //! Existing renderer shaping and TrueType subset output remain unchanged.
@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(feature = "bundled-faces")]
 pub mod bundled;
@@ -139,6 +140,9 @@ pub struct Font {
     /// Optional OpenType variations (`fvar` + optional `avar`). Absent for
     /// static faces and for fonts whose variation tables fail validation.
     variation: Option<FontVariation>,
+    /// Validated CFF directories contain offsets, never borrowed pointers.
+    /// Parsed clones share them even when their owned font bytes are copied.
+    cff_directory: OnceLock<Result<Arc<cff::Directory>, SubsetError>>,
     latin1_glyphs: [u16; 256],
     latin1_advances_1000: [u32; 256],
 }
@@ -687,6 +691,7 @@ impl Font {
             loca_long,
             kern0,
             variation,
+            cff_directory: OnceLock::new(),
             latin1_glyphs: [0; 256],
             latin1_advances_1000: [0; 256],
         };

@@ -56,12 +56,38 @@ Sparse subsets preserve metrics and geometry; unused glyph programs disappear.
 The caller must supply every pre-shaped glyph that it needs.
 
 Supported Type 2 mechanics include standard drawing operators, flex operators,
-stem/hint masks, and bounded local/global subroutines. Name-keyed CFF1 with the
-standard design-unit FontMatrix is supported. CID-keyed fonts, CFF2, seac,
-nonstandard matrices, and computational/random operators return typed refusals.
+stem/hint masks, and bounded local/global subroutines. Name-keyed and CID-keyed
+CFF1 with the standard design-unit top FontMatrix are supported. CID fonts
+use FDSelect format 0 or 3 to select each glyph's font dictionary and private
+subroutines. Calls from global subroutines retain that same local dictionary.
+The sfnt Unicode `cmap` addresses glyph IDs independently of the source CIDs;
+normalized subsets remain name-keyed OpenType CFF with fresh ascending glyph
+IDs, retaining the existing embedding format.
+
+CFF2, per-font-dictionary matrices, nonstandard top matrices, seac, and
+computational/random operators return typed refusals. CID font dictionaries,
+selectors, and charsets are validated before any glyph is decoded, including
+structures for glyphs outside the requested subset. Charsets support formats
+0, 1 and 2 and must contain unique, in-range CIDs. Selectors must cover every
+glyph with valid font-dictionary indices; range selectors require ordered
+ranges beginning at glyph zero and an exact glyph-count sentinel.
+
+Validated CFF directories are initialized once per font and shared by parsed
+clones. CharStrings and subroutine INDEXes retain compact offsets into the
+immutable font bytes: decoding a glyph does not allocate or walk the entire
+font's glyph array again. Cache initialization and use are thread-safe and
+do not depend on host files, font discovery, or a platform shaping engine.
+Directory parsing has a shared work limit that also bounds aliased structures.
 Charstrings have bounded stacks, recursion, instructions, and output commands;
 subsetting also bounds total decoded commands. Font license obligations still
 apply to embedding and redistribution.
+
+[`fonts/test-cid-cff`](fonts/test-cid-cff/README.md) contains tiny original
+fixtures and independently decoded FontTools references for both selector
+formats, multiple private dictionaries, nested global/local subroutines,
+nonidentity CIDs, cubic bounds, and sparse Unicode subsets. Font collections
+(`.ttc`/`.otc`) still require a caller to extract a standalone face before
+passing it to `Font::parse`.
 
 ## Explicit shaping runs
 

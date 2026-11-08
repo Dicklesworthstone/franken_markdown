@@ -1,13 +1,19 @@
 //! Bounded CFF1 Type 2 decoding and deterministic, unhinted CFF subsetting.
-//! CID-keyed CFF, CFF2, seac and computational charstring operators are
-//! explicitly refused. Drawing, hints, flex and local/global subroutines are
-//! supported. Coordinates and advances are font design units.
+//! Name-keyed and CID-keyed fonts use the same outline VM and normalized
+//! subset writer. CFF2, per-FD matrices, seac and computational charstring
+//! operators are explicitly refused. Drawing, hints, flex and local/global
+//! subroutines are supported. Coordinates and advances are font design units.
 use crate::outline::Point;
 use crate::{
     EmbeddingFormat, Font, MISSING_GLYPH_REMAP, Subset, SubsetError, SubsetErrorKind as Kind,
     be_u16, be_u32, find_table_full, table_checksum,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+mod directory;
+pub(crate) use directory::Directory;
+use directory::Index;
 
 /// A CFF contour command. Cubics are retained without quadratic approximation.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +135,7 @@ fn slice(d: &[u8], start: usize, len: usize) -> Result<&[u8], SubsetError> {
     d.get(start..start.checked_add(len).ok_or(malformed(start))?)
         .ok_or(malformed(start))
 }
+#[cfg(test)]
 fn index(d: &[u8], start: usize) -> Result<(Vec<&[u8]>, usize), SubsetError> {
     let count = usize::from(be_u16(d, start).ok_or(malformed(start))?);
     if count == 0 {
@@ -247,91 +254,24 @@ fn integer(v: f64, p: usize) -> Result<usize, SubsetError> {
     }
 }
 struct Cff<'a> {
-    chars: Vec<&'a [u8]>,
-    local: Vec<&'a [u8]>,
-    global: Vec<&'a [u8]>,
+    data: &'a [u8],
+    directory: &'a Directory,
 }
 impl<'a> Cff<'a> {
     fn parse(font: &'a Font) -> Result<Self, SubsetError> {
         font.validate_font_metrics()?;
-        let (o, n) = find_table_full(&font.data, b"CFF ").ok_or(SubsetError::new(
-            Kind::UnsupportedFormat,
-            *b"sfnt",
-            None,
-            None,
-        ))?;
-        let d = slice(&font.data, o, n)?;
-        if d.first() != Some(&1) {
-            return Err(err(Kind::UnsupportedFormat, 0));
+        let directory = font
+            .cff_directory
+            .get_or_init(|| Directory::parse(font).map(Arc::new))
+            .as_ref()
+            .map_err(|error| *error)?;
+        // Public metric fields may be edited by a caller. A cached directory
+        // must never silently validate a different glyph count or unit scale.
+        if !directory.matches_metrics(font) {
+            return Err(malformed(0));
         }
-        let header = usize::from(*d.get(2).ok_or(malformed(2))?);
-        if header < 4 || !matches!(d.get(3), Some(1..=4)) {
-            return Err(malformed(2));
-        }
-        let (names, p) = index(d, header)?;
-        if names.len() != 1 {
-            return Err(err(Kind::UnsupportedFormat, header));
-        }
-        let (top, p) = index(d, p)?;
-        if top.len() != 1 {
-            return Err(malformed(p));
-        }
-        let (_, p) = index(d, p)?;
-        let (global, _) = index(d, p)?;
-        let dict = dictionary(top[0])?;
-        if dict.get(&0x0c05).is_some_and(|v| v.as_slice() != [0.0]) {
-            return Err(err(Kind::UnsupportedFormat, header));
-        }
-        if dict.contains_key(&0x0c1e) {
-            return Err(err(Kind::UnsupportedFormat, header));
-        }
-        if dict.get(&0x0c06).is_some_and(|v| v.as_slice() != [2.0]) {
-            return Err(err(Kind::UnsupportedFormat, header));
-        }
-        if let Some(matrix) = dict.get(&0x0c07) {
-            let unit = 1.0 / f64::from(font.units_per_em);
-            if matrix.len() != 6
-                || matrix
-                    .iter()
-                    .zip([unit, 0.0, 0.0, unit, 0.0, 0.0])
-                    .any(|(a, b)| (a - b).abs() > 1e-12)
-            {
-                return Err(err(Kind::UnsupportedFormat, header));
-            }
-        } else if font.units_per_em != 1000 {
-            return Err(err(Kind::UnsupportedFormat, header));
-        }
-        let cs = dict
-            .get(&17)
-            .filter(|v| v.len() == 1)
-            .ok_or(malformed(header))?;
-        let (chars, _) = index(d, integer(cs[0], header)?)?;
-        if chars.len() != usize::from(font.num_glyphs) {
-            return Err(malformed(header));
-        }
-        let mut local = Vec::new();
-        if let Some(private) = dict.get(&18) {
-            if private.len() != 2 {
-                return Err(malformed(header));
-            }
-            let size = integer(private[0], header)?;
-            let base = integer(private[1], header)?;
-            let pd = dictionary(slice(d, base, size)?)?;
-            if let Some(subrs) = pd.get(&19) {
-                if subrs.len() != 1 {
-                    return Err(malformed(base));
-                }
-                let sub = base
-                    .checked_add(integer(subrs[0], base)?)
-                    .ok_or(malformed(base))?;
-                local = index(d, sub)?.0;
-            }
-        }
-        Ok(Self {
-            chars,
-            local,
-            global,
-        })
+        let data = font.data.get(directory.table.clone()).ok_or(malformed(0))?;
+        Ok(Self { data, directory })
     }
     fn outline(&self, font: &Font, gid: u16) -> Result<CffOutline, SubsetError> {
         self.outline_budget(font, gid, &mut 100_000)
@@ -343,14 +283,21 @@ impl<'a> Cff<'a> {
         budget: &mut usize,
     ) -> Result<CffOutline, SubsetError> {
         let initial = (*budget).min(100_000);
-        let program = self.chars.get(usize::from(gid)).ok_or(SubsetError::new(
-            Kind::InvalidGlyph,
-            *b"CFF ",
-            Some(gid),
-            None,
-        ))?;
+        let program = self
+            .directory
+            .chars
+            .object(self.data, usize::from(gid))
+            .ok_or(SubsetError::new(
+                Kind::InvalidGlyph,
+                *b"CFF ",
+                Some(gid),
+                None,
+            ))?;
+        let local = self.directory.local(gid).ok_or(malformed(0))?;
         let mut vm = Vm {
-            cff: self,
+            data: self.data,
+            local,
+            global: self.directory.global,
             stack: Vec::new(),
             out: Vec::new(),
             x: 0.0,
@@ -380,8 +327,10 @@ impl<'a> Cff<'a> {
         })
     }
 }
-struct Vm<'a, 'b> {
-    cff: &'a Cff<'b>,
+struct Vm<'a> {
+    data: &'a [u8],
+    local: Index,
+    global: Index,
     stack: Vec<f64>,
     out: Vec<Command>,
     x: f64,
@@ -391,7 +340,7 @@ struct Vm<'a, 'b> {
     stems: usize,
     fuel: usize,
 }
-impl Vm<'_, '_> {
+impl Vm<'_> {
     fn point(&mut self, dx: f64, dy: f64) -> Result<Point, SubsetError> {
         self.x += dx;
         self.y += dy;
@@ -449,20 +398,16 @@ impl Vm<'_, '_> {
             p += 1;
             if op == 10 || op == 29 {
                 let v = self.stack.pop().ok_or(malformed(at))?;
-                let subrs = if op == 10 {
-                    &self.cff.local
-                } else {
-                    &self.cff.global
-                };
-                let bias = if subrs.len() < 1240 {
+                let subrs = if op == 10 { self.local } else { self.global };
+                let bias = if subrs.count < 1240 {
                     107.0
-                } else if subrs.len() < 33900 {
+                } else if subrs.count < 33900 {
                     1131.0
                 } else {
                     32768.0
                 };
                 let i = integer(v + bias, at)?;
-                let sub = subrs.get(i).ok_or(malformed(at))?;
+                let sub = subrs.object(self.data, i).ok_or(malformed(at))?;
                 if self.run(sub, depth + 1)? {
                     return Ok(true);
                 }
@@ -1012,6 +957,12 @@ mod tests {
     }
 
     fn single_glyph_font(glyph: &CffOutline) -> Font {
+        // Deliberately false declared bounds ensure callers measure the ink.
+        let cff = cff_program(std::slice::from_ref(glyph), 1000, [0; 4]).unwrap();
+        single_glyph_font_with_program(cff, glyph.advance, glyph.lsb)
+    }
+
+    fn single_glyph_font_with_program(cff: Vec<u8>, advance: u16, lsb: i16) -> Font {
         let mut tables = BTreeMap::new();
         for tag in [*b"head", *b"hhea", *b"cmap"] {
             let (o, n) = find_table_full(FONT, &tag).unwrap();
@@ -1020,15 +971,35 @@ mod tests {
         crate::write_u32(tables.get_mut(b"head").unwrap(), 8, 0).unwrap();
         crate::write_u16(tables.get_mut(b"hhea").unwrap(), 34, 1).unwrap();
         tables.insert(*b"maxp", vec![0, 0, 0x50, 0, 0, 1]);
-        let mut metrics = glyph.advance.to_be_bytes().to_vec();
-        metrics.extend_from_slice(&glyph.lsb.to_be_bytes());
+        let mut metrics = advance.to_be_bytes().to_vec();
+        metrics.extend_from_slice(&lsb.to_be_bytes());
         tables.insert(*b"hmtx", metrics);
-        // Deliberately false declared bounds ensure callers measure the ink.
-        tables.insert(
-            *b"CFF ",
-            cff_program(std::slice::from_ref(glyph), 1000, [0; 4]).unwrap(),
-        );
+        tables.insert(*b"CFF ", cff);
         Font::parse(assemble(&tables).unwrap()).unwrap()
+    }
+
+    fn program_font(program: Vec<u8>, local: &[Vec<u8>]) -> Font {
+        let names = encode_index(&[b"FmdTest".to_vec()]).unwrap();
+        let chars = encode_index(&[program]).unwrap();
+        let top = |cs: usize, private: usize| {
+            let mut dict = Vec::new();
+            dict_int(&mut dict, cs as i32);
+            dict.push(17);
+            dict_int(&mut dict, 6);
+            dict_int(&mut dict, private as i32);
+            dict.push(18);
+            encode_index(&[dict]).unwrap()
+        };
+        let cs = 4 + names.len() + top(0, 0).len() + 4;
+        let mut cff = vec![1, 0, 4, 4];
+        cff.extend(names);
+        cff.extend(top(cs, cs + chars.len()));
+        cff.extend([0; 4]); // Empty strings and global subroutines.
+        cff.extend(chars);
+        dict_int(&mut cff, 6); // Local subroutines immediately follow Private.
+        cff.push(19);
+        cff.extend(encode_index(local).unwrap());
+        single_glyph_font_with_program(cff, 500, 0)
     }
 
     #[test]
@@ -1071,31 +1042,26 @@ mod tests {
 
     #[test]
     fn charstring_failures_keep_distinct_typed_causes() {
-        let f = Font::parse(FONT.to_vec()).unwrap();
         for (program, kind) in [
             (vec![12, 23, 14], Kind::UnsupportedOperator),
             (vec![28, 0], Kind::Malformed),
             (vec![5, 14], Kind::Malformed),
             (vec![11], Kind::Malformed),
         ] {
-            let c = Cff {
-                chars: vec![&program],
-                local: vec![],
-                global: vec![],
-            };
-            let e = c.outline(&f, 0).unwrap_err();
+            let e = program_font(program, &[]).cff_outline(0).unwrap_err();
             assert_eq!(e.kind, kind);
             assert_eq!(e.glyph, Some(0));
             assert!(e.offset.is_some());
         }
-        let recursive = [32, 10, 11];
-        let main = [32, 10, 14];
-        let c = Cff {
-            chars: vec![&main],
-            local: vec![&recursive],
-            global: vec![],
-        };
-        assert_eq!(c.outline(&f, 0).unwrap_err().kind, Kind::BudgetExceeded);
+        let recursive = vec![32, 10, 11];
+        let main = vec![32, 10, 14];
+        assert_eq!(
+            program_font(main, &[recursive])
+                .cff_outline(0)
+                .unwrap_err()
+                .kind,
+            Kind::BudgetExceeded
+        );
     }
     #[test]
     fn zero_glyph_font_and_cff2_refuse_without_panics() {

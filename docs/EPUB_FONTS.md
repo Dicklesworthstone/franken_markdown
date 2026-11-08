@@ -206,19 +206,28 @@ input/output/work limits, not a bound on all transient allocations. A retained
 session's source and font options are not mutated by rendering. An invalid font
 in a directly modified retained book is rejected at render time.
 
-CFF1 fonts use strict subsetting in the default Subset mode. Cubic curves, hints, flex operators and
-local/global subroutines are supported within the decoder's work limits;
-generated subsets contain deterministic unhinted cubic outlines. CID-keyed CFF,
-CFF2, `seac`, computational operators, unsupported transforms and ink outside
-the supported coordinate range are refused. A structurally admitted face can
+CFF1 fonts use strict subsetting in the default Subset mode. Name-keyed and
+CID-keyed inputs support cubic curves, hints, flex operators and local/global
+subroutines within the decoder's work limits. CID fonts select each glyph's
+private dictionary through FDSelect format 0 or 3, including local subroutine
+calls made from global subroutines. Generated subsets contain deterministic
+unhinted cubic outlines in normalized name-keyed OpenType fonts, with rebuilt
+glyph IDs and Unicode character maps.
+
+CFF2, `seac`, computational operators, nonstandard top font matrices,
+per-font-dictionary matrices and ink outside the supported coordinate range
+are refused. Font collections (`.ttc`/`.otc`) must be extracted into standalone
+faces before being assigned to a font slot. A structurally admitted face can
 still fail when a requested glyph uses an unsupported operation. The EPUB error
 retains the typed font cause and glyph context under `epub_fonts:`; the renderer
 does not return an archive with that glyph silently removed. Invalid unused
 glyph programs do not block a subset that does not request them. Full mode
 retains the complete program after the same structural font admission and
 delegates glyph execution to the reading system; subset-specific used-glyph
-decoder checks do not apply. It still refuses structurally unsupported faces
-such as CID-keyed CFF and CFF2.
+decoder checks do not apply. It still refuses structurally unsupported faces,
+including CFF2 and CID fonts requiring per-font-dictionary matrices. CID
+selectors, dictionaries and charsets are validated in both modes; they must
+cover the declared glyphs with valid dictionary indices and unique CIDs.
 
 ## Regression coverage and verification boundary
 

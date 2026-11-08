@@ -121,8 +121,8 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 
 ### Reusable font mechanics
 
-`fmd-font` 0.3.4 provides strict typed subsets, name-keyed CFF1 cubic
-outlines/subsetting, and bounded Latin/basic-Arabic shaping with source
+The `fmd-font` crate provides strict typed subsets, name-keyed and CID-keyed
+CFF1 cubic outlines/subsetting, and bounded Latin/basic-Arabic shaping with source
 clusters. See [the font API guide](fmd-font/README.md) for embedding formats,
 coverage, examples, and independent FontTools/HarfBuzz verification. These
 APIs are available to consumers without changing the existing Markdown/PDF
@@ -1203,7 +1203,7 @@ output; cross-platform determinism requires results from each platform.
 
 **Can I supply my own fonts or stylesheet?**
 Yes. `--css <file>` replaces the HTML stylesheet entirely. Library and WASM
-callers can supply TrueType or name-keyed CFF1 OpenType font bytes per slot
+callers can supply TrueType or supported CFF1 OpenType font bytes per slot
 through `FontAssets`; missing slots use the bundled fonts. The same host faces
 work in HTML, PDF, SVG and EPUB. Native commands accept
 `--pdf-font body-regular=./SourceSans3-Regular.otf` (repeat for other slots).
@@ -1212,10 +1212,16 @@ CFF fonts are subset by default for HTML/PDF/EPUB and drawn as native cubic
 paths in SVG. Raw HTML and EPUB resources use the OpenType MIME type and format
 hint; HTML can also wrap font programs in WOFF1 or WOFF2. PDF retains two-byte
 glyph IDs, Unicode extraction and ligatures, including subsets above 256 glyphs.
-The supported input is static, name-keyed CFF1 with the standard font matrix;
-CFF2 and CID-keyed CFF input remain unsupported. The checked subset and native
-outline paths reject unsupported glyph programs, including `seac` and
-computational Type2 operators, with explicit diagnostics.
+Supported CFF input includes static name-keyed and CID-keyed CFF1 with the
+standard top font matrix. CID-keyed faces, including standalone Noto CJK
+OpenType fonts, retain each glyph's font dictionary and local subroutines;
+their compact subsets use the same normalized name-keyed OpenType output.
+Validated directories are reused while measuring and decoding large fonts.
+CFF2, nonstandard top matrices and per-font-dictionary matrices remain
+unsupported. Font collections (`.ttc`/`.otc`) require extracting a standalone
+face before supplying its bytes or path. The checked subset and native outline
+paths reject unsupported glyph programs, including `seac` and computational
+Type 2 operators, with explicit diagnostics. See [CFF1 support and limits](fmd-font/README.md#cff1-outlines).
 
 Use `--font-embedding full` for HTML/EPUB to preserve the complete admitted font
 program and its shaping tables. That mode delegates glyph execution to the

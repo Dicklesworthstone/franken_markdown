@@ -250,6 +250,34 @@ fn strict_pagination_token_and_direct_field_reach_the_native_book_policy() {
 }
 
 #[test]
+fn retained_book_return_navigation_is_applied_and_reset_with_its_pdf_profile() {
+    let mut book = BookRenderer::new(&[BookInput {
+        path: "notes.md".into(),
+        source: "# Citations\n\nA claim[^n].\n\n[^n]: Supporting evidence.\n".into(),
+    }])
+    .unwrap();
+    let plain = book.render_pdf().unwrap();
+    settings(Some("footnote-backlinks")).apply(book.options_mut());
+    assert!(book.options().footnote_backlinks);
+    let linked = book.render_pdf().unwrap();
+    assert_ne!(linked, plain);
+    assert_eq!(
+        linked,
+        crate::book::render_book_pdf(
+            book.book(),
+            &PdfOptions {
+                footnote_backlinks: true,
+                ..PdfOptions::default()
+            }
+        )
+        .unwrap()
+    );
+    settings(None).apply(book.options_mut());
+    assert!(!book.options().footnote_backlinks);
+    assert_eq!(book.render_pdf().unwrap(), plain);
+}
+
+#[test]
 fn running_image_candidate_is_transactional_and_text_only_reset_clears_logos() {
     let mut options = WasmRenderOptions::default();
     settings(Some("antiriver"))

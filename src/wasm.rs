@@ -74,6 +74,8 @@ pub struct WasmRenderOptions {
     pub code_line_numbers: bool,
     /// Render running page numbers in the bottom margin of PDF pages.
     pub page_numbers: bool,
+    /// Link PDF note numbers back to their first citation. Disabled by default.
+    pub footnote_backlinks: bool,
     /// Opt-in running header/footer chrome for PDF output; see
     /// [`crate::PdfRunningContent`]. Default draws nothing.
     pub running: crate::PdfRunningContent,
@@ -430,6 +432,7 @@ impl WasmRenderOptions {
             allow_raw_html: self.allow_raw_html,
             code_line_numbers: self.code_line_numbers,
             page_numbers: self.page_numbers,
+            footnote_backlinks: self.footnote_backlinks,
             running: self.running.clone(),
             base_font_size,
             heading_scale: self.heading_scale,
@@ -452,7 +455,8 @@ impl WasmRenderOptions {
 
     /// Apply comma-separated typography tokens from a browser host:
     /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`,
-    /// `strict-pagination` (which also enables optimal pagination), and the
+    /// `strict-pagination` (which also enables optimal pagination),
+    /// `footnote-backlinks` (return navigation from PDF notes), and the
     /// microtype modes `protrusion` (with the expansion budget, like the CLI)
     /// or `expansion` (glyph expansion only). Empty or absent is a no-op.
     ///
@@ -469,6 +473,7 @@ impl WasmRenderOptions {
                 "antiriver" => self.river_penalty = true,
                 "pareto" => self.pareto_line_breaking = true,
                 "optimal-pagination" => self.optimal_pagination = true,
+                "footnote-backlinks" => self.footnote_backlinks = true,
                 "strict-pagination" => {
                     self.strict_pagination = true;
                     self.optimal_pagination = true;
@@ -483,7 +488,7 @@ impl WasmRenderOptions {
                 other => {
                     return Err(format!(
                         "unknown typography option '{other}'; expected homogeneous, antiriver, \
-                         pareto, optimal-pagination, strict-pagination, protrusion or expansion"
+                         pareto, optimal-pagination, strict-pagination, footnote-backlinks, protrusion or expansion"
                     ));
                 }
             }

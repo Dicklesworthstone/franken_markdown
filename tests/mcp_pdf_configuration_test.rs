@@ -71,6 +71,33 @@ fn custom_page() -> PageStyle {
 }
 
 #[test]
+fn footnote_return_links_reach_mcp_rendering_and_require_a_boolean() {
+    let source = "A claim[^n].\n\n[^n]: Supporting evidence.\n";
+    for enabled in [true, false] {
+        let options = PdfOptions {
+            footnote_backlinks: enabled,
+            ..PdfOptions::default()
+        };
+        let expected = franken_markdown::render_pdf(source, &options).unwrap();
+        let result = call(
+            "fmd.render_pdf",
+            args(&format!("{{\"footnoteBacklinks\":{enabled}}}"), source),
+        )
+        .unwrap();
+        assert_eq!(content(&result), base64_encode(&expected));
+    }
+    for invalid in ["\"true\"", "1", "null", "{}"] {
+        assert!(
+            call(
+                "fmd.render_pdf",
+                args(&format!("{{\"footnoteBacklinks\":{invalid}}}"), source)
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn custom_paper_and_numeric_typography_match_direct_pdf_bytes() {
     let source = "# Custom paper\n\nA paragraph.\n\n| A | B |\n|---|---|\n| One | Two |";
     let args = args(

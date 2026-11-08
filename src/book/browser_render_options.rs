@@ -140,6 +140,7 @@ impl PdfSettings {
         options.pareto_line_breaking = candidate.pareto_line_breaking;
         options.optimal_pagination = candidate.optimal_pagination;
         options.strict_pagination = candidate.strict_pagination;
+        options.footnote_backlinks = candidate.footnote_backlinks;
         options.microtype = candidate.microtype;
         options.base_font_size = candidate.base_font_size;
         options.heading_scale = candidate.heading_scale;

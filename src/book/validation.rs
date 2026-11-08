@@ -529,8 +529,8 @@ fn navigation(doc: &Document) -> Navigation<'_> {
     nav
 }
 
-/// Emitted HTML note IDs, including collisions with headings. PDF book links
-/// use this inventory to translate a source anchor to its note definition;
+/// Emitted HTML note and citation IDs, including collisions with headings.
+/// PDF book links use this inventory to identify the original note definition;
 /// they must not treat an arbitrary `fn-` prefix as proof that a note exists.
 /// This reuses the publication walk without running link-finding admission or
 /// rejecting a render because unrelated links exceed the diagnostic budget.
@@ -538,7 +538,12 @@ pub(crate) fn footnote_anchors(doc: &Document) -> Vec<DocumentAnchor> {
     navigation(doc)
         .anchors
         .into_values()
-        .filter(|anchor| anchor.kind == AnchorKind::Footnote)
+        .filter(|anchor| {
+            matches!(
+                anchor.kind,
+                AnchorKind::Footnote | AnchorKind::FootnoteBackreference
+            )
+        })
         .collect()
 }
 

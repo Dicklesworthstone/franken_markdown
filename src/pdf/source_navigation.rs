@@ -37,6 +37,10 @@ pub(crate) struct SourceNavigation {
     /// These entries are not bookmarks and must not match a heading with the
     /// same spelling as the renderer's internal note namespace.
     pub notes: BTreeMap<String, Destination>,
+    /// First linked citations, keyed by the same prepared note IDs as `notes`.
+    /// The original body takes precedence over any note-to-note citation even
+    /// when page-bottom placement paints the latter on an earlier page.
+    pub note_references: BTreeMap<String, Destination>,
 }
 
 pub(crate) fn render(
@@ -85,6 +89,17 @@ pub(super) fn collect(doc: &Document, outlines: &[OutlineEntry]) -> SourceNaviga
             && outline.id.starts_with(crate::footnotes::PAGE_NOTE_PREFIX)
         {
             navigation.notes.insert(outline.id.clone(), destination);
+        }
+        if outline.level == 0
+            && outline.source_identity.is_none()
+            && let Some(number) = outline
+                .id
+                .strip_prefix(crate::footnotes::PAGE_NOTE_REFERENCE_PREFIX)
+        {
+            navigation.note_references.insert(
+                format!("{}{number}", crate::footnotes::PAGE_NOTE_PREFIX),
+                destination,
+            );
         }
     }
     navigation

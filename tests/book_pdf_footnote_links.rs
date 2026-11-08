@@ -257,3 +257,20 @@ fn included_definitions_keep_their_containing_chapter_scope() {
     assert_eq!(annotations[2], annotations[3]);
     assert_ne!(annotations[0], annotations[3]);
 }
+
+#[test]
+fn missing_unreferenced_and_ambiguous_citation_ids_do_not_capture_heading_targets() {
+    let renderer = book(&[(
+        "one.md",
+        "# fnref-1\n\nCited.[^n] [Ambiguous](#fnref-1) [Unreferenced](#fnref-2) [Missing](#fnref-99)\n\n## fnref-heading\n\n[Ordinary heading](#fnref-heading)\n\n[^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
+    )]);
+    let annotations = links(&renderer.render_pdf().unwrap());
+    assert_eq!(annotations.len(), 5);
+    assert!(annotations[0].is_some(), "the note citation remains linked");
+    assert_eq!(&annotations[1..4], &[None, None, None]);
+    assert!(
+        annotations[4].is_some(),
+        "a prefix alone does not reserve a heading ID"
+    );
+    assert_ne!(annotations[0], annotations[4]);
+}

@@ -145,7 +145,8 @@ fn render_plan_with(
         crate::validate_doc_pdfa_strict(&plan.document)?;
     }
     let profiled = crate::apply_profile(&plan.document, options.profile);
-    let prepared = crate::footnotes::for_pdf_paged(&profiled);
+    let prepared =
+        crate::footnotes::for_pdf_paged_with_backlinks(&profiled, options.footnote_backlinks);
     if plan.targets.is_empty() {
         return crate::pdf::render_with_emit(&prepared, options, settings, emit);
     }
@@ -159,11 +160,12 @@ fn render_plan_with(
     }
     let (bytes, navigation) =
         crate::pdf::source_navigation::render(&prepared, options, settings, emit)?;
-    let note_ids = if plan
-        .targets
-        .values()
-        .any(|target| matches!(target, Some(Target::Footnote(_))))
-    {
+    let note_ids = if plan.targets.values().any(|target| {
+        matches!(
+            target,
+            Some(Target::Footnote(_) | Target::FootnoteReference(_))
+        )
+    }) {
         crate::footnotes::page_note_ids(&profiled)
     } else {
         BTreeMap::new()
@@ -189,6 +191,10 @@ fn render_plan_with(
                     .get(id)
                     .and_then(|prepared| navigation.notes.get(prepared))
                     .copied(),
+                Some(Target::FootnoteReference(id)) => note_ids
+                    .get(id)
+                    .and_then(|prepared| navigation.note_references.get(prepared))
+                    .copied(),
                 None => None,
             };
             (uri.clone(), destination)
@@ -208,6 +214,8 @@ enum Target {
     Heading(usize),
     /// Original definition ID after chapter isolation, before note numbering.
     Footnote(String),
+    /// The first linked citation of the same chapter-isolated definition.
+    FootnoteReference(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -386,7 +394,9 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
                     LocalTarget::Start(chapter) => {
                         starts.insert(chapter);
                     }
-                    LocalTarget::Fragment(chapter, fragment) if fragment.starts_with("fn-") => {
+                    LocalTarget::Fragment(chapter, fragment)
+                        if fragment.starts_with("fn-") || fragment.starts_with("fnref-") =>
+                    {
                         // Inventory only chapters addressed through the HTML
                         // note-ID namespace. The inventory, not the prefix,
                         // decides whether an unambiguous note actually exists.
@@ -516,7 +526,14 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
                 } else {
                     anchor.title
                 };
-                map.insert(anchor.id, Target::Footnote(id));
+                let target = match anchor.kind {
+                    crate::book::validation::AnchorKind::Footnote => Target::Footnote(id),
+                    crate::book::validation::AnchorKind::FootnoteBackreference => {
+                        Target::FootnoteReference(id)
+                    }
+                    crate::book::validation::AnchorKind::Heading => continue,
+                };
+                map.insert(anchor.id, target);
             }
         }
         aliases.push(map);
@@ -672,7 +689,9 @@ mod tests {
             if let Some(target) = plan.targets.get(dest) {
                 out.push(match target {
                     Some(Target::Heading(ordinal)) => Some(*ordinal),
-                    Some(Target::Footnote(_)) => panic!("expected a heading target"),
+                    Some(Target::Footnote(_) | Target::FootnoteReference(_)) => {
+                        panic!("expected a heading target")
+                    }
                     None => None,
                 });
             }

@@ -494,6 +494,45 @@ fn typography_tokens_match_native_pdf_options_byte_for_byte() {
 }
 
 #[test]
+fn footnote_return_navigation_tokens_and_typed_options_match_native_pdf() {
+    let source = "A claim[^n], then a repeated citation[^n].\n\n[^n]: Supporting evidence.\n";
+    let mut token_options = WasmRenderOptions::default();
+    token_options
+        .apply_typography_tokens(Some("footnote-backlinks"))
+        .unwrap();
+    assert!(token_options.footnote_backlinks);
+    let typed_options = WasmRenderOptions {
+        footnote_backlinks: true,
+        ..WasmRenderOptions::default()
+    };
+    let expected = franken_markdown::render_pdf(
+        source,
+        &franken_markdown::PdfOptions {
+            footnote_backlinks: true,
+            ..franken_markdown::PdfOptions::default()
+        },
+    )
+    .unwrap();
+    for options in [token_options, typed_options] {
+        assert_eq!(
+            franken_markdown::wasm::render_pdf(source, &options)
+                .unwrap()
+                .bytes,
+            expected
+        );
+    }
+    let plain = franken_markdown::wasm::render_pdf(source, &WasmRenderOptions::default()).unwrap();
+    assert_ne!(
+        plain.bytes, expected,
+        "Return navigation must reach the actual emitter"
+    );
+    assert_eq!(
+        plain.bytes,
+        franken_markdown::render_pdf(source, &franken_markdown::PdfOptions::default()).unwrap()
+    );
+}
+
+#[test]
 fn wasm_cff_host_fonts_match_native_html_and_pdf_for_every_slot() {
     use franken_markdown::{FontEmbedding, HtmlFontFormat, HtmlOptions, PdfOptions};
     let source = "Regular café Ω. **Bold café Ω.** *Italic café Ω.* \

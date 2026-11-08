@@ -6,7 +6,7 @@
 //! not recursive expansion: every definition is emitted at most once.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{Block, Document, Inline};
 
@@ -20,12 +20,15 @@ use crate::ast::{Block, Document, Inline};
 /// visible as `[^id]`, never the misleading `[0]`. A document with no footnote
 /// syntax is borrowed, avoiding a whole-AST clone on the ordinary PDF path.
 pub(crate) fn for_pdf(doc: &Document) -> Cow<'_, Document> {
-    prepare(doc, false)
+    prepare(doc, false, false)
 }
 
 /// Prefix of the fragment a page-bottom note reference links to, and of the
 /// id its prepared definition carries (`fmd-fn-3` for note 3).
 pub(crate) const PAGE_NOTE_PREFIX: &str = "fmd-fn-";
+
+/// Private destination of a prepared note's first linked citation.
+pub(crate) const PAGE_NOTE_REFERENCE_PREFIX: &str = "fmd-fnref-";
 
 /// [`for_pdf`] for the PDF page builder's bottom-of-page notes. References
 /// become `#fmd-fn-N` links around the superscript numeral, and each note
@@ -35,7 +38,18 @@ pub(crate) const PAGE_NOTE_PREFIX: &str = "fmd-fn-";
 /// note it cannot place there (unreferenced, referenced only from another
 /// note, or too tall) in a trailing Notes section exactly like [`for_pdf`].
 pub(crate) fn for_pdf_paged(doc: &Document) -> Cow<'_, Document> {
-    prepare(doc, true)
+    prepare(doc, true, false)
+}
+
+/// Page notes with optional return links on their existing superscript labels.
+/// The writer resolves these after final pagination; preparation cannot know
+/// the citing page or whether a label has a rendered citation to return to.
+pub(crate) fn for_pdf_paged_with_backlinks(doc: &Document, backlinks: bool) -> Cow<'_, Document> {
+    if backlinks {
+        prepare(doc, true, true)
+    } else {
+        for_pdf_paged(doc)
+    }
 }
 
 /// Original definition ID to the ID carried by its prepared page note. Book
@@ -69,16 +83,18 @@ pub(crate) fn page_note_ids(doc: &Document) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn prepare(doc: &Document, paged: bool) -> Cow<'_, Document> {
+fn prepare(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Document> {
     // Paged output cannot pass markup through: lower the safe HTML subset to
     // native nodes first (idempotent, borrowed when there is no raw HTML).
     match crate::safe_html::lower(doc) {
-        Cow::Borrowed(doc) => endnotes_for_pdf(doc, paged),
-        Cow::Owned(lowered) => Cow::Owned(endnotes_for_pdf(&lowered, paged).into_owned()),
+        Cow::Borrowed(doc) => endnotes_for_pdf(doc, paged, backlinks),
+        Cow::Owned(lowered) => {
+            Cow::Owned(endnotes_for_pdf(&lowered, paged, backlinks).into_owned())
+        }
     }
 }
 
-fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
+fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Document> {
     let mut notes = Notes::default();
     notes.collect(&doc.blocks);
     if notes.definitions.is_empty() && !notes.has_reference {
@@ -116,15 +132,44 @@ fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
         }
     }
     if paged {
-        for &index in &numbering.order {
-            let number = numbering.numbers[index];
-            let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
+        let prepared_notes: Vec<_> = numbering
+            .order
+            .iter()
+            .map(|&index| {
+                (
+                    numbering.numbers[index],
+                    rewrite_blocks(notes.definitions[index], &notes, &numbering),
+                )
+            })
+            .collect();
+        let mut references = BTreeSet::new();
+        if backlinks {
+            references.extend(page_note_references(&blocks));
+            for (_, body) in &prepared_notes {
+                references.extend(page_note_references(body));
+            }
+        }
+        for (number, mut body) in prepared_notes {
+            let backlinks =
+                backlinks && u32::try_from(number).is_ok_and(|number| references.contains(&number));
             let label = superscript(number);
             match body.first_mut() {
                 Some(Block::Paragraph(inlines)) if crate::toc::marker_depth(inlines).is_none() => {
-                    inlines.insert(0, Inline::Text(format!("{label} ")));
+                    if backlinks {
+                        inlines.insert(0, Inline::Text(" ".to_string()));
+                        inlines.insert(0, page_note_backlink(number, label));
+                    } else {
+                        inlines.insert(0, Inline::Text(format!("{label} ")));
+                    }
                 }
-                _ => body.insert(0, Block::Paragraph(vec![Inline::Text(label)])),
+                _ => body.insert(
+                    0,
+                    Block::Paragraph(vec![if backlinks {
+                        page_note_backlink(number, label)
+                    } else {
+                        Inline::Text(label)
+                    }]),
+                ),
             }
             blocks.push(Block::FootnoteDefinition {
                 id: format!("{PAGE_NOTE_PREFIX}{number}"),
@@ -133,6 +178,73 @@ fn endnotes_for_pdf(doc: &Document, paged: bool) -> Cow<'_, Document> {
         }
     }
     Cow::Owned(Document { blocks })
+}
+
+fn page_note_backlink(number: usize, label: String) -> Inline {
+    Inline::Link {
+        dest: format!("#{PAGE_NOTE_REFERENCE_PREFIX}{number}"),
+        title: None,
+        content: vec![Inline::Text(label)],
+    }
+}
+
+/// Prepared note links that can supply return destinations. Nested note marks
+/// are already plain text, so an enclosing ordinary link cannot manufacture a
+/// return target. The anchor audit uses the same inventory as label preparation.
+pub(crate) fn page_note_references(blocks: &[Block]) -> BTreeSet<u32> {
+    fn inlines(items: &[Inline], references: &mut BTreeSet<u32>) {
+        for inline in items {
+            match inline {
+                Inline::Link { dest, content, .. } if !content.is_empty() => {
+                    if let Some(number) = dest
+                        .strip_prefix('#')
+                        .and_then(crate::anchors::decode_fragment)
+                        .and_then(|id| id.strip_prefix(PAGE_NOTE_PREFIX)?.parse::<u32>().ok())
+                        .filter(|&number| number != 0 && number != u32::MAX)
+                    {
+                        references.insert(number);
+                    }
+                }
+                Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
+                    inlines(inner, references);
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk(blocks: &[Block], references: &mut BTreeSet<u32>) {
+        for block in blocks {
+            match block {
+                Block::Paragraph(items) | Block::Heading { inlines: items, .. } => {
+                    inlines(items, references)
+                }
+                Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
+                    walk(inner, references)
+                }
+                Block::List(list) => {
+                    for item in &list.items {
+                        walk(&item.blocks, references);
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in table.head.iter().chain(table.rows.iter().flatten()) {
+                        inlines(cell, references);
+                    }
+                }
+                Block::DefinitionList(items) => {
+                    for item in items {
+                        for content in item.terms.iter().chain(&item.definitions) {
+                            inlines(content, references);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut references = BTreeSet::new();
+    walk(blocks, &mut references);
+    references
 }
 
 fn number_notes(doc: &Document, notes: &Notes<'_>) -> Numbering {
@@ -590,7 +702,7 @@ mod tests {
         let original = doc.clone();
         // Endnote rewriting alone must keep every block, raw HTML included;
         // `for_pdf` additionally lowers that HTML (see `safe_html`).
-        let result = endnotes_for_pdf(&doc, false);
+        let result = endnotes_for_pdf(&doc, false, false);
         assert_eq!(result.blocks[2], paragraph("¹"));
         assert_eq!(&result.blocks[3..], rich.as_slice());
         let prepared = for_pdf(&doc);
@@ -676,6 +788,73 @@ mod tests {
             result.blocks[3],
             Block::Paragraph(vec![text("² "), text("Unreferenced evidence")])
         );
+    }
+
+    #[test]
+    fn page_note_return_labels_require_a_real_linked_citation() {
+        let doc = crate::parse_markdown(
+            "Claim[^one]. [Ordinary link[^hidden]](https://example.com)\n\n[^one]: First cites another[^two].\n\n[^two]: Second note.\n\n[^hidden]: Nested reference.\n\n[^unused]: Unreferenced note.\n",
+        );
+        let original = doc.clone();
+        let ids = page_note_ids(&doc);
+        let prepared = for_pdf_paged_with_backlinks(&doc, true);
+        let ordinary = for_pdf_paged(&doc);
+        for label in ["one", "two", "hidden", "unused"] {
+            let id = &ids[label];
+            let blocks = prepared
+                .blocks
+                .iter()
+                .find_map(|block| match block {
+                    Block::FootnoteDefinition { id: actual, blocks } if actual == id => {
+                        Some(blocks)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let Block::Paragraph(inlines) = &blocks[0] else {
+                panic!("numbered paragraph")
+            };
+            if matches!(label, "one" | "two") {
+                let Inline::Link { dest, .. } = &inlines[0] else {
+                    panic!("linked return label")
+                };
+                assert_eq!(
+                    dest,
+                    &format!(
+                        "#{PAGE_NOTE_REFERENCE_PREFIX}{}",
+                        id.strip_prefix(PAGE_NOTE_PREFIX).unwrap()
+                    )
+                );
+            } else {
+                assert!(
+                    matches!(&inlines[0], Inline::Text(_)),
+                    "{label} has no rendered citation"
+                );
+            }
+            let ordinary_blocks = ordinary
+                .blocks
+                .iter()
+                .find_map(|block| match block {
+                    Block::FootnoteDefinition { id: actual, blocks } if actual == id => {
+                        Some(blocks)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let Block::Paragraph(ordinary_inlines) = &ordinary_blocks[0] else {
+                panic!("ordinary label")
+            };
+            assert_eq!(
+                crate::html::inlines_to_plain(inlines),
+                crate::html::inlines_to_plain(ordinary_inlines)
+            );
+            assert_eq!(&blocks[1..], &ordinary_blocks[1..]);
+        }
+        assert_eq!(doc, original);
+        assert!(matches!(
+            for_pdf_paged_with_backlinks(&prepared, true),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]

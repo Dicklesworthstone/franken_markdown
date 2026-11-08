@@ -3791,6 +3791,18 @@ fn seg_page_note(seg: &Seg) -> Option<u32> {
     }
 }
 
+/// Both directions of note navigation keep the original superscript paint.
+fn seg_is_note_navigation(seg: &Seg) -> bool {
+    seg_page_note(seg).is_some()
+        || matches!(
+            &seg.link,
+            Some(LinkTarget::Fragment(id))
+                if id.strip_prefix(crate::footnotes::PAGE_NOTE_REFERENCE_PREFIX)
+                    .and_then(|number| number.parse::<u32>().ok())
+                    .is_some_and(|number| number != 0 && number != NOTE_SEPARATOR)
+        )
+}
+
 /// Footnote notes: page-bottom placement for documents prepared by
 /// `footnotes::for_pdf_paged`, the trailing notes section otherwise.
 fn layout_pdf_notes(blocks: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
@@ -3915,7 +3927,7 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
 /// A note mark reads as part of the text, not as a blue link.
 fn finish_page_note_marks(out: &mut [Line]) {
     for seg in out.iter_mut().flat_map(|line| &mut line.segs) {
-        if seg_page_note(seg).is_some() {
+        if seg_is_note_navigation(seg) {
             seg.fill = Fill::Black;
         }
     }
@@ -22950,10 +22962,11 @@ struct RenderScratch {
     inline_link_runs: BTreeMap<u32, LinkRun>,
     table_link_runs: BTreeMap<(u32, u32, u32), LinkRun>,
     table_header_link_runs: BTreeMap<(u32, usize, usize), u64>,
+    first_note_reference_lines: BTreeMap<u32, usize>,
 }
 
 impl RenderScratch {
-    fn with_capacity(page_count: usize, heading_count: usize) -> Self {
+    fn with_capacity(page_count: usize, heading_count: usize, lines: &[Line]) -> Self {
         Self {
             pages: Vec::with_capacity(page_count.max(1)),
             outlines: Vec::with_capacity(heading_count),
@@ -22962,8 +22975,53 @@ impl RenderScratch {
             inline_link_runs: BTreeMap::new(),
             table_link_runs: BTreeMap::new(),
             table_header_link_runs: BTreeMap::new(),
+            first_note_reference_lines: first_note_reference_lines(lines),
         }
     }
+}
+
+/// Choose each citation in logical order before page-note placement changes
+/// paint order. Body citations win; note-only references follow note numbering.
+/// Store immutable final-line identity, never an estimated page or position.
+/// Repeated table headers reuse that identity, so only their first paint binds.
+fn first_note_reference_lines(lines: &[Line]) -> BTreeMap<u32, usize> {
+    let notes: BTreeSet<_> = lines
+        .iter()
+        .flat_map(|line| [line.flow.note, line.flow.note_destination])
+        .filter(|&number| number != 0 && number != NOTE_SEPARATOR)
+        .collect();
+    if notes.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut first = BTreeMap::<u32, (u32, usize)>::new();
+    let mut origin = 0;
+    for (index, line) in lines.iter().enumerate() {
+        if line.flow.note != 0 {
+            origin = line.flow.note;
+        } else if line.flow.note_destination != 0 {
+            origin = line.flow.note_destination;
+        }
+        if origin == NOTE_SEPARATOR {
+            continue;
+        }
+        for number in line
+            .segs
+            .iter()
+            .filter(|seg| seg.width > 0.0)
+            .filter_map(seg_page_note)
+            .filter(|number| notes.contains(number))
+        {
+            let candidate = (origin, index);
+            first
+                .entry(number)
+                .and_modify(|previous| *previous = (*previous).min(candidate))
+                .or_insert(candidate);
+        }
+    }
+    first
+        .into_iter()
+        .map(|(number, (_, index))| (number, std::ptr::from_ref(&lines[index]) as usize))
+        .collect()
 }
 
 #[derive(Default)]
@@ -23420,7 +23478,7 @@ fn serialize_pages_monolithic(
         "mode=monolithic",
     );
     let stream_generation_started = profiler.checkpoint();
-    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len());
+    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len(), lines);
     let mut page_buffer_reserved_bytes = 0usize;
     for (page_idx, placed) in pages_placed.iter().enumerate() {
         let (content, reserved) = generate_page_content(
@@ -23470,7 +23528,7 @@ fn serialize_pages_chunked(
     profiler: &mut PdfProfiler,
 ) -> Result<SerializedPages> {
     let stream_generation_started = profiler.checkpoint();
-    let mut scratch = RenderScratch::with_capacity(1, heading_meta.len());
+    let mut scratch = RenderScratch::with_capacity(1, heading_meta.len(), lines);
     let mut compressed = Vec::new();
     let mut start = 0usize;
     let mut emitted_any = false;
@@ -23814,10 +23872,29 @@ fn generate_page_content(
         };
         if note_destination != 0 && note_destination != NOTE_SEPARATOR {
             let id = format!("{}{}", crate::footnotes::PAGE_NOTE_PREFIX, note_destination);
-            if !scratch.outlines.iter().any(|entry| entry.id == id) {
+            if !scratch
+                .outlines
+                .iter()
+                .any(|entry| entry.level == 0 && entry.id == id)
+            {
                 scratch.outlines.push(OutlineEntry {
                     source_identity: None,
                     id,
+                    title: String::new(),
+                    level: 0,
+                    page_index: page_idx,
+                    y: (y + line.size * 0.9).min(page.top_y()),
+                });
+            }
+        }
+        for number in line.segs.iter().filter_map(seg_page_note) {
+            if scratch.first_note_reference_lines.get(&number)
+                == Some(&(std::ptr::from_ref(line) as usize))
+            {
+                scratch.first_note_reference_lines.remove(&number);
+                scratch.outlines.push(OutlineEntry {
+                    source_identity: None,
+                    id: format!("{}{number}", crate::footnotes::PAGE_NOTE_REFERENCE_PREFIX),
                     title: String::new(),
                     level: 0,
                     page_index: page_idx,
@@ -30232,9 +30309,9 @@ fn draw_seg_decorations(
         append_rgb_stroke_line_operator(body, (r, g, b), sw, seg.x, sy, seg.x + seg.width);
     }
     if let Some(target) = &seg.link {
-        // A footnote mark stays a plain superscript; only its click target
-        // (the note) is added.
-        if seg_page_note(seg).is_none() {
+        // A note mark or return label stays a plain superscript; only its
+        // click target is added.
+        if !seg_is_note_navigation(seg) {
             let (r, g, b) = palette.link;
             let (fr, fg2, fb) = palette.fg;
             let uy = y - size * 0.12;
@@ -33445,8 +33522,14 @@ fn build_pdf(
     let outline_count = bookmarks.len();
     let outline_tree = navigation::OutlineTree::new(bookmarks.iter().map(|entry| entry.level));
     let dest_ids: BTreeSet<&str> = outlines.iter().map(|o| o.id.as_str()).collect();
-    let dest_by_id: BTreeMap<&str, &OutlineEntry> =
+    let mut dest_by_id: BTreeMap<&str, &OutlineEntry> =
         outlines.iter().map(|o| (o.id.as_str(), o)).collect();
+    // Internal note links must not be redirected by a heading whose generated
+    // slug happens to use the note namespace. Book heading links use immutable
+    // source identity and retain the heading's own destination independently.
+    for outline in outlines.iter().filter(|outline| outline.level == 0) {
+        dest_by_id.insert(outline.id.as_str(), outline);
+    }
 
     let mut annot_starts = Vec::with_capacity(p);
     let mut annot_counts = Vec::with_capacity(p);
@@ -44616,32 +44699,47 @@ fn audit_inline_fragment_links(
 pub fn audit_anchors(doc: &Document) -> AnchorAudit {
     let mut state = HeadingIdState::default();
     let mut ids: BTreeSet<String> = BTreeSet::new();
+    let mut notes = BTreeSet::new();
 
     // Pass 1: assign deterministic ids to every heading (container-aware).
-    fn collect_ids(blocks: &[Block], state: &mut HeadingIdState, ids: &mut BTreeSet<String>) {
+    fn collect_ids(
+        blocks: &[Block],
+        state: &mut HeadingIdState,
+        ids: &mut BTreeSet<String>,
+        notes: &mut BTreeSet<u32>,
+    ) {
         for block in blocks {
             match block {
                 Block::Heading { inlines, .. } => {
                     ids.insert(state.heading_id_from_slug(crate::anchors::heading_slug(inlines)));
                 }
-                Block::BlockQuote(inner) => collect_ids(inner, state, ids),
+                Block::BlockQuote(inner) => collect_ids(inner, state, ids, notes),
                 Block::List(list) => {
                     for item in &list.items {
-                        collect_ids(&item.blocks, state, ids);
+                        collect_ids(&item.blocks, state, ids, notes);
                     }
                 }
                 Block::FootnoteDefinition { id, blocks: inner } => {
                     // A prepared page note is its references' link target.
-                    if page_note_number(id).is_some() {
+                    if let Some(number) = page_note_number(id) {
                         ids.insert(id.clone());
+                        notes.insert(number);
                     }
-                    collect_ids(inner, state, ids);
+                    collect_ids(inner, state, ids, notes);
                 }
                 _ => {}
             }
         }
     }
-    collect_ids(&doc.blocks, &mut state, &mut ids);
+    collect_ids(&doc.blocks, &mut state, &mut ids, &mut notes);
+    for number in crate::footnotes::page_note_references(&doc.blocks) {
+        if notes.contains(&number) {
+            ids.insert(format!(
+                "{}{number}",
+                crate::footnotes::PAGE_NOTE_REFERENCE_PREFIX
+            ));
+        }
+    }
 
     // Pass 2: audit every inline link target against the assigned ids.
     // (Links inside headings are audited here too; their text was already

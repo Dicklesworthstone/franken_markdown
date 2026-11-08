@@ -971,6 +971,269 @@ fn run_containing<'a>(runs: &'a [PaintedRun], text: &str) -> &'a PaintedRun {
         .unwrap_or_else(|| panic!("missing painted text {text}"))
 }
 
+fn note_label<'a>(runs: &'a [PaintedRun], body: &str, numeral: &str) -> &'a PaintedRun {
+    let body = run_containing(runs, body);
+    runs.iter()
+        .find(|run| {
+            run.page == body.page
+                && (run.y - body.y).abs() < 0.01
+                && run.x < body.x
+                && run.text.trim() == numeral
+        })
+        .unwrap_or_else(|| panic!("missing note label {numeral} before {}", body.text))
+}
+
+fn assert_destination_at_run(destination: Destination, run: &PaintedRun) {
+    assert_eq!(
+        destination.page, run.page,
+        "destination page for {}",
+        run.text
+    );
+    assert!(
+        (destination.y - (run.y + run.size * 0.9)).abs() < 0.02,
+        "destination {destination:?} must identify the painted citation {} at {}",
+        run.text,
+        run.y,
+    );
+}
+
+#[test]
+fn footnote_backlinks_choose_first_body_citations_before_earlier_painted_note_citations() {
+    let source = "# Study\n\nFIRSTA[^a].\n\nFIRSTB[^b] and REPEATA[^a].\n\n[^a]: ANOTE cites NESTEDB[^b].\n\n[^b]: BNOTE.\n\n[^orphan]: ORPHAN.\n";
+    let mut document = parse_markdown(source);
+    document.blocks.insert(2, Block::PageBreak);
+    for optimal_pagination in [false, true] {
+        for toc in [false, true] {
+            let options = PdfOptions {
+                footnote_backlinks: true,
+                optimal_pagination,
+                toc,
+                metadata_epoch_seconds: Some(0),
+                ..Default::default()
+            };
+            let bytes = render_pdf_document(&document, &options).unwrap();
+            let objects = Objects::new(&bytes);
+            let runs = painted_runs(&objects);
+            let first_a = run_containing(&runs, "FIRSTA");
+            let first_b = run_containing(&runs, "FIRSTB");
+            let nested_b = run_containing(&runs, "NESTEDB");
+            assert_ne!(first_a.page, first_b.page, "the fixture must cross pages");
+            assert_eq!(nested_b.page, first_a.page, "the note is painted earlier");
+            assert_destination_at_run(
+                link_at_run(&objects, note_label(&runs, "ANOTE", "¹")),
+                first_a,
+            );
+            assert_destination_at_run(
+                link_at_run(&objects, note_label(&runs, "BNOTE", "²")),
+                first_b,
+            );
+            let (_, bookmarks) = outline(&objects);
+            assert_eq!(
+                bookmarks
+                    .iter()
+                    .map(|entry| entry.title.as_str())
+                    .collect::<Vec<_>>(),
+                ["Study", "Notes"],
+                "citation destinations never become bookmarks",
+            );
+            let ordinary = PdfOptions {
+                footnote_backlinks: false,
+                ..options.clone()
+            };
+            let baseline = franken_markdown::verify::verify_pdf(&document, &ordinary).unwrap();
+            let linked = franken_markdown::verify::verify_pdf(&document, &options).unwrap();
+            assert_eq!(
+                linked.pages, baseline.pages,
+                "return links preserve all layout geometry"
+            );
+            assert!(
+                linked.anchors_unresolved.is_empty(),
+                "{:?}",
+                linked.anchors_unresolved
+            );
+            assert_eq!(bytes, render_pdf_document(&document, &options).unwrap());
+            assert_eq!(
+                bytes,
+                render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic())
+                    .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+fn footnote_backlinks_follow_note_only_cycles_through_multipage_endnote_fallback() {
+    let mut source = String::from(
+        "# Evidence\n\nBODYREF[^large].\n\n[^large]: LARGENOTE cites NESTEDREF[^nested].\n\n",
+    );
+    for index in 0..70 {
+        source.push_str(&format!(
+            "    Evidence {index} retains its complete explanatory paragraph.\n\n"
+        ));
+    }
+    source.push_str("[^nested]: NESTEDNOTE cycles to the first.[^large]\n\n[^orphan]: ORPHAN.\n");
+    let document = parse_markdown(&source);
+    let options = PdfOptions {
+        footnote_backlinks: true,
+        ..Default::default()
+    };
+    for settings in [PdfASettings::OFF, PdfASettings::a2b_strict()] {
+        let bytes =
+            franken_markdown::render_pdf_document_pdfa(&document, &options, settings).unwrap();
+        let objects = Objects::new(&bytes);
+        let runs = painted_runs(&objects);
+        assert!(objects.pages().len() >= 3, "the full note must span pages");
+        assert_destination_at_run(
+            link_at_run(&objects, note_label(&runs, "LARGENOTE", "¹")),
+            run_containing(&runs, "BODYREF"),
+        );
+        assert_destination_at_run(
+            link_at_run(&objects, note_label(&runs, "NESTEDNOTE", "²")),
+            run_containing(&runs, "NESTEDREF"),
+        );
+        assert!(
+            runs.iter().any(|run| run.text.contains("69")),
+            "retain the full note body"
+        );
+        assert_eq!(
+            annotation_destinations(&objects).len(),
+            5,
+            "three citations and two return links"
+        );
+        let baseline =
+            franken_markdown::verify::verify_pdf(&document, &PdfOptions::default()).unwrap();
+        let linked = franken_markdown::verify::verify_pdf(&document, &options).unwrap();
+        assert_eq!(linked.pages, baseline.pages);
+        assert!(linked.anchors_unresolved.is_empty());
+    }
+}
+
+#[test]
+fn footnote_backlink_in_a_repeated_table_header_returns_to_its_first_occurrence() {
+    let mut source = String::from("# Data\n\n| HEADERREF[^n] | Value |\n| --- | --- |\n");
+    for index in 0..95 {
+        source.push_str(&format!("| Row {index} | {index} |\n"));
+    }
+    source.push_str("\n[^n]: TABLENOTE.\n");
+    for optimal_pagination in [false, true] {
+        let options = PdfOptions {
+            footnote_backlinks: true,
+            optimal_pagination,
+            ..Default::default()
+        };
+        let bytes = render_pdf(&source, &options).unwrap();
+        let objects = Objects::new(&bytes);
+        let runs = painted_runs(&objects);
+        let headers: Vec<_> = runs
+            .iter()
+            .filter(|run| run.text.contains("HEADERREF"))
+            .collect();
+        assert!(headers.len() >= 3, "the header must actually repeat");
+        let label = note_label(&runs, "TABLENOTE", "¹");
+        assert_destination_at_run(link_at_run(&objects, label), headers[0]);
+        assert_eq!(label.page, headers[0].page);
+        let note = run_containing(&runs, "TABLENOTE");
+        let targets = annotation_destinations(&objects);
+        assert_eq!(targets.len(), headers.len() + 1);
+        for target in targets.iter().filter(|target| target.y < headers[0].y) {
+            assert_destination_at_run(*target, note);
+        }
+    }
+}
+
+#[test]
+fn book_footnote_reference_fragments_bind_to_citations_with_or_without_return_labels() {
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "one.md".into(),
+            source: "# One\n\nFIRSTCITE[^same].\n\nOTHERCITE[^β].\n\n[Local](#fnref-1) [Next](two.md#fnref-1) [Other](#fnref-2)\n\n[^β]: OTHERNOTE.\n\n[^same]: FIRSTNOTE.\n".into(),
+        },
+        BookInput {
+            path: "two.md".into(),
+            source: "# Two\n\nSECONDCITE[^same].\n\n[Return](one.md#fnref-1)\n\n[^same]: SECONDNOTE.\n".into(),
+        },
+    ]).unwrap();
+    for footnote_backlinks in [false, true] {
+        for toc in [false, true] {
+            let options = PdfOptions {
+                footnote_backlinks,
+                toc,
+                ..Default::default()
+            };
+            for settings in [PdfASettings::OFF, PdfASettings::a2b_strict()] {
+                let bytes = book.render_pdf_with_options(&options, settings).unwrap();
+                let objects = Objects::new(&bytes);
+                let runs = painted_runs(&objects);
+                for (label, citation) in [
+                    ("Local", "FIRSTCITE"),
+                    ("Next", "SECONDCITE"),
+                    ("Other", "OTHERCITE"),
+                    ("Return", "FIRSTCITE"),
+                ] {
+                    assert_destination_at_run(
+                        link_at_run(&objects, run_containing(&runs, label)),
+                        run_containing(&runs, citation),
+                    );
+                }
+                assert_ne!(
+                    run_containing(&runs, "FIRSTCITE").page,
+                    run_containing(&runs, "SECONDCITE").page
+                );
+                if footnote_backlinks {
+                    for (body, numeral, citation) in [
+                        ("FIRSTNOTE", "¹", "FIRSTCITE"),
+                        ("OTHERNOTE", "²", "OTHERCITE"),
+                        ("SECONDNOTE", "³", "SECONDCITE"),
+                    ] {
+                        assert_destination_at_run(
+                            link_at_run(&objects, note_label(&runs, body, numeral)),
+                            run_containing(&runs, citation),
+                        );
+                    }
+                }
+                assert_eq!(
+                    bytes,
+                    book.render_pdf_with_options(&options, settings).unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn heading_names_cannot_manufacture_footnote_return_destinations() {
+    let base = "# fmd fn 9\n\n[Heading](#fmd-fn-9) [Missing](#fmd-fnref-9)\n";
+    for with_note in [false, true] {
+        let source = if with_note {
+            format!("{base}\nREALCITE[^n].\n\n[^n]: REALNOTE.\n")
+        } else {
+            base.to_string()
+        };
+        let document = parse_markdown(&source);
+        for footnote_backlinks in [false, true] {
+            let options = PdfOptions {
+                footnote_backlinks,
+                ..Default::default()
+            };
+            let report = franken_markdown::verify::verify_pdf(&document, &options).unwrap();
+            assert_eq!(report.anchors_unresolved, ["fmd-fnref-9"]);
+            let bytes = render_pdf_document(&document, &options).unwrap();
+            let objects = Objects::new(&bytes);
+            let runs = painted_runs(&objects);
+            let (_, headings) = outline(&objects);
+            assert_eq!(
+                link_at_run(&objects, run_containing(&runs, "Heading")),
+                headings[0].destination
+            );
+            assert_eq!(
+                annotation_destinations(&objects).len(),
+                1 + usize::from(with_note) * (1 + usize::from(footnote_backlinks)),
+                "only a real note can own a citation destination",
+            );
+        }
+    }
+}
+
 #[test]
 fn book_navigation_preserves_page_bottom_notes_and_chapter_local_citations() {
     let mut note_positions = Vec::new();

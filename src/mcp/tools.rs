@@ -159,6 +159,11 @@ const PDF_FIELDS: &[Field] = &[
         "Globally optimal (Plass) PDF page breaking",
     ),
     (
+        "footnoteBacklinks",
+        "boolean",
+        "Link PDF note numbers back to their first citation (default false)",
+    ),
+    (
         "strictPagination",
         "boolean",
         "Require exact final page breaking; implies optimalPagination and refuses planner fallback",
@@ -684,6 +689,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
             pareto_line_breaking: boolean(args, "typographyPareto"),
             optimal_pagination: boolean(args, "optimalPagination") || strict_pagination,
             strict_pagination,
+            footnote_backlinks: boolean(args, "footnoteBacklinks"),
             code_line_numbers: boolean(args, "codeLineNumbers"),
             page_numbers: boolean(args, "pageNumbers"),
             running: running::parse(args.get("running"))?,

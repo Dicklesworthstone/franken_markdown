@@ -48,6 +48,9 @@ pub(super) struct PublishingArgs {
     /// Implies optimal pagination; accepts =false to override config.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_strict_pagination: Option<bool>,
+    /// Link PDF note numbers back to their first citation; accepts =false.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pdf_footnote_backlinks: Option<bool>,
     /// Fit the assembled PDF, including contents and chapter breaks, to N pages.
     #[arg(long, visible_alias = "target-pages", value_name = "PAGES")]
     pub(super) fit_to_pages: Option<usize>,
@@ -158,6 +161,7 @@ pub(super) fn prepare(
             || args.typography_pareto.is_some()
             || args.pdf_optimal_pagination.is_some()
             || args.pdf_strict_pagination.is_some()
+            || args.pdf_footnote_backlinks.is_some()
             || args.fit_to_pages.is_some()
             || args.pdf_base_font_size.is_some()
             || args.pdf_heading_scale.is_some()
@@ -247,6 +251,10 @@ pub(super) fn prepare(
         strict_pagination: args
             .pdf_strict_pagination
             .or(defaults.pdf_strict_pagination)
+            .unwrap_or(false),
+        footnote_backlinks: args
+            .pdf_footnote_backlinks
+            .or(defaults.pdf_footnote_backlinks)
             .unwrap_or(false),
         page_numbers: args
             .pdf_page_numbers
@@ -390,6 +398,7 @@ impl Publishing {
         options.pareto_line_breaking = self.pdf.pareto_line_breaking;
         options.optimal_pagination = self.pdf.optimal_pagination;
         options.strict_pagination = self.pdf.strict_pagination;
+        options.footnote_backlinks = self.pdf.footnote_backlinks;
         options.page_numbers = self.pdf.page_numbers;
         options.fit_to_pages = self.pdf.fit_to_pages;
         options.base_font_size = self.pdf.base_font_size.or(options.base_font_size);

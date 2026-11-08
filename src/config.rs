@@ -39,6 +39,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "font_embedding",
     "microtype",
     "pdf_page_numbers",
+    "pdf_footnote_backlinks",
     "typography_homogeneous",
     "typography_antiriver",
     "typography_pareto",
@@ -63,6 +64,8 @@ pub struct RenderDefaults {
     /// `off`, `protrusion` or `expansion`.
     pub microtype: Option<String>,
     pub pdf_page_numbers: Option<bool>,
+    /// Link PDF note numbers back to their first citation.
+    pub pdf_footnote_backlinks: Option<bool>,
     pub typography_homogeneous: Option<bool>,
     pub typography_antiriver: Option<bool>,
     pub typography_pareto: Option<bool>,
@@ -78,6 +81,7 @@ impl RenderDefaults {
         Some(match key {
             "toc" => &mut self.toc,
             "pdf_page_numbers" => &mut self.pdf_page_numbers,
+            "pdf_footnote_backlinks" => &mut self.pdf_footnote_backlinks,
             "typography_homogeneous" => &mut self.typography_homogeneous,
             "typography_antiriver" => &mut self.typography_antiriver,
             "typography_pareto" => &mut self.typography_pareto,
@@ -99,6 +103,7 @@ impl RenderDefaults {
             ("font_embedding", self.font_embedding.clone()),
             ("microtype", self.microtype.clone()),
             ("pdf_page_numbers", flag(self.pdf_page_numbers)),
+            ("pdf_footnote_backlinks", flag(self.pdf_footnote_backlinks)),
             ("typography_homogeneous", flag(self.typography_homogeneous)),
             ("typography_antiriver", flag(self.typography_antiriver)),
             ("typography_pareto", flag(self.typography_pareto)),
@@ -191,6 +196,7 @@ impl RenderDefaults {
                 "pdf_baseline_grid_pt" => "0",
                 "toc"
                 | "pdf_page_numbers"
+                | "pdf_footnote_backlinks"
                 | "typography_homogeneous"
                 | "typography_antiriver"
                 | "typography_pareto"

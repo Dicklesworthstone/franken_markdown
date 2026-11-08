@@ -789,6 +789,12 @@ pub struct PdfOptions {
     pub code_line_numbers: bool,
     /// Render running page numbers in the bottom margin of PDF pages.
     pub page_numbers: bool,
+    /// Link each footnote's superscript label back to its first linked citation.
+    ///
+    /// Uses the citation's actual final page and position, including citations
+    /// inside notes and notes moved to the trailing Notes section. Unreferenced
+    /// notes have no return destination. Default false preserves existing output.
+    pub footnote_backlinks: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///
     /// Scales the whole typographic hierarchy proportionally when no explicit
@@ -1252,10 +1258,12 @@ fn transform_footnotes_for_pdf<'a>(
     opts: &PdfOptions,
 ) -> std::borrow::Cow<'a, Document> {
     match apply_profile(doc, opts.profile) {
-        std::borrow::Cow::Borrowed(doc) => footnotes::for_pdf_paged(doc),
-        std::borrow::Cow::Owned(doc) => {
-            std::borrow::Cow::Owned(footnotes::for_pdf_paged(&doc).into_owned())
+        std::borrow::Cow::Borrowed(doc) => {
+            footnotes::for_pdf_paged_with_backlinks(doc, opts.footnote_backlinks)
         }
+        std::borrow::Cow::Owned(doc) => std::borrow::Cow::Owned(
+            footnotes::for_pdf_paged_with_backlinks(&doc, opts.footnote_backlinks).into_owned(),
+        ),
     }
 }
 

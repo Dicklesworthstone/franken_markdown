@@ -2491,7 +2491,22 @@ impl<'s> Parser<'s> {
                     color_span.union(body_span),
                 ))
             }
-            Cmd::Begin => self.environment(span, true),
+            Cmd::Begin => {
+                let node = self.environment(span, true)?;
+                if self.restricted_text
+                    && let NodeKind::Environment { name, .. } = &node.kind
+                    && node.is_text_display()
+                {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "env:{name} is a display environment; \
+                             it cannot appear inside boxed text"
+                        ),
+                        at: span.start,
+                    });
+                }
+                Ok(node)
+            }
             Cmd::End => {
                 let (env_name, _) = self.raw_group("environment name after \\end")?;
                 Err(MathError::Malformed {

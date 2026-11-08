@@ -3806,6 +3806,53 @@ fn consecutive_displays_and_boxed_text_follow_tex_modes() {
 }
 
 #[test]
+fn boxed_text_rejects_display_environments() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    for environment in ["equation*", "gather*", "align*"] {
+        let display = format!(r"\begin{{{environment}}}x\end{{{environment}}}");
+        let check = |source: &str, result: Result<Layout, fmd_math::MathError>| {
+            let error = result.expect_err("a display cannot escape a restricted text box");
+            let expected_at = source.find(r"\begin").unwrap();
+            assert!(
+                matches!(&error, fmd_math::MathError::Malformed { what, at }
+                    if *at == expected_at
+                        && what.contains(&format!("env:{environment}"))
+                        && what.contains("boxed text")),
+                "{source}: {error:?}"
+            );
+        };
+        for command in ["underline", "text", "cancel"] {
+            let source = format!(r"Before \{command}{{inside {display} after}} After");
+            check(&source, e.typeset_text_with_macros(&source, &pack));
+        }
+        let nested = format!(r"Before \underline{{\textit{{inside {display} after}}}} After");
+        check(&nested, e.typeset_text_with_macros(&nested, &pack));
+        // Font switches entered from mathematics are restricted text too.
+        let math_text = format!(r"\textbf{{inside {display} after}}");
+        check(
+            &math_text,
+            e.typeset_with_macros(&math_text, Style::Display, &pack),
+        );
+        // The same unboxed font switch in a paragraph permits displays.
+        let unboxed = format!(r"Before \textbf{{inside {display} after}} After");
+        let layout = e.typeset_text_with_macros(&unboxed, &pack).unwrap();
+        assert!(glyph_y(&layout, 'x') < 0.0, "{unboxed}");
+        assert!(glyph_y(&layout, 'A') < glyph_y(&layout, 'x'), "{unboxed}");
+    }
+    // Ordinary inline mathematics, including an inline grid, stays legal.
+    for command in ["underline", "text", "cancel"] {
+        let source = format!(r"\{command}{{Before $\begin{{pmatrix}}x\end{{pmatrix}}$ After}}");
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        assert!(layout.width.is_finite() && layout.width > 0.0, "{source}");
+        assert!(
+            layout.glyphs.iter().any(|glyph| glyph.ch == 'x'),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn display_flow_keeps_slanted_text_corrections_and_punctuation_controls() {
     let pack = fmd_math::MacroSet::pack("default").unwrap();
     let e = engine();

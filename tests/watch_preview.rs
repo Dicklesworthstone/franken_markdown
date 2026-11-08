@@ -110,6 +110,11 @@ impl Directory {
         std::fs::write(&path, bytes).unwrap();
         path
     }
+    fn save_atomic(&self, path: &Path, bytes: impl AsRef<[u8]>) {
+        let staged = self.path(&format!(".save-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&staged, bytes).unwrap();
+        std::fs::rename(staged, path).unwrap();
+    }
 }
 impl Drop for Directory {
     fn drop(&mut self) {
@@ -144,7 +149,7 @@ fn preview_matches_export_and_tracks_include_images_and_failed_saves() {
         std::fs::read_to_string(&output).unwrap()
     );
 
-    std::fs::write(&included, "# Updated chapter\n\n![figure](figure.svg)\n").unwrap();
+    dir.save_atomic(&included, "# Updated chapter\n\n![figure](figure.svg)\n");
     let updated = preview.wait_html("Updated chapter");
     assert!(!updated.contains("Included chapter"));
     assert_eq!(
@@ -152,7 +157,7 @@ fn preview_matches_export_and_tracks_include_images_and_failed_saves() {
         std::fs::read_to_string(&output).unwrap()
     );
 
-    std::fs::write(&figure, IMAGE.replace("10", "20")).unwrap();
+    dir.save_atomic(&figure, IMAGE.replace("10", "20"));
     preview.event("\"event\":\"rebuild\"");
     let deadline = Instant::now() + Duration::from_secs(30);
     while preview.html() == updated {
@@ -163,14 +168,59 @@ fn preview_matches_export_and_tracks_include_images_and_failed_saves() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let working = preview.html();
-    std::fs::write(&included, [0xff]).unwrap();
+    // A completed invalid save has no intermediate valid empty document.
+    // Truncate-then-write can expose that separate save to the watcher;
+    // the next test covers its last-good semantics explicitly.
+    dir.save_atomic(&included, [0xff]);
     preview.event("include_invalid_utf8");
     assert_eq!(
         preview.html(),
         working,
         "bad saves must retain the last valid preview"
     );
-    std::fs::write(&included, "# Recovered chapter\n").unwrap();
+    dir.save_atomic(&included, "# Recovered chapter\n");
+    preview.wait_html("Recovered chapter");
+}
+
+#[test]
+fn empty_include_is_valid_and_a_failed_next_save_preserves_it() {
+    let dir = Directory::new();
+    let source = dir.write("doc.md", "{{#include chapter.txt}}\n");
+    let included = dir.write("chapter.txt", "# Visible chapter\n");
+    let output = dir.path("doc.html");
+    let preview = Preview::start(&source, &output, "html");
+    assert!(preview.html().contains("Visible chapter"));
+
+    // Empty Markdown is a successful save, including when it is the
+    // visible intermediate state of an editor's truncate-then-write.
+    std::fs::write(&included, "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let empty = loop {
+        let html = preview.html();
+        if !html.contains("Visible chapter") {
+            break html;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "valid empty save was not published"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(empty.contains("<main class=\"fmd\">"));
+    assert!(!empty.contains("<h1"));
+    assert_eq!(
+        empty.replace(franken_markdown::watch::RELOAD_SNIPPET, ""),
+        std::fs::read_to_string(&output).unwrap()
+    );
+
+    dir.save_atomic(&included, [0xff]);
+    preview.event("include_invalid_utf8");
+    assert_eq!(
+        preview.html(),
+        empty,
+        "an invalid save must retain the successfully rendered empty document"
+    );
+    dir.save_atomic(&included, "# Recovered chapter\n");
     preview.wait_html("Recovered chapter");
 }
 

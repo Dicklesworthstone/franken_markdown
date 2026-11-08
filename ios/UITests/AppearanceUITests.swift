@@ -151,6 +151,101 @@ final class FrankenMarkdownAppearanceUITests: XCTestCase {
         }
     }
 
+    func testDocumentMenuTemplateStartsUntitledAndPreservesTheOpenedFile() throws {
+        let (app, editor, original) = try launchOwnedTemplateFixture(autosave: true)
+        app.buttons["markdown-document-menu"].tap()
+        let template = app.buttons["markdown-template-living"]
+        XCTAssertTrue(template.waitForExistence(timeout: 5), app.debugDescription)
+        template.tap()
+
+        waitForSource(editor, in: app) { $0.hasPrefix("# A living document") }
+        let save = app.buttons["save-markdown-document"]
+        XCTAssertEqual(save.label, "Save new Markdown file", "A template must not retain the imported file's save destination")
+        XCTAssertFalse(app.alerts["Start a New Document?"].exists, "A pristine saved file needs no discard confirmation")
+
+        reopenMostRecentDocument(in: app)
+        waitForSource(editor, in: app) { $0 == original }
+        XCTAssertEqual(save.label, "Save")
+        keepScreenshot(of: app, named: "Template leaves original Markdown file unchanged")
+    }
+
+    func testLabTemplateConfirmationCanCancelWithoutLosingEditsOrFileOwnership() throws {
+        let (app, editor, original) = try launchOwnedTemplateFixture(autosave: false)
+        editor.tap()
+        editor.typeText(" TEMPLATE_CANCEL_SENTINEL ")
+        let edited = try XCTUnwrap(editor.value as? String)
+        XCTAssertTrue(edited.contains("TEMPLATE_CANCEL_SENTINEL"))
+
+        selectLabTemplate(in: app)
+        let confirmation = app.alerts["Start a New Document?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 8), app.debugDescription)
+        confirmation.buttons["Cancel"].tap()
+        waitForSource(editor, in: app) { $0 == edited }
+        XCTAssertEqual(app.buttons["save-markdown-document"].label, "Save")
+
+        selectLabTemplate(in: app)
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 8), app.debugDescription)
+        confirmation.buttons["Discard Edits and Start New"].tap()
+        waitForSource(editor, in: app) { $0.hasPrefix("# A living document") && !$0.contains("TEMPLATE_CANCEL_SENTINEL") }
+        XCTAssertEqual(app.buttons["save-markdown-document"].label, "Save new Markdown file")
+
+        reopenMostRecentDocument(in: app)
+        waitForSource(editor, in: app) { $0 == original }
+        keepScreenshot(of: app, named: "Confirmed template uses a new document after preserving cancelled edits")
+    }
+
+    private func launchOwnedTemplateFixture(autosave: Bool) throws -> (XCUIApplication, XCUIElement, String) {
+        let app = XCUIApplication()
+        app.launchArguments = ["-frankenmarkdown.documentAutosave.v1", autosave ? "YES" : "NO"]
+        app.launchEnvironment["FMD_INITIAL_LANE"] = "Write"
+        app.launchEnvironment["FMD_UI_TEST_SOURCE_BYTES"] = String(750 * 1_024)
+        app.launch()
+        let editor = app.textViews["Markdown source editor"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 15), app.debugDescription)
+        waitForSource(editor, in: app) { $0.hasSuffix("FMD_LARGE_DOCUMENT_END\n") }
+        XCTAssertEqual(app.buttons["save-markdown-document"].label, "Save")
+        return (app, editor, try XCTUnwrap(editor.value as? String))
+    }
+
+    private func selectLabTemplate(in app: XCUIApplication) {
+        app.buttons["document-lab-button"].tap()
+        let home = app.scrollViews["document-forge-home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 8), app.debugDescription)
+        let templates = app.buttons["document-forge-route-templates"]
+        for _ in 0..<10 {
+            if templates.exists && templates.isHittable { break }
+            home.swipeUp()
+        }
+        XCTAssertTrue(templates.isHittable, app.debugDescription)
+        templates.tap()
+        let template = app.buttons["document-lab-template-living"]
+        XCTAssertTrue(template.waitForExistence(timeout: 5), app.debugDescription)
+        template.tap()
+    }
+
+    private func reopenMostRecentDocument(in app: XCUIApplication) {
+        app.buttons["markdown-document-menu"].tap()
+        let recent = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "markdown-recent-document-")
+        ).firstMatch
+        XCTAssertTrue(recent.waitForExistence(timeout: 5), app.debugDescription)
+        recent.tap()
+    }
+
+    private func waitForSource(
+        _ editor: XCUIElement,
+        in app: XCUIApplication,
+        matching predicate: @escaping (String) -> Bool
+    ) {
+        let loaded = NSPredicate { element, _ in
+            guard let value = (element as? XCUIElement)?.value as? String else { return false }
+            return predicate(value)
+        }
+        expectation(for: loaded, evaluatedWith: editor)
+        waitForExpectations(timeout: 30)
+        XCTAssertTrue(editor.exists, app.debugDescription)
+    }
+
     private func keepScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

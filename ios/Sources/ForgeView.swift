@@ -64,7 +64,8 @@ struct ForgeView: View {
     @State private var exportError: String?
     @State private var pendingDocument: PendingSourceDocument?
     @State private var confirmationRequest: UUID?
-    @State private var confirmingNewDocument = false
+    @State private var pendingNewDocument: MarkdownUntitledDocumentRequest?
+    @State private var templateAfterLabDismissal: MarkdownUntitledDocumentRequest?
     @State private var confirmingRevert = false
     @State private var attemptedDocumentRestoration = false
     @State private var showingRestorationConflict = false
@@ -309,14 +310,23 @@ struct ForgeView: View {
         } message: { _ in
             Text("The current Markdown has unsaved edits. Use Save a Copy first if you want to keep them.")
         }
-        .alert("Start a New Document?", isPresented: $confirmingNewDocument, presenting: confirmationRequest) { request in
-            Button("Cancel", role: .cancel) {}
-            Button("Discard Edits and Start New", role: .destructive) {
-                guard documentSession.isCurrentDocumentRequest(request) else { return }
-                newSourceDocument()
+        .alert("Start a New Document?", isPresented: Binding(
+            get: { pendingNewDocument != nil },
+            set: { [request = pendingNewDocument?.id] in
+                if !$0, pendingNewDocument?.id == request { pendingNewDocument = nil }
             }
-        } message: { _ in
-            Text("The current Markdown has unsaved edits. Use Save or Save a Copy first if you want to keep them.")
+        ), presenting: pendingNewDocument) { request in
+            Button("Cancel", role: .cancel) {
+                documentSession.cancelDocumentRequest(request.id)
+            }
+            Button("Discard Edits and Start New", role: .destructive) {
+                newSourceDocument(request)
+            }
+        } message: { request in
+            Text(request.title.isEmpty
+                ? "The current Markdown has unsaved edits. Use Save or Save a Copy first if you want to keep them."
+                : "The current Markdown has unsaved edits. Starting \(request.title) creates a new document. "
+                    + "Use Save or Save a Copy first if you want to keep your edits.")
         }
         .alert("Reopen Saved Version?", isPresented: $confirmingRevert, presenting: confirmationRequest) { request in
             Button("Cancel", role: .cancel) {}
@@ -374,8 +384,10 @@ struct ForgeView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $showDocumentLab) {
-            DocumentLabView(renderer: renderer)
+        .fullScreenCover(isPresented: $showDocumentLab, onDismiss: finishDocumentLabDismissal) {
+            DocumentLabView(renderer: renderer) { preset in
+                requestTemplateDocument(preset, afterLabDismissal: true)
+            }
         }
         .overlay(alignment: .top) {
             if showCopiedAlert {
@@ -492,16 +504,18 @@ struct ForgeView: View {
                             } label: {
                                 Label(recent.displayName, systemImage: "clock.arrow.circlepath")
                             }
+                            .accessibilityIdentifier("markdown-recent-document-\(recent.id)")
                         }
                     }
                 }
                 Divider()
                 ForEach(MarkdownRendererModel.presets) { preset in
                     Button {
-                        renderer.source = preset.markdown
+                        requestTemplateDocument(preset)
                     } label: {
                         Label(preset.title, systemImage: "doc.text")
                     }
+                    .accessibilityIdentifier("markdown-template-\(preset.id)")
                 }
             } label: {
                 Label("Document", systemImage: "doc.text")
@@ -974,7 +988,8 @@ struct ForgeView: View {
         cancelSourceExportPreparation()
         pendingDocument = nil
         confirmationRequest = nil
-        confirmingNewDocument = false
+        pendingNewDocument = nil
+        templateAfterLabDismissal = nil
         confirmingRevert = false
         showingRestorationConflict = false
         sourceImportError = nil
@@ -983,11 +998,36 @@ struct ForgeView: View {
 
     private func requestNewSourceDocument() {
         clearDocumentPresentations()
-        confirmationRequest = documentSession.beginDocumentRequest()
-        if documentSession.isDirty(source: renderer.source) {
-            confirmingNewDocument = true
+        requestUntitledDocument(documentSession.prepareUntitled(
+            source: "# New Document\n\nStart writing..."
+        ))
+    }
+
+    private func requestTemplateDocument(_ preset: DocumentPreset, afterLabDismissal: Bool = false) {
+        clearDocumentPresentations()
+        let request = documentSession.prepareUntitled(source: preset.markdown, title: preset.title)
+        if afterLabDismissal {
+            // Reserve ownership at the tap, but do not present an alert behind
+            // the Lab's full-screen cover. New/Open can supersede it meanwhile.
+            templateAfterLabDismissal = request
+            showDocumentLab = false
         } else {
-            newSourceDocument()
+            requestUntitledDocument(request)
+        }
+    }
+
+    private func finishDocumentLabDismissal() {
+        guard let request = templateAfterLabDismissal else { return }
+        templateAfterLabDismissal = nil
+        requestUntitledDocument(request)
+    }
+
+    private func requestUntitledDocument(_ request: MarkdownUntitledDocumentRequest) {
+        guard documentSession.isCurrentDocumentRequest(request.id) else { return }
+        if documentSession.isDirty(source: renderer.source) {
+            pendingNewDocument = request
+        } else {
+            newSourceDocument(request)
         }
     }
 
@@ -997,13 +1037,14 @@ struct ForgeView: View {
         showSourceImporter = true
     }
 
-    private func newSourceDocument() {
+    private func newSourceDocument(_ request: MarkdownUntitledDocumentRequest) {
+        guard documentSession.beginUntitled(request) else { return }
         clearDocumentPresentations()
-        let source = "# New Document\n\nStart writing..."
-        documentSession.beginUntitled(source: source)
+        documentAutosaveTask.cancel()
         renderer.documentIdentity = nil
-        renderer.source = source
-        renderer.documentTitle = ""
+        renderer.source = request.source
+        renderer.documentTitle = request.title
+        renderer.documentAuthor = ""
         renderer.allowRawHtml = false
         lane = .write
         sourceImportError = nil

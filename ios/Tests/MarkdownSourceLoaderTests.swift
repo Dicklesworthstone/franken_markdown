@@ -987,6 +987,112 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledTemplateRequestPreservesOwnedFileAndUnsavedEdits() async throws {
+        let defaults = try makeDefaults()
+        let document = try await testDocument("# Original file\n")
+        let session = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: defaults)
+        session.adopt(document)
+        let identity = session.currentDocumentIdentity
+        let generation = session.documentGeneration
+        let reference = defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey)
+        let edits = "# Keep these unsaved edits\n"
+        let request = session.prepareUntitled(source: "# Template\n", title: "Template")
+
+        XCTAssertEqual(session.currentDocument, document, "Selecting a template must not detach before confirmation")
+        XCTAssertEqual(session.documentGeneration, generation)
+        XCTAssertTrue(session.isDirty(source: edits))
+        session.cancelDocumentRequest(request.id)
+        XCTAssertFalse(session.beginUntitled(request), "A late confirmation cannot revive a cancelled template")
+        XCTAssertEqual(session.currentDocument, document)
+        XCTAssertEqual(session.currentDocumentIdentity, identity)
+        XCTAssertTrue(session.isDirty(source: edits))
+        XCTAssertEqual(defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey), reference)
+        XCTAssertEqual(try Data(contentsOf: document.url), Data(document.source.utf8))
+    }
+
+    @MainActor
+    func testOnlyNewestTemplateCanDetachTheFileAndItCannotAutosaveIntoTheOriginal() async throws {
+        let defaults = try makeDefaults()
+        let document = try await testDocument("# Keep this file\n")
+        let session = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: defaults)
+        session.adopt(document)
+        let first = session.prepareUntitled(source: "# Earlier template\n", title: "Earlier")
+        let latest = session.prepareUntitled(source: "# Selected template 🧪\n", title: "Selected")
+        session.cancelDocumentRequest(first.id)
+
+        XCTAssertFalse(session.beginUntitled(first))
+        XCTAssertTrue(session.beginUntitled(latest), "Dismissing an older alert cannot cancel the newer choice")
+        XCTAssertFalse(session.beginUntitled(latest), "A request is consumed by the document transition")
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertNil(session.currentDocumentIdentity)
+        XCTAssertNil(defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey))
+        XCTAssertEqual(session.displayName, "Untitled.md")
+        XCTAssertFalse(session.isDirty(source: latest.source))
+        XCTAssertFalse(session.needsAutosave(source: latest.source))
+        XCTAssertFalse(session.needsAutosave(source: latest.source + "More edits\n"))
+        XCTAssertEqual(session.recentDocuments.first?.displayName, document.displayName)
+        do {
+            try await session.save(source: latest.source)
+            XCTFail("An untitled template must require a new save destination")
+        } catch {
+            XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .noCurrentDocument)
+        }
+        XCTAssertEqual(try Data(contentsOf: document.url), Data(document.source.utf8))
+    }
+
+    @MainActor
+    func testFileOpenSupersedesTemplateWaitingForLabDismissalOrConfirmation() async throws {
+        let first = try await testDocument("# First file\n", name: "first.md")
+        let selected = try await testDocument("# Selected file\n", name: "selected.md")
+        let session = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: try makeDefaults())
+        session.adopt(first)
+        let template = session.prepareUntitled(source: "# Obsolete template\n", title: "Obsolete")
+        let openRequest = session.beginDocumentRequest()
+
+        XCTAssertFalse(session.beginUntitled(template), "Even a still-reading Open owns the newer intent")
+        session.cancelDocumentRequest(template.id)
+        let opened = try await session.open(from: selected.url, request: openRequest)
+        session.adopt(try XCTUnwrap(opened))
+        XCTAssertFalse(session.beginUntitled(template))
+        XCTAssertEqual(session.currentDocument?.url, selected.url)
+        XCTAssertFalse(session.isDirty(source: selected.source))
+        XCTAssertEqual(try Data(contentsOf: first.url), Data(first.source.utf8))
+    }
+
+    @MainActor
+    func testConfirmedTemplateRetiresOldAutosaveQueueWithoutReattachingItsFile() async throws {
+        let document = try await testDocument("# Original\n")
+        let writes = SuspendedMarkdownSaves()
+        defer { Task { await writes.releaseAll() } }
+        let session = MarkdownDocumentSession(
+            initialSource: "# Untitled\n", defaults: try makeDefaults(),
+            saveDocument: { try await writes.save($0, replacing: $1) }
+        )
+        session.adopt(document)
+        let first = await MarkdownSaveCall.start(session, source: "# Already saving original edits\n")
+        _ = await writes.waitForRequest(0)
+        let queued = await MarkdownSaveCall.start(session, source: "# Superseded original edits\n")
+        let template = session.prepareUntitled(source: "# New template\n", title: "Template")
+        guard assertPending(queued) else { return }
+        XCTAssertTrue(session.hasCurrentDocument, "Opening the confirmation must preserve the live file")
+        XCTAssertTrue(session.beginUntitled(template))
+        guard await assertCancelled(queued) else { return }
+        XCTAssertFalse(session.needsAutosave(source: template.source))
+
+        // The provider may already have committed valid old edits. Its late
+        // reply must not reconnect the template to that file or drain its queue.
+        await writes.release(0)
+        try await first.value()
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertNil(session.currentDocumentIdentity)
+        XCTAssertFalse(session.isSaving)
+        XCTAssertFalse(session.isDirty(source: template.source))
+        let allWrites = await writes.requests
+        XCTAssertEqual(allWrites.map(\.source), ["# Already saving original edits\n"])
+        XCTAssertEqual(try Data(contentsOf: document.url), Data("# Already saving original edits\n".utf8))
+    }
+
+    @MainActor
     func testOlderAutosaveFinalizerCannotClearOrCancelNewerTask() async throws {
         let autosave = MarkdownDocumentAutosave()
         let gates = SuspendedMarkdownIO()

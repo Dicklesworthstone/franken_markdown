@@ -84,6 +84,14 @@ enum MarkdownDocumentAttention: Equatable {
     case unavailable
 }
 
+/// A New/template selection owns its source before presentation can suspend.
+/// Confirming an older alert must never replace a newer document selection.
+struct MarkdownUntitledDocumentRequest: Identifiable, Sendable {
+    let id: UUID
+    let source: String
+    let title: String
+}
+
 @MainActor
 final class MarkdownDocumentSession: ObservableObject {
     static let recentsStorageKey = "frankenmarkdown.recentSourceDocuments.v1"
@@ -179,6 +187,24 @@ final class MarkdownDocumentSession: ObservableObject {
 
     func isCurrentDocumentRequest(_ request: UUID) -> Bool {
         request == requestGeneration
+    }
+
+    func cancelDocumentRequest(_ request: UUID) {
+        guard isCurrentDocumentRequest(request) else { return }
+        cancelPendingDocumentRequests()
+    }
+
+    func prepareUntitled(source: String, title: String = "") -> MarkdownUntitledDocumentRequest {
+        MarkdownUntitledDocumentRequest(id: beginDocumentRequest(), source: source, title: title)
+    }
+
+    /// Detach the original file and its save queue before the editor adopts a
+    /// template. Otherwise the source observer would autosave into that file.
+    @discardableResult
+    func beginUntitled(_ request: MarkdownUntitledDocumentRequest) -> Bool {
+        guard isCurrentDocumentRequest(request.id) else { return false }
+        beginUntitled(source: request.source)
+        return true
     }
 
     private func beginDocumentTransition() {

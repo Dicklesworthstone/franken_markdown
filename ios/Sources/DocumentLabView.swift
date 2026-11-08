@@ -81,6 +81,7 @@ private enum DocumentForgeRoute: String, CaseIterable, Hashable, Identifiable {
 
 struct DocumentLabView: View {
     @ObservedObject var renderer: MarkdownRendererModel
+    let openTemplate: (DocumentPreset) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var routePath: [DocumentForgeRoute]
@@ -95,8 +96,9 @@ struct DocumentLabView: View {
     @State private var showStylesheetImporter = false
     @State private var bookFiles: [BookSourceFile] = []
 
-    init(renderer: MarkdownRendererModel) {
+    init(renderer: MarkdownRendererModel, openTemplate: @escaping (DocumentPreset) -> Void) {
         self.renderer = renderer
+        self.openTemplate = openTemplate
         let requested = ProcessInfo.processInfo.environment["FMD_FORGE_ROUTE"]
         if let requested, let route = DocumentForgeRoute(rawValue: requested) {
             _routePath = State(initialValue: [route])
@@ -709,9 +711,7 @@ struct DocumentLabView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14)], spacing: 14) {
             ForEach(MarkdownRendererModel.presets) { preset in
                 Button {
-                    renderer.source = preset.markdown
-                    renderer.documentTitle = preset.title
-                    dismiss()
+                    openTemplate(preset)
                 } label: {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -752,6 +752,7 @@ struct DocumentLabView: View {
                     .overlay(RoundedRectangle(cornerRadius: 21).stroke(templateColor(preset.id).opacity(0.22)))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("document-lab-template-\(preset.id)")
             }
         }
     }

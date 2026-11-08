@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Standalone equations accept explicit `\tag{...}` and `\tag*{...}` labels in
+  HTML, EPUB, PDF, SVG and Flow. Labels retain text styling and math islands,
+  stay beside the centered equation within its containing column, and fit or
+  scroll with the complete formula at narrow widths. Additive `fmd-math`
+  display APIs preserve the existing intrinsic math layout contract; see
+  [Explicit equation labels](docs/DISPLAY_EQUATION_LABELS.md).
 - Browser HTML, PDF/PDF-A, SVG and EPUB exports now accept the same explicit
   `commonmark-gfm` and `gfm-plus` authoring profiles as native rendering.
   Workers, atomic publications and batches retain the selected dialect.

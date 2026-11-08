@@ -24,6 +24,12 @@ foreground color, center within their current column, and scale down when
 necessary to fit the page. Their measured height participates in pagination,
 including equations nested in blockquotes, lists and footnotes.
 
+Standalone displays also accept [explicit equation labels](DISPLAY_EQUATION_LABELS.md)
+with `\tag{1}` or `\tag*{Energy}`. The equation stays centered and its upright
+label sits at the current column's right edge. A narrow column fits the complete
+pair without overlap; both the label and original TeX remain in the formula's
+accessible source. This does not enable automatic equation numbering.
+
 Explicit `\color` and `\textcolor` declarations override that inherited ink
 within their TeX scope, for glyphs, fraction rules and constructed paths alike.
 The shared engine supports xcolor's base names, mixes such as `red!30!blue`,

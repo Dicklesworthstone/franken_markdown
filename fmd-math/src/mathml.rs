@@ -66,6 +66,18 @@ pub fn to_mathml_element(node: &Node) -> String {
     w.buf
 }
 
+/// Display labels are text-mode trees whose nested text styling may contain
+/// explicit math islands. Preserve those islands instead of flattening a
+/// whole text box to one `mtext`. The ordinary serializer remains byte-stable.
+pub(crate) fn to_label_mathml(node: &Node) -> String {
+    let mut w = Writer::with_capacity(MATHML_CAPACITY_FLOOR, false);
+    w.rich_text = true;
+    w.open("math", &[("xmlns", MATHML_NS), ("display", "inline")]);
+    emit_node(&mut w, node, Style::Text);
+    w.close("math");
+    w.buf
+}
+
 /// Std-only well-formedness check: balanced tags, quoted attributes, escaped
 /// text. Accepts the serializer's output contract (no self-closing tags).
 pub fn mathml_well_formed(xml: &str) -> Result<(), String> {
@@ -77,6 +89,8 @@ struct Writer {
     /// amsmath's `\if@display` for [`NodeKind::DisplayKern`]: a block
     /// root, or inside a display island.
     in_display: bool,
+    rich_text: bool,
+    text_variant: Option<&'static str>,
 }
 
 impl Writer {
@@ -84,6 +98,8 @@ impl Writer {
         Self {
             buf: String::with_capacity(cap),
             in_display,
+            rich_text: false,
+            text_variant: None,
         }
     }
 
@@ -219,11 +235,19 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
                 w.close("mo");
             }
         }
+        NodeKind::Text { body } if w.rich_text => emit_rich_text(w, body, None),
         NodeKind::Text { body } => emit_mtext_nodes(w, body),
         NodeKind::TextRun { text, .. } => {
-            w.open("mtext", &[]);
+            if let Some(variant) = w.text_variant {
+                w.open("mtext", &[("mathvariant", variant)]);
+            } else {
+                w.open("mtext", &[]);
+            }
             w.text(text);
             w.close("mtext");
+        }
+        NodeKind::TextStyled { style: ts, body } if w.rich_text => {
+            emit_rich_text(w, body, Some(*ts))
         }
         NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body),
         NodeKind::MathIsland { body, display } => {
@@ -233,11 +257,13 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
                 Style::Text
             };
             let outer = w.in_display;
+            let outer_text_variant = w.text_variant.take();
             w.in_display |= *display;
             w.open("mrow", &[]);
             emit_run(w, body, inner_style, None, None);
             w.close("mrow");
             w.in_display = outer;
+            w.text_variant = outer_text_variant;
         }
         NodeKind::StyleChange(_)
         | NodeKind::AlignChange(_)
@@ -749,6 +775,35 @@ fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
     w.open("mtext", &[("mathvariant", variant)]);
     collect_text(w, body);
     w.close("mtext");
+}
+
+/// Text styling applies to text runs, while an explicit `$...$` island
+/// resumes ordinary mathematical alphabets, matching the layout engine.
+fn emit_rich_text(w: &mut Writer, body: &[Node], style: Option<TextStyle>) {
+    let outer_variant = w.text_variant;
+    if let Some(style) = style {
+        w.text_variant = Some(match style {
+            TextStyle::Bold => "bold",
+            TextStyle::Emph | TextStyle::Italic => "italic",
+            TextStyle::Underline | TextStyle::Roman => "normal",
+            TextStyle::Typewriter => "monospace",
+            TextStyle::SansSerif => "sans-serif",
+        });
+    }
+    let underline = style == Some(TextStyle::Underline);
+    if underline {
+        w.open("munder", &[("accentunder", "true")]);
+    }
+    w.open("mrow", &[]);
+    emit_run(w, body, Style::Text, None, None);
+    w.close("mrow");
+    if underline {
+        w.open("mo", &[("stretchy", "true")]);
+        w.text("_");
+        w.close("mo");
+        w.close("munder");
+    }
+    w.text_variant = outer_variant;
 }
 
 fn math_font_variant(font: MathFont) -> &'static str {

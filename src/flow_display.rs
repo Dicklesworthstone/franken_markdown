@@ -641,11 +641,12 @@ impl ResumableFlowDisplay {
                     let result = if math_bytes > math_byte_limit {
                         Err(MathFailure::Budget)
                     } else {
-                        math.typeset(source, command_limit).and_then(|formula| {
-                            formula
-                                .place(x, y, width, 14.0, span)
-                                .map_err(MathFailure::Fallback)
-                        })
+                        math.typeset(source, command_limit, width, 14.0)
+                            .and_then(|formula| {
+                                formula
+                                    .place(x, y, width, 14.0, span)
+                                    .map_err(MathFailure::Fallback)
+                            })
                     };
                     let bounds = match result {
                         Ok(formula) => {

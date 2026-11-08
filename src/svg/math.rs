@@ -67,6 +67,15 @@ impl Poster {
     }
 
     fn typeset_formula(&self, source: &str, display: bool) -> Result<Rc<Formula>, SvgWarning> {
+        self.typeset_formula_in_column(source, display, None)
+    }
+
+    fn typeset_formula_in_column(
+        &self,
+        source: &str,
+        display: bool,
+        width_em: Option<f64>,
+    ) -> Result<Rc<Formula>, SvgWarning> {
         if source.len() > MAX_FORMULA_BYTES {
             return Err(warning(
                 "svg_math_limit",
@@ -78,9 +87,11 @@ impl Poster {
             .get_or_init(|| math::Engine::bundled().ok())
             .as_ref()
             .ok_or_else(|| warning("svg_math_fonts", "bundled math faces unavailable"))?;
-        let layout = engine
-            .typeset(source, if display { Style::Display } else { Style::Text })
-            .map_err(|error| warning("svg_math_unsupported", &error.to_string()))?;
+        let layout = match width_em {
+            Some(width) => engine.typeset_display(source, width),
+            None => engine.typeset(source, if display { Style::Display } else { Style::Text }),
+        }
+        .map_err(|error| warning("svg_math_unsupported", &error.to_string()))?;
         if layout
             .glyphs
             .len()
@@ -252,9 +263,10 @@ impl Poster {
     }
 
     pub(super) fn math_block(&mut self, source: &str, l: f64, r: f64, quote: bool) {
-        match self.typeset_formula(source, true) {
+        let available = (r - l).max(1.0);
+        let width_em = available / f64::from(self.scale.body);
+        match self.typeset_formula_in_column(source, true, Some(width_em)) {
             Ok(formula) => {
-                let available = (r - l).max(1.0);
                 let size = fitted_size(&formula, f64::from(self.scale.body), available);
                 let x = l + (available - formula.width * size).max(0.0) / 2.0;
                 let pad = f64::from(self.scale.body) * 0.5;

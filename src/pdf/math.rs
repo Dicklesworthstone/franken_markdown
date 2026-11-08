@@ -48,13 +48,14 @@ struct Formula {
 }
 
 impl MathRenderer {
-    fn typeset(&self, source: &str) -> std::result::Result<Formula, String> {
+    fn typeset(&self, source: &str, width_em: f64) -> std::result::Result<Formula, String> {
         let engine = self
             .engine
             .get_or_init(|| Engine::bundled().map_err(|error| error.to_string()))
             .as_ref()
             .map_err(Clone::clone)?;
-        let mut formula = typeset_formula(engine, source, Style::Display)?;
+        let mut formula =
+            typeset_formula_in_column(engine, source, Style::Display, Some(width_em))?;
         formula.bounds.left -= INK_PADDING_EM;
         formula.bounds.right += INK_PADDING_EM;
         formula.bounds.bottom -= INK_PADDING_EM;
@@ -71,12 +72,23 @@ fn typeset_formula(
     source: &str,
     style: Style,
 ) -> std::result::Result<Formula, String> {
+    typeset_formula_in_column(engine, source, style, None)
+}
+
+fn typeset_formula_in_column(
+    engine: &Engine,
+    source: &str,
+    style: Style,
+    width_em: Option<f64>,
+) -> std::result::Result<Formula, String> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(SOURCE_LIMIT_REASON.to_string());
     }
-    let mut layout = engine
-        .typeset(source, style)
-        .map_err(|error| error.to_string())?;
+    let mut layout = match width_em {
+        Some(width) => engine.typeset_display(source, width),
+        None => engine.typeset(source, style),
+    }
+    .map_err(|error| error.to_string())?;
     if layout
         .glyphs
         .len()
@@ -404,14 +416,16 @@ pub(super) fn layout_block(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let Ok(formula) = cx.math_renderer.typeset(source) else {
+    let available_width = (cx.page.content_w - indent).max(1.0);
+    let nominal_size = f64::from(positive_finite(cx.type_scale.body, 11.0));
+    let width_em = (f64::from(available_width) / nominal_size - 2.0 * INK_PADDING_EM).max(0.01);
+    let Ok(formula) = cx.math_renderer.typeset(source, width_em) else {
         return false;
     };
     let width_em = formula.bounds.right - formula.bounds.left;
     let height_em = formula.bounds.top - formula.bounds.bottom;
-    let available_width = (cx.page.content_w - indent).max(1.0);
     let available_height = (cx.page.top_y() - cx.page.bottom).max(1.0);
-    let size = f64::from(positive_finite(cx.type_scale.body, 11.0))
+    let size = nominal_size
         .min(f64::from(available_width) / width_em)
         .min(f64::from(available_height) / height_em);
     let ink_width = (width_em * size) as f32;
@@ -547,7 +561,9 @@ pub(super) fn collect_warnings<'a>(
         for block in blocks {
             match block {
                 Block::MathBlock(source) => {
-                    if let Err(reason) = renderer.typeset(source) {
+                    // This pass reports syntax/font/resource admission only;
+                    // final placement supplies the actual containing measure.
+                    if let Err(reason) = renderer.typeset(source, 64.0) {
                         warnings.push(RenderWarning::MathFallback {
                             source: source.chars().take(120).collect(),
                             reason,

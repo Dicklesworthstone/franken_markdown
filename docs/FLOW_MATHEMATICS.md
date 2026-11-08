@@ -32,6 +32,12 @@ The formula's enclosing geometry includes its layout advance, height and depth, 
 
 Measured layout bounds are retained separately from painting items. A phantom-only equation therefore occupies its real space without a visible placeholder, artificial link anchor or clipping item. Code highlighting preserves these bounds when it reconstructs a display list.
 
+Standalone displays support [explicit equation labels](DISPLAY_EQUATION_LABELS.md)
+using `\tag{1}` or `\tag*{Energy}`. The label follows the current column's right
+edge during reflow, with the equation centered and a reserved gap between them.
+Narrow columns uniformly fit the complete pair. Both remain one math reading
+node with the complete original source and enclosing source span.
+
 ## Inline composition and host fonts
 
 `FlowInlineRun::math` preserves each formula as a separate atomic range in the block's reading text, including internal TeX newlines. Adjacent formulas are never coalesced into one expression. Normal text keeps its styled font shaping; formula contours use the math engine's own faces. Inherited links and strikethrough remain attached to the measured inline object.

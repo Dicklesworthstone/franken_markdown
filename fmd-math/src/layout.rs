@@ -143,6 +143,39 @@ impl Engine {
         self.finish(&root, StyleCtx::new(style), true, None, true)
     }
 
+    /// Typeset a standalone display and its optional explicit `\tag` label.
+    ///
+    /// `width_em` is the containing column's width in ems of the host's base
+    /// math size. The equation stays centered and its upright label is placed
+    /// at the right edge, separated by at least one em of actual ink clearance.
+    /// If the pair cannot fit, the returned width grows to its minimum safe
+    /// measure; the host can then fit or scroll the complete formula. Neither
+    /// the formula nor its label is dropped. Untagged formulas retain exactly
+    /// the same layout as [`Self::typeset`] in [`Style::Display`].
+    ///
+    /// # Errors
+    /// As [`Self::typeset`], plus invalid containing widths and the standalone
+    /// tag restrictions documented by [`crate::parse_display`]. Combined body
+    /// and label output remains subject to this engine's existing budgets.
+    pub fn typeset_display(&self, source: &str, width_em: f64) -> Result<Layout, MathError> {
+        crate::display::validate_width(width_em)?;
+        let display = crate::parse::parse_display_with(source, self.budgets.max_input_bytes)?;
+        let body = self.finish(
+            &display.body,
+            StyleCtx::new(Style::Display),
+            true,
+            None,
+            true,
+        )?;
+        let Some(tag) = display.tag else {
+            return Ok(body);
+        };
+        let tag = self.finish(&tag, StyleCtx::new(Style::Text), false, None, true)?;
+        let layout = crate::display::compose(self, body, tag, width_em)?;
+        self.check_output_budgets(&layout)?;
+        Ok(layout)
+    }
+
     /// Typeset a TexText-contract string (text mainland + math islands).
     ///
     /// # Errors

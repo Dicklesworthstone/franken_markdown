@@ -63,8 +63,12 @@ impl MathRenderer {
         &self,
         source: &str,
         remaining_commands: usize,
+        available_width: f32,
+        font_size: f32,
     ) -> Result<Formula, MathFailure> {
-        self.typeset_style(source, Style::Display, remaining_commands)
+        let width_em =
+            (f64::from(available_width) / f64::from(font_size) - 2.0 * INK_PADDING_EM).max(0.01);
+        self.typeset_in_column(source, Style::Display, remaining_commands, Some(width_em))
     }
 
     pub(super) fn typeset_style(
@@ -72,6 +76,16 @@ impl MathRenderer {
         source: &str,
         style: Style,
         remaining_commands: usize,
+    ) -> Result<Formula, MathFailure> {
+        self.typeset_in_column(source, style, remaining_commands, None)
+    }
+
+    fn typeset_in_column(
+        &self,
+        source: &str,
+        style: Style,
+        remaining_commands: usize,
+        width_em: Option<f64>,
     ) -> Result<Formula, MathFailure> {
         if source.len() > MAX_SOURCE_BYTES {
             return Err(MathFailure::Fallback(
@@ -83,9 +97,11 @@ impl MathRenderer {
             .get_or_init(|| Engine::bundled().map_err(|error| error.to_string()))
             .as_ref()
             .map_err(Clone::clone)?;
-        let mut layout = engine
-            .typeset(source, style)
-            .map_err(|error| error.to_string())?;
+        let mut layout = match width_em {
+            Some(width) => engine.typeset_display(source, width),
+            None => engine.typeset(source, style),
+        }
+        .map_err(|error| error.to_string())?;
         let primitives = layout
             .glyphs
             .len()
@@ -439,7 +455,7 @@ where
         let command_limit = remaining_commands.min(remaining_bytes / COMMAND_BYTES);
         let result = self
             .math
-            .typeset(source, command_limit)
+            .typeset(source, command_limit, width, self.options.body_size)
             .and_then(|formula| {
                 formula
                     .place(x, y, width, self.options.body_size, span)

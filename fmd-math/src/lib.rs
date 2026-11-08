@@ -82,6 +82,7 @@
 pub mod atom;
 mod color;
 pub mod commands;
+mod display;
 mod drawn;
 mod error;
 pub mod faces;
@@ -103,6 +104,7 @@ pub use commands::{
     ConstructStatus, LAYOUT_PENDING_TRACKING, OUTSIDE_CORPUS_TRACKING, TIER2_TRACKING, Tier,
     UNTIERED_TRACKING, construct_status, tier2_tracking,
 };
+pub use display::DisplayFormula;
 pub use error::{BudgetKind, Budgets, MathError};
 pub use faces::FaceSet;
 pub use layout::Engine;
@@ -129,6 +131,25 @@ pub use style::{Style, StyleCtx, style_walk};
 /// over [`Budgets::DEFAULT`]'s input budget or nested past the depth bound.
 pub fn parse(source: &str) -> Result<Node, MathError> {
     parse::parse_math(source)
+}
+
+/// Parse a standalone display formula with an optional explicit label.
+///
+/// `\tag{1}` supplies an upright `(1)` label; `\tag*{Energy}` supplies an
+/// upright label without parentheses. Exactly one braced tag is allowed at
+/// the display's top level. Tags inside groups, aligned rows, scripts or text
+/// islands are refused, as are automatic-numbering environments. An aligned
+/// formula may have a single tag after its complete `aligned` environment.
+///
+/// Ordinary [`parse`] deliberately continues to refuse labels: an inline or
+/// intrinsic formula has no containing width at which to place one. Use
+/// [`Engine::typeset_display`] for width-aware placement, or serialize the
+/// returned body and label trees separately for a browser.
+///
+/// # Errors
+/// As [`parse`], with malformed errors for duplicate, nested or unbraced tags.
+pub fn parse_display(source: &str) -> Result<DisplayFormula, MathError> {
+    parse::parse_display_with(source, Budgets::DEFAULT.max_input_bytes)
 }
 
 /// Parse a whole source string under the TexText contract: a text mainland

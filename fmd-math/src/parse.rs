@@ -82,17 +82,37 @@ pub(crate) fn parse_math_with<'s>(
     macros: &'s crate::macros::MacroSet,
     max_input_bytes: usize,
 ) -> Result<Node, MathError> {
+    parse_math_context(source, macros, max_input_bytes, false).map(|display| display.body)
+}
+
+pub(crate) fn parse_display_with(
+    source: &str,
+    max_input_bytes: usize,
+) -> Result<crate::DisplayFormula, MathError> {
+    parse_math_context(source, empty_macros(), max_input_bytes, true)
+}
+
+fn parse_math_context<'s>(
+    source: &'s str,
+    macros: &'s crate::macros::MacroSet,
+    max_input_bytes: usize,
+    display_tags: bool,
+) -> Result<crate::DisplayFormula, MathError> {
     check_input_budget(source, max_input_bytes)?;
     let toks = crate::macros::expand(lex(source), macros, source.len())?;
     let mut parser = Parser::with_tokens(source, toks);
     parser.ligatures = macros.ligatures();
     parser.physics = macros.physics();
+    parser.display_tags = display_tags;
     let (items, reason) = parser.math_list(Stops {
         top: true,
         ..Stops::default()
     })?;
     match reason {
-        Reason::EndOfInput => Ok(Node::new(NodeKind::List(items), Span::new(0, source.len()))),
+        Reason::EndOfInput => Ok(crate::DisplayFormula {
+            body: Node::new(NodeKind::List(items), Span::new(0, source.len())),
+            tag: parser.display_tag,
+        }),
         Reason::EndGroup(span) => Err(MathError::Malformed {
             what: "unmatched '}'".to_owned(),
             at: span.start,
@@ -227,6 +247,9 @@ struct Parser<'s> {
     ligatures: bool,
     /// The physics package's function arguments apply (`MacroSet::physics`).
     physics: bool,
+    /// Only the standalone display entry point admits one top-level label.
+    display_tags: bool,
+    display_tag: Option<Node>,
     /// Token indices of the delimiters closing the physics arguments being
     /// parsed. xparse consumes them, so `\argclose` follows the argument
     /// instead and amsmath's dots see no closing delimiter.
@@ -253,6 +276,8 @@ impl<'s> Parser<'s> {
             depth: 0,
             ligatures: true,
             physics: false,
+            display_tags: false,
+            display_tag: None,
             argument_closes: Vec::new(),
             unclosed_arguments,
             close_table: std::cell::OnceCell::new(),
@@ -1004,6 +1029,18 @@ impl<'s> Parser<'s> {
         items: &mut Vec<Node>,
         over: &mut Option<(usize, FracSpec, Span)>,
     ) -> Result<ControlFlow, MathError> {
+        if name == "tag" && self.display_tags {
+            if !stops.top || self.depth != 0 {
+                return Err(MathError::Malformed {
+                    what: "\\tag is only supported at the top level of a standalone display"
+                        .to_owned(),
+                    at: span.start,
+                });
+            }
+            self.pos += 1;
+            self.read_display_tag(span)?;
+            return Ok(ControlFlow::Continue);
+        }
         let Some(cmd) = commands::lookup(name) else {
             return Err(MathError::UnsupportedCommand {
                 name: format!("\\{name}"),
@@ -1110,6 +1147,46 @@ impl<'s> Parser<'s> {
             }
         }
         Ok(ControlFlow::Continue)
+    }
+
+    /// A display label is a strict braced text argument, not an inline atom.
+    /// Parsing it through the existing text grammar retains macro expansion,
+    /// escaped characters, math islands and exact original-source spans.
+    fn read_display_tag(&mut self, span: Span) -> Result<(), MathError> {
+        if self.display_tag.is_some() {
+            return Err(MathError::Malformed {
+                what: "a standalone display can have only one \\tag".to_owned(),
+                at: span.start,
+            });
+        }
+        self.skip_spaces();
+        let starred = matches!(self.peek().map(|tok| tok.kind), Some(TokKind::Char('*')));
+        if starred {
+            self.pos += 1;
+            self.skip_spaces();
+        }
+        if !matches!(self.peek().map(|tok| tok.kind), Some(TokKind::BeginGroup)) {
+            return Err(MathError::Malformed {
+                what: "\\tag requires a braced text label".to_owned(),
+                at: self.here(),
+            });
+        }
+        let (mut body, argument_span) = self.text_island_argument("tag")?;
+        if !starred {
+            let paren = |ch: char| {
+                Node::new(
+                    NodeKind::TextRun {
+                        text: ch.to_string(),
+                        char_spans: vec![span],
+                    },
+                    span,
+                )
+            };
+            body.insert(0, paren('('));
+            body.push(paren(')'));
+        }
+        self.display_tag = Some(Node::new(NodeKind::List(body), span.union(argument_span)));
+        Ok(())
     }
 
     /// Build the node for a self-contained (non-structural) command. Shared

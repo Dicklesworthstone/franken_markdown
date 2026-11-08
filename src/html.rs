@@ -422,10 +422,10 @@ struct RenderState<'a> {
     /// Bounded per-render cache for repeated non-consecutive code blocks.
     highlight_cache: Vec<HighlightCacheEntry>,
     highlight_cache_next: usize,
-    /// Bounded per-render cache for repeated formulas. Keyed by the trimmed
-    /// TeX source plus the display flag — the exact inputs fmd_math::parse
-    /// and to_mathml_with_capacity consume (the capacity hint is the key's
-    /// own byte length; see push_mathml_cached for the purity audit).
+    /// Bounded per-render cache for repeated formulas. Keys include source,
+    /// math style and standalone-block context. Block source is exact for
+    /// `data-tex`; inline source is trimmed. Only standalone blocks have a
+    /// containing column in which an explicit label can be placed.
     math_cache: Vec<MathCacheEntry>,
     math_cache_next: usize,
     /// Bounded per-render cache for repeated link/image destinations.
@@ -448,6 +448,7 @@ struct HighlightCacheEntry {
 struct MathCacheEntry {
     tex: String,
     display: bool,
+    standalone: bool,
     mathml: String,
 }
 
@@ -621,31 +622,52 @@ impl<'a> RenderState<'a> {
     /// the key (and the fallback is a cheap escape, not worth memoizing).
     /// Returns true when MathML was pushed.
     fn push_mathml_cached(&mut self, tex: &str, display: bool, out: &mut String) -> bool {
+        self.push_mathml_in_context(tex, display, false, out)
+    }
+
+    fn push_mathml_in_context(
+        &mut self,
+        tex: &str,
+        display: bool,
+        standalone: bool,
+        out: &mut String,
+    ) -> bool {
         let trimmed = tex.trim();
-        if let Some(entry) = self
-            .math_cache
-            .iter()
-            .find(|entry| entry.display == display && entry.tex == trimmed)
-        {
+        // Tagged blocks retain their complete original source in data-tex.
+        // Inline entries can keep the established whitespace-normalized key.
+        let key = if standalone { tex } else { trimmed };
+        if let Some(entry) = self.math_cache.iter().find(|entry| {
+            entry.display == display && entry.standalone == standalone && entry.tex == key
+        }) {
             out.push_str(&entry.mathml);
             return true;
         }
 
-        match fmd_math::parse(trimmed) {
-            Ok(node) => {
-                let mathml = fmd_math::to_mathml_with_capacity(&node, display, trimmed.len());
-                out.push_str(&mathml);
-                self.remember_math(trimmed, display, mathml);
-                true
+        let mathml = if standalone {
+            let Ok(formula) = fmd_math::parse_display(trimmed) else {
+                return false;
+            };
+            let body = fmd_math::to_mathml_with_capacity(formula.body(), true, trimmed.len());
+            match formula.tag_mathml() {
+                Some(tag) => tagged_equation_html(tex, &body, &tag),
+                None => body,
             }
-            Err(_) => false,
-        }
+        } else {
+            let Ok(node) = fmd_math::parse(trimmed) else {
+                return false;
+            };
+            fmd_math::to_mathml_with_capacity(&node, display, trimmed.len())
+        };
+        out.push_str(&mathml);
+        self.remember_math(key, display, standalone, mathml);
+        true
     }
 
-    fn remember_math(&mut self, trimmed: &str, display: bool, mathml: String) {
+    fn remember_math(&mut self, key: &str, display: bool, standalone: bool, mathml: String) {
         let entry = MathCacheEntry {
-            tex: trimmed.to_string(),
+            tex: key.to_string(),
             display,
+            standalone,
             mathml,
         };
         if self.math_cache.len() < MATH_CACHE_MAX_ENTRIES {
@@ -880,7 +902,7 @@ fn render_block<'a, 'b>(
         Block::Table(table) => render_table(table, out, opts, state),
         Block::ThematicBreak => out.push_str("<hr>\n"),
         Block::MathBlock(tex) => {
-            if state.push_mathml_cached(tex, true, out) {
+            if state.push_mathml_in_context(tex, true, true, out) {
                 out.push('\n');
             } else {
                 out.push_str("<div class=\"math display\">\\[");
@@ -908,6 +930,23 @@ fn render_block<'a, 'b>(
             }
         }
     }
+}
+
+/// The browser owns the column width, so body and label occupy separate grid
+/// cells. Equal outside tracks keep a fitting equation centered; an oversized
+/// pair scrolls as a complete unit instead of clipping or overlapping its tag.
+/// Layout styles belong only to this new wrapper, preserving ordinary output
+/// bytes and keeping labels usable with a caller-supplied replacement sheet.
+fn tagged_equation_html(source: &str, body: &str, tag: &str) -> String {
+    let mut out = String::new();
+    out.push_str("<div class=\"fmd-tagged-equation\" style=\"overflow-x:auto\" data-tex=\"");
+    push_escaped_attr(source, &mut out);
+    out.push_str("\"><div class=\"fmd-equation-row\" style=\"display:grid;grid-template-columns:1fr max-content 1fr;column-gap:1em;align-items:center;min-width:max-content\"><div class=\"fmd-equation-body\" style=\"grid-column:2\">");
+    out.push_str(body);
+    out.push_str("</div><div class=\"fmd-equation-tag\" style=\"grid-column:3;justify-self:end\">");
+    out.push_str(tag);
+    out.push_str("</div></div></div>");
+    out
 }
 
 fn render_definition_list<'a, 'b>(

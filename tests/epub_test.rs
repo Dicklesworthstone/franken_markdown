@@ -634,6 +634,39 @@ fn fixture_epub(opts: &HtmlOptions) -> Vec<u8> {
 }
 
 #[test]
+fn explicit_equation_tags_survive_single_and_book_epub_mathml() {
+    let source = "# Equations\n\n$$\nx^2\\tag{Energy \\& <safety> $n_1$}\n$$\n";
+    let document = parse_markdown(source);
+    let book = franken_markdown::build_book(&[franken_markdown::BookInput {
+        path: "equations.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for options in [
+        HtmlOptions::default(),
+        HtmlOptions {
+            custom_css: Some(".fmd { color: navy; }".into()),
+            ..HtmlOptions::default()
+        },
+    ] {
+        for archive in [
+            epub::render_epub(&document, &options).unwrap(),
+            epub::render_book_epub(&book, &options).unwrap(),
+        ] {
+            let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+            assert_eq!(chapter.matches("class=\"fmd-tagged-equation\"").count(), 1);
+            assert_eq!(chapter.matches("<math ").count(), 2);
+            assert!(chapter.contains("class=\"fmd-equation-tag\""));
+            assert!(chapter.contains("&amp;") && chapter.contains("&lt;safety&gt;"));
+            assert!(chapter.contains("<msub>"));
+            assert_well_formed_xml(&chapter);
+            let opf = entry_text(&archive, "OEBPS/content.opf");
+            assert!(opf.contains("properties=\"mathml\""));
+        }
+    }
+}
+
+#[test]
 fn epub_mimetype_is_first_and_stored() {
     let bytes = fixture_epub(&HtmlOptions::default());
 

@@ -3663,6 +3663,46 @@ fn text_displays_end_the_line_and_keep_tex_vertical_skips() {
 }
 
 #[test]
+fn scoped_displays_reset_line_state_through_trailing_declarations() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    let control = e
+        .typeset_text_with_macros(r"\begin{center}Before $$x$$After\end{center}", &pack)
+        .unwrap();
+    for body in [
+        r"Before {$$x$$} After",
+        r"Before {$$x$$\small} After",
+        r"Before {{$$x$$\small}\color{red}} After",
+        r"Before \textbf{$$x$$\small} After",
+    ] {
+        let source = format!(r"\begin{{center}}{body}\end{{center}}");
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        assert_eq!(
+            (layout.width, layout.height, layout.depth),
+            (control.width, control.height, control.depth),
+            "{body}"
+        );
+        let glyphs = |layout: &Layout| {
+            layout
+                .glyphs
+                .iter()
+                .map(|glyph| {
+                    (
+                        glyph.ch,
+                        glyph.x,
+                        glyph.y,
+                        glyph.size,
+                        glyph.face,
+                        glyph.color,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(glyphs(&layout), glyphs(&control), "{body}");
+    }
+}
+
+#[test]
 fn text_displays_use_short_skips_and_the_declared_line_width() {
     let pack = fmd_math::MacroSet::pack("default").unwrap();
     // A left-aligned short preceding line selects 0pt / 6pt skips.

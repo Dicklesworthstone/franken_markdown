@@ -2703,28 +2703,33 @@ fn dots_next(kind: Option<TokKind<'_>>) -> DotsNext {
 /// `\color{…}`, `\centering` …) set nothing, so a space after one at a line
 /// start is still dropped, as is a space after `\\`.
 fn line_begun(items: &[Node], started: bool) -> bool {
-    items.iter().fold(started, |begun, node| {
+    // The last material or break determines the state. A forward fold
+    // rescans every preceding atom at each space after inline mathematics.
+    for node in items.iter().rev() {
         if node.is_text_display() {
             return false;
         }
         match &node.kind {
-            NodeKind::Linebreak => false,
+            NodeKind::Linebreak => return false,
             // An ordinary group counts as material, even `{}`: the
             // corpus deliberately uses it to retain a leading space.
             // Only a group containing a display can end this text line.
             NodeKind::List(body) | NodeKind::TextStyled { body, .. }
                 if body.iter().any(Node::contains_text_display) =>
             {
-                line_begun(body, begun)
+                // A display inside this group resets any incoming state,
+                // so only the material following its last display matters.
+                return line_begun(body, false);
             }
             NodeKind::StyleChange(_)
             | NodeKind::SizeChange(_)
             | NodeKind::ColorChange(_)
             | NodeKind::AlignChange(_)
-            | NodeKind::LineSpacing(_) => begun,
-            _ => true,
+            | NodeKind::LineSpacing(_) => {}
+            _ => return true,
         }
-    })
+    }
+    started
 }
 
 /// TeX's `\unskip` at the end of a line: the last glue goes, whether a

@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTML and EPUB mathematics preserve complete conditions inside TeX text
+  boxes, including nested subscripts, fractions, text styling, colors and
+  explicit spacing. Ordinary text and equation labels share one semantic
+  MathML path; script and fraction contexts select the same mathematical
+  branches as vector layout. Plain text output keeps its existing bytes; see
+  [Mathematics in HTML and EPUB](docs/HTML_MATHEMATICS.md).
 - Standalone PDF exports resolve ordinary `#fn-...` and `#fnref-...` links to
   the same notes and first citations as HTML, using their final page positions.
   These links preserve citation ordering and page-note placement. Ambiguous

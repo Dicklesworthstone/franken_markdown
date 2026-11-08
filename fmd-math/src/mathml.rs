@@ -66,12 +66,10 @@ pub fn to_mathml_element(node: &Node) -> String {
     w.buf
 }
 
-/// Display labels are text-mode trees whose nested text styling may contain
-/// explicit math islands. Preserve those islands instead of flattening a
-/// whole text box to one `mtext`. The ordinary serializer remains byte-stable.
+/// A display label uses the same semantic text walk as ordinary mathematics.
+/// Its root is an inline text-mode tree rather than a display formula.
 pub(crate) fn to_label_mathml(node: &Node) -> String {
     let mut w = Writer::with_capacity(MATHML_CAPACITY_FLOOR, false);
-    w.rich_text = true;
     w.open("math", &[("xmlns", MATHML_NS), ("display", "inline")]);
     emit_node(&mut w, node, Style::Text);
     w.close("math");
@@ -89,8 +87,11 @@ struct Writer {
     /// amsmath's `\if@display` for [`NodeKind::DisplayKern`]: a block
     /// root, or inside a display island.
     in_display: bool,
-    rich_text: bool,
     text_variant: Option<&'static str>,
+    /// The child style already supplied by a MathML script/fraction element.
+    /// Passing that style through the semantic walk must not add an absolute
+    /// `scriptlevel` wrapper to an otherwise unchanged ordinary child group.
+    automatic_style: Option<Style>,
 }
 
 impl Writer {
@@ -98,8 +99,8 @@ impl Writer {
         Self {
             buf: String::with_capacity(cap),
             in_display,
-            rich_text: false,
             text_variant: None,
+            automatic_style: None,
         }
     }
 
@@ -235,35 +236,16 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
                 w.close("mo");
             }
         }
-        NodeKind::Text { body } if w.rich_text => emit_rich_text(w, body, None),
-        NodeKind::Text { body } => emit_mtext_nodes(w, body),
+        NodeKind::Text { body } => emit_text(w, body, None, style),
         NodeKind::TextRun { text, .. } => {
-            if let Some(variant) = w.text_variant {
-                w.open("mtext", &[("mathvariant", variant)]);
-            } else {
-                w.open("mtext", &[]);
-            }
+            let variant = w.text_variant;
+            open_mtext(w, variant);
             w.text(text);
             w.close("mtext");
         }
-        NodeKind::TextStyled { style: ts, body } if w.rich_text => {
-            emit_rich_text(w, body, Some(*ts))
-        }
-        NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body),
+        NodeKind::TextStyled { style: ts, body } => emit_text(w, body, Some(*ts), style),
         NodeKind::MathIsland { body, display } => {
-            let inner_style = if *display {
-                Style::Display
-            } else {
-                Style::Text
-            };
-            let outer = w.in_display;
-            let outer_text_variant = w.text_variant.take();
-            w.in_display |= *display;
-            w.open("mrow", &[]);
-            emit_run(w, body, inner_style, None, None);
-            w.close("mrow");
-            w.in_display = outer;
-            w.text_variant = outer_text_variant;
+            emit_math_island(w, body, *display, style);
         }
         NodeKind::StyleChange(_)
         | NodeKind::AlignChange(_)
@@ -302,12 +284,14 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             emit_node(w, &branches[style.choice_index()], style);
         }
         NodeKind::Logo(kind) => {
-            w.open("mtext", &[]);
+            let variant = w.text_variant;
+            open_mtext(w, variant);
             w.text(logo_text(*kind));
             w.close("mtext");
         }
         NodeKind::Tie => {
-            w.open("mtext", &[]);
+            let variant = w.text_variant;
+            open_mtext(w, variant);
             w.buf.push('\u{00A0}');
             w.close("mtext");
         }
@@ -324,6 +308,44 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
     }
 }
 
+/// A structural MathML element supplies its child's smaller style itself.
+/// Keep the semantic style in step for math choices and text/math islands,
+/// while leaving the ordinary element's native sizing and bytes alone.
+fn emit_child(w: &mut Writer, node: &Node, style: Style) {
+    let outer = w.automatic_style.replace(style);
+    emit_node(w, node, style);
+    w.automatic_style = outer;
+}
+
+fn emit_math_island(w: &mut Writer, body: &[Node], display: bool, style: Style) {
+    // A text island resumes its surrounding script size. Outside scripts,
+    // $...$ and $$...$$ select text and display style respectively, as in
+    // Engine::math_island. Text font declarations do not enter mathematics.
+    let inner_style = if style.is_script() {
+        style
+    } else if display {
+        Style::Display
+    } else {
+        Style::Text
+    };
+    let outer_display = w.in_display;
+    let outer_variant = w.text_variant.take();
+    w.in_display |= display;
+    w.open("mrow", &[]);
+    let style_wrapper = inner_style != style;
+    if style_wrapper {
+        let displaystyle = if display { "true" } else { "false" };
+        w.open("mstyle", &[("displaystyle", displaystyle)]);
+    }
+    emit_run(w, body, inner_style, None, None);
+    if style_wrapper {
+        w.close("mstyle");
+    }
+    w.close("mrow");
+    w.in_display = outer_display;
+    w.text_variant = outer_variant;
+}
+
 fn emit_run(w: &mut Writer, items: &[Node], style: Style, color: Option<&str>, size: Option<f64>) {
     // Remainder markers (`\color`, `\displaystyle`, …) are siblings, not
     // nested groups. Walking them recursively is O(markers) stack frames, so
@@ -332,11 +354,12 @@ fn emit_run(w: &mut Writer, items: &[Node], style: Style, color: Option<&str>, s
     let mut style = style;
     let mut color = color;
     let mut size = size;
+    let mut explicit_style = false;
     while !items.is_empty() {
         let marker_at = items.iter().position(|n| is_remainder_marker(&n.kind));
         match marker_at {
             None => {
-                emit_styled_siblings(w, items, style, color, size);
+                emit_styled_siblings(w, items, style, color, size, explicit_style);
                 return;
             }
             Some(0) => {
@@ -345,13 +368,14 @@ fn emit_run(w: &mut Writer, items: &[Node], style: Style, color: Option<&str>, s
                 };
                 let (next_style, next_color, next_size) =
                     apply_marker(&first.kind, style, color, size);
+                explicit_style |= matches!(first.kind, NodeKind::StyleChange(_));
                 style = next_style;
                 color = next_color;
                 size = next_size;
                 items = rest;
             }
             Some(k) => {
-                emit_styled_siblings(w, &items[..k], style, color, size);
+                emit_styled_siblings(w, &items[..k], style, color, size, explicit_style);
                 items = &items[k..];
             }
         }
@@ -390,11 +414,14 @@ fn emit_styled_siblings(
     style: Style,
     color: Option<&str>,
     size: Option<f64>,
+    explicit_style: bool,
 ) {
     if items.is_empty() {
         return;
     }
-    let wrap = color.is_some() || size.is_some() || style_needs_mstyle(style);
+    let style_wrapper =
+        explicit_style || (style_needs_mstyle(style) && w.automatic_style != Some(style));
+    let wrap = color.is_some() || size.is_some() || style_wrapper;
     if wrap {
         let ds = if matches!(style, Style::Display) {
             "true"
@@ -415,7 +442,7 @@ fn emit_styled_siblings(
         let size_val = size.map(|f| write_percent(&mut pct_buf, f));
         let mut attrs: [(&str, &str); MSTYLE_MAX_ATTRS] = [("", ""); MSTYLE_MAX_ATTRS];
         let mut n_attrs = 0usize;
-        if style_needs_mstyle(style) {
+        if style_wrapper {
             attrs[n_attrs] = ("displaystyle", ds);
             n_attrs += 1;
             attrs[n_attrs] = ("scriptlevel", sl);
@@ -559,10 +586,10 @@ fn emit_scripts(
         }
     }
     if has_sub && let Some(s) = sub {
-        emit_node(w, s, style);
+        emit_child(w, s, style.sup());
     }
     if has_sup {
-        emit_superscript(w, sup, primes, style);
+        emit_superscript(w, sup, primes, style.sup());
     }
     w.close(tag);
 }
@@ -570,7 +597,7 @@ fn emit_scripts(
 fn emit_superscript(w: &mut Writer, sup: Option<&Node>, primes: &[Span], style: Style) {
     if primes.is_empty() {
         if let Some(s) = sup {
-            emit_node(w, s, style);
+            emit_child(w, s, style);
         }
         return;
     }
@@ -587,7 +614,7 @@ fn emit_superscript(w: &mut Writer, sup: Option<&Node>, primes: &[Span], style: 
         w.close("mo");
     }
     if let Some(s) = sup {
-        emit_node(w, s, style);
+        emit_child(w, s, style);
     }
     w.close("mrow");
 }
@@ -618,7 +645,7 @@ fn emit_frac(w: &mut Writer, num: &Node, den: &Node, spec: FracSpec, style: Styl
             "false"
         };
         w.open("mstyle", &[("displaystyle", ds)]);
-        emit_frac_body(w, num, den, spec, style);
+        emit_frac_body(w, num, den, spec, st);
         w.close("mstyle");
     } else {
         emit_frac_body(w, num, den, spec, style);
@@ -656,8 +683,8 @@ fn emit_mfrac(w: &mut Writer, num: &Node, den: &Node, spec: FracSpec, style: Sty
         attrs.push(("numalign", numalign));
     }
     w.open("mfrac", &attrs);
-    emit_node(w, num, style);
-    emit_node(w, den, style);
+    emit_child(w, num, style.num());
+    emit_child(w, den, style.num());
     w.close("mfrac");
 }
 
@@ -671,7 +698,7 @@ fn emit_radical(w: &mut Writer, index: Option<&Node>, radicand: &Node, style: St
     if let Some(ix) = index {
         w.open("mroot", &[]);
         emit_node(w, radicand, style);
-        emit_node(w, ix, style);
+        emit_child(w, ix, Style::ScriptScript);
         w.close("mroot");
     } else {
         w.open("msqrt", &[]);
@@ -741,21 +768,29 @@ fn emit_left_right(w: &mut Writer, left: &Delim, right: &Delim, body: &[Node], s
     w.close("mrow");
 }
 
-fn emit_mtext_nodes(w: &mut Writer, body: &[Node]) {
-    w.open("mtext", &[]);
-    collect_text(w, body);
-    w.close("mtext");
+/// Only literal text, unstyled groups, logos and ties may be folded into one
+/// token. Math islands, styling, declarations and explicit spacing must keep
+/// their own nodes: flattening those changes or drops authored mathematics.
+fn plain_text_only(body: &[Node]) -> bool {
+    body.iter().all(|node| match &node.kind {
+        NodeKind::TextRun { .. }
+        | NodeKind::Symbol { .. }
+        | NodeKind::AmsSymbol { .. }
+        | NodeKind::Logo(_)
+        | NodeKind::Tie => true,
+        NodeKind::List(items) | NodeKind::Text { body: items } => plain_text_only(items),
+        _ => false,
+    })
 }
 
-fn collect_text(w: &mut Writer, body: &[Node]) {
+/// Called only after `plain_text_only` has admitted the complete subtree.
+fn collect_plain_text(w: &mut Writer, body: &[Node]) {
     for n in body {
         match &n.kind {
             NodeKind::TextRun { text, .. } => w.text(text),
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
-            NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
-            NodeKind::TextStyled { body, .. } => collect_text(w, body),
-            NodeKind::Space(_) | NodeKind::Skip(_) | NodeKind::DisplayKern { .. } => {
-                w.buf.push(' ');
+            NodeKind::List(items) | NodeKind::Text { body: items } => {
+                collect_plain_text(w, items);
             }
             NodeKind::Logo(kind) => w.text(logo_text(*kind)),
             NodeKind::Tie => w.buf.push('\u{00A0}'),
@@ -764,38 +799,43 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
     }
 }
 
-fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
-    let variant = match ts {
+fn text_variant(style: TextStyle) -> &'static str {
+    match style {
         TextStyle::Bold => "bold",
         TextStyle::Emph | TextStyle::Italic => "italic",
         TextStyle::Underline | TextStyle::Roman => "normal",
         TextStyle::Typewriter => "monospace",
         TextStyle::SansSerif => "sans-serif",
-    };
-    w.open("mtext", &[("mathvariant", variant)]);
-    collect_text(w, body);
-    w.close("mtext");
+    }
+}
+
+fn open_mtext(w: &mut Writer, variant: Option<&str>) {
+    if let Some(variant) = variant {
+        w.open("mtext", &[("mathvariant", variant)]);
+    } else {
+        w.open("mtext", &[]);
+    }
 }
 
 /// Text styling applies to text runs, while an explicit `$...$` island
 /// resumes ordinary mathematical alphabets, matching the layout engine.
-fn emit_rich_text(w: &mut Writer, body: &[Node], style: Option<TextStyle>) {
-    let outer_variant = w.text_variant;
-    if let Some(style) = style {
-        w.text_variant = Some(match style {
-            TextStyle::Bold => "bold",
-            TextStyle::Emph | TextStyle::Italic => "italic",
-            TextStyle::Underline | TextStyle::Roman => "normal",
-            TextStyle::Typewriter => "monospace",
-            TextStyle::SansSerif => "sans-serif",
-        });
-    }
+/// Plain text keeps its compact, byte-compatible single `mtext` spelling.
+fn emit_text(w: &mut Writer, body: &[Node], style: Option<TextStyle>, math_style: Style) {
+    let variant = style.map(text_variant).or(w.text_variant);
     let underline = style == Some(TextStyle::Underline);
+    if !underline && plain_text_only(body) {
+        open_mtext(w, variant);
+        collect_plain_text(w, body);
+        w.close("mtext");
+        return;
+    }
+    let outer_variant = w.text_variant;
+    w.text_variant = variant;
     if underline {
         w.open("munder", &[("accentunder", "true")]);
     }
     w.open("mrow", &[]);
-    emit_run(w, body, Style::Text, None, None);
+    emit_run(w, body, math_style, None, None);
     w.close("mrow");
     if underline {
         w.open("mo", &[("stretchy", "true")]);
@@ -851,7 +891,7 @@ fn emit_stack(w: &mut Writer, kind: StackKind, annotation: &Node, base: &Node, s
     };
     w.open(tag, &[]);
     emit_node(w, base, style);
-    emit_node(w, annotation, style);
+    emit_child(w, annotation, style.sup());
     w.close(tag);
 }
 
@@ -867,9 +907,9 @@ fn emit_xarrow(w: &mut Writer, mapsto: bool, above: &Node, below: Option<&Node>,
     w.text(arrow);
     w.close("mo");
     if let Some(b) = below {
-        emit_node(w, b, style);
+        emit_child(w, b, style.sup());
     }
-    emit_node(w, above, style);
+    emit_child(w, above, style.sup());
     w.close(tag);
 }
 

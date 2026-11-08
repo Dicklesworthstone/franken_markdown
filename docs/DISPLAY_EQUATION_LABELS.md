@@ -94,8 +94,9 @@ their existing intrinsic layout, independent of the supplied column width.
 Glyphs, rules and constructed paths retain their exact source spans and paint
 order. Label parentheses refer to the original `\tag` command span.
 
-`tag_mathml()` preserves nested text styling and math islands without changing
-the byte output of the existing general MathML serializer.
+`tag_mathml()` and [ordinary HTML/EPUB mathematics](HTML_MATHEMATICS.md) share
+the same text serializer, preserving nested styling and mathematical islands.
+Plain text-only formulas retain their compact single-`mtext` spelling.
 
 ## Focused validation
 

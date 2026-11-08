@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SVG exports link footnote citations to the complete note body and note
+  labels back to the first painted citation. Ordinary `#fn-ID` and `#fnref-N`
+  fragments resolve to actual note destinations. Typed transient provenance
+  preserves the shared AST, rich note content and existing endnote transform;
+  ambiguous source aliases remain inactive. See [SVG links](docs/SVG_LINKS.md).
 - Book publishing controls expose literal PDF line spacing, horizontal and
   vertical table padding, and footnote return links. Editing one option keeps
   unrelated imported typography settings intact, including numeric precedence;

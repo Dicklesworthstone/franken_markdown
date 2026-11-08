@@ -502,10 +502,39 @@ fn svg_links_all_public_entrypoints_and_endnotes_keep_navigation_deterministical
     let opts = SvgOptions::default();
     let result = render_svg_with_diagnostics(&doc, &opts);
     assert_eq!(result, render_svg_with_diagnostics(&doc, &opts));
-    assert_eq!(
-        result,
-        render_svg_with_diagnostics(&doc.with_endnotes(), &opts)
+    let legacy = render_svg_with_diagnostics(&doc.with_endnotes(), &opts);
+    // Explicit legacy preparation intentionally erases note provenance. Its
+    // existing external/heading links and complete painted content remain;
+    // source documents additionally gain typed citation/return navigation.
+    let without_note_navigation = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .filter(|line| {
+                let value = line
+                    .strip_prefix("<view id=\"")
+                    .or_else(|| line.strip_prefix("<a href=\"#"));
+                !value
+                    .and_then(|value| value.split_once('"'))
+                    .is_some_and(|(id, _)| {
+                        id.strip_prefix("fmd-note-ref-")
+                            .or_else(|| id.strip_prefix("fmd-note-"))
+                            .is_some_and(|number| {
+                                !number.is_empty()
+                                    && !number.starts_with('0')
+                                    && number.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        without_note_navigation(&result.0) == String::from_utf8_lossy(&legacy.0).trim_end(),
+        "note navigation changed paint or existing source links"
     );
+    assert_eq!(result.1, legacy.1);
+    assert_eq!(result.2, legacy.2);
+    assert!(!String::from_utf8_lossy(&legacy.0).contains("<view id=\"fmd-note-"));
     assert_eq!(result.0, render_svg(&doc, &opts));
     assert_eq!(
         (result.0.clone(), result.1),
@@ -520,6 +549,8 @@ fn svg_links_all_public_entrypoints_and_endnotes_keep_navigation_deterministical
     assert!(out.contains("<view id=\"fmd-heading-0\""));
     assert!(out.contains("<a href=\"#fmd-heading-0\""));
     assert!(out.contains("<a href=\"https://example.com/note\""));
+    assert!(out.contains("<a href=\"#fmd-note-1\""));
+    assert!(out.contains("<a href=\"#fmd-note-ref-1\""));
     assert!(result.2.is_empty());
 }
 

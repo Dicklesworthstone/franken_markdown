@@ -385,6 +385,8 @@ struct RStyle {
     ink: Ink,
     /// Render-local navigation identity; preserved by every inline style.
     link: Option<usize>,
+    /// Exact generated citation provenance, including inside an existing link.
+    note_reference: Option<usize>,
 }
 
 impl RStyle {
@@ -395,6 +397,7 @@ impl RStyle {
         strike: false,
         ink: Ink::Fg,
         link: None,
+        note_reference: None,
     };
 
     fn font_style(self) -> FontStyle {
@@ -444,6 +447,7 @@ struct Poster {
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
     images: images::ImageStore,
     navigation: RefCell<links::Navigation>,
+    has_note_navigation: bool,
     warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
@@ -482,6 +486,7 @@ impl Poster {
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
             navigation: RefCell::new(links::Navigation::default()),
+            has_note_navigation: false,
             warnings: geometry.warnings,
             colors: theme.effective_colors(false, false).clone(),
             scale: geometry.scale,
@@ -526,8 +531,12 @@ impl Poster {
         let r = self.content_right();
         // Share PDF's cycle-safe numbering and lossless rich-note preparation.
         // With no footnote syntax this borrows the source rather than cloning it.
-        let prepared = doc.with_endnotes();
-        for block in &prepared.blocks {
+        let prepared = franken_markdown::PreparedEndnotes::new(doc);
+        self.has_note_navigation = self.navigation.borrow_mut().prepare_endnotes(&prepared);
+        for (index, block) in prepared.document().blocks.iter().enumerate() {
+            if let Some(number) = prepared.note_at_block(index) {
+                self.navigation.borrow_mut().note_start(number, self.y);
+            }
             self.block(block, l, r, false);
         }
         (self.y + self.margin_bottom).max(1.0)
@@ -665,6 +674,29 @@ impl Poster {
 
     fn flatten(&self, inlines: &[Inline], st: RStyle, out: &mut Vec<Piece>) {
         for inline in inlines {
+            let note_target = if self.has_note_navigation {
+                self.navigation.borrow().inline_note(inline)
+            } else {
+                None
+            };
+            let st = if let Some(target) = note_target {
+                let note_reference = match target {
+                    franken_markdown::EndnoteTarget::Note(number) => Some(number),
+                    franken_markdown::EndnoteTarget::Reference(_) => None,
+                };
+                // Preserve the enclosing source link's destination. The note
+                // mark still supplies its first actual return position.
+                let link = st
+                    .link
+                    .or_else(|| Some(self.navigation.borrow_mut().intern_note(target)));
+                RStyle {
+                    link,
+                    note_reference,
+                    ..st
+                }
+            } else {
+                st
+            };
             match inline {
                 Inline::Text(s) => out.push(Piece::Text(s.clone(), st)),
                 Inline::Emphasis(inner) => self.flatten(inner, RStyle { italic: true, ..st }, out),

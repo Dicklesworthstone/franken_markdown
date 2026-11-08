@@ -168,11 +168,15 @@ impl Poster {
                 let prepared = Shaper::new(self).shape(&word.text, word.style, size);
                 pen = prepared.paint(self, pen, baseline, word.style, size);
             }
-            if word.style.link.is_some() {
+            if word.style.link.is_some() || word.style.note_reference.is_some() {
                 let (ascent, height) =
                     self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
                 let bounds = (start, baseline - ascent, pen, baseline - ascent + height);
-                self.navigation.borrow_mut().record(
+                let mut navigation = self.navigation.borrow_mut();
+                if let Some(number) = word.style.note_reference {
+                    navigation.note_reference(number, bounds);
+                }
+                navigation.record(
                     word.style.link,
                     Some(bounds),
                     &mut previous_link,

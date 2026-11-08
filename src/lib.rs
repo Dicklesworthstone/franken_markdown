@@ -165,6 +165,7 @@ pub use flow_display::{
     AssetRequest, AssetRequestId, AssetResult, DisplayBlock, FlowDisplayError,
     ResumableFlowDisplay, StepResult, UnresolvedAsset,
 };
+pub use footnotes::{EndnoteTarget, PreparedEndnotes};
 pub use interactive::render_interactive_html;
 pub use lang_dispatch::{
     DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult, LanguageId,

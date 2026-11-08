@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{Block, Document, Inline};
 
+#[path = "footnotes/endnote_navigation.rs"]
+mod endnote_navigation;
+pub use endnote_navigation::{EndnoteTarget, PreparedEndnotes};
+
 /// Internal provenance for a document whose page notes have been prepared.
 ///
 /// A source `Document` can contain any footnote identifier and any leading
@@ -169,14 +173,24 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
     }
     let mut numbering = number_notes(doc, &notes);
     numbering.paged = paged;
-    let mut blocks = rewrite_blocks(&doc.blocks, &notes, &numbering);
+    Cow::Owned(assemble_notes(doc, &notes, &numbering, backlinks))
+}
+
+fn assemble_notes(
+    doc: &Document,
+    notes: &Notes<'_>,
+    numbering: &Numbering,
+    backlinks: bool,
+) -> Document {
+    let paged = numbering.paged;
+    let mut blocks = rewrite_blocks(&doc.blocks, notes, numbering);
     if !notes.definitions.is_empty() && !paged {
         blocks.push(Block::Heading {
             level: 2,
             inlines: vec![Inline::Text("Notes".to_string())],
         });
         for &index in &numbering.order {
-            let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
+            let mut body = rewrite_blocks(notes.definitions[index], notes, numbering);
             let label = superscript(numbering.numbers[index]);
             match body.first_mut() {
                 Some(Block::Paragraph(inlines)) if paragraph_accepts_note_label(inlines) => {
@@ -199,7 +213,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
             .map(|&index| {
                 (
                     numbering.numbers[index],
-                    rewrite_blocks(notes.definitions[index], &notes, &numbering),
+                    rewrite_blocks(notes.definitions[index], notes, numbering),
                 )
             })
             .collect();
@@ -238,7 +252,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
             });
         }
     }
-    Cow::Owned(Document { blocks })
+    Document { blocks }
 }
 
 /// Keep figure-only paragraphs intact. Prefixing their first image with text

@@ -2,6 +2,7 @@
 //! Measurement may intern metadata but never records regions or diagnostics.
 
 use super::{Inline, SvgWarning, esc_attr, push_q2, push_u64_fast};
+use franken_markdown::{EndnoteTarget, PreparedEndnotes};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "link_targets.rs"]
@@ -15,7 +16,12 @@ const MAX_METADATA_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const UNSAFE: usize = usize::MAX;
 const LIMITED: usize = usize::MAX - 1;
-const TOP: usize = usize::MAX - 2;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum View {
+    Heading(usize),
+    Endnote(EndnoteTarget),
+    Top,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Link {
@@ -102,15 +108,75 @@ pub(super) struct Navigation {
     links: Vec<Link>,
     ids: BTreeMap<Link, usize>,
     headings: BTreeMap<String, Heading>,
+    /// Exact immutable prepared Inline identities, never authored destinations.
+    note_inlines: BTreeMap<usize, EndnoteTarget>,
+    note_aliases: BTreeMap<String, EndnoteTarget>,
+    note_positions: BTreeMap<EndnoteTarget, f64>,
     regions: Vec<Region>,
     seen: BTreeSet<usize>,
     metadata_bytes: usize,
     heading_limited: bool,
     region_limited: bool,
     geometry_adjusted: bool,
+    note_limited: bool,
 }
 
 impl Navigation {
+    pub(super) fn prepare_endnotes(&mut self, prepared: &PreparedEndnotes<'_>) -> bool {
+        self.note_limited = prepared.navigation_limited();
+        prepared.for_each_inline_target(|inline, target| {
+            self.note_inlines
+                .insert(std::ptr::from_ref(inline) as usize, target);
+        });
+        for (name, target) in prepared.aliases() {
+            if name.len() > MAX_METADATA_BYTES - self.metadata_bytes {
+                self.note_limited = true;
+                continue;
+            }
+            self.metadata_bytes += name.len();
+            self.note_aliases.insert(name.to_owned(), target);
+        }
+        !self.note_inlines.is_empty()
+    }
+
+    pub(super) fn inline_note(&self, inline: &Inline) -> Option<EndnoteTarget> {
+        self.note_inlines
+            .get(&(std::ptr::from_ref(inline) as usize))
+            .copied()
+    }
+
+    pub(super) fn note_start(&mut self, number: usize, top: f64) {
+        self.note_position(EndnoteTarget::Note(number), top);
+    }
+
+    pub(super) fn note_reference(&mut self, number: usize, bounds: (f64, f64, f64, f64)) {
+        if let Some(rect) = Rect::new(bounds) {
+            self.note_position(EndnoteTarget::Reference(number), rect.top);
+        }
+    }
+
+    fn note_position(&mut self, target: EndnoteTarget, top: f64) {
+        if top.is_finite() && (0.0..=1e9).contains(&top) {
+            // Measurement never calls this method. Repeated citations and
+            // emergency-wrapped labels retain their first painted position.
+            self.note_positions.entry(target).or_insert(top);
+        } else {
+            self.geometry_adjusted = true;
+        }
+    }
+
+    pub(super) fn intern_note(&mut self, target: EndnoteTarget) -> usize {
+        let label = match target {
+            EndnoteTarget::Note(number) => format!("Footnote {number}"),
+            EndnoteTarget::Reference(number) => format!("Return to footnote {number} citation"),
+        };
+        self.intern_link(Link {
+            target: Target::Endnote(target),
+            title: String::new(),
+            label,
+        })
+    }
+
     pub(super) fn intern(&mut self, raw: &str, title: Option<&str>, content: &[Inline]) -> usize {
         if raw.len() > targets::MAX_TARGET_BYTES {
             return LIMITED;
@@ -122,16 +188,20 @@ impl Navigation {
         if label.trim().is_empty() {
             label = text_label(raw);
         }
-        let link = Link {
+        self.intern_link(Link {
             target,
             title: text_label(title.unwrap_or_default()),
             label,
-        };
+        })
+    }
+
+    fn intern_link(&mut self, link: Link) -> usize {
         if let Some(&id) = self.ids.get(&link) {
             return id;
         }
         let destination_bytes = match &link.target {
             Target::External(value) | Target::Fragment(value) => value.len(),
+            Target::Endnote(_) => 0,
         };
         // The map key and the ordered entry each own their metadata bytes.
         let bytes = (destination_bytes + link.title.len() + link.label.len()) * 2;
@@ -253,11 +323,28 @@ impl Navigation {
             let Some(link) = self.links.get(id) else {
                 continue;
             };
-            if let Target::Fragment(fragment) = &link.target {
-                let view = if fragment.is_empty() {
-                    Some(TOP)
-                } else {
-                    self.headings.get(fragment).map(|heading| heading.id)
+            if !matches!(&link.target, Target::External(_)) {
+                let view = match &link.target {
+                    Target::Fragment(fragment) if fragment.is_empty() => Some(View::Top),
+                    Target::Fragment(fragment) if !self.note_limited => {
+                        match (self.headings.get(fragment), self.note_aliases.get(fragment)) {
+                            // A source spelling owned by two emitted elements
+                            // is ambiguous. Generated typed note links bypass
+                            // source names and still reach the correct object.
+                            (Some(_), Some(_)) => None,
+                            (Some(heading), None) => Some(View::Heading(heading.id)),
+                            (None, Some(target)) if !self.heading_limited => self
+                                .note_positions
+                                .contains_key(target)
+                                .then_some(View::Endnote(*target)),
+                            (None, _) => None,
+                        }
+                    }
+                    Target::Endnote(target) => self
+                        .note_positions
+                        .contains_key(target)
+                        .then_some(View::Endnote(*target)),
+                    _ => None,
                 };
                 if let Some(view) = view {
                     resolved.insert(id, view);
@@ -274,21 +361,35 @@ impl Navigation {
         for heading in self
             .headings
             .values()
-            .filter(|h| needed_views.contains(&h.id))
+            .filter(|h| needed_views.contains(&View::Heading(h.id)))
         {
             part.clear();
-            emit_view(&mut part, heading.id, heading.top, width, height);
+            let view = View::Heading(heading.id);
+            emit_view(&mut part, view, heading.top, width, height);
             if append_bounded(out, &part, &mut budget) {
-                emitted_views.insert(heading.id);
+                emitted_views.insert(view);
             } else {
                 output_limited = true;
             }
         }
-        if needed_views.contains(&TOP) {
+        for (&target, &top) in &self.note_positions {
+            let view = View::Endnote(target);
+            if !needed_views.contains(&view) {
+                continue;
+            }
             part.clear();
-            emit_view(&mut part, TOP, 0.0, width, height);
+            emit_view(&mut part, view, top, width, height);
             if append_bounded(out, &part, &mut budget) {
-                emitted_views.insert(TOP);
+                emitted_views.insert(view);
+            } else {
+                output_limited = true;
+            }
+        }
+        if needed_views.contains(&View::Top) {
+            part.clear();
+            emit_view(&mut part, View::Top, 0.0, width, height);
+            if append_bounded(out, &part, &mut budget) {
+                emitted_views.insert(View::Top);
             } else {
                 output_limited = true;
             }
@@ -302,7 +403,7 @@ impl Navigation {
             part.push_str("<a href=\"");
             match &link.target {
                 Target::External(uri) => esc_attr(uri, &mut part),
-                Target::Fragment(_) => {
+                Target::Fragment(_) | Target::Endnote(_) => {
                     let Some(&view) = resolved.get(&region.link) else {
                         continue;
                     };
@@ -333,17 +434,21 @@ impl Navigation {
             warn(
                 warnings,
                 "svg_link_unsafe",
-                "Unsupported or unsafe link destinations were kept as inert visible content; only HTTP, HTTPS, mailto and known heading fragments are activated.",
+                "Unsupported or unsafe link destinations were kept as inert visible content; only HTTP, HTTPS, mailto and known heading or note fragments are activated.",
             );
         }
         if unknown {
             warn(
                 warnings,
                 "svg_link_unresolved",
-                "One or more heading links have no matching exported heading; their visible content was retained without an active anchor.",
+                "One or more internal links have no unique exported heading, note or citation destination; their visible content was retained without an active anchor.",
             );
         }
-        if self.seen.contains(&LIMITED) || self.region_limited || output_limited {
+        if self.seen.contains(&LIMITED)
+            || self.region_limited
+            || output_limited
+            || self.note_limited
+        {
             warn(
                 warnings,
                 "svg_link_limit",
@@ -381,16 +486,21 @@ fn append_bounded(out: &mut String, part: &str, remaining: &mut usize) -> bool {
     true
 }
 
-fn emit_view_id(out: &mut String, id: usize) {
-    if id == TOP {
-        out.push_str("fmd-top");
-    } else {
-        out.push_str("fmd-heading-");
-        push_u64_fast(out, id as u64);
-    }
+fn emit_view_id(out: &mut String, view: View) {
+    let (prefix, number) = match view {
+        View::Top => {
+            out.push_str("fmd-top");
+            return;
+        }
+        View::Heading(number) => ("fmd-heading-", number),
+        View::Endnote(EndnoteTarget::Note(number)) => ("fmd-note-", number),
+        View::Endnote(EndnoteTarget::Reference(number)) => ("fmd-note-ref-", number),
+    };
+    out.push_str(prefix);
+    push_u64_fast(out, number as u64);
 }
 
-fn emit_view(out: &mut String, id: usize, top: f64, width: f64, height: f64) {
+fn emit_view(out: &mut String, id: View, top: f64, width: f64, height: f64) {
     // A named SVG view translates the origin to the heading without changing
     // scale: retain the root's width/height. Browser history or a `#` link
     // restores the overview. No script, event handler or external fetch.

@@ -10,11 +10,13 @@ const MAX_SLUG_BYTES: usize = 1024;
 pub(super) enum Target {
     External(String),
     Fragment(String),
+    Endnote(franken_markdown::EndnoteTarget),
 }
 
 /// Deliberately narrower than HTML: a portable poster has no document base URL.
 /// Keep relative paths, executable/custom schemes and obfuscated URLs inert.
-/// Fragments are decoded once and later resolved ONLY against heading slugs.
+/// Fragments are decoded once and later resolved only against exported source
+/// headings and typed endnote aliases, never arbitrary SVG element IDs.
 pub(super) fn target(raw: &str) -> Option<Target> {
     if raw.len() > MAX_TARGET_BYTES {
         return None;

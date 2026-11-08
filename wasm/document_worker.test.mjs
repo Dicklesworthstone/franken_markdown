@@ -44,6 +44,8 @@ if (!isMainThread) {
         });
         if (workerData.fontEmbeddingSupport === false && options.fontEmbedding === "full")
           throw Object.assign(new Error("Full font embedding requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
+        if (workerData.profileSupport === false && options.profile !== undefined)
+          throw Object.assign(new Error("Authoring profiles require matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
         const bands = options.running && [options.running.header, options.running.footer];
         if (format === "pdf" && bands && (workerData.runningSupport === "none"
             || (workerData.runningSupport === "text-only" && bands.some(band => band?.image)))) {
@@ -851,6 +853,84 @@ if (!isMainThread) {
       await rejects(api.render(format, "font", { fontEmbedding: "full" }), "UNSUPPORTED_WASM_PACKAGE");
       assert.equal(api.disposed, true, "existing stale-package failure closes the worker");
     }
+  });
+
+  test("authoring profiles remain owned across queued document and publication requests", async t => {
+    const api = renderer(t);
+    const active = api.renderHtml("slow");
+    const options = { profile: "commonmark-gfm" };
+    const outputs = ["html", "pdf", "svg", "epub"].map(format => api.render(format, "Term\n: Definition", options));
+    options.profile = "gfm-plus";
+    await active;
+    for (const output of await Promise.all(outputs))
+      assert.equal(JSON.parse(output.text()).options.profile, "commonmark-gfm");
+    const targets = ["html", "pdf", "svg", "epub"].map((format, index) => ({
+      format, options: { profile: index % 2 ? "gfm-plus" : "commonmark-gfm" },
+    }));
+    const pending = api.publish("publication", targets);
+    for (const target of targets) target.options.profile = "invalid-after-admission";
+    assert.deepEqual((await pending).outputs.map(output => JSON.parse(output.text()).options.profile),
+      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus"]);
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  test("authoring profiles validate before workers, assets and publication admission", async () => {
+    let starts = 0, reads = 0;
+    const api = createWorkerRenderer({ workerFactory() { starts++; assert.fail("unexpected worker"); } });
+    const accessor = Object.defineProperty({}, "profile", { get() { reads++; return "gfm-plus"; } });
+    try {
+      for (const format of ["html", "pdf", "svg", "epub"]) {
+        for (const profile of [null, "", "gfm", "GFM-PLUS", " gfm-plus ", 1, true, {}])
+          await rejects(api.render(format, "x", { profile, pdfImages: [null] }), "INVALID_OPTIONS");
+        await rejects(api.render(format, "x", accessor), "INVALID_OPTIONS");
+      }
+      for (const profile of ["commonmark-gfm", "gfm-plus"])
+        await rejects(api.renderInteractiveHtml("x", { profile }), "INVALID_OPTIONS");
+      await rejects(api.publish("x", [{ format: "html" }, { format: "pdf", options: { profile: "unknown" } }]),
+        "INVALID_OPTIONS");
+      assert.equal(starts, 0); assert.equal(reads, 0); assert.equal(api.pendingBytes, 0);
+    } finally { api.dispose(); }
+  });
+
+  test("authoring profile ingress is charged and queued cancellation releases it", async t => {
+    const api = renderer(t);
+    const active = api.renderHtml("slow"), before = api.pendingBytes;
+    const controller = new AbortController();
+    const queued = rejects(api.renderPdf("x", { profile: "commonmark-gfm" }, { signal: controller.signal }), "ABORTED");
+    assert.equal(api.pendingBytes - before, 512 + 2 + 64 + "commonmark-gfm".length * 2);
+    controller.abort(); await queued;
+    assert.equal(api.pendingBytes, before);
+    await active;
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  test("worker-side authoring profiles reject malformed raw RPC before loading native code", async t => {
+    const rpc = new OwnedWorkerRpc(new NodeEndpoint({ loadFailure: true }), { timeoutMs: 5000 });
+    t.after(() => rpc.dispose());
+    for (const format of ["html", "pdf", "svg", "epub"])
+      await rejects(rpc.request(format, 512, () => ({ args: [format, "x", { profile: "gfm" }, 4096] })), "INVALID_OPTIONS");
+    await rejects(rpc.request("publish", 512, () => ({ args: ["publish", "x", [
+      { format: "html" }, { format: "pdf", options: { profile: "" } },
+    ], 4096] })), "INVALID_OPTIONS");
+    assert.equal(rpc.closed, false);
+    await rejects(rpc.request("html", 512, () => ({ args: ["html", "x", { profile: "commonmark-gfm" }, 4096] })),
+      "RENDER_FAILED");
+    assert.equal(rpc.closed, true);
+  });
+
+  test("unsupported authoring profiles retain the stale-package error and never replay work", async t => {
+    for (const format of ["html", "pdf", "svg", "epub"]) {
+      const api = renderer(t, {}, { profileSupport: false });
+      await api.render(format, "ordinary");
+      const refused = rejects(api.render(format, "profiled", { profile: "commonmark-gfm" }), "UNSUPPORTED_WASM_PACKAGE");
+      const queued = rejects(api.renderHtml("must not replay"), "SESSION_LOST");
+      await Promise.all([refused, queued]);
+      assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
+    }
+    const api = renderer(t, {}, { profileSupport: false });
+    await rejects(api.publish("publication", [{ format: "html" }, { format: "epub", options: { profile: "gfm-plus" } }]),
+      "UNSUPPORTED_WASM_PACKAGE");
+    assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
   });
 
 }

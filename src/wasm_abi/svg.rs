@@ -40,6 +40,56 @@ pub fn render_svg_configured_resources(
     mono_regular: Vec<u8>,
     font_weights: Vec<u32>,
 ) -> Result<FmdRenderResult, JsValue> {
+    render_svg_configured_profiled(
+        markdown,
+        font,
+        dark_mode,
+        font_scale,
+        max_width_pt,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        None,
+    )
+}
+
+/// Render with an explicit Markdown authoring profile and the complete
+/// resource/format options. Existing bindings retain their original signatures.
+///
+/// An absent profile keeps every supported construct; `commonmark-gfm` keeps
+/// definition-list syntax as paragraphs and `gfm-plus` enables definition lists.
+/// This selection does not change raw-HTML safety or PDF/A policy.
+///
+/// # Errors
+/// Rejects an unknown authoring profile and the same invalid options, resources
+/// and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderSvgConfiguredProfiled)]
+pub fn render_svg_configured_profiled(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    font_scale: Option<f64>,
+    max_width_pt: Option<f64>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    authoring_profile: Option<String>,
+) -> Result<FmdRenderResult, JsValue> {
+    let authoring_profile =
+        super::parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     admit_assets(
         markdown.len(),
         &image_destinations,
@@ -57,6 +107,7 @@ pub fn render_svg_configured_resources(
     .map_err(JsValue::from_str)?;
     let width = geometry(font_scale, max_width_pt).map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.profile = authoring_profile;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     apply_font_assets(
         &mut options,
@@ -197,8 +248,10 @@ pub(super) fn render_with_options(
             &diagnostic.message,
         );
     }
+    let document = parsed.into_document();
+    let document = crate::apply_profile(&document, options.profile);
     let (bytes, report, warnings) = crate::svg::render_svg_with_resources(
-        &parsed.into_document(),
+        &document,
         &svg_options,
         &options.font_assets,
         &options.pdf_image_assets,

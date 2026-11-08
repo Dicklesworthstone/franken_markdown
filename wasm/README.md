@@ -219,6 +219,31 @@ caller buffers do not retarget that render. This applies after initialization
 has already completed too. Submit another call to render later changes.
 PDF, SVG and EPUB already use the same request-ownership model.
 
+### Markdown authoring profiles
+
+Single-document HTML, PDF (including PDF/A), SVG and EPUB exports accept
+`profile: "commonmark-gfm"` or `profile: "gfm-plus"`. The CommonMark/GFM
+profile keeps definition-list syntax as literal paragraphs; GFM-plus renders
+definition lists. Omitting the option preserves the existing extended dialect.
+The same choice is retained by document-worker renders, publications and batches.
+
+```js
+const source = "Term\n: A definition.\n";
+const html = await fmd.renderHtml(source, { profile: "commonmark-gfm" });
+const pdf = await fmd.renderPdf(source, { profile: "gfm-plus" });
+```
+
+The profile uses the shared Rust AST transformation, including nested lists,
+quotes and footnotes. It does not change raw-HTML safety, image/font ownership,
+or archival-PDF settings. It is separate from `pdfA: "2b"`.
+
+Explicit selection requires the additive `render*ConfiguredProfiled` bindings
+generated from matching source. Older packages reject it with
+`UNSUPPORTED_WASM_PACKAGE` instead of silently rendering the wrong dialect.
+Requests that omit the profile retain their original binding signatures.
+Unknown spellings and blank values fail with `INVALID_OPTIONS` before rendering.
+Book exports and editable interactive HTML do not accept this option.
+
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
 (including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and
 `tocDepth` settings from leading document frontmatter; PDF also inherits

@@ -49,6 +49,10 @@ export interface FmdFontAsset {
 }
 
 export interface FmdRenderOptions {
+  /** Single-document authoring dialect. Omission retains the extended dialect.
+   * commonmark-gfm keeps definition lists literal; gfm-plus enables them.
+   * An explicit profile requires matching profiled WASM bindings. */
+  profile?: "commonmark-gfm" | "gfm-plus";
   font?: FmdFont;
   darkMode?: FmdDarkMode;
   /** HTML/PDF/EPUB title; omitted metadata inherits source frontmatter with matching WASM bindings. */
@@ -206,7 +210,7 @@ export interface FmdRenderOutput {
  * SVG remains light-only; darkMode is retained for shared option compatibility.
  */
 export interface FmdSvgRenderOptions extends Pick<FmdRenderOptions,
-  "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets"> {}
+  "profile" | "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets"> {}
 export interface FmdSvgRenderOutput extends FmdRenderOutput {
   format: "svg";
   mimeType: "image/svg+xml";
@@ -271,7 +275,7 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict" | "profile">): Promise<FmdRenderOutput>;
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -360,7 +364,7 @@ export function documentStats(markdown: string): Promise<FmdDocumentStats>;
  * For chapter-aware PDF/A emission, use renderBookPdf from the ./book entry. */
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">,
+  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict" | "profile">,
 ): Promise<FmdRenderOutput>;
 export function renderBookSite(
   files: readonly FmdBookFile[],

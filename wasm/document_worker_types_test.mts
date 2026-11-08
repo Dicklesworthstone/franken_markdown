@@ -54,6 +54,18 @@ renderer.dispose();
 
 await renderer.renderHtml("# Full", { fontEmbedding: "full" });
 await renderer.renderEpub("# Full", { fontEmbedding: "subset" });
+await renderer.renderHtml("Term\n: Definition", { profile: "commonmark-gfm" });
+await renderer.renderPdf("Term\n: Definition", { profile: "gfm-plus", pdfA: "2b" });
+await renderer.renderSvg("Term\n: Definition", { profile: "commonmark-gfm" });
+await renderer.renderEpub("Term\n: Definition", { profile: "gfm-plus" });
+await renderer.publish("Term\n: Definition", [
+  { format: "html", options: { profile: "commonmark-gfm" } },
+  { format: "epub", options: { profile: "gfm-plus" } },
+]);
+// @ts-expect-error Authoring profiles use canonical explicit names.
+await renderer.renderPdf("Term\n: Definition", { profile: "gfm" });
+// @ts-expect-error Lightweight interactive editing does not retain dialect settings.
+await renderer.renderInteractiveHtml("Term\n: Definition", { profile: "gfm-plus" });
 // @ts-expect-error Native PDF keeps its own font subsetting policy.
 await renderer.renderPdf("# PDF", { fontEmbedding: "full" });
 // @ts-expect-error Font policies are explicit.

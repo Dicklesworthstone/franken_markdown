@@ -42,6 +42,66 @@ pub fn render_epub_configured_advanced(
     font_weights: Vec<u32>,
     font_embedding: Option<String>,
 ) -> Result<FmdRenderResult, JsValue> {
+    render_epub_configured_profiled(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        lang,
+        font_scale,
+        custom_css,
+        toc,
+        toc_depth,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        font_embedding,
+        None,
+    )
+}
+
+/// Render with an explicit Markdown authoring profile and the complete
+/// resource/format options. Existing bindings retain their original signatures.
+///
+/// An absent profile keeps every supported construct; `commonmark-gfm` keeps
+/// definition-list syntax as paragraphs and `gfm-plus` enables definition lists.
+/// This selection does not change raw-HTML safety or PDF/A policy.
+///
+/// # Errors
+/// Rejects an unknown authoring profile and the same invalid options, resources
+/// and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderEpubConfiguredProfiled)]
+pub fn render_epub_configured_profiled(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    lang: Option<String>,
+    font_scale: Option<f64>,
+    custom_css: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    font_embedding: Option<String>,
+    authoring_profile: Option<String>,
+) -> Result<FmdRenderResult, JsValue> {
+    let authoring_profile =
+        super::parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     admit_assets(
         markdown.len(),
         custom_css.as_ref().map_or(0, String::len),
@@ -58,6 +118,7 @@ pub fn render_epub_configured_advanced(
     )
     .map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.profile = authoring_profile;
     options.font_embedding = font_embedding
         .as_deref()
         .map(|value| {

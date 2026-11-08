@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -58,13 +58,17 @@ export async function capabilities() {
 }
 
 export async function renderHtml(markdown, options = {}) {
+  const profile = normalizeAuthoringProfile(options.profile);
+  const render = profile === undefined ? renderHtmlConfiguredAdvanced
+    : requireBrowserBinding("renderHtmlConfiguredProfiled", "Markdown authoring profiles");
+  if (profile !== undefined) requireBindingArguments(render, 22, "Markdown authoring profiles");
   const requestedEmbedding = options.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
   if (fontEmbedding === "full")
-    requireBindingArguments(renderHtmlConfiguredAdvanced, 21, "Full HTML font embedding");
+    requireBindingArguments(render, 21, "Full HTML font embedding");
   const htmlFontFormat = stringOption(options.htmlFontFormat);
   if (htmlFontFormat !== undefined)
-    requireBindingArguments(renderHtmlConfiguredAdvanced, 20, "HTML font format selection");
+    requireBindingArguments(render, 20, "HTML font format selection");
   const pdfImages = pdfImagesOption(options.pdfImages);
   const fontAssets = fontAssetsOption(options.fontAssets).map(asset => ({
     ...asset, bytes: new Uint8Array(asset.bytes),
@@ -100,25 +104,29 @@ export async function renderHtml(markdown, options = {}) {
     stringOption(options.lang),
     Boolean(toc),
     integerOption(options.tocDepth, "tocDepth"),
-    ...(fontEmbedding === "full" ? [htmlFontFormat, fontEmbedding]
+    ...(profile !== undefined ? [htmlFontFormat, fontEmbedding, profile]
+      : fontEmbedding === "full" ? [htmlFontFormat, fontEmbedding]
       : htmlFontFormat === undefined ? [] : [htmlFontFormat]),
   ];
   // Own source, scalar settings and exact asset ranges before initialization
   // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
   await init();
   applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, toc === undefined);
-  return normalizeResult(renderHtmlConfiguredAdvanced(...args));
+  return normalizeResult(render(...args));
 }
 
 export async function renderPdf(markdown, options = {}) {
   // Admit and capture geometry before initializing WASM or copying assets.
+  const profile = normalizeAuthoringProfile(options.profile);
   const archival = normalizePdfArchival(options.pdfA, options.pdfAStrict);
   const baselineGridPt = normalizeBaselineGridPt(options.baselineGridPt);
   const fitToPages = integerOption(options.fitToPages, "fitToPages");
   validateBaselineGridFit(baselineGridPt, fitToPages);
   const geometry = pdfPageGeometry(options.page);
   const running = pdfRunningOption(options.running);
-  const render = archival.pdfA
+  const render = profile !== undefined
+    ? requireBrowserBinding("renderPdfConfiguredProfiled", "Markdown authoring profiles")
+    : archival.pdfA
     ? requireBrowserBinding("renderPdfConfiguredArchival", "single-document PDF/A emission")
     : baselineGridPt > 0
     ? requireBrowserBinding("renderPdfConfiguredGrid", "baseline-grid support")
@@ -133,6 +141,7 @@ export async function renderPdf(markdown, options = {}) {
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
+  if (profile !== undefined) requireBindingArguments(render, 40, "Markdown authoring profiles");
   if (archival.pdfA) requireBindingArguments(render, baselineGridPt > 0 ? 39 : 38,
     baselineGridPt > 0 ? "PDF/A with baseline-grid support" : "Single-document PDF/A emission");
   const typography = typographyOption(options);
@@ -140,9 +149,10 @@ export async function renderPdf(markdown, options = {}) {
     const count = archival.pdfA ? 38 : baselineGridPt > 0 ? 37 : running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
     requireBindingArguments(render, count, "PDF typography, pagination and footnote backlinks");
   }
-  const source = archival.pdfA ? String(markdown) : undefined;
+  const bounded = profile !== undefined || archival.pdfA !== undefined;
+  const source = bounded ? String(markdown) : undefined;
   const imageInput = options.pdfImages, fontInput = options.fontAssets;
-  if (archival.pdfA) {
+  if (bounded) {
     archivalPdfTextBytes(source, 32 * 1024 * 1024);
     for (const [input, maximum, label] of [[imageInput, 4096, "pdfImages"], [fontInput, 5, "fontAssets"]]) {
       if (input != null && (!Array.isArray(input) || input.length > maximum))
@@ -150,7 +160,7 @@ export async function renderPdf(markdown, options = {}) {
     }
   }
   const pdfImages = pdfImagesOption(imageInput), fonts = fontAssetsOption(fontInput);
-  if (archival.pdfA) admitArchivalPdfAssets(pdfImages, fonts);
+  if (bounded) admitArchivalPdfAssets(pdfImages, fonts);
   const fontAssets = fonts.map(asset => ({
     ...asset, bytes: new Uint8Array(asset.bytes),
   }));
@@ -209,6 +219,14 @@ export async function renderPdf(markdown, options = {}) {
   await init();
   applySourceMetadata(args, { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 }, toc === undefined);
   try {
+    if (profile !== undefined) {
+      const result = normalizeResult(render(...args, geometry, running?.slots ?? [],
+        running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+        running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
+        running?.imageHeights ?? new Uint32Array(), typography, archival.pdfA ?? "off",
+        archival.pdfAStrict ?? false, baselineGridPt, profile));
+      return archival.pdfA ? Object.freeze({ ...result, ...archival }) : result;
+    }
     if (archival.pdfA) {
       const result = normalizeResult(render(...args, geometry, running?.slots ?? [],
         running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
@@ -390,9 +408,13 @@ function runningImageOption(value, label) {
 }
 
 export async function renderSvg(markdown, options = {}) {
-  const render = wasmBindings.renderSvgConfiguredResources;
+  const profile = normalizeAuthoringProfile(options?.profile);
+  const render = profile === undefined ? wasmBindings.renderSvgConfiguredResources
+    : requireBrowserBinding("renderSvgConfiguredProfiled", "Markdown authoring profiles");
+  if (profile !== undefined) requireBindingArguments(render, 15, "Markdown authoring profiles");
   // Capture options and exact owned byte views before initialization yields.
   const prepared = svgArguments(markdown, options, typeof render === "function");
+  if (profile !== undefined) prepared.args.push(profile);
   await init();
   try {
     if (typeof render === "function") return normalizeResult(render(...prepared.args));
@@ -504,19 +526,23 @@ function svgTextBytes(text, maximum, label) {
 }
 
 export async function renderEpub(markdown, options = {}) {
+  const profile = normalizeAuthoringProfile(options.profile);
+  const render = profile === undefined ? wasmBindings.renderEpubConfiguredAdvanced
+    : requireBrowserBinding("renderEpubConfiguredProfiled", "Markdown authoring profiles");
+  if (profile !== undefined) requireBindingArguments(render, 20, "Markdown authoring profiles");
   const requestedEmbedding = options.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
   if (fontEmbedding === "full") {
-    const binding = requireBrowserBinding("renderEpubConfiguredAdvanced", "full EPUB font embedding");
+    const binding = render ?? requireBrowserBinding("renderEpubConfiguredAdvanced", "full EPUB font embedding");
     requireBindingArguments(binding, 19, "Full EPUB font embedding");
   }
   // Capture source, settings and exact asset views before the initialization
   // await. Later host edits cannot silently change the publication being built.
-  const prepared = epubArguments(markdown, options, fontEmbedding);
+  const prepared = epubArguments(markdown, options, fontEmbedding, profile);
   await init();
   applySourceMetadata(prepared.args, { title: 3, lang: 4, toc: 7, tocDepth: 8 }, prepared.inheritToc);
-  if (typeof wasmBindings.renderEpubConfiguredAdvanced === "function") {
-    return normalizeResult(wasmBindings.renderEpubConfiguredAdvanced(...prepared.args));
+  if (typeof render === "function") {
+    return normalizeResult(render(...prepared.args));
   }
   if (prepared.requiresAdvanced || prepared.args[7] || prepared.args[8] !== undefined) {
     const error = new Error("EPUB assets, CSS and navigation require a WASM package rebuilt from matching source");
@@ -527,7 +553,7 @@ export async function renderEpub(markdown, options = {}) {
   return normalizeResult(renderEpubConfigured(...prepared.args.slice(0, 6)));
 }
 
-function epubArguments(markdown, options, fontEmbedding) {
+function epubArguments(markdown, options, fontEmbedding, profile) {
   const {
     font, darkMode, title, lang, fontScale, typeSize, customCss,
     toc, tocDepth, pdfImages, fontAssets,
@@ -581,7 +607,8 @@ function epubArguments(markdown, options, fontEmbedding) {
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
       fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
-      ...(fontEmbedding === "full" ? [fontEmbedding] : [])],
+      ...(profile !== undefined ? [fontEmbedding, profile]
+        : fontEmbedding === "full" ? [fontEmbedding] : [])],
   };
 }
 
@@ -956,6 +983,8 @@ export async function renderBookPdf(files, options = {}) {
 // TOC/page-number defaults and narrow ABI. Only configured requests need the
 // additive ABI; neither images nor newer options may silently disappear.
 function bookPdfArguments(files, options) {
+  if (options.profile !== undefined)
+    throw Object.assign(new TypeError("Markdown authoring profiles are supported by single-document exports, not book PDF exports"), { code: "INVALID_OPTIONS" });
   if (options.pdfA !== undefined || options.pdfAStrict !== undefined)
     throw new TypeError("Book PDF/A emission requires renderBookPdf from the ./book entry point");
   const grid = normalizeBaselineGridPt(options.baselineGridPt);

@@ -4,6 +4,15 @@ function invalid(message) {
   throw Object.assign(new TypeError(message), { code: "INVALID_OPTIONS" });
 }
 
+/** Single-document Markdown dialect, shared by the facade and worker admission.
+ * Omission retains the existing extended dialect and legacy binding shapes. */
+export function normalizeAuthoringProfile(value) {
+  if (value === undefined) return undefined;
+  if (value !== "commonmark-gfm" && value !== "gfm-plus")
+    invalid("profile must be commonmark-gfm or gfm-plus");
+  return value;
+}
+
 /** Capture only the three native switches, without retaining caller objects or
  * invoking accessors. Missing and explicit false values keep their spelling. */
 export function normalizePdfTypography(value) {

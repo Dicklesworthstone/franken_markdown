@@ -1,7 +1,7 @@
 import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff } from "./franken_markdown.js";
 
 export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html";
-type Shared = Pick<FmdRenderOptions, "font" | "darkMode" | "fontScale" | "typeSize">;
+type Shared = Pick<FmdRenderOptions, "profile" | "font" | "darkMode" | "fontScale" | "typeSize">;
 export interface DocumentOptions {
   html: Shared & Pick<FmdRenderOptions, "title" | "customCss" | "allowRawHtml" | "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat" | "fontEmbedding">;
   pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "strictPagination" | "footnoteBacklinks" | "baselineGridPt" | "pdfImages" | "fontAssets" | "page" | "running" | "pdfA" | "pdfAStrict">;

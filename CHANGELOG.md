@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Browser HTML, PDF/PDF-A, SVG and EPUB exports now accept the same explicit
+  `commonmark-gfm` and `gfm-plus` authoring profiles as native rendering.
+  Workers, atomic publications and batches retain the selected dialect.
+  Additive bindings preserve existing callers, and older generated packages
+  reject unsupported profile requests instead of silently ignoring them.
+
 ### Fixed
 
 - Batch exports discover image ownership across all inputs before workers run,

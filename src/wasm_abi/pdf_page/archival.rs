@@ -62,6 +62,106 @@ pub fn render_pdf_configured_archival(
     strict: bool,
     baseline_grid_pt: Option<f64>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
+    render_pdf_configured_profiled(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        author,
+        metadata_epoch_seconds,
+        allow_raw_html,
+        code_line_numbers,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        base_font_size,
+        heading_scale,
+        table_font_size,
+        page_numbers,
+        font_scale,
+        lang,
+        toc,
+        toc_depth,
+        fit_to_pages,
+        microtype_protrusion,
+        page_geometry,
+        running_slots,
+        header_rule,
+        footer_rule,
+        skip_first_page,
+        running_image_destinations,
+        running_image_positions,
+        running_image_heights,
+        typography,
+        profile,
+        strict,
+        baseline_grid_pt,
+        None,
+    )
+}
+
+/// Render with an explicit Markdown authoring profile and the complete
+/// resource/format options. Existing bindings retain their original signatures.
+///
+/// An absent profile keeps every supported construct; `commonmark-gfm` keeps
+/// definition-list syntax as paragraphs and `gfm-plus` enables definition lists.
+/// This selection does not change raw-HTML safety or PDF/A policy.
+///
+/// # Errors
+/// Rejects an unknown authoring profile and the same invalid options, resources
+/// and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderPdfConfiguredProfiled)]
+pub fn render_pdf_configured_profiled(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    metadata_epoch_seconds: Option<f64>,
+    allow_raw_html: bool,
+    code_line_numbers: bool,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
+    page_numbers: bool,
+    font_scale: Option<f64>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    fit_to_pages: Option<u32>,
+    microtype_protrusion: bool,
+    page_geometry: Vec<f64>,
+    running_slots: Vec<String>,
+    header_rule: bool,
+    footer_rule: bool,
+    skip_first_page: bool,
+    running_image_destinations: Vec<String>,
+    running_image_positions: Vec<u32>,
+    running_image_heights: Vec<u32>,
+    typography: Option<String>,
+    profile: &str,
+    strict: bool,
+    baseline_grid_pt: Option<f64>,
+    authoring_profile: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    let authoring_profile = super::super::parse_authoring_profile(authoring_profile.as_deref())
+        .map_err(JsValue::from_str)?;
     let settings = archival_settings(profile, strict).map_err(JsValue::from_str)?;
     let grid = super::grid::admit_grid(baseline_grid_pt.unwrap_or(0.0), fit_to_pages)
         .map_err(render_error_to_js)?;
@@ -120,6 +220,7 @@ pub fn render_pdf_configured_archival(
         page_geometry,
     )?
     .with_running(running);
+    options.profile = authoring_profile;
     options.theme.page.baseline_grid = grid;
     options
         .apply_typography_tokens(typography.as_deref())

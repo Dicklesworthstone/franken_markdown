@@ -89,6 +89,26 @@ test("publication settings and exact resources are captured synchronously on bat
   assert.equal(h.sends.length, 1);
 });
 
+test("batch admission preserves per-target authoring profiles in single documents and publications", async t => {
+  const h = host(t);
+  const job = publication("Term\n: Definition", { targets: [
+    { format: "html", options: { profile: "commonmark-gfm" } },
+    { format: "pdf", options: { profile: "gfm-plus" } },
+  ] });
+  const stream = h.batch([job, { format: "epub", source: "Term\n: Other", options: { profile: "commonmark-gfm" } }],
+    { concurrency: 1 });
+  const pending = stream.next();
+  job.targets[0].options.profile = "gfm-plus";
+  job.targets[1].options.profile = "invalid-after-admission";
+  const first = (await pending).value;
+  assert.equal(first.status, "fulfilled");
+  assert.deepEqual(first.value.outputs.map(output => JSON.parse(output.text()).options.profile), ["commonmark-gfm", "gfm-plus"]);
+  const second = (await stream.next()).value;
+  assert.equal(second.status, "fulfilled");
+  assert.equal(JSON.parse(second.value.text()).options.profile, "commonmark-gfm");
+  assert.equal((await stream.next()).done, true);
+});
+
 test("a failed publication yields no partial artifacts and replaces only its failed lane", async t => {
   const h = host(t);
   const receipts = [];

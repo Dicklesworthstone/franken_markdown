@@ -25,16 +25,32 @@ mod pdf_page;
 pub use pdf_page::{
     render_book_pdf_configured_advanced, render_book_pdf_configured_grid,
     render_book_pdf_configured_page, render_pdf_configured_grid, render_pdf_configured_page,
+    render_pdf_configured_profiled,
 };
 
 mod epub;
-pub use epub::render_epub_configured_advanced;
+pub use epub::{render_epub_configured_advanced, render_epub_configured_profiled};
 
 #[cfg(test)]
 mod font_embedding_tests;
 
+#[cfg(test)]
+mod authoring_profile_tests;
+
 mod svg;
-pub use svg::render_svg_configured_resources;
+pub use svg::{render_svg_configured_profiled, render_svg_configured_resources};
+
+/// Keep authoring-profile admission separate from the archival PDF profile.
+/// In particular, omission preserves the historical extension-enabled default;
+/// it is not the same as explicitly selecting CommonMark/GFM.
+fn parse_authoring_profile(value: Option<&str>) -> Result<Option<crate::Profile>, &'static str> {
+    match value {
+        None => Ok(None),
+        Some("commonmark-gfm") => Ok(Some(crate::Profile::CommonMarkGfm)),
+        Some("gfm-plus") => Ok(Some(crate::Profile::GfmPlus)),
+        Some(_) => Err("profile must be commonmark-gfm or gfm-plus"),
+    }
+}
 
 /// Render output object exposed to JavaScript.
 #[wasm_bindgen]
@@ -632,7 +648,72 @@ pub fn render_html_configured_advanced(
     html_font_format: Option<String>,
     font_embedding: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
+    render_html_configured_profiled(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        custom_css,
+        allow_raw_html,
+        font_scale,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        lang,
+        toc,
+        toc_depth,
+        html_font_format,
+        font_embedding,
+        None,
+    )
+}
+
+/// Render with an explicit Markdown authoring profile and the complete
+/// resource/format options. Existing bindings retain their original signatures.
+///
+/// An absent profile keeps every supported construct; `commonmark-gfm` keeps
+/// definition-list syntax as paragraphs and `gfm-plus` enables definition lists.
+/// This selection does not change raw-HTML safety or PDF/A policy.
+///
+/// # Errors
+/// Rejects an unknown authoring profile and the same invalid options, resources
+/// and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderHtmlConfiguredProfiled)]
+pub fn render_html_configured_profiled(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    custom_css: Option<String>,
+    allow_raw_html: bool,
+    font_scale: Option<f64>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    html_font_format: Option<String>,
+    font_embedding: Option<String>,
+    authoring_profile: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    let authoring_profile =
+        parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.profile = authoring_profile;
     options.font_embedding = font_embedding
         .as_deref()
         .map(|value| {

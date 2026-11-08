@@ -12,6 +12,7 @@ use crate::PageStyle;
 use crate::wasm;
 
 mod archival;
+pub use archival::render_pdf_configured_profiled;
 mod book_advanced;
 mod grid;
 pub use book_advanced::render_book_pdf_configured_advanced;

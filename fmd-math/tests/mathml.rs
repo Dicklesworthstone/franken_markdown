@@ -360,6 +360,36 @@ fn mixed_text_restores_math_mode_and_preserves_scoped_declarations() {
 }
 
 #[test]
+fn text_underlining_preserves_inherited_faces_and_restores_the_outer_scope() {
+    for (command, face) in [
+        ("textbf", "bold"),
+        ("textit", "italic"),
+        ("texttt", "monospace"),
+        ("textsf", "sans-serif"),
+    ] {
+        let source = format!(r"\{command}{{A\underline{{B}}C}}D");
+        let xml = to_mathml(&parse_text(&source).unwrap(), false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        assert!(
+            xml.contains(&format!(
+                r#"<menclose notation="bottom"><mtext mathvariant="{face}">B</mtext></menclose>"#
+            )),
+            "{source}: underlining changed the face: {xml}"
+        );
+        assert!(
+            xml.ends_with("<mtext>D</mtext></math>"),
+            "{source}: text face leaked outside its group: {xml}"
+        );
+    }
+    let source = r"\textbf{\underline{A\textrm{B}C}}D";
+    let xml = to_mathml(&parse_text(source).unwrap(), false);
+    assert!(
+        xml.contains(r#"<mtext mathvariant="normal">B</mtext>"#),
+        "explicit roman must still override inherited bold: {xml}"
+    );
+}
+
+#[test]
 fn mixed_text_keeps_faces_on_logos_and_nonbreaking_spaces() {
     for (source, face) in [
         (r"\textbf{\TeX~$\pi$}", "bold"),

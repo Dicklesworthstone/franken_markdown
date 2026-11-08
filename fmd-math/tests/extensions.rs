@@ -15,6 +15,48 @@ fn engine() -> Engine {
 }
 
 #[test]
+fn text_underlining_keeps_glyph_faces_positions_and_explicit_overrides() {
+    let e = engine();
+    for (plain, underlined) in [
+        (r"\textbf{Ab}", r"\textbf{\underline{Ab}}"),
+        (r"\textit{Ab}", r"\textit{\underline{Ab}}"),
+        (r"\texttt{Ab}", r"\texttt{\underline{Ab}}"),
+        (r"\textsf{Ab}", r"\textsf{\underline{Ab}}"),
+        (
+            r"\textbf{A\textrm{B}C}D",
+            r"\textbf{\underline{A\textrm{B}C}}D",
+        ),
+        (r"\textit{A$\pi$B}C", r"\textit{\underline{A$\pi$B}}C"),
+    ] {
+        let plain = e.typeset_text(plain).unwrap();
+        let decorated = e.typeset_text(underlined).unwrap();
+        assert_eq!(decorated.glyphs.len(), plain.glyphs.len(), "{underlined}");
+        for (actual, expected) in decorated.glyphs.iter().zip(&plain.glyphs) {
+            assert_eq!(
+                (
+                    actual.ch,
+                    actual.face,
+                    actual.gid,
+                    actual.x,
+                    actual.y,
+                    actual.size
+                ),
+                (
+                    expected.ch,
+                    expected.face,
+                    expected.gid,
+                    expected.x,
+                    expected.y,
+                    expected.size
+                ),
+                "{underlined}: underline may add a rule, not change its glyphs"
+            );
+        }
+        assert_eq!(decorated.rules.len(), plain.rules.len() + 1, "{underlined}");
+    }
+}
+
+#[test]
 fn pifont_cross_matches_reference_text_boxes_in_scripts_and_declared_sizes() {
     // Independent ruled-template TeX: pzdr character 55, not the digit 7
     // bare \ding{55} accidentally emits in the Reference's math mode.

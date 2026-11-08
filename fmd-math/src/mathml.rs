@@ -797,7 +797,8 @@ fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node], style: Style) 
     let variant = match ts {
         TextStyle::Bold => "bold",
         TextStyle::Emph | TextStyle::Italic => "italic",
-        TextStyle::Underline | TextStyle::Roman => "normal",
+        TextStyle::Underline => w.text_variant.unwrap_or("normal"),
+        TextStyle::Roman => "normal",
         TextStyle::Typewriter => "monospace",
         TextStyle::SansSerif => "sans-serif",
     };

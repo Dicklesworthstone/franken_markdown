@@ -5652,9 +5652,18 @@ fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
 /// The group-scoped text face, shared by inline and paragraph layout.
 fn text_style_ctx(style: TextStyle, ctx: LayCtx<'_>) -> LayCtx<'_> {
     let alphabet = Some(match style {
+        // Underlining decorates the current text without selecting a font.
+        // Keep both contexts: nested math islands can use a different
+        // alphabet from the surrounding text.
+        TextStyle::Underline => {
+            return LayCtx {
+                text_mode: true,
+                ..ctx
+            };
+        }
         TextStyle::Bold => MathFont::Bold,
         TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
-        TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
+        TextStyle::Roman => MathFont::Roman,
         TextStyle::Typewriter => MathFont::Typewriter,
         TextStyle::SansSerif => MathFont::SansSerif,
     });

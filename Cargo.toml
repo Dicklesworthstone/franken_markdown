@@ -142,7 +142,7 @@ wasm-bindgen = { version = "=0.2.129", optional = true }
 # enters the render core or any wasm/no-default build. Use the published crate,
 # not a moving git checkout, so default installs and release builds do not fetch
 # unrelated repository fixtures before compiling `fmd`.
-asupersync = { version = "0.5.0", optional = true }
+asupersync = { version = "0.6.2", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

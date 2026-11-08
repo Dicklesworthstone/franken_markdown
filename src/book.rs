@@ -30,6 +30,7 @@ pub use workspace::{BookSourceSetUpdate, BookSourceUpdate, BookWorkspace};
 #[path = "book/validation.rs"]
 pub mod validation;
 
+pub(crate) use render::render_document_note_links;
 pub use render::{BookRenderer, book_pdf_document_with_assets, render_book_pdf, render_book_site};
 
 #[cfg(feature = "wasm-book")]

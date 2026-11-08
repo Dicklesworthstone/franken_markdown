@@ -13,6 +13,8 @@ use crate::{
     Block, Document, Inline, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result,
 };
 
+#[path = "document_pdf_links.rs"]
+pub(crate) mod document;
 #[path = "pdf_link_wire.rs"]
 mod wire;
 
@@ -387,7 +389,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
     let mut candidates = 0usize;
     for (index, range) in ranges.iter().enumerate() {
         walk_links(&mut document.blocks[range.clone()], &mut |dest| {
-            reserve_nonce(dest.as_bytes(), &mut reserved);
+            reserve_link_nonce(dest, &mut reserved);
             if let Some(target) = local_target(index, &sources[index], dest, &known) {
                 candidates += 1;
                 match target {
@@ -413,8 +415,9 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             targets: BTreeMap::new(),
         });
     }
-    // SVG-hosted links can also become URI annotations. Reserve prefixes that
-    // occur in supplied bytes as well as source links before generating ours.
+    // Preserve the established token allocation for literal asset URLs. The
+    // binder also checks source-annotation ownership, so encoded SVG anchors
+    // cannot impersonate source tokens that this byte scan does not see.
     for asset in &options.image_assets {
         for (start, window) in asset.bytes.windows(PREFIX.len()).enumerate() {
             if window == PREFIX.as_bytes() {
@@ -590,6 +593,14 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         .map(|(target, token)| (token, target))
         .collect();
     Ok(Plan { document, targets })
+}
+
+fn reserve_link_nonce(destination: &str, reserved: &mut BTreeSet<usize>) {
+    // The PDF link policy trims these characters before serializing URI
+    // actions. Reserve that emitted spelling, not the unnormalized AST value.
+    let destination =
+        destination.trim_matches(|ch: char| ch.is_ascii_whitespace() || ch.is_control());
+    reserve_nonce(destination.as_bytes(), reserved);
 }
 
 fn reserve_nonce(bytes: &[u8], reserved: &mut BTreeSet<usize>) {

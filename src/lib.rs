@@ -1118,6 +1118,11 @@ pub fn render_pdf_document_emitted(
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
+    if let Some(rendered) =
+        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false)?
+    {
+        return Ok(rendered.bytes);
+    }
     let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_with_emit(&doc, opts, PdfASettings::OFF, emit)
 }
@@ -1138,6 +1143,14 @@ pub fn render_pdf_document_reported(
     emit: PdfEmitOptions,
 ) -> Result<PdfRenderReport> {
     opts.font_assets.validate()?;
+    if let Some(rendered) =
+        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false)?
+    {
+        return Ok(PdfRenderReport {
+            bytes: rendered.bytes,
+            pagination: rendered.pagination,
+        });
+    }
     let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_reported(&doc, opts, PdfASettings::OFF, emit)
 }
@@ -1173,6 +1186,11 @@ pub fn render_pdf_document_pdfa(
     opts.font_assets.validate()?;
     if pdf_a.strict {
         validate_doc_pdfa_strict(doc)?;
+    }
+    if let Some(rendered) =
+        book::render_document_note_links(doc, opts, pdf_a, PdfEmitOptions::default(), false)?
+    {
+        return Ok(rendered.bytes);
     }
     let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render(&doc, opts, pdf_a)
@@ -1280,6 +1298,18 @@ fn transform_footnotes_for_pdf<'a>(
 /// See [`render_pdf_document`].
 pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> {
     opts.font_assets.validate()?;
+    if let Some(rendered) = book::render_document_note_links(
+        doc,
+        opts,
+        PdfASettings::OFF,
+        PdfEmitOptions::default(),
+        true,
+    )? {
+        return Ok(PdfProfile {
+            bytes: rendered.bytes,
+            stages: rendered.stages,
+        });
+    }
     let doc = transform_footnotes_for_pdf(doc, opts);
     pdf::render_profiled(&doc, opts)
 }

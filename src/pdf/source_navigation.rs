@@ -49,8 +49,33 @@ pub(crate) fn render(
     settings: PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<(Vec<u8>, SourceNavigation)> {
-    let rendered = super::render_inner(doc, options, settings, false, emit, true)?;
+    let rendered = render_complete(doc, options, settings, emit, false)?;
     Ok((rendered.bytes, rendered.navigation))
+}
+
+/// Keep the same renderer result for ordinary, reported and profiled source
+/// navigation. Binding annotations changes neither pagination nor page paint.
+pub(crate) struct NavigationRender {
+    pub bytes: Vec<u8>,
+    pub navigation: SourceNavigation,
+    pub stages: Vec<super::PdfStageSummary>,
+    pub pagination: super::PdfPaginationReport,
+}
+
+pub(crate) fn render_complete(
+    doc: &Document,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    profiled: bool,
+) -> Result<NavigationRender> {
+    let rendered = super::render_inner(doc, options, settings, profiled, emit, true)?;
+    Ok(NavigationRender {
+        bytes: rendered.bytes,
+        navigation: rendered.navigation,
+        stages: rendered.stages,
+        pagination: rendered.pagination,
+    })
 }
 
 pub(super) fn collect(doc: &Document, outlines: &[OutlineEntry]) -> SourceNavigation {

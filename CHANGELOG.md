@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Standalone PDF exports resolve ordinary `#fn-...` and `#fnref-...` links to
+  the same notes and first citations as HTML, using their final page positions.
+  These links preserve citation ordering and page-note placement. Ambiguous
+  IDs stay inert, and source links cannot capture unrelated SVG image links.
 - Batch exports discover image ownership across all inputs before workers run,
   including missing paths and originals hidden by explicit overrides. Every
   publication checks source identities, so one job cannot create another job's

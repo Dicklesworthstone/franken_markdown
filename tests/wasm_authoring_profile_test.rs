@@ -162,11 +162,12 @@ fn pdf_authoring_profile_and_archival_profile_remain_independent() {
             metadata_epoch_seconds: Some(1_700_000_000),
             ..PdfOptions::default()
         };
-        options.theme.page = franken_markdown::PageStyle::from_browser_geometry(&[
-            500.0, 700.0, 40.0, 30.0, 45.0, 35.0,
-        ])
-        .unwrap()
-        .unwrap();
+        options.theme.page.size.width_pt = 500.0;
+        options.theme.page.size.height_pt = 700.0;
+        options.theme.page.margins.top_pt = 40.0;
+        options.theme.page.margins.right_pt = 30.0;
+        options.theme.page.margins.bottom_pt = 45.0;
+        options.theme.page.margins.left_pt = 35.0;
         for (archival, settings) in [
             ("off", franken_markdown::PdfASettings::OFF),
             ("2b", franken_markdown::PdfASettings::a2b()),

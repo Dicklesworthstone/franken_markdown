@@ -35,6 +35,23 @@ pub(super) fn bind(
         if !pdf.named(&dict, b"/Type", b"/Annot") || !pdf.named(&dict, b"/Subtype", b"/Link") {
             continue;
         }
+        // Only source links belong to the tagged structure tree. The writer
+        // gives every text/linked-image annotation an owner_mcid, and only
+        // those owners receive /StructParent; intrinsic SVG anchors have no
+        // owner, even when their image is itself tagged. Keep that provenance
+        // boundary instead of trying to find token-shaped strings in encoded
+        // SVG bytes, nested data URLs, or generated diagram assets.
+        let Some(owner) = pdf.field(&dict, b"/StructParent") else {
+            continue;
+        };
+        let mut owner = Reader::new(pdf.bytes.get(owner.value).ok_or_else(invalid)?);
+        if owner.integer().is_none() {
+            return Err(invalid());
+        }
+        owner.skip();
+        if owner.pos != owner.bytes.len() {
+            return Err(invalid());
+        }
         let Some(action) = pdf.field(&dict, b"/A") else {
             continue;
         };
@@ -527,6 +544,26 @@ mod tests {
             before,
             bind(before.clone(), &BTreeMap::from([("decoy".into(), None)])).unwrap()
         );
+    }
+
+    #[test]
+    fn unowned_asset_annotations_cannot_impersonate_source_tokens() {
+        let uri = format!("fmd-book-link/{}", "0".repeat(128));
+        let mut before = fixture(&uri);
+        let pdf = Pdf::parse(&before).unwrap();
+        let annot = pdf.dictionary(4).unwrap();
+        let owner = pdf.field(&annot, b"/StructParent").unwrap().range;
+        before[owner].fill(b' ');
+        for target in [
+            None,
+            Some(Destination {
+                page_index: 0,
+                y: 712.5,
+            }),
+        ] {
+            let after = bind(before.clone(), &BTreeMap::from([(uri.clone(), target)])).unwrap();
+            assert_eq!(before, after, "an SVG-owned URI must retain its action");
+        }
     }
 
     #[test]

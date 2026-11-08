@@ -6125,14 +6125,14 @@ fn parse_bare_url_autolink(
         return None;
     }
 
-    let is_www = match chars.get(i) {
-        Some('h' | 'H')
-            if starts_with_ascii_chars_ignore_case(chars, i, b"http://")
-                || starts_with_ascii_chars_ignore_case(chars, i, b"https://") =>
-        {
-            false
+    let (is_www, domain_start) = match chars.get(i) {
+        Some('h' | 'H') if starts_with_ascii_chars_ignore_case(chars, i, b"http://") => {
+            (false, i + 7)
         }
-        Some('w' | 'W') if starts_with_ascii_chars_ignore_case(chars, i, b"www.") => true,
+        Some('h' | 'H') if starts_with_ascii_chars_ignore_case(chars, i, b"https://") => {
+            (false, i + 8)
+        }
+        Some('w' | 'W') if starts_with_ascii_chars_ignore_case(chars, i, b"www.") => (true, i),
         _ => return None,
     };
 
@@ -6150,6 +6150,9 @@ fn parse_bare_url_autolink(
     if end == i || (is_www && end <= i + 4) {
         return None;
     }
+    if end < domain_start || !bare_url_domain_is_valid(&chars[domain_start..end], work) {
+        return None;
+    }
 
     if bare_autolink_is_angle_attempt(chars, i, end, work)? {
         return None;
@@ -6162,6 +6165,39 @@ fn parse_bare_url_autolink(
         label.clone()
     };
     Some((label, dest, end))
+}
+
+/// GFM excludes underscores from the final two domain segments, but allows
+/// them in earlier subdomains and in the path/query/fragment. Keep the existing
+/// short HTTP hosts and Unicode host text: this is an autolink grammar check,
+/// not DNS validation. In particular, do not impose label lengths or reject
+/// consecutive domain dots that the reference renderer accepts.
+fn bare_url_domain_is_valid(chars: &[char], work: &mut InlineWorkBudget) -> bool {
+    let mut scanned = 0;
+    let mut has_host_text = false;
+    let mut previous_has_underscore = false;
+    let mut current_has_underscore = false;
+    for &ch in chars {
+        scanned += 1;
+        match ch {
+            '.' => {
+                previous_has_underscore = current_has_underscore;
+                current_has_underscore = false;
+            }
+            '_' => current_has_underscore = true,
+            '-' => {}
+            ch if !ch.is_ascii_punctuation() && !ch.is_whitespace() && !ch.is_control() => {
+                has_host_text = true;
+            }
+            _ => break,
+        }
+    }
+    // Rejected domain scans are speculative work too: an underscore can admit
+    // another URL candidate later in the same still-unconsumed source.
+    work.charge(scanned.max(1))
+        && has_host_text
+        && !previous_has_underscore
+        && !current_has_underscore
 }
 
 /// Parse a bare (scheme-less) email address into a `mailto:` autolink, GFM-style.
@@ -6201,6 +6237,12 @@ fn parse_bare_email_autolink(
         .get(j)
         .is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
     {
+        // A double dot cannot join email-domain segments. Stop at the first
+        // dot so a valid preceding address remains linkable and the entire
+        // punctuation suffix stays ordinary source, as in the GFM extension.
+        if chars[j] == '.' && chars.get(j + 1) == Some(&'.') {
+            break;
+        }
         j += 1;
     }
     // Cover the domain scan, trailing-dot trim and dotted-domain validation.

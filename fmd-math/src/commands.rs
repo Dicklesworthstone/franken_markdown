@@ -112,6 +112,8 @@ pub(crate) enum Cmd {
     Mod,
     /// One of amsmath's dots, which read the token after them.
     Dots(Dots),
+    /// LaTeX's text-mode ellipsis.
+    TextEllipsis,
     /// TeX's `\mathord` … `\mathinner`: the argument as one atom of a class.
     Classed(AtomClass),
     /// An accent command.
@@ -351,6 +353,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
         // amsmath's own dots read the token after them (`Parser::dots`).
         "ldots" | "hdots" => sym('…', Inner),
+        "textellipsis" => Cmd::TextEllipsis,
         // TeX's class primitives (`\mathop` is a big operator, not here).
         "mathord" => Cmd::Classed(Ord),
         "mathbin" => Cmd::Classed(Bin),

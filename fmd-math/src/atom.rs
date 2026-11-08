@@ -245,6 +245,7 @@ pub fn intrinsic_class(node: &Node) -> Option<AtomClass> {
         | NodeKind::List(_)
         | NodeKind::Text { .. }
         | NodeKind::TextRun { .. }
+        | NodeKind::TextEllipsis
         | NodeKind::TextStyled { .. }
         | NodeKind::MathIsland { .. }
         | NodeKind::AlignBlock { .. }

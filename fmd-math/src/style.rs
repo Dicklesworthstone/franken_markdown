@@ -321,6 +321,7 @@ where
         | NodeKind::OpName { .. }
         | NodeKind::SizedDelim { .. }
         | NodeKind::TextRun { .. }
+        | NodeKind::TextEllipsis
         | NodeKind::StyleChange(_)
         | NodeKind::SizeChange(_)
         | NodeKind::AlignChange(_)

@@ -1127,6 +1127,7 @@ impl<'s> Parser<'s> {
             Cmd::Classed(class) => self.classed(name, span, class),
             // An argument's dots see no list after them.
             Cmd::Dots(kind) => Ok(plain_dots(kind, span)),
+            Cmd::TextEllipsis => Ok(Node::new(NodeKind::TextEllipsis, span)),
             Cmd::AmsSym {
                 ch,
                 class,
@@ -2391,6 +2392,10 @@ impl<'s> Parser<'s> {
                     self.toks[self.pos].kind = TokKind::Par;
                 }
                 TokKind::ControlWord(name) => {
+                    if name == "dotso" {
+                        self.text_other_dots(tok.span, &mut items, &mut run, &mut run_spans);
+                        continue;
+                    }
                     flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     if env && name == "end" {
                         self.pos += 1;
@@ -2425,6 +2430,12 @@ impl<'s> Parser<'s> {
         };
         self.pos += 1;
         match cmd {
+            Cmd::TextEllipsis | Cmd::Dots(Dots::Auto) => {
+                Ok(Node::new(NodeKind::TextEllipsis, span))
+            }
+            Cmd::Sym { ch: '…', .. } if name == "ldots" => {
+                Ok(Node::new(NodeKind::TextEllipsis, span))
+            }
             Cmd::UnsupportedT2 => Err(MathError::UnsupportedCommand {
                 name: format!("\\{name}"),
                 span,
@@ -2539,6 +2550,49 @@ impl<'s> Parser<'s> {
                     island_span,
                 ))
             }
+        }
+    }
+
+    /// amsmath's text `\dotso` is `\tdots@`, not `\textellipsis`:
+    /// remove preceding glue, add a text space, and set low math dots
+    /// with thin space. Punctuation gets another thin space; other
+    /// successors get a text space, dropped at the paragraph end.
+    fn text_other_dots(
+        &mut self,
+        span: Span,
+        items: &mut Vec<Node>,
+        run: &mut String,
+        run_spans: &mut Vec<Span>,
+    ) {
+        self.pos += 1;
+        let punctuation = matches!(
+            self.peek().map(|t| t.kind),
+            Some(TokKind::Char(',' | '.' | ';' | ':' | '?' | '!'))
+        );
+        let paragraph_end = matches!(
+            self.peek().map(|t| t.kind),
+            None | Some(TokKind::Par | TokKind::ControlWord("end" | "par"))
+                | Some(TokKind::ControlSymbol('\\'))
+        );
+        unskip(items, run, run_spans);
+        flush_run(items, run, run_spans, self.ligatures);
+        items.push(Node::new(NodeKind::Space(SpaceKind::ControlSpace), span));
+        let mut body = vec![
+            plain_dots(Dots::Other, span),
+            Node::new(NodeKind::Space(SpaceKind::Thin), span),
+        ];
+        if punctuation {
+            body.push(Node::new(NodeKind::Space(SpaceKind::Thin), span));
+        }
+        items.push(Node::new(
+            NodeKind::MathIsland {
+                body,
+                display: false,
+            },
+            span,
+        ));
+        if !punctuation && (self.restricted_text || !paragraph_end) {
+            items.push(Node::new(NodeKind::Space(SpaceKind::ControlSpace), span));
         }
     }
 }

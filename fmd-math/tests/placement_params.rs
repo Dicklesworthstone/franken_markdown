@@ -37,6 +37,91 @@ fn glyph_size(layout: &Layout, ch: char) -> f64 {
 const EPS: f64 = 1e-9;
 
 #[test]
+fn text_ellipsis_uses_text_font_stretch_and_sentence_spacing() {
+    let e = engine();
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent default-template T1 showboxes: every text period is
+    // followed by fontdimen3, including the last one. The explicit space
+    // after an empty group retains the periods' sentence spacefactor.
+    for (source, width) in [
+        (r"\dots", 1.333_008),
+        (r"\ldots", 1.333_008),
+        (r"\textellipsis", 1.333_008),
+        (r"a\dots b", 2.388_306),
+        (r"a\dots{} b", 2.832_642),
+    ] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        assert!(
+            (layout.width - width).abs() < 1e-4,
+            "{source}: native {}, independent TeX {width}",
+            layout.width
+        );
+        let dots: Vec<_> = layout.glyphs.iter().filter(|g| g.ch == '.').collect();
+        assert_eq!(dots.len(), 3, "{source}");
+        for pair in dots.windows(2) {
+            assert!(
+                (pair[1].x - pair[0].x - 0.444_336).abs() < 1e-5,
+                "{source}: period positions {dots:?}"
+            );
+        }
+        assert!(dots.iter().all(|g| {
+            matches!(
+                &source[g.span.start..g.span.end],
+                r"\dots" | r"\ldots" | r"\textellipsis"
+            )
+        }));
+    }
+    // Math dots keep their math spacing, rather than becoming text dots.
+    for (source, width) in [(r"$\dots$", 1.333_324), (r"$a\ldots b$", 2.457_741)] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        assert!(
+            (layout.width - width).abs() < 1e-4,
+            "{source}: {}",
+            layout.width
+        );
+    }
+    let mono = e
+        .typeset_text_with_macros(r"\texttt{\dots}", &pack)
+        .unwrap();
+    let period = e.typeset_text_with_macros(r"\texttt{.}", &pack).unwrap();
+    assert!((mono.width - 1.574_615).abs() < 1e-4, "{mono:?}");
+    assert!((mono.width - 3.0 * period.width).abs() < EPS);
+    assert!(mono.glyphs.iter().all(|g| g.face == period.glyphs[0].face));
+    let explicit_math = e
+        .typeset_text_with_macros(r"$\textellipsis$", &pack)
+        .unwrap();
+    assert!((explicit_math.width - 1.333_214).abs() < 1e-4);
+}
+
+#[test]
+fn text_dotso_keeps_amsmath_spacing_and_group_boundaries() {
+    let e = engine();
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent T1 showboxes with amsmath: unlike textellipsis,
+    // dotso uses low math dots, leading text glue and thin math glue.
+    // A brace/color boundary preserves its generated trailing space.
+    for (source, expected) in [
+        (r"\dotso", [1.666_576, 0.105_554, 0.0]),
+        (r"a\dotso b", [3.055_125, 0.688_720, 0.0]),
+        (r"{\dotso}", [1.999_828, 0.105_554, 0.0]),
+        (r"{{\dotso}}", [1.999_828, 0.105_554, 0.0]),
+        (r"\textcolor{red}{\dotso}", [1.999_828, 0.105_554, 0.0]),
+        (r"\dotso,", [2.110_948, 0.105_554, 0.194_397]),
+        (r"a \dotso, b", [3.499_498, 0.688_720, 0.194_397]),
+        (r"{\dotso}b", [2.555_247, 0.688_720, 0.0]),
+    ] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: native {actual:?}, independent TeX {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_pair_kerns_follow_the_active_font_control() {
     // Independent T1 showbox captures without the Reference's font
     // control, and with it. Basic/bare callers keep natural text kerns.

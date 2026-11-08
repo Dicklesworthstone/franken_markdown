@@ -572,6 +572,10 @@ pub enum NodeKind {
         /// One span per `char` of `text`, in order.
         char_spans: Vec<Span>,
     },
+    /// Three periods, each followed by the active text font's interword
+    /// stretch. Text `\dots`/`\ldots` and `\textellipsis` use this;
+    /// explicit `\textellipsis` in math keeps the math period glyphs.
+    TextEllipsis,
     /// A `\textbf`/`\emph`/`\underline` styling island (text mode, or the
     /// LaTeX text-in-math form).
     TextStyled {

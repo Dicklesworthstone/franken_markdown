@@ -289,6 +289,17 @@ fn xml_escapes_lt_gt_amp() {
     assert_contains("gt", ">", &["&gt;"]);
 }
 
+#[test]
+fn text_ellipsis_keeps_all_three_periods_in_text_and_styled_mathml() {
+    for source in [r"\dots", r"\text{\textellipsis}", r"\textbf{\ldots}"] {
+        let node = parse_text(source).unwrap();
+        let xml = to_mathml(&node, false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        assert!(xml.contains("..."), "{source}: {xml}");
+        assert!(!xml.contains('…'), "{source}: {xml}");
+    }
+}
+
 struct Lcg(u64);
 
 impl Lcg {

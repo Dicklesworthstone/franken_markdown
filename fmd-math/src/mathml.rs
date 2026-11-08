@@ -225,6 +225,11 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             w.text(text);
             w.close("mtext");
         }
+        NodeKind::TextEllipsis => {
+            w.open("mtext", &[]);
+            w.text("...");
+            w.close("mtext");
+        }
         NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body),
         NodeKind::MathIsland { body, display } => {
             let inner_style = if *display {
@@ -727,6 +732,7 @@ fn collect_text(w: &mut Writer, body: &[Node]) {
     for n in body {
         match &n.kind {
             NodeKind::TextRun { text, .. } => w.text(text),
+            NodeKind::TextEllipsis => w.text("..."),
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
             NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
             NodeKind::TextStyled { body, .. } => collect_text(w, body),

@@ -216,6 +216,7 @@ impl Engine {
         let ctx = LayCtx {
             style: ctx,
             alphabet: None,
+            text_alphabet: None,
             text_mode: !align_rows,
             text_kerns,
             decl_size: 1.0,
@@ -295,6 +296,9 @@ impl Engine {
 struct LayCtx<'a> {
     style: StyleCtx,
     alphabet: Option<MathFont>,
+    /// The surrounding text face survives an inline math island. Text
+    /// commands in math still read that font's spacing parameters.
+    text_alphabet: Option<MathFont>,
     /// Laying text (islands, `\text` bodies): letters stay upright.
     text_mode: bool,
     /// The active font control permits text pair kerns. Math kerns are
@@ -350,6 +354,7 @@ struct WideAccentWidth {
 struct WideAccentWidthKey {
     span: Span,
     alphabet: Option<u8>,
+    text_alphabet: Option<u8>,
     text_mode: bool,
     text_kerns: bool,
     decl_size: u64,
@@ -1184,6 +1189,7 @@ impl Engine {
             NodeKind::TextRun { text, char_spans } => {
                 self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx), true)
             }
+            NodeKind::TextEllipsis => self.text_ellipsis(node.span, ctx),
             NodeKind::Text { body } => self.text_body(body, ctx),
             NodeKind::TextStyled { style, body } => self.text_styled(*style, body, node.span, ctx),
             NodeKind::MathIsland { body, display } => self.math_island(body, *display, ctx),
@@ -1250,6 +1256,55 @@ impl Engine {
     }
 
     // ── lay_node's arms ─────────────────────────────────────────────────
+
+    /// LaTeX's default text ellipsis ends with a kern too. Periods keep
+    /// the current mode's face and size; the kern reads the surrounding
+    /// text font, even when the command occurs inside mathematics.
+    fn text_ellipsis(&self, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let dot = self.char_atom('.', span, ctx)?.boxx;
+        let text = LayCtx {
+            style: if ctx.text_mode {
+                ctx.style
+            } else {
+                StyleCtx::new(Style::Text)
+            },
+            alphabet: if ctx.text_mode {
+                ctx.alphabet
+            } else {
+                ctx.text_alphabet
+            },
+            text_mode: true,
+            ..ctx
+        };
+        let face = text_face(text);
+        let stretch = if let Some(font) = self.faces.text_font(face, 10.0 * text.text_size()) {
+            font.param(3) * text.text_size()
+        } else if face == FACE_TYPEWRITER {
+            0.0
+        } else {
+            // Proportional fallback faces use the CM half-space
+            // convention when their own EC fontdimens are unavailable.
+            self.char_atom(' ', span, text)?.boxx.width / 2.0
+        };
+        let advance = dot.width + stretch;
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: 3.0 * advance,
+                height: dot.height,
+                depth: dot.depth,
+                children: [0.0, advance, 2.0 * advance]
+                    .map(|dx| Positioned {
+                        dx,
+                        dy: 0.0,
+                        node: MNode::Box(dot.clone()),
+                    })
+                    .into(),
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
 
     /// A list as one box.
     fn lay_list(&self, items: &[Node], ctx: LayCtx) -> Result<Laid, MathError> {
@@ -4209,6 +4264,7 @@ impl Engine {
         let key = WideAccentWidthKey {
             span: base.span,
             alphabet: ctx.alphabet.map(|font| font as u8),
+            text_alphabet: ctx.text_alphabet.map(|font| font as u8),
             text_mode: ctx.text_mode,
             text_kerns: ctx.text_kerns,
             decl_size: ctx.decl_size.to_bits(),
@@ -5571,6 +5627,7 @@ fn space_factor_after(factor: u16, ch: char) -> u16 {
 /// ties leave it; anything else (math, a box) makes it 1000.
 fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
     nodes.iter().fold(factor, |factor, node| match &node.kind {
+        NodeKind::TextEllipsis => (0..3).fold(factor, |f, _| space_factor_after(f, '.')),
         NodeKind::TextRun { text, .. } => text
             .chars()
             .filter(|ch| *ch != ' ')
@@ -5594,15 +5651,17 @@ fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
 
 /// The group-scoped text face, shared by inline and paragraph layout.
 fn text_style_ctx(style: TextStyle, ctx: LayCtx<'_>) -> LayCtx<'_> {
+    let alphabet = Some(match style {
+        TextStyle::Bold => MathFont::Bold,
+        TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
+        TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
+        TextStyle::Typewriter => MathFont::Typewriter,
+        TextStyle::SansSerif => MathFont::SansSerif,
+    });
     LayCtx {
         text_mode: true,
-        alphabet: Some(match style {
-            TextStyle::Bold => MathFont::Bold,
-            TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
-            TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
-            TextStyle::Typewriter => MathFont::Typewriter,
-            TextStyle::SansSerif => MathFont::SansSerif,
-        }),
+        alphabet,
+        text_alphabet: alphabet,
         ..ctx
     }
 }

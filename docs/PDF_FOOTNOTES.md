@@ -26,6 +26,12 @@ link to its note.
     are admitted in note order; the remaining notes use the Notes section.
 - Note bodies keep their full block structure: paragraphs, lists, code,
   tables, quotes, mathematics and images.
+- When a note starts with an image-only paragraph, its superscript label
+  appears in a separate paragraph before the figure. Linked and styled
+  images and image galleries keep their figure layout and dimensions; adding
+  the note label does not shrink them into inline icons. Images mixed with
+  prose retain ordinary inline sizing. A figure that makes its note too tall
+  for the page foot keeps its full figure layout in the trailing Notes section.
 - Note marks link to the note (a `/Link` annotation with a `/Dest`), including
   notes moved to the Notes section and references from one note to another.
   Note destinations are not bookmarks.
@@ -114,6 +120,10 @@ reference's page, below the body, smaller than body text), linking without
 bookmarks, the endnote fallbacks, emitter determinism and placement under
 optimal pagination. `tests/pdf_footnote_fidelity_test.rs` proves no note
 block is discarded on any PDF entrypoint.
+`tests/pdf_footnote_figures_test.rs` checks first-image notes, linked and styled
+figures, galleries, tall-note fallback, explicit endnotes and the unchanged
+inline-prose case. It compares emitted Figure bounds with decoded drawing
+matrices and checks the note label and both navigation directions.
 `tests/pdf_footnote_source_identity.rs` checks author-controlled note names,
 rich unreferenced bodies, authored superscripts, strict baseline-grid output,
 and book navigation across the source-document APIs.

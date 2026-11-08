@@ -227,8 +227,12 @@ fn note_images_use_resources_and_report_failures_once() {
     let expected = doc(vec![
         Block::Paragraph(vec![text("¹"), text("¹")]),
         notes_heading(),
-        Block::Paragraph(vec![text("¹ "), image]),
+        paragraph("¹"),
+        Block::Paragraph(vec![image]),
     ]);
+    // Keep the generated label in its own paragraph so shared endnote
+    // preparation preserves the original image-only block.
+    assert_eq!(source.with_endnotes().as_ref(), &expected);
     let options = SvgOptions::default();
     let fonts = FontAssets::default();
     let asset = PdfImageAsset::new("plot.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>"#.to_vec());

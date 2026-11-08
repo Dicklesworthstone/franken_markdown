@@ -179,7 +179,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
             let mut body = rewrite_blocks(notes.definitions[index], &notes, &numbering);
             let label = superscript(numbering.numbers[index]);
             match body.first_mut() {
-                Some(Block::Paragraph(inlines)) if crate::toc::marker_depth(inlines).is_none() => {
+                Some(Block::Paragraph(inlines)) if paragraph_accepts_note_label(inlines) => {
                     inlines.insert(0, Inline::Text(format!("{label} ")));
                 }
                 _ => {
@@ -215,7 +215,7 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
                 backlinks && u32::try_from(number).is_ok_and(|number| references.contains(&number));
             let label = superscript(number);
             match body.first_mut() {
-                Some(Block::Paragraph(inlines)) if crate::toc::marker_depth(inlines).is_none() => {
+                Some(Block::Paragraph(inlines)) if paragraph_accepts_note_label(inlines) => {
                     if backlinks {
                         inlines.insert(0, Inline::Text(" ".to_string()));
                         inlines.insert(0, page_note_backlink(number, label));
@@ -239,6 +239,33 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
         }
     }
     Cow::Owned(Document { blocks })
+}
+
+/// Keep figure-only paragraphs intact. Prefixing their first image with text
+/// changes a standalone figure or gallery into prose, making PDF choose
+/// inline-image sizing. This decision uses only source structure, so missing
+/// resources and custom assets follow the same preparation path.
+fn paragraph_accepts_note_label(inlines: &[Inline]) -> bool {
+    if crate::toc::marker_depth(inlines).is_some() {
+        return false;
+    }
+    let mut pending = vec![inlines];
+    let mut has_image = false;
+    while let Some(inlines) = pending.pop() {
+        for inline in inlines {
+            match inline {
+                Inline::Image { .. } => has_image = true,
+                Inline::Text(text) if text.trim().is_empty() => {}
+                Inline::SoftBreak | Inline::HardBreak => {}
+                Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
+                    pending.push(inner);
+                }
+                Inline::Link { content, .. } => pending.push(content),
+                _ => return true,
+            }
+        }
+    }
+    !has_image
 }
 
 fn page_note_backlink(number: usize, label: String) -> Inline {
@@ -675,6 +702,114 @@ mod tests {
                 Block::Paragraph(vec![text("¹ "), text("Citation")]),
             ])
         );
+    }
+
+    #[test]
+    fn first_figure_notes_preserve_blocks_and_optional_return_labels() -> Result<(), String> {
+        let image = Inline::Image {
+            dest: "plot.svg".into(),
+            title: Some("Original title".into()),
+            alt: "Evidence plot".into(),
+        };
+        let linked = Inline::Link {
+            dest: "https://example.com/evidence".into(),
+            title: None,
+            content: vec![Inline::Strong(vec![Inline::Emphasis(vec![image.clone()])])],
+        };
+        for inlines in [
+            vec![image.clone()],
+            vec![linked.clone()],
+            vec![Inline::Strikethrough(vec![image.clone()])],
+            vec![
+                image.clone(),
+                text(" \t"),
+                Inline::SoftBreak,
+                linked,
+                Inline::HardBreak,
+                image.clone(),
+            ],
+        ] {
+            let figure = Block::Paragraph(inlines);
+            let doc = document(vec![
+                Block::Paragraph(vec![text("Evidence"), reference("plot")]),
+                definition("plot", vec![figure.clone()]),
+            ]);
+            let original = doc.clone();
+            let endnotes = for_pdf(&doc);
+            assert_eq!(endnotes.blocks.len(), 4);
+            assert_eq!(endnotes.blocks[2], paragraph("¹"));
+            assert_eq!(endnotes.blocks[3], figure);
+            for backlinks in [false, true] {
+                let prepared = for_pdf_paged_with_backlinks(&doc, backlinks);
+                let Some(Block::FootnoteDefinition { id, blocks }) = prepared.blocks.get(1) else {
+                    return Err(format!(
+                        "missing prepared figure note: {:?}",
+                        prepared.as_ref()
+                    ));
+                };
+                assert_eq!(id, "fmd-fn-1");
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[1], figure);
+                let label = if backlinks {
+                    Inline::Link {
+                        dest: "#fmd-fnref-1".into(),
+                        title: None,
+                        content: vec![text("¹")],
+                    }
+                } else {
+                    text("¹")
+                };
+                assert_eq!(blocks[0], Block::Paragraph(vec![label]));
+                assert!(matches!(
+                    for_pdf_paged_with_backlinks(&prepared, backlinks).0,
+                    Cow::Borrowed(_)
+                ));
+            }
+            assert_eq!(doc, original);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_image_prose_keeps_its_inline_note_label() -> Result<(), String> {
+        let prose = vec![
+            text("See "),
+            Inline::Image {
+                dest: "plot.svg".into(),
+                title: None,
+                alt: "Evidence plot".into(),
+            },
+            text(" for evidence."),
+        ];
+        let doc = document(vec![
+            Block::Paragraph(vec![reference("plot")]),
+            definition("plot", vec![Block::Paragraph(prose.clone())]),
+        ]);
+        let mut expected = vec![text("¹ ")];
+        expected.extend(prose.clone());
+        let endnotes = for_pdf(&doc);
+        assert_eq!(endnotes.blocks.len(), 3);
+        assert_eq!(endnotes.blocks[2], Block::Paragraph(expected.clone()));
+        let paged = for_pdf_paged(&doc);
+        let Some(Block::FootnoteDefinition { blocks, .. }) = paged.blocks.get(1) else {
+            return Err(format!("missing prepared prose note: {:?}", paged.as_ref()));
+        };
+        assert_eq!(blocks, &[Block::Paragraph(expected)]);
+        let linked = for_pdf_paged_with_backlinks(&doc, true);
+        let Some(Block::FootnoteDefinition { blocks, .. }) = linked.blocks.get(1) else {
+            return Err(format!("missing linked prose note: {:?}", linked.as_ref()));
+        };
+        let mut expected = vec![
+            Inline::Link {
+                dest: "#fmd-fnref-1".into(),
+                title: None,
+                content: vec![text("¹")],
+            },
+            text(" "),
+        ];
+        expected.extend(prose);
+        assert_eq!(blocks, &[Block::Paragraph(expected)]);
+        Ok(())
     }
 
     #[test]

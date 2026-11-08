@@ -121,6 +121,11 @@ text geometry, emitter determinism and chapter-scoped `fnref-N` targets.
 `tests/book_pdf_footnote_links.rs` keeps missing and ambiguous citation anchors
 from capturing unrelated destinations.
 
+`tests/book_browser_footnote_profile.rs` drives the production Rust `FmdBook`
+API through repeated enable/reset cycles, comparing actual PDF bytes with
+direct native book exports and preserving source identity. Run it with
+`cargo test --no-default-features --features wasm-book --test book_browser_footnote_profile`.
+
 The browser adapter regressions cover root/book exports, worker and Flow
 transport, retained-output caching, and offline/source-project round trips with
 explicit native binding doubles and real Node workers. They verify option

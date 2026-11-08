@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn page_note_return_labels_require_a_real_linked_citation() {
+    fn page_note_return_labels_require_a_real_linked_citation() -> Result<(), String> {
         let doc = crate::parse_markdown(
             "Claim[^one]. [Ordinary link[^hidden]](https://example.com)\n\n[^one]: First cites another[^two].\n\n[^two]: Second note.\n\n[^hidden]: Nested reference.\n\n[^unused]: Unreferenced note.\n",
         );
@@ -800,7 +800,9 @@ mod tests {
         let prepared = for_pdf_paged_with_backlinks(&doc, true);
         let ordinary = for_pdf_paged(&doc);
         for label in ["one", "two", "hidden", "unused"] {
-            let id = &ids[label];
+            let id = ids
+                .get(label)
+                .ok_or_else(|| format!("missing prepared note ID for {label}"))?;
             let blocks = prepared
                 .blocks
                 .iter()
@@ -810,24 +812,25 @@ mod tests {
                     }
                     _ => None,
                 })
-                .unwrap();
-            let Block::Paragraph(inlines) = &blocks[0] else {
-                panic!("numbered paragraph")
+                .ok_or_else(|| format!("missing prepared note {label} ({id})"))?;
+            let Some(Block::Paragraph(inlines)) = blocks.first() else {
+                return Err(format!(
+                    "note {label} ({id}) must start with a numbered paragraph: {blocks:?}"
+                ));
             };
             if matches!(label, "one" | "two") {
-                let Inline::Link { dest, .. } = &inlines[0] else {
-                    panic!("linked return label")
+                let Some(Inline::Link { dest, .. }) = inlines.first() else {
+                    return Err(format!(
+                        "note {label} ({id}) must start with a linked return label: {inlines:?}"
+                    ));
                 };
-                assert_eq!(
-                    dest,
-                    &format!(
-                        "#{PAGE_NOTE_REFERENCE_PREFIX}{}",
-                        id.strip_prefix(PAGE_NOTE_PREFIX).unwrap()
-                    )
-                );
+                let number = id
+                    .strip_prefix(PAGE_NOTE_PREFIX)
+                    .ok_or_else(|| format!("invalid prepared note ID for {label}: {id}"))?;
+                assert_eq!(dest, &format!("#{PAGE_NOTE_REFERENCE_PREFIX}{number}"));
             } else {
                 assert!(
-                    matches!(&inlines[0], Inline::Text(_)),
+                    matches!(inlines.first(), Some(Inline::Text(_))),
                     "{label} has no rendered citation"
                 );
             }
@@ -840,9 +843,11 @@ mod tests {
                     }
                     _ => None,
                 })
-                .unwrap();
-            let Block::Paragraph(ordinary_inlines) = &ordinary_blocks[0] else {
-                panic!("ordinary label")
+                .ok_or_else(|| format!("missing ordinary note {label} ({id})"))?;
+            let Some(Block::Paragraph(ordinary_inlines)) = ordinary_blocks.first() else {
+                return Err(format!(
+                    "ordinary note {label} ({id}) must start with a numbered paragraph: {ordinary_blocks:?}"
+                ));
             };
             assert_eq!(
                 crate::html::inlines_to_plain(inlines),
@@ -855,6 +860,7 @@ mod tests {
             for_pdf_paged_with_backlinks(&prepared, true),
             Cow::Borrowed(_)
         ));
+        Ok(())
     }
 
     #[test]

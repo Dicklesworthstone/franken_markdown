@@ -10,6 +10,62 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{Block, Document, Inline};
 
+/// Internal provenance for a document whose page notes have been prepared.
+///
+/// A source `Document` can contain any footnote identifier and any leading
+/// text. Neither a destination-shaped ID nor a matching superscript proves
+/// that its notes have already been numbered. Only this wrapper carries that
+/// fact; borrowing it for another internal pass never applies the transform
+/// again. The source AST remains unchanged and no marker enters output.
+pub(crate) struct PreparedPdfDocument<'a>(Cow<'a, Document>);
+
+impl PreparedPdfDocument<'_> {
+    pub(crate) fn into_owned(self) -> PreparedPdfDocument<'static> {
+        PreparedPdfDocument(Cow::Owned(self.0.into_owned()))
+    }
+}
+
+impl std::ops::Deref for PreparedPdfDocument<'_> {
+    type Target = Document;
+
+    fn deref(&self) -> &Document {
+        &self.0
+    }
+}
+
+impl AsRef<Document> for PreparedPdfDocument<'_> {
+    fn as_ref(&self) -> &Document {
+        &self.0
+    }
+}
+
+/// Explicit source/prepared distinction for private preparation and warning
+/// passes. Every public `Document` input is source, even when its contents
+/// happen to be identical to an internal prepared representation.
+pub(crate) trait PdfDocumentInput {
+    fn document(&self) -> &Document;
+
+    fn is_pdf_prepared(&self) -> bool {
+        false
+    }
+}
+
+impl PdfDocumentInput for Document {
+    fn document(&self) -> &Document {
+        self
+    }
+}
+
+impl PdfDocumentInput for PreparedPdfDocument<'_> {
+    fn document(&self) -> &Document {
+        self
+    }
+
+    fn is_pdf_prepared(&self) -> bool {
+        true
+    }
+}
+
 /// Typeset references as superscript numerals (`claim¹`, the way a printed
 /// document marks notes) while retaining every supported block in each note. Number referenced notes by first use in the
 /// body, then traverse note-to-note references in that order. Definitions
@@ -37,19 +93,30 @@ pub(crate) const PAGE_NOTE_REFERENCE_PREFIX: &str = "fmd-fnref-";
 /// at the foot of the page carrying its first body reference, and prints any
 /// note it cannot place there (unreferenced, referenced only from another
 /// note, or too tall) in a trailing Notes section exactly like [`for_pdf`].
-pub(crate) fn for_pdf_paged(doc: &Document) -> Cow<'_, Document> {
-    prepare(doc, true, false)
+pub(crate) fn for_pdf_paged(doc: &impl PdfDocumentInput) -> PreparedPdfDocument<'_> {
+    prepare_paged(doc, false)
 }
 
 /// Page notes with optional return links on their existing superscript labels.
 /// The writer resolves these after final pagination; preparation cannot know
 /// the citing page or whether a label has a rendered citation to return to.
-pub(crate) fn for_pdf_paged_with_backlinks(doc: &Document, backlinks: bool) -> Cow<'_, Document> {
+pub(crate) fn for_pdf_paged_with_backlinks(
+    doc: &impl PdfDocumentInput,
+    backlinks: bool,
+) -> PreparedPdfDocument<'_> {
     if backlinks {
-        prepare(doc, true, true)
+        prepare_paged(doc, true)
     } else {
         for_pdf_paged(doc)
     }
+}
+
+fn prepare_paged(doc: &impl PdfDocumentInput, backlinks: bool) -> PreparedPdfDocument<'_> {
+    PreparedPdfDocument(if doc.is_pdf_prepared() {
+        Cow::Borrowed(doc.document())
+    } else {
+        prepare(doc.document(), true, backlinks)
+    })
 }
 
 /// Original definition ID to the ID carried by its prepared page note. Book
@@ -59,11 +126,11 @@ pub(crate) fn for_pdf_paged_with_backlinks(doc: &Document, backlinks: bool) -> C
 ///
 /// Use the same HTML lowering, definition collection and numbering as
 /// [`for_pdf_paged`]. Already prepared notes retain their existing IDs.
-pub(crate) fn page_note_ids(doc: &Document) -> BTreeMap<String, String> {
-    let lowered = crate::safe_html::lower(doc);
+pub(crate) fn page_note_ids(doc: &impl PdfDocumentInput) -> BTreeMap<String, String> {
+    let lowered = crate::safe_html::lower(doc.document());
     let mut notes = Notes::default();
     notes.collect(&lowered.blocks);
-    if notes.is_paged() {
+    if doc.is_pdf_prepared() {
         return notes
             .indices
             .keys()
@@ -100,12 +167,6 @@ fn endnotes_for_pdf(doc: &Document, paged: bool, backlinks: bool) -> Cow<'_, Doc
     if notes.definitions.is_empty() && !notes.has_reference {
         return Cow::Borrowed(doc);
     }
-    // Already prepared for page notes: nothing references the labeled
-    // definitions any more, and preparing again would renumber them.
-    if paged && notes.is_paged() {
-        return Cow::Borrowed(doc);
-    }
-
     let mut numbering = number_notes(doc, &notes);
     numbering.paged = paged;
     let mut blocks = rewrite_blocks(&doc.blocks, &notes, &numbering);
@@ -336,14 +397,6 @@ struct Notes<'a> {
 }
 
 impl<'a> Notes<'a> {
-    fn is_paged(&self) -> bool {
-        !self.has_reference
-            && self
-                .indices
-                .keys()
-                .all(|id| id.starts_with(PAGE_NOTE_PREFIX))
-    }
-
     fn collect(&mut self, blocks: &'a [Block]) {
         for block in blocks {
             match block {
@@ -791,6 +844,70 @@ mod tests {
     }
 
     #[test]
+    fn source_note_ids_are_not_preparation_markers() {
+        for id in [
+            "fmd-fn-evidence",
+            "fmd-fn-1",
+            "fmd-fn-0",
+            "fmd-fn-01",
+            "fmd-fn-4294967295",
+            "fmd-fn-4294967296",
+        ] {
+            let source = document(vec![
+                paragraph("Body"),
+                definition(id, vec![paragraph("Evidence")]),
+            ]);
+            let expected = document(vec![
+                paragraph("Body"),
+                definition(
+                    "fmd-fn-1",
+                    vec![Block::Paragraph(vec![text("¹ "), text("Evidence")])],
+                ),
+            ]);
+            for backlinks in [false, true] {
+                let prepared = for_pdf_paged_with_backlinks(&source, backlinks);
+                assert_eq!(prepared.as_ref(), &expected, "{id}, backlinks={backlinks}");
+                assert_eq!(
+                    page_note_ids(&source).get(id),
+                    Some(&"fmd-fn-1".to_string())
+                );
+                assert!(matches!(
+                    for_pdf_paged_with_backlinks(&prepared, backlinks).0,
+                    Cow::Borrowed(_)
+                ));
+                assert_eq!(
+                    page_note_ids(&prepared).get("fmd-fn-1"),
+                    Some(&"fmd-fn-1".to_string())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matching_authored_superscripts_are_not_preparation_provenance() {
+        for body in [
+            "¹ Original text",
+            "¹ **Original text**",
+            "¹",
+            "² Original text",
+        ] {
+            let authored = crate::parse_markdown(&format!("[^fmd-fn-1]: {body}\n"));
+            let ordinary = crate::parse_markdown(&format!("[^evidence]: {body}\n"));
+            for backlinks in [false, true] {
+                let prepared = for_pdf_paged_with_backlinks(&authored, backlinks);
+                assert_eq!(
+                    prepared.as_ref(),
+                    for_pdf_paged_with_backlinks(&ordinary, backlinks).as_ref(),
+                    "author text {body:?} must survive numbering"
+                );
+                let reused = for_pdf_paged_with_backlinks(&prepared, backlinks);
+                assert!(matches!(&reused.0, Cow::Borrowed(_)));
+                assert!(std::ptr::eq(reused.as_ref(), prepared.as_ref()));
+            }
+        }
+    }
+
+    #[test]
     fn page_note_return_labels_require_a_real_linked_citation() -> Result<(), String> {
         let doc = crate::parse_markdown(
             "Claim[^one]. [Ordinary link[^hidden]](https://example.com)\n\n[^one]: First cites another[^two].\n\n[^two]: Second note.\n\n[^hidden]: Nested reference.\n\n[^unused]: Unreferenced note.\n",
@@ -857,7 +974,7 @@ mod tests {
         }
         assert_eq!(doc, original);
         assert!(matches!(
-            for_pdf_paged_with_backlinks(&prepared, true),
+            for_pdf_paged_with_backlinks(&prepared, true).0,
             Cow::Borrowed(_)
         ));
         Ok(())

@@ -1272,16 +1272,20 @@ pub fn render_pdf_pdfa(src: &str, opts: &PdfOptions, pdf_a: PdfASettings) -> Res
 /// transformation allocate a replacement AST. The HTML renderer keeps its
 /// own native footnote representation.
 fn transform_footnotes_for_pdf<'a>(
-    doc: &'a Document,
+    input: &'a impl footnotes::PdfDocumentInput,
     opts: &PdfOptions,
-) -> std::borrow::Cow<'a, Document> {
+) -> footnotes::PreparedPdfDocument<'a> {
+    if input.is_pdf_prepared() {
+        return footnotes::for_pdf_paged_with_backlinks(input, opts.footnote_backlinks);
+    }
+    let doc = input.document();
     match apply_profile(doc, opts.profile) {
         std::borrow::Cow::Borrowed(doc) => {
             footnotes::for_pdf_paged_with_backlinks(doc, opts.footnote_backlinks)
         }
-        std::borrow::Cow::Owned(doc) => std::borrow::Cow::Owned(
-            footnotes::for_pdf_paged_with_backlinks(&doc, opts.footnote_backlinks).into_owned(),
-        ),
+        std::borrow::Cow::Owned(doc) => {
+            footnotes::for_pdf_paged_with_backlinks(&doc, opts.footnote_backlinks).into_owned()
+        }
     }
 }
 

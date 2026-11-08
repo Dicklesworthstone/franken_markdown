@@ -132,7 +132,7 @@ fn definition_lookup_preserves_exact_ids_escaping_and_undefined_literals() {
         note("Case", vec![paragraph("Exact case body.")]),
     ]);
     assert!(html.contains("id=\"fn-id&lt;&amp;&quot;\""));
-    assert!(html.contains("href=\"#fn-id&lt;&amp;&quot;\""));
+    assert!(html.contains("href=\"#fn-id%3C%26%22\""));
     assert!(html.contains("id=\"fn-Case\""));
     assert!(html.contains("[^case]"));
     assert!(html.contains("[^&lt;img src=x&gt;]"));

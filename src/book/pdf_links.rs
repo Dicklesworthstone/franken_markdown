@@ -45,7 +45,7 @@ pub(super) fn render_report(
     settings: PdfASettings,
 ) -> Result<(Vec<u8>, Vec<crate::RenderWarning>)> {
     let plan = prepare_configured(book, document, options, settings)?;
-    let warnings = crate::render_warnings(
+    let warnings = crate::pdf::render_warnings_for_prepared(
         &crate::transform_footnotes_for_pdf(&plan.document, options),
         options,
     );
@@ -147,8 +147,10 @@ fn render_plan_with(
         crate::validate_doc_pdfa_strict(&plan.document)?;
     }
     let profiled = crate::apply_profile(&plan.document, options.profile);
-    let prepared =
-        crate::footnotes::for_pdf_paged_with_backlinks(&profiled, options.footnote_backlinks);
+    let prepared = crate::footnotes::for_pdf_paged_with_backlinks(
+        profiled.as_ref(),
+        options.footnote_backlinks,
+    );
     if plan.targets.is_empty() {
         return crate::pdf::render_with_emit(&prepared, options, settings, emit);
     }
@@ -168,7 +170,7 @@ fn render_plan_with(
             Some(Target::Footnote(_) | Target::FootnoteReference(_))
         )
     }) {
-        crate::footnotes::page_note_ids(&profiled)
+        crate::footnotes::page_note_ids(profiled.as_ref())
     } else {
         BTreeMap::new()
     };

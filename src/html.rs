@@ -1931,7 +1931,7 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
     out.push_str("\">");
     render_blocks(blocks, out, opts, state);
     out.push_str(" <a class=\"footnote-backref\" href=\"#");
-    push_escaped_attr(state.id_prefix, out);
+    push_fragment_identifier(state.id_prefix, out);
     out.push_str("fnref-");
     push_u64(out, number as u64);
     out.push_str("\">\u{21a9}</a>\n</li>\n");
@@ -1956,9 +1956,9 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
         out.push('"');
     }
     out.push_str("><a href=\"#");
-    push_escaped_attr(state.id_prefix, out);
+    push_fragment_identifier(state.id_prefix, out);
     out.push_str("fn-");
-    push_escaped_attr(id, out);
+    push_fragment_identifier(id, out);
     out.push_str("\">");
     push_u64(out, number as u64);
     out.push_str("</a></sup>");
@@ -2094,6 +2094,24 @@ const URL_CHAR_KIND: [u8; 256] = {
     }
     table
 };
+
+/// Encode a generated anchor's literal identifier as URL-fragment bytes.
+/// Unlike an authored URL, an identifier's `%HH` is literal source text:
+/// preserving that escape would navigate to a different DOM ID. Restricting
+/// the output to unreserved bytes also keeps markup, URL delimiters and text
+/// fragment directives from changing its meaning in HTML and EPUB readers.
+fn push_fragment_identifier(id: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+}
 
 fn push_escaped_url(s: &str, out: &mut String) {
     let bytes = s.as_bytes();

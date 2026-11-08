@@ -542,7 +542,7 @@ fn footnotes<W: Write + ?Sized>(
             out.text("\">")?;
             blocks(None, children, out, opts, state)?;
             out.text(" <a class=\"footnote-backref\" href=\"#")?;
-            out.escaped(state.id_prefix, true)?;
+            out.buffered(|html| super::push_fragment_identifier(state.id_prefix, html))?;
             out.text("fnref-")?;
             out.number((index + 1) as u64)?;
             out.text("\">↩</a>\n</li>\n")?;

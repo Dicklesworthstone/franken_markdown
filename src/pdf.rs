@@ -2445,9 +2445,13 @@ impl ParagraphPolicy {
     }
 }
 
+/// Render an existing layout document without preparing its footnotes or
+/// applying an authoring profile. Use [`crate::render_pdf_document`] for an
+/// ordinary parsed/source document. This low-level path lets callers reuse an
+/// explicitly prepared representation without numbering its note bodies again.
+///
 /// # Errors
-/// Infallible in practice (the bundled fonts always parse); returns [`Result`]
-/// to leave room for future validation without a signature change.
+/// Propagates font, layout, pagination, and PDF-emission errors.
 pub fn render(doc: &Document, opts: &PdfOptions, pdf_a: crate::PdfASettings) -> Result<Vec<u8>> {
     render_with_emit(doc, opts, pdf_a, PdfEmitOptions::default())
 }
@@ -2648,6 +2652,23 @@ impl RenderWarning {
 /// stderr so degraded output is never silent.
 #[must_use]
 pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> {
+    render_warnings_for_input(doc, opts)
+}
+
+/// Internal audits retain preparation provenance instead of guessing from
+/// author-controlled footnote IDs or numbering the same note bodies twice.
+pub(crate) fn render_warnings_for_prepared(
+    doc: &crate::footnotes::PreparedPdfDocument<'_>,
+    opts: &PdfOptions,
+) -> Vec<RenderWarning> {
+    render_warnings_for_input(doc, opts)
+}
+
+fn render_warnings_for_input(
+    input: &impl crate::footnotes::PdfDocumentInput,
+    opts: &PdfOptions,
+) -> Vec<RenderWarning> {
+    let doc = input.document();
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
     let mut warnings = Vec::new();
@@ -2684,7 +2705,7 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
         // otherwise note reservations or fitted geometry could report a
         // different fallback than the PDF that is actually written.
         if opts.requests_optimal_pagination() || has_inline_math {
-            let prepared = crate::transform_footnotes_for_pdf(doc, opts);
+            let prepared = crate::transform_footnotes_for_pdf(input, opts);
             let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
             if let Ok((lines, paragraph_variants)) =
                 layout_with_pagination_report(&prepared.blocks, &effective, &faces, page)
@@ -44586,7 +44607,8 @@ pub fn verification_text_layer_result(
     doc: &Document,
     opts: &PdfOptions,
 ) -> Result<VerifyTextLayer> {
-    // Preparation is idempotent for already numbered page notes.
+    // This API accepts source. Already prepared layout documents use the
+    // separate compatibility API rather than inferring state from note IDs.
     let prepared = crate::transform_footnotes_for_pdf(doc, opts);
     verification_text_layer_for_layout(&prepared, opts)
 }

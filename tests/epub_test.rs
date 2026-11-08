@@ -1124,6 +1124,34 @@ Term
 }
 
 #[test]
+fn epub_footnote_links_address_literal_ids_after_uri_fragment_decoding() {
+    use franken_markdown::{BookInput, build_book};
+
+    let source = "# Evidence\n\nFirst.[^note%41] Second.[^noteA]\n\n[^note%41]: Percent-named evidence.\n\n[^noteA]: Literal-letter evidence.\n";
+    let options = HtmlOptions {
+        custom_css: Some(String::new()),
+        ..HtmlOptions::default()
+    };
+    let book = build_book(&[BookInput {
+        path: "evidence.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [
+        epub::render_epub(&parse_markdown(source), &options).unwrap(),
+        epub::render_book_epub(&book, &options).unwrap(),
+    ] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert!(chapter.contains("id=\"fn-note%41\""), "{chapter}");
+        assert!(chapter.contains("href=\"#fn-note%2541\""), "{chapter}");
+        assert!(chapter.contains("id=\"fn-noteA\""), "{chapter}");
+        assert!(chapter.contains("href=\"#fn-noteA\""), "{chapter}");
+        assert!(!chapter.contains("href=\"#fn-note%41\""), "{chapter}");
+        assert_well_formed_xml(&chapter);
+    }
+}
+
+#[test]
 fn epub_heading_links_do_not_resolve_ambiguous_footnote_anchors() {
     let source = "<h1>fn-note</h1>\n\n# fn-note\n\n<h1>fnref-1</h1>\n\n# fnref-1\n\nReference[^note].\n\n[^note]: Note body.\n\n[Ambiguous note](#fn-note) [Ambiguous backreference](#fnref-1)\n";
     let archive = epub::render_epub(&parse_markdown(source), &HtmlOptions::default()).unwrap();

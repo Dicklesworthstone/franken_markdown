@@ -6,8 +6,9 @@
 use franken_markdown::verify::{self, VerifyReport};
 use franken_markdown::{
     Align, Block, DefinitionItem, Document, FontAssets, Inline, List, ListItem, PageMargins,
-    PageSize, PdfASettings, PdfEmitOptions, PdfOptions, Table, parse_markdown, render_pdf_document,
-    render_pdf_document_emitted, render_pdf_document_pdfa, render_pdf_document_profiled,
+    PageSize, PdfASettings, PdfEmitOptions, PdfOptions, Table, parse_markdown, pdf,
+    render_pdf_document, render_pdf_document_emitted, render_pdf_document_pdfa,
+    render_pdf_document_profiled,
 };
 
 fn text(value: &str) -> Inline {
@@ -105,8 +106,10 @@ fn normal_profiled_and_explicit_emission_preserve_every_rich_note_block() {
     let (doc, expected) = rich_document();
     let original = doc.clone();
     let options = PdfOptions::default();
+    // The expected AST is already a layout document. Pass it explicitly to
+    // that API; ordinary Document entrypoints must treat every ID as source.
     let expected_bytes =
-        render_pdf_document(&expected, &options).expect("independent expected PDF");
+        pdf::render(&expected, &options, PdfASettings::OFF).expect("independent expected PDF");
     assert_eq!(render_pdf_document(&doc, &options).unwrap(), expected_bytes);
     assert_eq!(
         render_pdf_document_profiled(&doc, &options).unwrap().bytes,
@@ -128,7 +131,7 @@ fn pdfa_renders_the_same_complete_notes_with_archival_identification() {
     };
     let settings = PdfASettings::a2b();
     let actual = render_pdf_document_pdfa(&doc, &options, settings).unwrap();
-    let expected = render_pdf_document_pdfa(&expected, &options, PdfASettings::a2b()).unwrap();
+    let expected = pdf::render(&expected, &options, PdfASettings::a2b()).unwrap();
     assert_eq!(actual, expected);
     assert!(actual.starts_with(b"%PDF-"));
 }
@@ -138,7 +141,7 @@ fn verification_text_layer_contains_the_same_notes_as_the_emitted_pdf() {
     let (doc, expected) = rich_document();
     let options = PdfOptions::default();
     let actual = verify::verify_pdf(&doc, &options).unwrap();
-    let expected = verify::verify_pdf(&expected, &options).unwrap();
+    let expected = pdf::verification_text_layer(&expected, &options).unwrap();
     assert_eq!(
         actual.pages, expected.pages,
         "verification must use PDF document preparation"
@@ -207,7 +210,7 @@ fn first_reference_order_matches_numbered_bodies_even_when_definitions_are_rever
     };
     assert_eq!(
         render_pdf_document(&doc, &PdfOptions::default()).unwrap(),
-        render_pdf_document(&expected, &PdfOptions::default()).unwrap()
+        pdf::render(&expected, &PdfOptions::default(), PdfASettings::OFF).unwrap()
     );
 }
 

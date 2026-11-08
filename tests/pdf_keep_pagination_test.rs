@@ -507,12 +507,24 @@ fn prepared_endnote_boundaries_do_not_create_caption_bonds() {
         },
     ];
     let options = options(148.0, 172);
-    let rendered =
-        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+    // This fixture supplies already prepared layout blocks. The public source
+    // renderer must not infer preparation from author-controlled identifiers.
+    let rendered = franken_markdown::pdf::render_reported(
+        &document,
+        &options,
+        franken_markdown::PdfASettings::OFF,
+        PdfEmitOptions::default(),
+    )
+    .unwrap();
     assert!(rendered.pagination.page_breaks.is_exact());
     assert_eq!(painted_pages(&rendered.bytes), ["NotesCAP00.", "FIGURE"]);
-    let monolithic =
-        render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic()).unwrap();
+    let monolithic = franken_markdown::pdf::render_reported(
+        &document,
+        &options,
+        franken_markdown::PdfASettings::OFF,
+        PdfEmitOptions::monolithic(),
+    )
+    .unwrap();
     assert_eq!(rendered, monolithic);
 
     // A note's own caption still binds its figure. Only entry into a new
@@ -521,8 +533,13 @@ fn prepared_endnote_boundaries_do_not_create_caption_bonds() {
         id: "fmd-fn-1".to_string(),
         blocks: parse_markdown("CAP00.\n\n![Figure](figure.svg)").blocks,
     }];
-    let error =
-        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap_err();
+    let error = franken_markdown::pdf::render_reported(
+        &document,
+        &options,
+        franken_markdown::PdfASettings::OFF,
+        PdfEmitOptions::default(),
+    )
+    .unwrap_err();
     assert_infeasible(&error);
 }
 

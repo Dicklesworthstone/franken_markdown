@@ -67,7 +67,7 @@ fn constructed_footnote_id_quote_is_attribute_escaped() {
     assert_ok(
         "fn-quote-href",
         "href attribute",
-        html.contains("href=\"#fn-a&quot;b\""),
+        html.contains("href=\"#fn-a%22b\""),
         &html,
     );
 }

@@ -30,6 +30,14 @@ link to its note.
   notes moved to the Notes section and references from one note to another.
   Note destinations are not bookmarks.
 
+Footnote names are literal source identifiers. Names such as `fmd-fn-1` and
+`fmd-fn-evidence` follow the same numbering and preservation rules as any other
+name, including unreferenced definitions and text that already starts with a
+superscript. Internal preparation state is kept separately from the source.
+HTML and EPUB retain those literal names in their anchor IDs and encode them
+when generating links: a note named `evidence%41` links to
+`#fn-evidence%2541`, keeping it distinct from a note named `evidenceA`.
+
 ## Return to a citation
 
 Enable `--pdf-footnote-backlinks` to make the existing superscript label at the
@@ -106,6 +114,9 @@ reference's page, below the body, smaller than body text), linking without
 bookmarks, the endnote fallbacks, emitter determinism and placement under
 optimal pagination. `tests/pdf_footnote_fidelity_test.rs` proves no note
 block is discarded on any PDF entrypoint.
+`tests/pdf_footnote_source_identity.rs` checks author-controlled note names,
+rich unreferenced bodies, authored superscripts, strict baseline-grid output,
+and book navigation across the source-document APIs.
 The page-footnote tests also cover several large notes cited on one line,
 fallback destinations in the emitted PDF, note-to-note cycles, nonparagraph
 endnotes, and byte parity with the ordinary-note PDF captured before these fixes.

@@ -604,6 +604,215 @@ final class MarkdownDraftStoreTests: XCTestCase {
         }
     }
 
+    func testSceneIdentifiersRejectPathsAndNormalizeOnlyUUIDs() throws {
+        let raw = "01234567-89AB-4CDE-8F01-23456789ABCD"
+        let identity = try XCTUnwrap(MarkdownSceneIdentity(storedValue: raw))
+        XCTAssertEqual(identity.storageValue, raw.lowercased())
+        XCTAssertEqual(MarkdownSceneIdentity(storedValue: raw.lowercased()), identity)
+        for invalid in ["", ".", "..", "../\(raw)", "/\(raw)", raw + "/..", raw + "\n", " " + raw,
+                        raw.replacingOccurrences(of: "-", with: ""), "not-a-scene"] {
+            XCTAssertNil(MarkdownSceneIdentity(storedValue: invalid), invalid)
+        }
+    }
+
+    @MainActor
+    func testLiveSceneOwnershipRejectsDuplicateRestorationButAllowsRelaunch() throws {
+        let stored = MarkdownSceneIdentity().storageValue
+        var first: MarkdownSceneRecoveryOwner? = MarkdownSceneRecoveryOwner()
+        let firstIdentity = try XCTUnwrap(first).claim(storedIdentifier: stored)
+        let second = MarkdownSceneRecoveryOwner()
+        let secondIdentity = second.claim(storedIdentifier: stored.uppercased())
+        XCTAssertNotEqual(firstIdentity, secondIdentity)
+        XCTAssertEqual(first?.claim(storedIdentifier: "different"), firstIdentity)
+        XCTAssertTrue(MarkdownSceneRecoveryOwner.isActive(firstIdentity))
+
+        weak var released = first
+        first = nil
+        XCTAssertNil(released, "The ownership registry must not retain closed scene models")
+        let relaunched = MarkdownSceneRecoveryOwner()
+        XCTAssertEqual(relaunched.claim(storedIdentifier: stored), firstIdentity)
+        XCTAssertTrue(MarkdownSceneRecoveryOwner.isActive(secondIdentity))
+    }
+
+    func testSimultaneousScenesKeepIndependentDraftGenerationsAcrossRelaunch() async throws {
+        let directory = makeStore().fileURL.deletingLastPathComponent()
+        let firstID = MarkdownSceneIdentity()
+        let secondID = MarkdownSceneIdentity()
+        async let firstPreparation = MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        async let secondPreparation = MarkdownDraftStore.prepareSceneRecovery(for: secondID, directory: directory)
+        let (first, second) = try await (firstPreparation, secondPreparation)
+        XCTAssertNotEqual(first.draftFileURL, second.draftFileURL)
+        XCTAssertNotEqual(first.ownsLegacyRecovery, second.ownsLegacyRecovery)
+        let firstStore = MarkdownDraftStore(fileURL: first.draftFileURL)
+        let secondStore = MarkdownDraftStore(fileURL: second.draftFileURL)
+        let a = makeDraft(source: "\u{FEFF}# First\r\ne\u{301}\n", documentIdentity: UUID(), title: "First")
+        let b = makeDraft(source: "# Second\n漢字 👩🏽‍💻\n", documentIdentity: UUID(), title: "Second")
+        async let writeA: Void = firstStore.save(a)
+        async let writeB: Void = secondStore.save(b)
+        _ = try await (writeA, writeB)
+        let a2 = makeDraft(source: "\u{FEFF}# First edited\r\ne\u{301}\n", documentIdentity: a.documentIdentity, title: "First")
+        try await firstStore.save(a2)
+
+        let reloadedFirst = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let reloadedSecond = try await MarkdownDraftStore.prepareSceneRecovery(for: secondID, directory: directory)
+        let recoveredA = await MarkdownDraftStore(fileURL: reloadedFirst.draftFileURL).load()
+        let recoveredB = await MarkdownDraftStore(fileURL: reloadedSecond.draftFileURL).load()
+        XCTAssertEqual(recoveredA, a2)
+        XCTAssertEqual(recoveredB, b)
+        XCTAssertEqual(recoveredA.map { Data($0.source.utf8) }, Data(a2.source.utf8))
+        XCTAssertEqual(try sourceFiles(firstStore).count, 1)
+        XCTAssertEqual(try sourceFiles(secondStore).count, 1, "Another scene's cleanup cannot remove this source")
+    }
+
+    func testLegacySnapshotIsCopiedToOneSceneAndItsOriginalBytesRemainIntact() async throws {
+        let legacy = makeStore()
+        let directory = legacy.fileURL.deletingLastPathComponent()
+        let draft = makeDraft(source: "\u{FEFF}# Before scenes\r\n", documentIdentity: UUID())
+        try await legacy.save(draft)
+        let legacyManifest = try Data(contentsOf: legacy.fileURL)
+        let originalSource = try storedSourceURL(legacy)
+        let originalBytes = try Data(contentsOf: originalSource)
+        let firstID = MarkdownSceneIdentity()
+        let first = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let firstStore = MarkdownDraftStore(fileURL: first.draftFileURL)
+        let secondStore = MarkdownDraftStore(fileURL: second.draftFileURL)
+        let restored = await firstStore.load()
+        let unrelated = await secondStore.load()
+        XCTAssertEqual(restored, draft)
+        XCTAssertNil(unrelated)
+        XCTAssertTrue(first.ownsLegacyRecovery)
+        XCTAssertFalse(second.ownsLegacyRecovery)
+
+        try await firstStore.save(makeDraft(source: "# New owner text"))
+        try await secondStore.save(makeDraft(source: "# Independent text"))
+        let preparedAgain = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let saved = await MarkdownDraftStore(fileURL: preparedAgain.draftFileURL).load()
+        XCTAssertEqual(saved?.source, "# New owner text", "Legacy replay must not replace a newer scene snapshot")
+        XCTAssertEqual(try Data(contentsOf: legacy.fileURL), legacyManifest)
+        XCTAssertEqual(try Data(contentsOf: originalSource), originalBytes)
+    }
+
+    func testInterruptedLegacyCopyKeepsItsOwnerAndRetriesWithoutLosingTheOriginal() async throws {
+        let legacy = makeStore()
+        let directory = legacy.fileURL.deletingLastPathComponent()
+        let draft = makeDraft(source: "# The last durable draft")
+        try await legacy.save(draft)
+        let original = try Data(contentsOf: legacy.fileURL)
+        let firstID = MarkdownSceneIdentity()
+        do {
+            _ = try await MarkdownDraftStore.prepareSceneRecovery(
+                for: firstID, directory: directory,
+                beforePublishing: { throw CocoaError(.fileWriteOutOfSpace) }
+            )
+            XCTFail("The interrupted destination publication must be reported")
+        } catch {
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteOutOfSpace)
+        }
+        let recoverable = try await MarkdownDraftStore.savedSceneDrafts(directory: directory)
+        XCTAssertEqual(recoverable.map(\.id), [firstID], "An interrupted migration must remain discoverable without SceneStorage")
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        XCTAssertFalse(second.ownsLegacyRecovery)
+        let secondDraft = await MarkdownDraftStore(fileURL: second.draftFileURL).load()
+        XCTAssertNil(secondDraft)
+        let retried = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let recovered = await MarkdownDraftStore(fileURL: retried.draftFileURL).load()
+        XCTAssertTrue(retried.ownsLegacyRecovery)
+        XCTAssertEqual(recovered, draft)
+        XCTAssertEqual(try Data(contentsOf: legacy.fileURL), original)
+        let legacyRecovered = await legacy.load()
+        XCTAssertEqual(legacyRecovered, draft)
+    }
+
+    func testCorruptLegacyReceiptRequiresExplicitBypassAndNeverReassignsTheOldDraft() async throws {
+        let legacy = makeStore()
+        let directory = legacy.fileURL.deletingLastPathComponent()
+        let draft = makeDraft(source: "# Keep the old source")
+        try await legacy.save(draft)
+        let receipt = directory.appendingPathComponent("legacy-recovery-owner.v1")
+        let corrupt = Data("../another-scene".utf8)
+        try corrupt.write(to: receipt, options: .atomic)
+        let identity = MarkdownSceneIdentity()
+        do {
+            _ = try await MarkdownDraftStore.prepareSceneRecovery(for: identity, directory: directory)
+            XCTFail("An invalid owner must not redirect or replay private recovery data")
+        } catch {
+            XCTAssertEqual(error as? MarkdownDraftStore.StoreError, .invalidDraft)
+        }
+        let bypassed = try await MarkdownDraftStore.prepareSceneRecovery(
+            for: identity, directory: directory, restoreLegacy: false
+        )
+        XCTAssertFalse(bypassed.ownsLegacyRecovery)
+        let empty = await MarkdownDraftStore(fileURL: bypassed.draftFileURL).load()
+        XCTAssertNil(empty)
+        XCTAssertEqual(try Data(contentsOf: receipt), corrupt)
+        let preserved = await legacy.load()
+        XCTAssertEqual(preserved, draft)
+    }
+
+    func testMigratedLegacyJSONKeepsLiteralSourceButDropsUnrecognizedTrustSettings() async throws {
+        let legacy = makeStore()
+        try createParent(of: legacy.fileURL)
+        let draft = makeDraft(source: "\u{FEFF}<script>private()</script>\r\n", documentIdentity: UUID())
+        let data = try JSONEncoder().encode(draft)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        encoded["allowRawHtml"] = true
+        let original = try JSONSerialization.data(withJSONObject: encoded)
+        try original.write(to: legacy.fileURL, options: .atomic)
+
+        let recovery = try await MarkdownDraftStore.prepareSceneRecovery(
+            for: MarkdownSceneIdentity(), directory: legacy.fileURL.deletingLastPathComponent()
+        )
+        let store = MarkdownDraftStore(fileURL: recovery.draftFileURL)
+        let recovered = await store.load()
+        XCTAssertEqual(recovered, draft)
+        XCTAssertEqual(recovered.map { Data($0.source.utf8) }, Data(draft.source.utf8))
+        let migrated = try readManifest(store)
+        let settings = try XCTUnwrap(migrated["draft"] as? [String: Any])
+        XCTAssertNil(settings["allowRawHtml"])
+        XCTAssertEqual(try Data(contentsOf: legacy.fileURL), original)
+    }
+
+    func testExistingEmptyOrMalformedSceneSnapshotNeverReplaysOlderLegacyContent() async throws {
+        let legacy = makeStore()
+        let directory = legacy.fileURL.deletingLastPathComponent()
+        try await legacy.save(makeDraft(source: "# Old source"))
+        let identity = MarkdownSceneIdentity()
+        let recovery = try await MarkdownDraftStore.prepareSceneRecovery(for: identity, directory: directory)
+        let store = MarkdownDraftStore(fileURL: recovery.draftFileURL)
+        try await store.save(makeDraft(source: ""))
+        _ = try await MarkdownDraftStore.prepareSceneRecovery(for: identity, directory: directory)
+        let empty = await store.load()
+        XCTAssertEqual(empty?.source, "")
+        try Data("not-json".utf8).write(to: recovery.draftFileURL, options: .atomic)
+        _ = try await MarkdownDraftStore.prepareSceneRecovery(for: identity, directory: directory)
+        let invalid = await store.load()
+        XCTAssertNil(invalid)
+        XCTAssertEqual(try String(contentsOf: recovery.draftFileURL, encoding: .utf8), "not-json")
+        let preserved = await legacy.load()
+        XCTAssertEqual(preserved?.source, "# Old source")
+    }
+
+    func testSavedSceneCatalogSurvivesDiscardedSceneMetadataAndSkipsForeignEntries() async throws {
+        let directory = makeStore().fileURL.deletingLastPathComponent()
+        let first = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        try await MarkdownDraftStore(fileURL: first.draftFileURL).save(makeDraft(source: "# First body", title: "First"))
+        try await MarkdownDraftStore(fileURL: second.draftFileURL).save(makeDraft(source: "# Second body", title: "Second"))
+        let scenes = directory.appendingPathComponent("scenes", isDirectory: true)
+        let foreign = scenes.appendingPathComponent("not-a-scene", isDirectory: true)
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: first.draftFileURL, to: foreign.appendingPathComponent("active-draft.json"))
+        let alias = scenes.appendingPathComponent(MarkdownSceneIdentity().storageValue, isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first.draftFileURL.deletingLastPathComponent())
+
+        let catalog = try await MarkdownDraftStore.savedSceneDrafts(directory: directory)
+
+        XCTAssertEqual(Set(catalog.map(\.id)), Set([first.identity, second.identity]))
+        XCTAssertEqual(Set(catalog.map(\.title)), Set(["First", "Second"]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path), "Catalog reads must not clean up unknown content")
+    }
+
     private enum RecoveryTestError: Error {
         case tornSnapshot
         case unexpectedSourceRewrite
@@ -664,6 +873,7 @@ final class MarkdownDraftStoreTests: XCTestCase {
         source: String,
         documentIdentity: UUID? = nil,
         fontFamily: String = "serif",
+        title: String = "Recovered",
         customCSS: String? = "body { color: #123456; }"
     ) -> MarkdownActiveDraft {
         MarkdownActiveDraft(
@@ -671,7 +881,7 @@ final class MarkdownDraftStoreTests: XCTestCase {
             savedAtMilliseconds: 1_725_350_400_000,
             documentIdentity: documentIdentity,
             source: source,
-            title: "Recovered",
+            title: title,
             author: "Author",
             fontFamily: fontFamily,
             rendererDarkMode: "auto",

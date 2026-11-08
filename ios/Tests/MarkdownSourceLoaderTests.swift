@@ -1155,6 +1155,122 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     }
 
     @MainActor
+    func testSceneSessionsRestoreTheirOwnFilesAndMergeSharedRecents() async throws {
+        let defaults = try makeDefaults()
+        let directory = recoveryDirectory()
+        let first = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        // Create both sessions before opening either file. Their cached recents
+        // begin identically and must not overwrite one another's later entries.
+        let a = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: first)
+        let b = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: second)
+        let fileA = try await testDocument("# First\r\n", name: "first.md")
+        let fileB = try await testDocument("# Second\n", name: "second.md")
+        a.adopt(fileA)
+        b.adopt(fileB)
+        a.adopt(fileA)
+        b.refreshRecents()
+        XCTAssertEqual(a.recentDocuments.map(\.displayName), ["first.md", "second.md"])
+        XCTAssertEqual(b.recentDocuments, a.recentDocuments)
+        XCTAssertNil(defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey))
+
+        let restoredA = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: first)
+        let restoredB = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: second)
+        let resultA = try await restoredA.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        let resultB = try await restoredB.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        guard case .fileVersion(let openedA) = resultA, case .fileVersion(let openedB) = resultB else {
+            return XCTFail("Each scene must restore its own file")
+        }
+        XCTAssertEqual(openedA.document.url, fileA.url)
+        XCTAssertEqual(openedB.document.url, fileB.url)
+        XCTAssertEqual(openedA.documentIdentity, a.currentDocumentIdentity)
+        XCTAssertEqual(openedB.documentIdentity, b.currentDocumentIdentity)
+    }
+
+    @MainActor
+    func testLegacyBookmarkHasOneSceneOwnerAndNewCannotResurrectIt() async throws {
+        let defaults = try makeDefaults()
+        let file = try await testDocument("# Before scene namespaces\n", name: "legacy.md")
+        let legacy = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+        legacy.adopt(file)
+        let legacyReference = try XCTUnwrap(defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey))
+        let directory = recoveryDirectory()
+        let firstID = MarkdownSceneIdentity()
+        let first = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let a = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: first)
+        let b = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: second)
+        let resultA = try await a.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        let resultB = try await b.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        guard case .fileVersion(let restored) = resultA else {
+            return XCTFail("The migration owner must retain the old bookmark")
+        }
+        XCTAssertEqual(restored.document.url, file.url)
+        XCTAssertEqual(resultB, .none)
+
+        a.beginUntitled(source: "# New draft")
+        let preparedAgain = try await MarkdownDraftStore.prepareSceneRecovery(for: firstID, directory: directory)
+        let relaunched = MarkdownDocumentSession(initialSource: "# New draft", defaults: defaults, sceneRecovery: preparedAgain)
+        let afterNew = try await relaunched.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        XCTAssertEqual(afterNew, .none, "A cleared scene bookmark is not a request to replay legacy state")
+        XCTAssertEqual(defaults.data(forKey: MarkdownDocumentSession.activeDocumentStorageKey), legacyReference)
+    }
+
+    @MainActor
+    func testInFlightSavesAndNewInOneSceneCannotReplaceAnotherScenesRestoration() async throws {
+        let defaults = try makeDefaults()
+        let directory = recoveryDirectory()
+        let first = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let second = try await MarkdownDraftStore.prepareSceneRecovery(for: MarkdownSceneIdentity(), directory: directory)
+        let savesA = SuspendedMarkdownSaves()
+        let savesB = SuspendedMarkdownSaves()
+        addTeardownBlock {
+            await savesA.releaseAll()
+            await savesB.releaseAll()
+        }
+        let a = MarkdownDocumentSession(
+            initialSource: "", defaults: defaults, sceneRecovery: first,
+            saveDocument: { try await savesA.save($0, replacing: $1) }
+        )
+        let b = MarkdownDocumentSession(
+            initialSource: "", defaults: defaults, sceneRecovery: second,
+            saveDocument: { try await savesB.save($0, replacing: $1) }
+        )
+        let fileA = try await testDocument("# First original\n", name: "first.md")
+        let fileB = try await testDocument("# Second original\n", name: "second.md")
+        a.adopt(fileA)
+        b.adopt(fileB)
+        let callA = await MarkdownSaveCall.start(a, source: "# First changed\n")
+        _ = await savesA.waitForRequest(0)
+        let callB = await MarkdownSaveCall.start(b, source: "# Second changed\n")
+        _ = await savesB.waitForRequest(0)
+        a.beginUntitled(source: "# Different untitled source")
+        await savesB.release(0)
+        try await callB.value()
+        await savesA.release(0)
+        guard await assertCancelled(callA) else { return }
+
+        let restoredA = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: first)
+        let restoredB = MarkdownDocumentSession(initialSource: "", defaults: defaults, sceneRecovery: second)
+        let resultA = try await restoredA.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        let resultB = try await restoredB.restoreActiveDocument(recoveredSource: nil, recoveredDocumentIdentity: nil)
+        XCTAssertEqual(resultA, .none)
+        guard case .fileVersion(let openedB) = resultB else {
+            return XCTFail("The independently saved second document must still restore")
+        }
+        XCTAssertEqual(openedB.document.url, fileB.url)
+        XCTAssertEqual(openedB.document.source, "# Second changed\n")
+        XCTAssertEqual(openedB.documentIdentity, b.currentDocumentIdentity)
+    }
+
+    private func recoveryDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("frankenmarkdown-scenes-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
+    }
+
+    @MainActor
     private func assertCancelled(
         _ call: MarkdownSaveCall, file: StaticString = #filePath, line: UInt = #line
     ) async -> Bool {

@@ -1,6 +1,36 @@
 import CryptoKit
 import Foundation
 
+/// Only a canonical UUID can become a recovery path component or defaults key.
+/// SceneStorage keeps this lightweight identity; source bytes stay in protected
+/// Application Support files, never in the operating system's scene metadata.
+struct MarkdownSceneIdentity: Hashable, Sendable {
+    private let value: UUID
+
+    init() { value = UUID() }
+
+    init?(storedValue: String) {
+        guard storedValue.utf8.count == 36,
+              let value = UUID(uuidString: storedValue),
+              value.uuidString.lowercased() == storedValue.lowercased() else { return nil }
+        self.value = value
+    }
+
+    var storageValue: String { value.uuidString.lowercased() }
+}
+
+struct MarkdownSceneRecovery: Sendable {
+    let identity: MarkdownSceneIdentity
+    let draftFileURL: URL
+    let ownsLegacyRecovery: Bool
+}
+
+struct MarkdownSceneDraftSummary: Identifiable, Sendable {
+    let id: MarkdownSceneIdentity
+    let title: String
+    let savedAtMilliseconds: Int64
+}
+
 struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     static let currentSchema = 1
     static let maximumCustomCSSBytes = 256 * 1_024
@@ -73,6 +103,14 @@ actor MarkdownDraftStore {
     private static let storageSchema = 2
     private static let diskAccess = MarkdownDraftDiskAccess()
 
+    static var defaultDirectory: URL {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return applicationSupport.appendingPathComponent("FrankenMarkdown", isDirectory: true)
+    }
+
     nonisolated let fileURL: URL
     private let beforePublishing: @Sendable () throws -> Void
     private var ownedSource: OwnedSource?
@@ -86,13 +124,176 @@ actor MarkdownDraftStore {
             self.fileURL = fileURL
             return
         }
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        self.fileURL = applicationSupport
-            .appendingPathComponent("FrankenMarkdown", isDirectory: true)
+        self.fileURL = Self.defaultDirectory
             .appendingPathComponent("active-draft.json", isDirectory: false)
+    }
+
+    /// Prepare the namespace before constructing a renderer or document session.
+    /// The durable receipt belongs to one scene, including after interruption.
+    /// It is committed before copying so another scene cannot adopt the same
+    /// legacy document while the first copy is in flight. The old manifest and
+    /// its source generations are never modified or cleaned up here.
+    static func prepareSceneRecovery(
+        for identity: MarkdownSceneIdentity,
+        directory: URL = defaultDirectory,
+        restoreLegacy: Bool = true,
+        beforePublishing: @escaping @Sendable () throws -> Void = {}
+    ) async throws -> MarkdownSceneRecovery {
+        try await diskAccess.perform {
+            try Task.checkCancellation()
+            try prepareRecoveryDirectory(directory)
+            let scenes = directory.appendingPathComponent("scenes", isDirectory: true)
+            try prepareRecoveryDirectory(scenes)
+            let scene = scenes.appendingPathComponent(identity.storageValue, isDirectory: true)
+            try prepareRecoveryDirectory(scene)
+            let destination = scene.appendingPathComponent("active-draft.json", isDirectory: false)
+            let receipt = directory.appendingPathComponent("legacy-recovery-owner.v1", isDirectory: false)
+            var owner: MarkdownSceneIdentity?
+            if restoreLegacy {
+                if let previous = try recoveryOwner(at: receipt) {
+                    owner = previous
+                } else {
+                    try Task.checkCancellation()
+                    try Data(identity.storageValue.utf8).write(
+                        to: receipt, options: [.atomic, .completeFileProtection]
+                    )
+                    owner = identity
+                }
+            }
+            if owner == identity, !(try recoveryEntryExists(at: destination)) {
+                let legacy = directory.appendingPathComponent("active-draft.json", isDirectory: false)
+                // As with ordinary recovery, malformed old snapshots do not
+                // become source. Preserve them on disk without blocking a new
+                // editor. Real publication failures still surface for retry.
+                if let draft = try? readSnapshot(from: legacy) {
+                    _ = try writeSnapshot(
+                        draft, to: destination, sourceIdentity: nil,
+                        reusing: nil, beforePublishing: beforePublishing
+                    )
+                }
+            }
+            try Task.checkCancellation()
+            return MarkdownSceneRecovery(
+                identity: identity, draftFileURL: destination,
+                ownsLegacyRecovery: owner == identity
+            )
+        }
+    }
+
+    /// SceneStorage may be discarded by the OS. Keep those drafts discoverable
+    /// without guessing which document belongs to a newly created scene. This
+    /// reads bounded manifests only, not the potentially large source bodies.
+    static func savedSceneDrafts(directory: URL = defaultDirectory) async throws -> [MarkdownSceneDraftSummary] {
+        try await diskAccess.perform {
+            let scenes = directory.appendingPathComponent("scenes", isDirectory: true)
+            guard try recoveryEntryExists(at: scenes) else { return [] }
+            try checkSourceDirectory(scenes)
+            let entries = try FileManager.default.contentsOfDirectory(
+                at: scenes, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            )
+            var summaries: [MarkdownSceneDraftSummary] = []
+            for entry in entries {
+                try Task.checkCancellation()
+                guard let identity = MarkdownSceneIdentity(storedValue: entry.lastPathComponent),
+                      entry.lastPathComponent == identity.storageValue,
+                      (try? checkSourceDirectory(entry)) != nil else { continue }
+                let location = entry.appendingPathComponent("active-draft.json", isDirectory: false)
+                guard let bytes = try? readMetadata(from: location),
+                      bytes.count <= maximumMetadataBytes,
+                      let manifest = try? JSONDecoder().decode(Manifest.self, from: bytes),
+                      isValid(manifest) else { continue }
+                summaries.append(MarkdownSceneDraftSummary(
+                    id: identity, title: manifest.draft.title,
+                    savedAtMilliseconds: manifest.draft.savedAtMilliseconds
+                ))
+            }
+            // A failed first copy has a durable owner but not yet a scene
+            // manifest. Keep it selectable if the OS also lost SceneStorage,
+            // so choosing that identity resumes the original transaction.
+            let receipt = directory.appendingPathComponent("legacy-recovery-owner.v1", isDirectory: false)
+            if let owner = try? recoveryOwner(at: receipt),
+               !summaries.contains(where: { $0.id == owner }) {
+                let destination = scenes.appendingPathComponent(owner.storageValue, isDirectory: true)
+                    .appendingPathComponent("active-draft.json", isDirectory: false)
+                let legacy = directory.appendingPathComponent("active-draft.json", isDirectory: false)
+                if !(try recoveryEntryExists(at: destination)),
+                   let bytes = try? readMetadata(from: legacy),
+                   let summary = legacySummary(bytes, identity: owner) {
+                    summaries.append(summary)
+                }
+            }
+            return summaries.sorted {
+                if $0.savedAtMilliseconds != $1.savedAtMilliseconds {
+                    return $0.savedAtMilliseconds > $1.savedAtMilliseconds
+                }
+                return $0.id.storageValue < $1.id.storageValue
+            }
+        }
+    }
+
+    private struct LegacySummary: Decodable {
+        let schema: Int
+        let title: String
+        let savedAtMilliseconds: Int64
+    }
+
+    private static func legacySummary(_ bytes: Data, identity: MarkdownSceneIdentity) -> MarkdownSceneDraftSummary? {
+        let decoder = JSONDecoder()
+        guard let header = try? decoder.decode(Header.self, from: bytes) else { return nil }
+        if header.storageSchema != nil {
+            guard bytes.count <= maximumMetadataBytes,
+                  let manifest = try? decoder.decode(Manifest.self, from: bytes),
+                  isValid(manifest) else { return nil }
+            return MarkdownSceneDraftSummary(
+                id: identity, title: manifest.draft.title,
+                savedAtMilliseconds: manifest.draft.savedAtMilliseconds
+            )
+        }
+        guard let summary = try? decoder.decode(LegacySummary.self, from: bytes),
+              summary.schema == MarkdownActiveDraft.currentSchema,
+              summary.title.utf8.count <= 1_024 else { return nil }
+        return MarkdownSceneDraftSummary(
+            id: identity, title: summary.title, savedAtMilliseconds: summary.savedAtMilliseconds
+        )
+    }
+
+    private static func recoveryOwner(at receipt: URL) throws -> MarkdownSceneIdentity? {
+        guard try recoveryEntryExists(at: receipt) else { return nil }
+        let values = try receipt.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink == false,
+              values.fileSize == 36 else { throw StoreError.invalidDraft }
+        let handle = try FileHandle(forReadingFrom: receipt)
+        defer { try? handle.close() }
+        let bytes = try handle.read(upToCount: 37) ?? Data()
+        guard bytes.count == 36,
+              let stored = String(data: bytes, encoding: .utf8),
+              let identity = MarkdownSceneIdentity(storedValue: stored) else {
+            throw StoreError.invalidDraft
+        }
+        return identity
+    }
+
+    private static func prepareRecoveryDirectory(_ directory: URL) throws {
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        try checkSourceDirectory(directory)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var protectedDirectory = directory
+        try protectedDirectory.setResourceValues(values)
+    }
+
+    /// Unlike fileExists, lstat-style attributes also see a dangling symlink.
+    /// An occupied or unreadable namespace must never trigger stale migration.
+    private static func recoveryEntryExists(at url: URL) throws -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return false
+        }
     }
 
     func load() async -> MarkdownActiveDraft? {

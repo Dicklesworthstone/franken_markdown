@@ -254,10 +254,31 @@ Conflicts stop the queue, cancelled queued requests do not write, and New/Open
 retire the previous document's pending saves. Autosave task ownership also keeps
 an older completion or error from clearing a newer request.
 
-Full `DocumentGroup` browser ownership and independent multiwindow recovery remain
-open. The autosave/ownership regression tests use controlled continuations and
-real coordinated source writes, but still require an Apple XCTest run; they do
-not establish device or Catalyst qualification. The earlier document-session
+Each window now resolves a canonical UUID from `SceneStorage` before constructing
+its renderer and document session. It keeps a separate protected draft manifest,
+immutable source generations and active-file bookmark. A weak live-owner registry
+prevents two restored windows from claiming the same namespace. Recents remain
+shared; updates merge the latest persisted list and foregrounded windows refresh
+their view of it. New clears only that scene's active bookmark, including an
+explicit empty marker that prevents legacy restoration from undoing the choice.
+
+The first migration records one durable owner before copying the older singleton
+draft. It retains the original manifest, source files and bookmark, and a failed
+copy can resume under the same owner. An otherwise fresh first window offers
+saved drafts if the OS discarded scene metadata, including an interrupted legacy
+copy; it does not guess which document to reopen. Existing restored scenes open
+directly, and additional live windows start independently. Invalid migration
+receipts are refused without rewriting them; an explicit choice can open the
+new namespace without adopting the older recovery. Raw-HTML trust is never
+restored. Only the lightweight UUID enters
+[`SceneStorage`](https://developer.apple.com/documentation/swiftui/scenestorage);
+source data remains in the existing bounded atomic file format.
+
+Full `DocumentGroup` browser ownership remains open. The scene migration and
+autosave/ownership regression tests use controlled continuations and real source
+files, but still require an Apple XCTest run, along with real multiwindow,
+startup file-open and OS restoration checks; they do not establish device or
+Catalyst qualification. The earlier document-session
 tranche is tracked by Bead `br-best-in-class-markdown-renderer-fmd-agent-ergonomics-commonma-3ady`;
 Xcode, Simulator, and executable DSR evidence must be added only after the
 storage guard admits those lanes.

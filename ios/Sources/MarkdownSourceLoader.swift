@@ -108,6 +108,8 @@ final class MarkdownDocumentSession: ObservableObject {
     private var activeDocumentReference: MarkdownActiveDocumentReference?
     private var restorationDisplayName: String?
     private let defaults: UserDefaults
+    private let activeStorageKey: String
+    private let hasSceneRecovery: Bool
     private let openDocument: @Sendable (URL) async throws -> MarkdownSourceDocument
     private let saveDocument: @Sendable (String, MarkdownSourceDocument) async throws -> MarkdownSourceDocument
     private var requestGeneration = UUID()
@@ -128,6 +130,7 @@ final class MarkdownDocumentSession: ObservableObject {
     init(
         initialSource: String,
         defaults: UserDefaults = .standard,
+        sceneRecovery: MarkdownSceneRecovery? = nil,
         openDocument: @escaping @Sendable (URL) async throws -> MarkdownSourceDocument = {
             try await MarkdownSourceLoader.open(from: $0)
         },
@@ -137,10 +140,23 @@ final class MarkdownDocumentSession: ObservableObject {
     ) {
         untitledBaseline = initialSource
         self.defaults = defaults
+        hasSceneRecovery = sceneRecovery != nil
+        let activeKey = sceneRecovery.map {
+            Self.activeDocumentStorageKey + "." + $0.identity.storageValue
+        } ?? Self.activeDocumentStorageKey
+        activeStorageKey = activeKey
         self.openDocument = openDocument
         self.saveDocument = saveDocument
+        if let sceneRecovery, defaults.object(forKey: activeKey) == nil {
+            // Only the scene named by the durable migration receipt may copy
+            // the old bookmark. An explicit empty value also marks migration
+            // complete; New must not resurrect that bookmark on the next launch.
+            let legacy = sceneRecovery.ownsLegacyRecovery
+                ? defaults.data(forKey: Self.activeDocumentStorageKey) : nil
+            defaults.set(legacy ?? Data("null".utf8), forKey: activeKey)
+        }
         recentDocuments = Self.loadRecents(from: defaults)
-        activeDocumentReference = Self.loadActiveDocument(from: defaults)
+        activeDocumentReference = Self.loadActiveDocument(from: defaults, key: activeKey)
         restorationDisplayName = activeDocumentReference?.displayName
     }
 
@@ -227,7 +243,11 @@ final class MarkdownDocumentSession: ObservableObject {
         attention = nil
         restorationDisplayName = nil
         activeDocumentReference = nil
-        defaults.removeObject(forKey: Self.activeDocumentStorageKey)
+        if hasSceneRecovery {
+            defaults.set(Data("null".utf8), forKey: activeStorageKey)
+        } else {
+            defaults.removeObject(forKey: activeStorageKey)
+        }
     }
 
     func adopt(
@@ -479,7 +499,14 @@ final class MarkdownDocumentSession: ObservableObject {
         currentDocument?.url.deletingPathExtension().lastPathComponent ?? "Untitled"
     }
 
+    func refreshRecents() {
+        recentDocuments = Self.loadRecents(from: defaults)
+    }
+
     private func recordRecent(_ document: MarkdownSourceDocument) {
+        // Another scene may have opened a file since this session was created.
+        // Merge against the latest shared list, never this window's old copy.
+        refreshRecents()
         let recent = MarkdownRecentDocument(
             id: recentDocuments.first(where: { represents($0, url: document.url) })?.id ?? UUID(),
             bookmarkData: document.bookmarkData,
@@ -509,7 +536,7 @@ final class MarkdownDocumentSession: ObservableObject {
         )
         activeDocumentReference = reference
         if let encoded = try? JSONEncoder().encode(reference) {
-            defaults.set(encoded, forKey: Self.activeDocumentStorageKey)
+            defaults.set(encoded, forKey: activeStorageKey)
         }
     }
 
@@ -529,9 +556,10 @@ final class MarkdownDocumentSession: ObservableObject {
     }
 
     private static func loadActiveDocument(
-        from defaults: UserDefaults
+        from defaults: UserDefaults,
+        key: String
     ) -> MarkdownActiveDocumentReference? {
-        guard let data = defaults.data(forKey: activeDocumentStorageKey) else { return nil }
+        guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(MarkdownActiveDocumentReference.self, from: data)
     }
 

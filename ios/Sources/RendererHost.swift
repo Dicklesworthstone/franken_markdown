@@ -260,7 +260,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var activeAuxiliaryRequestID: Int?
     private var auxiliaryTimeoutTask: Task<Void, Never>?
     private var scheduledDraftSave: Task<Void, Never>?
-    private let draftStore = MarkdownDraftStore()
+    private let draftStore: MarkdownDraftStore
 
     private var activeExportRequestID: Int?
     private var activeExportPhaseGeneration: Int?
@@ -288,7 +288,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         phase = next
     }
 
-    override init() {
+    override convenience init() {
+        self.init(draftStore: MarkdownDraftStore())
+    }
+
+    init(draftStore: MarkdownDraftStore) {
+        self.draftStore = draftStore
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(FrankenResourceSchemeHandler(), forURLScheme: "frankenmd")
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -456,6 +461,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 return
             }
             self.draftWasRecovered = true
+            self.allowRawHtml = false
             self.documentIdentity = draft.documentIdentity
             self.source = draft.source
             self.documentTitle = draft.title

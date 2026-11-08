@@ -35,12 +35,15 @@ private struct PreparedSourceExport {
 
 struct ForgeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(LabAppearance.storageKey) private var appearance = LabAppearance.dark.rawValue
     @AppStorage(Lab.textScaleStorageKey) private var uiTextScale = Lab.defaultTextScale
     @AppStorage("renderFontScale") private var renderFontScale = 1.0
     @AppStorage("frankenmarkdown.documentAutosave.v1") private var documentAutosave = true
-    @StateObject private var renderer = MarkdownRendererModel()
+    @StateObject private var renderer: MarkdownRendererModel
     @StateObject private var documentSession: MarkdownDocumentSession
+    private let recovery: MarkdownSceneRecovery?
+    private let openRequest: MarkdownSceneOpenRequest?
     @State private var lane: ForgeLane = .write
     @State private var editorFocused = false
 
@@ -78,10 +81,17 @@ struct ForgeView: View {
     @State private var installedUITestSource = false
 #endif
 
-    init() {
+    init(recovery: MarkdownSceneRecovery? = nil, openRequest: MarkdownSceneOpenRequest? = nil) {
+        self.recovery = recovery
+        self.openRequest = openRequest
         let requested = ProcessInfo.processInfo.environment["FMD_INITIAL_LANE"]
+        _renderer = StateObject(wrappedValue: MarkdownRendererModel(
+            draftStore: MarkdownDraftStore(fileURL: recovery?.draftFileURL)
+        ))
         _documentSession = StateObject(
-            wrappedValue: MarkdownDocumentSession(initialSource: MarkdownRendererModel.sample)
+            wrappedValue: MarkdownDocumentSession(
+                initialSource: MarkdownRendererModel.sample, sceneRecovery: recovery
+            )
         )
         _lane = State(initialValue: ForgeLane(rawValue: requested ?? "") ?? .write)
         _showDocumentLab = State(
@@ -92,6 +102,7 @@ struct ForgeView: View {
     var body: some View {
         forgePresentation
             .onAppear {
+                documentSession.refreshRecents()
                 uiTextScale = Lab.clampedTextScale(uiTextScale)
                 scheduleSourceMetrics(renderer.source)
 #if DEBUG
@@ -101,6 +112,9 @@ struct ForgeView: View {
             .onChange(of: uiTextScale) { _, value in
                 let clamped = Lab.clampedTextScale(value)
                 if clamped != value { uiTextScale = clamped }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { documentSession.refreshRecents() }
             }
             .onChange(of: renderer.draftRecoveryIsComplete, initial: true) { _, isComplete in
                 if isComplete { restoreActiveDocumentAfterLaunch() }
@@ -220,6 +234,24 @@ struct ForgeView: View {
         }
     }
 
+    private func handleOpenedURL(_ url: URL) {
+        if url.isFileURL {
+            loadSourceDocument(from: url)
+            return
+        }
+        guard url.scheme?.lowercased() == "frankenmarkdown" else { return }
+        switch url.host?.lowercased() {
+        case "lab", "publish":
+            showDocumentLab = true
+        case "write":
+            lane = .write
+        case "preview":
+            lane = .preview
+        default:
+            break
+        }
+    }
+
     private var forgeDocumentEvents: some View {
         forgeModelObservers
         .onChange(of: documentAutosave) { _, enabled in
@@ -237,23 +269,12 @@ struct ForgeView: View {
             sourceMetricsGeneration = UUID()
         }
         .onOpenURL { url in
-            if url.isFileURL {
-                loadSourceDocument(from: url)
-                return
-            }
-            guard url.scheme?.lowercased() == "frankenmarkdown" else { return }
-            switch url.host?.lowercased() {
-            case "lab":
-                showDocumentLab = true
-            case "publish":
-                showDocumentLab = true
-            case "write":
-                lane = .write
-            case "preview":
-                lane = .preview
-            default:
-                break
-            }
+            // The scene root retains startup URLs while recovery is prepared.
+            // Standalone previews keep the original direct URL entry point.
+            if recovery == nil { handleOpenedURL(url) }
+        }
+        .onChange(of: openRequest, initial: true) { _, request in
+            if let request { handleOpenedURL(request.url) }
         }
         .fileImporter(
             isPresented: $showSourceImporter,

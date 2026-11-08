@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 mod font_coverage;
+pub(crate) mod host_fonts;
 pub(crate) mod protected_paths;
 pub(crate) mod remote_images;
 pub(crate) use crate::source_origins;
@@ -33,6 +34,7 @@ use crate::{
     PdfASettings, PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme,
     render_html_document, render_pdf_document, render_pdf_document_pdfa, render_warnings,
 };
+use host_fonts::{HostFontError, HostFonts};
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_PDF_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
@@ -523,6 +525,11 @@ struct RenderStyleArgs {
     /// same file at weight 700.
     #[arg(long = "pdf-font", value_name = "SLOT=PATH")]
     pdf_fonts: Vec<String>,
+    /// Select a zero-based face from a mapped TTC/OTC font collection.
+    /// Bare INDEX selects body-regular; SLOT=INDEX selects another slot.
+    /// Required for collections, omitted for standalone TTF/OTF fonts.
+    #[arg(long = "pdf-font-face", value_name = "INDEX|SLOT=INDEX")]
+    pdf_font_faces: Vec<String>,
     /// Pin CSS font-weight for a host font slot. Repeatable. Bare WEIGHT pins
     /// body-regular; SLOT=WEIGHT pins one slot. Range 1..=1000. Static faces
     /// ignore the pin (stderr warning `font_weight_ignored_static`).
@@ -848,6 +855,10 @@ fn render_watched_file(
 
 fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
+    let font_inputs = match parse_host_font_args(&args.style, json) {
+        Ok(fonts) => fonts,
+        Err(code) => return code,
+    };
     let profile = match parse_profile_arg(&args.style, json) {
         Ok(profile) => profile,
         Err(code) => return code,
@@ -913,13 +924,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     // Custom faces are render inputs even when Markdown never mentions their
     // paths. Retain missing paths as well so installing a font repairs a failed
     // initial render without requiring a source edit.
-    for spec in &args.style.pdf_fonts {
-        let (_, path) = match parse_pdf_font_spec(spec) {
-            Ok(asset) => asset,
-            Err(message) => return fail_json(64, "usage_error", &message, json),
-        };
-        extras.push(path);
-    }
+    extras.extend(font_inputs.paths().map(Path::to_path_buf));
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
     // would surprise agents that typed the wrong path).
@@ -1571,6 +1576,10 @@ fn run_render_with_preview(
 ) -> ExitCode {
     let json = global_json || args.json;
     let want_preview = preview_html.is_some();
+    let font_inputs = match parse_host_font_args(&args.style, json) {
+        Ok(fonts) => fonts,
+        Err(code) => return code,
+    };
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
@@ -1772,11 +1781,7 @@ fn run_render_with_preview(
     } else {
         None
     };
-    let font_assets = match load_host_font_assets_recording(
-        &args.style.pdf_fonts,
-        &args.style.pdf_font_weights,
-        &mut input_paths,
-    ) {
+    let font_assets = match font_inputs.load(&mut input_paths) {
         Ok(assets) => assets,
         Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
         Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
@@ -2656,6 +2661,10 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     use crate::batch::{self, BatchOptions, BatchPlan, OutputFormat};
 
     let json = global_json || args.json;
+    let font_inputs = match parse_host_font_args(&args.style, json) {
+        Ok(fonts) => fonts,
+        Err(code) => return code,
+    };
     if let Err(code) = validate_running_image_target(&args.style, args.to, json) {
         return code;
     }
@@ -2802,11 +2811,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         Ok(profile) => profile,
         Err(code) => return code,
     };
-    let font_assets = match load_host_font_assets_recording(
-        &style.pdf_fonts,
-        &style.pdf_font_weights,
-        &mut input_paths,
-    ) {
+    let font_assets = match font_inputs.load(&mut input_paths) {
         Ok(assets) => assets,
         Err(HostFontError::Usage(e)) => return fail_json(64, "usage_error", &e, json),
         Err(HostFontError::Input(e)) => return fail_json(66, "input_error", &e, json),
@@ -3237,92 +3242,13 @@ enum PdfImageError {
     Input(String),
 }
 
-enum HostFontError {
-    Usage(String),
-    Input(String),
-}
-
-fn load_host_font_assets_recording(
-    fonts: &[String],
-    weights: &[String],
-    input_paths: &mut Vec<PathBuf>,
-) -> std::result::Result<FontAssets, HostFontError> {
-    let mut assets = FontAssets::default();
-    let max_bytes = crate::MAX_FONT_ASSET_BYTES as u64;
-    for spec in fonts {
-        let (slot, path) = parse_pdf_font_spec(spec).map_err(HostFontError::Usage)?;
-        let label = format!("{} font from {}", slot.as_str(), path.display());
-        if let Ok(meta) = std::fs::metadata(&path)
-            && meta.len() > max_bytes
-        {
-            return Err(HostFontError::Input(format!(
-                "{label} is {} bytes; exceeds the {max_bytes}-byte font-asset limit",
-                meta.len()
-            )));
-        }
-        let file = std::fs::File::open(&path)
-            .map_err(|e| HostFontError::Input(format!("reading {label}: {e}")))?;
-        let bytes = read_limited_with_flag(file, max_bytes, &label, "the font-asset size limit")
-            .map_err(|e| HostFontError::Input(format!("reading {label}: {e}")))?;
-        assets
-            .set_slot(slot, bytes)
-            .map_err(|e| HostFontError::Input(e.to_string()))?;
-        input_paths.push(path);
-    }
-    for spec in weights {
-        let (slot, weight) = parse_pdf_font_weight_spec(spec).map_err(HostFontError::Usage)?;
-        assets
-            .set_slot_weight(slot, weight)
-            .map_err(|e| HostFontError::Usage(e.to_string()))?;
-    }
-    Ok(assets)
-}
-
-fn parse_pdf_font_spec(spec: &str) -> std::result::Result<(FontAssetSlot, PathBuf), String> {
-    let Some((slot_s, path)) = spec.split_once('=') else {
-        return Err(format!(
-            "invalid --pdf-font {spec:?}; expected SLOT=PATH, for example --pdf-font body-regular=./Body.ttf"
-        ));
-    };
-    let slot = FontAssetSlot::parse(slot_s).ok_or_else(|| {
-        format!(
-            "unknown --pdf-font slot '{}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular",
-            slot_s.trim()
-        )
-    })?;
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("invalid --pdf-font: PATH must not be blank".to_string());
-    }
-    Ok((slot, PathBuf::from(path)))
-}
-
-fn parse_pdf_font_weight_spec(spec: &str) -> std::result::Result<(FontAssetSlot, u16), String> {
-    let spec = spec.trim();
-    if let Some((slot_s, weight_s)) = spec.split_once('=') {
-        let slot = FontAssetSlot::parse(slot_s).ok_or_else(|| {
-            format!(
-                "unknown --pdf-font-weight slot '{}'; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular",
-                slot_s.trim()
-            )
-        })?;
-        return Ok((slot, parse_css_weight(weight_s)?));
-    }
-    Ok((FontAssetSlot::BodyRegular, parse_css_weight(spec)?))
-}
-
-fn parse_css_weight(raw: &str) -> std::result::Result<u16, String> {
-    let trimmed = raw.trim();
-    let weight = trimmed
-        .parse::<u16>()
-        .map_err(|_| format!("invalid --pdf-font-weight {trimmed:?}; expected integer 1..=1000"))?;
-    if (1..=1000).contains(&weight) {
-        Ok(weight)
-    } else {
-        Err(format!(
-            "invalid --pdf-font-weight {weight}; CSS font-weight is 1..=1000"
-        ))
-    }
+fn parse_host_font_args(style: &RenderStyleArgs, json: bool) -> Result<HostFonts, ExitCode> {
+    HostFonts::parse(
+        &style.pdf_fonts,
+        &style.pdf_font_weights,
+        &style.pdf_font_faces,
+    )
+    .map_err(|message| fail_json(64, "usage_error", &message, json))
 }
 
 fn report_font_pin_warnings(assets: &FontAssets, json: bool) {

@@ -18,8 +18,16 @@ Font paths resolve from the command's working directory. Repeat `--pdf-font`
 for `body-regular`, `body-bold`, `body-italic`, `body-bold-italic`, and
 `mono-regular`. Missing slots use the normal bundled fonts. As in the shared
 renderer, a variable `body-regular` face also supplies bold when no separate
-bold face is selected. Each explicit file must be a supported TrueType font
-with `glyf` outlines, stored in a regular file of at most 32 MiB.
+bold face is selected. Each explicit file must contain a supported TrueType or
+CFF1 OpenType font, stored in a regular file of at most 32 MiB.
+
+TTC/OTC collections use `--pdf-font-face INDEX` for body regular or
+`--pdf-font-face SLOT=INDEX` for another mapped slot. Indices start at zero;
+collections require an explicit selection. The shared native loader extracts
+the chosen face before validation and weight instancing, and protects the
+original collection from output overwrite. Ordinary standalone TTF/OTF files
+omit the selector. See [font collections](FONT_COLLECTIONS.md) for render,
+watch, batch, and book examples and limits.
 
 `--pdf-font-weight WEIGHT` pins body regular; `--pdf-font-weight SLOT=WEIGHT`
 pins another slot. Weights must be integers from 1 through 1000. A static

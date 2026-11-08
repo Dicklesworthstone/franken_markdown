@@ -1,10 +1,10 @@
 //! Native book typography admission and bounded host-font loading.
 
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::PathBuf;
 
 use super::{BookArgs, BookTarget, Failure, error};
+use crate::cli::host_fonts::{HostFontError, HostFonts};
 use crate::{FontAssetSlot, FontAssets, FontScale, RenderWarning, Theme};
 
 /// Parse during argument admission, before configuration or source/asset I/O.
@@ -20,8 +20,7 @@ pub(super) fn parse_authoring_profile(value: &str) -> Result<crate::Profile, Str
 pub(super) struct Typography {
     pub theme: Theme,
     pub font_scale: Option<FontScale>,
-    fonts: Vec<(FontAssetSlot, PathBuf)>,
-    weights: Vec<(FontAssetSlot, u16)>,
+    fonts: HostFonts,
 }
 
 /// Validate all explicit option values before reading chapter or font files.
@@ -65,48 +64,17 @@ pub(super) fn prepare(
         )
         .map_err(|err| error(64, err.code(), err.to_string()))?;
     }
-    let fonts = args.pdf_fonts.iter().map(|spec| {
-        let (slot, path) = spec.split_once('=').ok_or_else(|| error(64, "usage_error",
-            format!("invalid --pdf-font {spec:?}; use SLOT=PATH, for example body-regular=./Body.ttf")))?;
-        let slot = parse_slot(slot, "--pdf-font")?;
-        let path = path.trim();
-        if path.is_empty() { return Err(error(64, "usage_error", "--pdf-font PATH must not be blank")); }
-        Ok((slot, PathBuf::from(path)))
-    }).collect::<Result<Vec<_>, Failure>>()?;
-    let weights = args
-        .pdf_font_weights
-        .iter()
-        .map(|spec| {
-            let (slot, value) = match spec.split_once('=') {
-                Some((slot, value)) => (parse_slot(slot, "--pdf-font-weight")?, value),
-                None => (FontAssetSlot::BodyRegular, spec.as_str()),
-            };
-            let weight = value
-                .trim()
-                .parse::<u16>()
-                .ok()
-                .filter(|weight| (1..=1000).contains(weight))
-                .ok_or_else(|| {
-                    error(
-                        64,
-                        "usage_error",
-                        "--pdf-font-weight must be an integer from 1 through 1000",
-                    )
-                })?;
-            Ok((slot, weight))
-        })
-        .collect::<Result<Vec<_>, Failure>>()?;
+    let fonts = HostFonts::parse(
+        &args.pdf_fonts,
+        &args.pdf_font_weights,
+        &args.pdf_font_faces,
+    )
+    .map_err(|message| error(64, "usage_error", message))?;
     Ok(Typography {
         theme,
         font_scale,
         fonts,
-        weights,
     })
-}
-
-fn parse_slot(value: &str, flag: &str) -> Result<FontAssetSlot, Failure> {
-    FontAssetSlot::parse(value).ok_or_else(|| error(64, "usage_error", format!(
-        "unknown {flag} slot {value:?}; use body-regular, body-bold, body-italic, body-bold-italic, or mono-regular")))
 }
 
 fn configure_page(
@@ -123,43 +91,15 @@ impl Typography {
         &self,
         protected: &mut BTreeSet<PathBuf>,
     ) -> Result<FontAssets, Failure> {
-        let mut assets = FontAssets::default();
-        let limit = crate::MAX_FONT_ASSET_BYTES as u64;
-        for (slot, path) in &self.fonts {
-            let label = format!("{} font from {}", slot.as_str(), path.display());
-            let metadata = std::fs::metadata(path)
-                .map_err(|e| error(66, "font_error", format!("reading {label}: {e}")))?;
-            if !metadata.is_file() || metadata.len() > limit {
-                return Err(error(
-                    66,
-                    "font_error",
-                    format!("{label} must be a regular file of at most {limit} bytes"),
-                ));
-            }
-            let canonical = path
-                .canonicalize()
-                .map_err(|e| error(66, "font_error", format!("resolving {label}: {e}")))?;
-            let mut bytes = Vec::new();
-            std::fs::File::open(path)
-                .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
-                .map_err(|e| error(66, "font_error", format!("reading {label}: {e}")))?;
-            if bytes.len() as u64 > limit {
-                return Err(error(
-                    66,
-                    "font_error",
-                    format!("{label} exceeds the {limit}-byte font limit"),
-                ));
-            }
-            assets
-                .set_slot(*slot, bytes)
-                .map_err(|e| error(66, "font_error", format!("{label}: {e}")))?;
-            protected.insert(canonical);
-        }
-        for (slot, weight) in &self.weights {
-            assets
-                .set_slot_weight(*slot, *weight)
-                .map_err(|e| error(64, "usage_error", e))?;
-        }
+        let mut paths = Vec::new();
+        let assets = self
+            .fonts
+            .load(&mut paths)
+            .map_err(|failure| match failure {
+                HostFontError::Usage(message) => error(64, "usage_error", message),
+                HostFontError::Input(message) => error(66, "font_error", message),
+            })?;
+        protected.extend(paths);
         Ok(assets)
     }
 }

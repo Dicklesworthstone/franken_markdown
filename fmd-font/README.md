@@ -86,8 +86,50 @@ apply to embedding and redistribution.
 fixtures and independently decoded FontTools references for both selector
 formats, multiple private dictionaries, nested global/local subroutines,
 nonidentity CIDs, cubic bounds, and sparse Unicode subsets. Font collections
-(`.ttc`/`.otc`) still require a caller to extract a standalone face before
-passing it to `Font::parse`.
+(`.ttc`/`.otc`) use the explicit extraction API below; `Font::parse` continues
+to accept standalone faces only.
+
+## Font collections
+
+`collection_face_count(bytes)` validates a TTC/OTC header and its face-directory
+pointers and returns the number of faces. `extract_collection_face(bytes,
+face_index)` selects a zero-based face and returns standalone sfnt bytes for
+the existing font and renderer APIs:
+
+```rust
+use fmd_font::{Font, collection_face_count, extract_collection_face};
+# fn example(collection: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+let count = collection_face_count(collection)?;
+if count > 0 {
+    let selected = extract_collection_face(collection, 0)?;
+    let font = Font::parse(selected)?;
+    let subset = font.try_subset(&['A', '日'])?;
+}
+# Ok(()) }
+```
+
+TTC header versions 1.0 and 2.0 are supported, including mixed TrueType/CFF
+collections and tables shared by different faces. Extraction preserves table
+bytes, sorts the selected sfnt directory, rebases offsets, and regenerates
+table checksums and `head.checksumAdjustment`. Digital signatures from either
+the collection header or a selected `DSIG` table are omitted because the
+container rewrite invalidates them. Signature metadata is bounds-checked;
+this API does not authenticate source signatures.
+
+The source collection and extracted face are each limited to 32 MiB, with at
+most 1,024 faces and 4,095 tables per face. Checked output-size accumulation
+prevents shared source tables from amplifying into an oversized standalone
+font. Duplicate table tags, invalid ranges, and missing or truncated `head`
+tables are rejected before output allocation. `CollectionErrorKind` separates
+invalid face indices from malformed input, unsupported containers, and limits;
+errors carry bounded face/table/offset context without host paths.
+
+Extraction is a container operation. It preserves optional layout and variable
+font tables; `Font::parse`, instancing and renderer validation still determine
+which font programs are supported. It does not add CFF2 decoding, discover
+installed fonts, choose a face implicitly, or modify the supplied collection.
+The original mixed-format fixtures and independent FontTools checks are
+documented in [`fonts/test-collection`](fonts/test-collection/README.md).
 
 ## Explicit shaping runs
 

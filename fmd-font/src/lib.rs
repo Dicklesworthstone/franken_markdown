@@ -29,6 +29,7 @@ use std::sync::{Arc, OnceLock};
 #[cfg(feature = "bundled-faces")]
 pub mod bundled;
 pub mod cff;
+pub mod collection;
 mod gvar;
 pub mod macos;
 pub mod native_route;
@@ -37,6 +38,9 @@ pub mod shaping;
 mod subset;
 pub mod text_run;
 mod variation_metrics;
+pub use collection::{
+    CollectionError, CollectionErrorKind, collection_face_count, extract_collection_face,
+};
 pub use macos::{
     DEFAULT_MAC_CONTEXT_BUDGET, MAX_MAC_RASTER_BYTES, MAX_MAC_RASTER_DIMENSION, MacBridgeDriver,
     MacFontAdapter, MacFontAdapterConfig, MacFontAdapterError, RawCoreGraphicsRaster,

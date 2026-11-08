@@ -614,6 +614,7 @@ fmd --text '<markdown>' --out out.html
 | `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
 | `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` | Fine-grained PDF type sizes |
 | `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType/CFF1 OpenType faces for HTML/PDF/SVG/EPUB and variable-font weight pins |
+| `--pdf-font-face INDEX\|SLOT=INDEX` | Explicit zero-based face from a mapped TTC/OTC collection; bare index selects body regular. Available for render, watch, batch and book. See [font collections](docs/FONT_COLLECTIONS.md) |
 | `--pdf-a 2b`, `--pdf-a-strict` | Emit PDF/A-2b identification (XMP + sRGB OutputIntent); `--pdf-a-strict` fails closed on constructs PDF/A-2b cannot carry |
 | `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
 | `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
@@ -1218,8 +1219,11 @@ OpenType fonts, retain each glyph's font dictionary and local subroutines;
 their compact subsets use the same normalized name-keyed OpenType output.
 Validated directories are reused while measuring and decoding large fonts.
 CFF2, nonstandard top matrices and per-font-dictionary matrices remain
-unsupported. Font collections (`.ttc`/`.otc`) require extracting a standalone
-face before supplying its bytes or path. The checked subset and native outline
+unsupported. Native commands select a face from a font collection (`.ttc`/`.otc`)
+with `--pdf-font body-regular=./Family.ttc --pdf-font-face 0`; the shared loader
+extracts standalone bytes before rendering. Library callers can use the same
+bounded extractor before supplying bytes to `FontAssets`. See
+[font collection selection](docs/FONT_COLLECTIONS.md). The checked subset and native outline
 paths reject unsupported glyph programs, including `seac` and computational
 Type 2 operators, with explicit diagnostics. See [CFF1 support and limits](fmd-font/README.md#cff1-outlines).
 

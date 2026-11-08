@@ -73,7 +73,7 @@ pub(crate) struct BookArgs {
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
-    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing"])]
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_faces", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing"])]
     check_links: bool,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
@@ -96,10 +96,14 @@ pub(crate) struct BookArgs {
     /// Override the configured body font for HTML/PDF.
     #[arg(long, value_parser = ["sans", "serif"])]
     font: Option<String>,
-    /// Host TrueType font as SLOT=PATH, applied to HTML, PDF and EPUB. Repeatable.
+    /// Host TrueType or CFF1 font as SLOT=PATH, applied to HTML, PDF and EPUB. Repeatable.
     /// Slots: body-regular, body-bold, body-italic, body-bold-italic, mono-regular.
     #[arg(long = "pdf-font", value_name = "SLOT=PATH")]
     pdf_fonts: Vec<String>,
+    /// Zero-based face from a mapped TTC/OTC collection: INDEX for body-regular,
+    /// or SLOT=INDEX. Required for collections; omit for standalone TTF/OTF.
+    #[arg(long = "pdf-font-face", value_name = "INDEX|SLOT=INDEX")]
+    pdf_font_faces: Vec<String>,
     /// Host font weight: WEIGHT for body-regular, or SLOT=WEIGHT (1..=1000).
     /// Variable fonts are instanced; static fonts report an ignored-weight warning.
     #[arg(long = "pdf-font-weight", value_name = "WEIGHT|SLOT=WEIGHT")]

@@ -738,7 +738,12 @@ impl DestinationTracker {
         self.chars.push(map);
     }
 
-    pub(super) fn push_chars_lines(&mut self, chars: &[char], lines: &[&str]) {
+    pub(super) fn push_chars_lines(
+        &mut self,
+        chars: &[char],
+        lines: &[&str],
+        padding: &LazyLinePadding,
+    ) {
         if self.diagnostics_only() {
             return;
         }
@@ -751,12 +756,7 @@ impl DestinationTracker {
             if index > 0 {
                 map.push(1, None);
             }
-            let text = line.trim_start_matches([' ', '\t']);
-            let text = if index + 1 == lines.len() {
-                text.trim_end_matches([' ', '\t'])
-            } else {
-                text
-            };
+            let text = inline_source_line(line, index == 0, index + 1 == lines.len(), padding);
             self.append_chars(&mut map, text);
         }
         self.chars.push(map);
@@ -1010,15 +1010,21 @@ impl ParseProfiler {
         }
     }
 
-    pub(super) fn destination_checkpoint(&self) -> usize {
-        self.destinations
-            .as_ref()
-            .map_or(0, DestinationTracker::checkpoint)
+    pub(super) fn destination_checkpoint(&self) -> (usize, usize) {
+        (
+            self.destinations
+                .as_ref()
+                .map_or(0, DestinationTracker::checkpoint),
+            self.lazy_line_padding.checkpoint(),
+        )
     }
 
-    pub(super) fn destination_restore(&mut self, checkpoint: usize) {
+    pub(super) fn destination_restore(&mut self, checkpoint: (usize, usize)) {
+        // Container buffers can be released immediately after this scope.
+        // Restore padding even when destination tracking/profiling is disabled.
+        self.lazy_line_padding.restore(checkpoint.1);
         if let Some(tracker) = &mut self.destinations {
-            tracker.restore(checkpoint);
+            tracker.restore(checkpoint.0);
         }
     }
 

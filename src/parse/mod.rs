@@ -261,6 +261,46 @@ pub struct ParseStageSummary {
     pub notes: &'static str,
 }
 
+/// Padding on an admitted lazy line protects paragraph ownership while nested
+/// containers are split. Its byte ranges remain separate from real indentation
+/// until inline tokenization. Borrowed suffixes retain that provenance.
+#[derive(Default)]
+struct LazyLinePadding {
+    ranges: BTreeMap<usize, usize>,
+    inserted: Vec<usize>,
+}
+
+impl LazyLinePadding {
+    fn contains(&self, address: usize) -> bool {
+        self.ranges
+            .range(..=address)
+            .next_back()
+            .is_some_and(|(_, end)| address < *end)
+    }
+
+    fn record(&mut self, line: &str) {
+        let padding = line.len() - trim_start_space_tab(line).len();
+        let start = line.as_ptr() as usize;
+        if padding == 0 || self.contains(start) {
+            return;
+        }
+        self.ranges.insert(start, start + padding);
+        self.inserted.push(start);
+    }
+
+    fn checkpoint(&self) -> usize {
+        self.inserted.len()
+    }
+
+    fn restore(&mut self, checkpoint: usize) {
+        while self.inserted.len() > checkpoint {
+            if let Some(start) = self.inserted.pop() {
+                self.ranges.remove(&start);
+            }
+        }
+    }
+}
+
 struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
@@ -280,6 +320,7 @@ struct ParseProfiler {
     /// through every block-parsing call.
     block_depth: usize,
     destinations: Option<destinations::DestinationTracker>,
+    lazy_line_padding: LazyLinePadding,
     // Only the spanned entrypoint records top-level block consumption. The
     // normal parser remains the source of truth for every block boundary.
     block_spans: Option<BlockSpanTracker>,
@@ -296,6 +337,7 @@ impl ParseProfiler {
             table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
+            lazy_line_padding: LazyLinePadding::default(),
             block_spans: None,
         }
     }
@@ -310,6 +352,7 @@ impl ParseProfiler {
             table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
+            lazy_line_padding: LazyLinePadding::default(),
             block_spans: None,
         }
     }
@@ -1002,7 +1045,8 @@ fn collect_link_reference_metadata_at_depth(
         // quoted definitions keep precedence over later top-level/list ones.
         if scan.maybe_blockquote && blockquote_marker_start(line) {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
-            let (inner, used) = split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut());
+            let (inner, used) =
+                split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut(), None);
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
             i += used;
             if depth < MAX_BLOCK_NESTING_DEPTH {
@@ -1089,6 +1133,7 @@ fn collect_link_reference_metadata_at_depth(
                 &lines[i..],
                 marker,
                 tracker.as_deref_mut(),
+                None,
             );
             let used = split.used.max(1);
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
@@ -1802,8 +1847,11 @@ fn parse_blocks_with_refs_profiled(
         if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
             let checkpoint = profiler.destination_checkpoint();
-            let (inner, used) =
-                split_blockquote_lines_tracked(&lines[i..], profiler.destinations.as_mut());
+            let (inner, used) = split_blockquote_lines_tracked(
+                &lines[i..],
+                profiler.destinations.as_mut(),
+                Some(&mut profiler.lazy_line_padding),
+            );
             i += used;
             let inner_line_count = inner.len();
             let inner_bytes = if profiler.enabled {
@@ -2042,9 +2090,10 @@ fn parse_lines_as_inlines(
                 );
                 return (inlines, scan.byte_len, 0);
             }
-            let chars = collect_inline_chars_from_lines(lines, scan.byte_len);
+            let chars =
+                collect_inline_chars_from_lines(lines, scan.byte_len, &profiler.lazy_line_padding);
             if let Some(tracker) = &mut profiler.destinations {
-                tracker.push_chars_lines(&chars, lines);
+                tracker.push_chars_lines(&chars, lines, &profiler.lazy_line_padding);
             }
             let parsed = parse_inlines_chars_with_refs_profiled(
                 &chars,
@@ -2114,21 +2163,37 @@ fn plain_multiline_inline_fast_path(lines: &[&str], count_chars: bool) -> (Vec<I
     (out, char_count)
 }
 
-fn collect_inline_chars_from_lines(lines: &[&str], byte_len: usize) -> Vec<char> {
+fn collect_inline_chars_from_lines(
+    lines: &[&str],
+    byte_len: usize,
+    padding: &LazyLinePadding,
+) -> Vec<char> {
     let mut chars = Vec::with_capacity(byte_len);
     for (idx, line) in lines.iter().enumerate() {
         if idx > 0 {
             chars.push('\n');
         }
-        let trimmed_start = line.trim_start_matches([' ', '\t']);
-        let trimmed = if idx + 1 == lines.len() {
-            trimmed_start.trim_end_matches([' ', '\t'])
-        } else {
-            trimmed_start
-        };
-        chars.extend(trimmed.chars());
+        chars.extend(inline_source_line(line, idx == 0, idx + 1 == lines.len(), padding).chars());
     }
     chars
+}
+
+// Prose's newline tokenizer skips continuation whitespace. Code, math and HTML
+// consume their literal contents before that branch, so only container-owned
+// padding and the paragraph's outer whitespace may be stripped here. Source
+// tracking must use precisely the same borrowed view.
+fn inline_source_line<'a>(
+    line: &'a str,
+    first: bool,
+    last: bool,
+    padding: &LazyLinePadding,
+) -> &'a str {
+    let line = if first || padding.contains(line.as_ptr() as usize) {
+        trim_start_space_tab(line)
+    } else {
+        line
+    };
+    if last { trim_end_space_tab(line) } else { line }
 }
 
 fn collect_inline_chars_from_text(text: &str) -> Vec<char> {
@@ -2901,6 +2966,7 @@ fn blockquote_marker_start(line: &str) -> bool {
 fn split_blockquote_lines_tracked<'a>(
     lines: &[&'a str],
     mut tracker: Option<&mut destinations::DestinationTracker>,
+    mut padding: Option<&mut LazyLinePadding>,
 ) -> (Vec<std::borrow::Cow<'a, str>>, usize) {
     let mut inner = Vec::new();
     let mut tail = ContainerTail::default();
@@ -2916,6 +2982,9 @@ fn split_blockquote_lines_tracked<'a>(
             stripped
         } else if tail.can_continue_lazily(line) {
             let lazy = tail.lazy_line(line);
+            if let Some(padding) = &mut padding {
+                padding.record(lazy.as_ref());
+            }
             if let std::borrow::Cow::Owned(copied) = &lazy
                 && let Some(tracker) = &mut tracker
             {
@@ -3274,7 +3343,10 @@ fn parse_definition_list_profiled(
                 if i + 1 < lines.len() && is_definition_marker(lines[i + 1]) {
                     break;
                 }
-                definition_lines.push(line);
+                // Definition-list continuation indentation is container padding;
+                // keep its established semantics without trimming literal lines
+                // in the shared inline collector.
+                definition_lines.push(trim_start_space_tab(line));
                 i += 1;
             }
             let inlines = if inline_lines_need_physical_breaks(&definition_lines) {
@@ -3861,6 +3933,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
     lines: &[&'a str],
     first: Marker<'a>,
     mut tracker: Option<&mut destinations::DestinationTracker>,
+    mut padding: Option<&mut LazyLinePadding>,
 ) -> ListSplit<'a> {
     let ordered = first.ordered;
     let start = first.start;
@@ -3995,6 +4068,9 @@ fn split_list_items_with_first_marker_tracked<'a>(
                     break;
                 }
                 let lazy = tail.lazy_line(lines[i]);
+                if let Some(padding) = &mut padding {
+                    padding.record(lazy.as_ref());
+                }
                 if let std::borrow::Cow::Owned(copied) = &lazy
                     && let Some(tracker) = &mut tracker
                 {
@@ -4029,8 +4105,12 @@ fn parse_list_profiled_with_first_marker(
     first: Marker<'_>,
 ) -> (List, usize) {
     let checkpoint = profiler.destination_checkpoint();
-    let split =
-        split_list_items_with_first_marker_tracked(lines, first, profiler.destinations.as_mut());
+    let split = split_list_items_with_first_marker_tracked(
+        lines,
+        first,
+        profiler.destinations.as_mut(),
+        Some(&mut profiler.lazy_line_padding),
+    );
     let parsed = parse_list_split(split, refs, profiler);
     profiler.destination_restore(checkpoint);
     parsed
@@ -4042,10 +4122,12 @@ fn parse_list_split(
     profiler: &mut ParseProfiler,
 ) -> (List, usize) {
     let mut items = Vec::with_capacity(split.items.len());
-    for (task, body) in split.items {
+    // Source maps and padding provenance share the enclosing list's lifetime.
+    // Retain every item buffer until all items have been parsed.
+    for (task, body) in &split.items {
         let str_refs: Vec<&str> = body.iter().map(|s| s.as_ref()).collect();
         items.push(ListItem {
-            task,
+            task: *task,
             blocks: parse_blocks_bounded(&str_refs, refs, profiler),
         });
     }

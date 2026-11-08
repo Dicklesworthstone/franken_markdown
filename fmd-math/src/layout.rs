@@ -3898,8 +3898,17 @@ impl Engine {
             return Ok(width);
         }
         // Drop the cache borrow before recursively measuring another accent.
+        // amsfonts' mathmeasure starts a fresh text-style formula: an
+        // enclosing math alphabet does not leak into it, while an alphabet
+        // explicitly inside the nucleus still applies.
         let width = self
-            .clean_box(base, ctx.map(|_| StyleCtx::new(Style::Text)))?
+            .clean_box(
+                base,
+                LayCtx {
+                    alphabet: None,
+                    ..ctx.map(|_| StyleCtx::new(Style::Text))
+                },
+            )?
             .boxx
             .width;
         ctx.wide_accent_widths

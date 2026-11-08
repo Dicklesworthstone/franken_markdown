@@ -2399,6 +2399,47 @@ fn wide_tildes_match_independent_tex_boxes() {
 }
 
 #[test]
+fn wide_accent_measurements_start_fresh_math_alphabets() {
+    // amsfonts measures the nucleus in a fresh text-style formula before
+    // selecting CMEX/MSBM. An outer alphabet changes the actual nucleus,
+    // but must not change that measurement. An explicit inner alphabet does.
+    // Independent ruled-Reference boxes, captured before repairing this path.
+    let e = engine();
+    for (source, expected) in [
+        (
+            r"\mathrm{\widetilde{AP\hspace{0.48em}}}",
+            [1.910_437, 1.045_372, 0.0],
+        ),
+        (
+            r"\widetilde{\mathrm{AP\hspace{0.48em}}}",
+            [1.910_437, 1.002_777, 0.0],
+        ),
+        (
+            r"\mathrm{\widehat{AP\hspace{0.48em}}}",
+            [1.910_437, 1.045_372, 0.0],
+        ),
+        (
+            r"\widehat{\mathrm{AP\hspace{0.48em}}}",
+            [1.910_437, 1.002_777, 0.0],
+        ),
+        (
+            r"\widetilde{AP\hspace{0.48em}}",
+            [2.010_783, 1.045_372, 0.0],
+        ),
+        (r"\widehat{AP\hspace{0.48em}}", [2.010_783, 1.045_372, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                got.is_finite() && (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn nested_wide_hats_reuse_text_style_measurements() {
     let e = engine();
     let mut source = String::from("x");

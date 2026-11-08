@@ -4254,7 +4254,11 @@ fn split_table_row_into<'a>(line: &'a str, cells: &mut Vec<&'a str>) {
 fn visit_table_row_cells<'a>(line: &'a str, mut emit: impl FnMut(&'a str)) {
     let t = trim_space_tab(line);
     let t = t.strip_prefix('|').unwrap_or(t);
-    if !t.as_bytes().iter().any(|b| matches!(b, b'`' | b'\\')) {
+    if !t
+        .as_bytes()
+        .iter()
+        .any(|b| matches!(b, b'`' | b'\\' | b'$'))
+    {
         for cell in t.strip_suffix('|').unwrap_or(t).split('|') {
             emit(trim_unicode_ws(cell));
         }
@@ -4276,6 +4280,10 @@ fn visit_table_row_cells<'a>(line: &'a str, mut emit: impl FnMut(&'a str)) {
             pos += 1;
         }
     }
+    // Math uses the same delimiter admission rules as the inline parser. Its
+    // closing runs are indexed once: many unmatched dollars must not repeatedly
+    // rescan the row, or prevent a later formula from protecting its own pipes.
+    let mut math_runs = TableMathRuns::new(bytes);
     let mut cell_start = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
@@ -4292,6 +4300,22 @@ fn visit_table_row_cells<'a>(line: &'a str, mut emit: impl FnMut(&'a str)) {
                 i = end + len;
             } else {
                 i += len;
+            }
+        } else if bytes[i] == b'$' {
+            let len = ascii_run_len(bytes, i, b'$');
+            if len > 2 {
+                // The inline tokenizer treats the leading dollars of a longer
+                // run as literal, then tries its final double/single suffix.
+                // Skip that literal prefix together to keep this scan linear.
+                i += len - 2;
+                continue;
+            }
+            if let Some(after) = math_delimiter_content_start(bytes, i, len, len)
+                && let Some(end) = math_runs.close_after(bytes, after, len)
+            {
+                i = end + len;
+            } else {
+                i += 1;
             }
         } else if bytes[i] == b'|' {
             emit(trim_unicode_ws(&t[cell_start..i]));
@@ -5535,6 +5559,126 @@ fn normalize_code_span(chars: &[char]) -> String {
     }
 }
 
+/// The math grammar deliberately excludes only ASCII space, tab and line
+/// endings at delimiter edges; Unicode whitespace remains TeX content. Share
+/// these rules between character-based inline parsing and byte-based table
+/// boundaries, so a formula cannot be split before the inline parser sees it.
+fn math_delimiter_content_start<T: Copy + Into<u32>>(
+    units: &[T],
+    start: usize,
+    run: usize,
+    want: usize,
+) -> Option<usize> {
+    if run != want || !matches!(want, 1 | 2) {
+        return None;
+    }
+    let after = start + want;
+    units
+        .get(after)
+        .filter(|&&unit| !matches!(unit.into(), 0x20 | 0x09 | 0x0a))
+        .map(|_| after)
+}
+
+fn math_delimiter_can_close<T: Copy + Into<u32>>(
+    units: &[T],
+    start: usize,
+    run: usize,
+    want: usize,
+) -> bool {
+    run == want
+        && matches!(want, 1 | 2)
+        && start > 0
+        && !matches!(units[start - 1].into(), 0x20 | 0x09 | 0x0a)
+}
+
+/// Table boundaries need a conservative pairing rule in addition to the shared
+/// inline grammar: `$12 | $19 | $x|y$` must keep its price columns. Only the first
+/// unescaped same-width run may close a table formula; an ineligible run leaves
+/// the opener literal rather than searching across more cells. A single dollar
+/// before a digit, or one directly after a real pipe and before word/TeX content,
+/// belongs to the following cell instead of closing the preceding one.
+///
+/// `$12|$|x|$` is also ambiguous. A numeric opener cannot close directly after a
+/// real pipe: prefer preserving a price column over merging it with its neighbor.
+/// Ordinary `$2|x$` and `$|x|$` still work; numeric math ending in a pipe can escape
+/// that pipe. These are table-boundary preferences, not changes to inline math.
+///
+/// Index all candidate runs once, including ineligible closers, and advance each
+/// lookup cursor monotonically. Failed and ambiguous probes stay linear without
+/// borrowing or exhausting an individual cell's inline work budget.
+struct TableMathRuns {
+    runs: [Vec<TableMathRun>; 2],
+    next: [usize; 2],
+}
+
+struct TableMathRun {
+    start: usize,
+    can_close: bool,
+    after_pipe: bool,
+}
+
+impl TableMathRuns {
+    fn new(bytes: &[u8]) -> Self {
+        let mut index = Self {
+            runs: [Vec::new(), Vec::new()],
+            next: [0; 2],
+        };
+        let mut pos = 0;
+        let mut last_pipe = None;
+        while pos < bytes.len() {
+            if bytes[pos] == b'\\' {
+                // Only ASCII delimiter positions matter here. Skipping the
+                // first byte of a non-ASCII escaped character is sufficient:
+                // its continuation bytes cannot contain a dollar/backslash.
+                pos += usize::from(pos + 1 < bytes.len()) + 1;
+            } else if bytes[pos] == b'$' {
+                let len = ascii_run_len(bytes, pos, b'$');
+                if matches!(len, 1 | 2) {
+                    let after_pipe = pos > 0 && last_pipe == Some(pos - 1);
+                    let following = bytes.get(pos + len);
+                    let starts_price = len == 1 && following.is_some_and(u8::is_ascii_digit);
+                    let starts_cell = after_pipe
+                        && following.is_some_and(|byte| {
+                            byte.is_ascii_alphanumeric() || *byte == b'\\' || !byte.is_ascii()
+                        });
+                    index.runs[len - 1].push(TableMathRun {
+                        start: pos,
+                        can_close: math_delimiter_can_close(bytes, pos, len, len)
+                            && !starts_price
+                            && !starts_cell,
+                        after_pipe,
+                    });
+                }
+                pos += len;
+            } else {
+                if bytes[pos] == b'|' {
+                    last_pipe = Some(pos);
+                }
+                pos += 1;
+            }
+        }
+        index
+    }
+
+    fn close_after(&mut self, bytes: &[u8], after: usize, width: usize) -> Option<usize> {
+        let runs = &self.runs[width - 1];
+        let next = &mut self.next[width - 1];
+        // The body must be nonempty; an immediately adjacent run is not a
+        // closer. Caller positions only advance through a row.
+        while runs.get(*next).is_some_and(|run| run.start <= after) {
+            *next += 1;
+        }
+        let close = runs.get(*next)?;
+        let numeric_opener = width == 1
+            && (bytes.get(after).is_some_and(u8::is_ascii_digit)
+                || (bytes
+                    .get(after)
+                    .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+                    && bytes.get(after + 1).is_some_and(u8::is_ascii_digit)));
+        (close.can_close && !(numeric_opener && close.after_pipe)).then_some(close.start)
+    }
+}
+
 /// Parse a math delimiter run `$` or `$$`, returning inner TeX text and next index.
 fn parse_math_delim(
     chars: &[char],
@@ -5543,13 +5687,7 @@ fn parse_math_delim(
     work: &mut InlineWorkBudget,
 ) -> Option<(String, usize)> {
     let open_run = run_len(chars, i, '$', work)?;
-    if open_run != want {
-        return None;
-    }
-    let after = i + want;
-    if after >= chars.len() || chars[after] == ' ' || chars[after] == '\t' || chars[after] == '\n' {
-        return None;
-    }
+    let after = math_delimiter_content_start(chars, i, open_run, want)?;
     let mut j = after;
     let mut found = None;
     while j < chars.len() {
@@ -5559,12 +5697,7 @@ fn parse_math_delim(
         }
         if chars[j] == '$' {
             let run = run_len(chars, j, '$', work)?;
-            if run == want
-                && j > after
-                && chars[j - 1] != ' '
-                && chars[j - 1] != '\t'
-                && chars[j - 1] != '\n'
-            {
+            if j > after && math_delimiter_can_close(chars, j, run, want) {
                 found = Some(j);
                 break;
             }

@@ -69,9 +69,16 @@ caret position. Unused include-only resources have no report entry and are not
 parsed merely to produce diagnostics.
 
 The parser's stable classifications currently include `inline_work_limit`,
-`inline_depth_limit`, `block_depth_limit`, `malformed_reference`, and
-`unclosed_fence`. Findings retain the parser's message, severity, and source
-ordering. Consumers should display unknown future codes rather than hide them.
+`inline_depth_limit`, `emphasis_work_limit`, `emphasis_depth_limit`,
+`block_depth_limit`, `malformed_reference`, and `unclosed_fence`. Findings retain
+the parser's message, severity, and source ordering. Consumers should display
+unknown future codes rather than hide them.
+
+Emphasis limits preserve already-resolved styles and accepted links, leaving
+remaining or surplus delimiters as literal text. They differ from the inline
+tokenizer's work/depth fallbacks, which render the entire affected inline run
+literally. All of these warnings identify the affected run's original source
+envelope; successful publication can still require author review.
 
 ## Native and MCP behavior
 

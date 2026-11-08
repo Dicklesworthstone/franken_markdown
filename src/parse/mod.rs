@@ -99,6 +99,8 @@ const INLINE_PARSE_WORK_MULTIPLIER: usize = 64;
 enum InlineLimit {
     Work,
     Depth,
+    EmphasisWork,
+    EmphasisDepth,
 }
 
 impl InlineLimit {
@@ -106,6 +108,8 @@ impl InlineLimit {
         match self {
             Self::Work => "inline_work_limit",
             Self::Depth => "inline_depth_limit",
+            Self::EmphasisWork => "emphasis_work_limit",
+            Self::EmphasisDepth => "emphasis_depth_limit",
         }
     }
 
@@ -116,6 +120,12 @@ impl InlineLimit {
             }
             Self::Depth => {
                 "inline nesting limit reached; this inline run is rendered as literal text"
+            }
+            Self::EmphasisWork => {
+                "emphasis resolution work limit reached; remaining delimiters are rendered literally"
+            }
+            Self::EmphasisDepth => {
+                "emphasis nesting limit reached; surplus delimiters are rendered literally"
             }
         }
     }
@@ -148,7 +158,8 @@ impl InlineWorkBudget {
 
     fn exhaust(&mut self, limit: InlineLimit) {
         self.exhausted = true;
-        self.limit.get_or_insert(limit);
+        // A whole-run rollback supersedes an earlier nonfatal emphasis limit.
+        self.limit = Some(limit);
     }
 }
 
@@ -5070,7 +5081,11 @@ fn parse_inlines_chars_with_refs_profiled(
         0
     };
     let out = if has_emphasis_delimiters {
-        resolve_emphasis(els)
+        let (out, limit) = resolve_emphasis(els);
+        if let Some(limit) = limit {
+            profiler.inline_work.limit.get_or_insert(limit);
+        }
+        out
     } else {
         finish_inline_elements_without_delimiters(els)
     };
@@ -5260,13 +5275,13 @@ impl EmphasisArena {
 
 /// Resolve a flat token list into a nested inline tree using the CommonMark
 /// "process emphasis" delimiter-stack algorithm, then linearize what remains.
-fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
+fn resolve_emphasis(els: Vec<InlineEl>) -> (Vec<Inline>, Option<InlineLimit>) {
     let n = els.len();
     let mut els = els;
     let mut arena = EmphasisArena::new(n);
     let mut head: Option<usize> = (n > 0).then_some(0);
 
-    process_emphasis(&mut els, &mut arena, &mut head);
+    let limit = process_emphasis(&mut els, &mut arena, &mut head);
 
     let mut out = Vec::new();
     let mut idx = head;
@@ -5278,7 +5293,7 @@ fn resolve_emphasis(els: Vec<InlineEl>) -> Vec<Inline> {
         }
         idx = next_idx;
     }
-    out
+    (out, limit)
 }
 
 /// Defensive bound on emphasis/strong/strike nesting depth. Real prose never nests
@@ -5306,11 +5321,16 @@ fn opener_bottom_index(ch: char, slot: usize) -> usize {
 /// to the nearest compatible opener honoring the rule of three, and wrap the
 /// enclosed nodes in `Strong` (2 delimiters), `Emphasis` (1 delimiter), or
 /// `Strikethrough` (2 tildes).
-fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &mut Option<usize>) {
+fn process_emphasis(
+    els: &mut Vec<InlineEl>,
+    arena: &mut EmphasisArena,
+    head: &mut Option<usize>,
+) -> Option<InlineLimit> {
     let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
     let step_budget = els.len().saturating_mul(64).max(4096);
     let mut steps: usize = 0;
     let mut ci = *head;
+    let mut limit = None;
 
     while let Some(c) = ci {
         if !arena.nodes[c].alive {
@@ -5341,7 +5361,7 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
         while let Some(o) = opener_idx {
             steps += 1;
             if steps > step_budget {
-                return;
+                return Some(InlineLimit::EmphasisWork);
             }
             if Some(o) == bound {
                 break;
@@ -5394,6 +5414,7 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
             m = arena.nodes[mi].next;
         }
         if max_child_depth >= MAX_INLINE_NESTING_DEPTH {
+            limit.get_or_insert(InlineLimit::EmphasisDepth);
             ci = arena.nodes[c].next;
             continue;
         }
@@ -5451,6 +5472,7 @@ fn process_emphasis(els: &mut Vec<InlineEl>, arena: &mut EmphasisArena, head: &m
             ci = Some(c);
         }
     }
+    limit
 }
 
 #[inline(always)]
@@ -5667,6 +5689,7 @@ fn parse_link_like(
     let close = close?;
     let target = parse_inline_link_target(chars, close, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
+    let previous_limit = profiler.inline_work.limit;
     let content = parse_inlines_chars_nested(
         &chars[i + 1..close],
         refs,
@@ -5676,6 +5699,9 @@ fn parse_link_like(
     let nested_link = !image && contains_link(&content);
     if nested_link {
         profiler.destination_rollback(mark);
+        if !profiler.inline_work.exhausted {
+            profiler.inline_work.limit = previous_limit;
+        }
     } else if image {
         profiler.destination_tokens_rollback(mark);
     }
@@ -5919,6 +5945,7 @@ fn parse_reference_link_like(
     let (reference, next) =
         reference_link_target(chars, i, close, refs, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
+    let previous_limit = profiler.inline_work.limit;
     let content = parse_inlines_chars_nested(
         &chars[i + 1..close],
         refs,
@@ -5928,6 +5955,9 @@ fn parse_reference_link_like(
     let nested_link = !image && contains_link(&content);
     if nested_link {
         profiler.destination_rollback(mark);
+        if !profiler.inline_work.exhausted {
+            profiler.inline_work.limit = previous_limit;
+        }
     } else if image {
         profiler.destination_tokens_rollback(mark);
     }

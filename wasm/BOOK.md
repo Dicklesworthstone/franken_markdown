@@ -14,9 +14,12 @@ browser-print PDF, third-party dependency, network loader, or server-side storag
 
 **Check expanded chapter parsing** in the workbench reports parser warnings for
 the actual chapter text after include expansion and resource-path rebasing.
-This includes `inline_work_limit`, `inline_depth_limit`, `block_depth_limit`,
-`unclosed_fence`, and `malformed_reference`. Work/depth limits retain content as
-literal text, so a successful export can still need author review.
+This includes `inline_work_limit`, `inline_depth_limit`, `emphasis_work_limit`,
+`emphasis_depth_limit`, `block_depth_limit`, `unclosed_fence`, and
+`malformed_reference`. Emphasis limits preserve already-resolved styles and
+links while leaving remaining or surplus delimiters as literal text. Inline
+tokenizer work/depth limits instead render the entire affected run literally,
+so a successful export can still need author review.
 
 The same check is available through the public book API:
 

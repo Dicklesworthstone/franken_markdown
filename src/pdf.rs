@@ -44703,13 +44703,22 @@ fn audit_inline_fragment_links(
     inlines: &[Inline],
     audit: &mut AnchorAudit,
     ids: &BTreeSet<String>,
+    resolve: &impl Fn(&str, &BTreeSet<String>) -> Option<bool>,
 ) {
     let mut plain = String::new();
     let mut links = Vec::new();
     push_plain_inlines(inlines, &mut plain, &mut links);
     for dest in links {
-        if let Some(target) = dest.strip_prefix('#') {
-            if crate::anchors::decode_fragment(target).is_some_and(|id| ids.contains(&id)) {
+        let resolved = resolve(&dest, ids);
+        let target = if resolved.is_some() {
+            dest.split_once('#').map(|(_, fragment)| fragment)
+        } else {
+            dest.strip_prefix('#')
+        };
+        if let Some(target) = target {
+            if resolved.unwrap_or_else(|| {
+                crate::anchors::decode_fragment(target).is_some_and(|id| ids.contains(&id))
+            }) {
                 audit.resolved += 1;
             } else if !audit.unresolved.iter().any(|u| u == target) {
                 audit.unresolved.push(target.to_string());
@@ -44719,6 +44728,17 @@ fn audit_inline_fragment_links(
 }
 
 pub fn audit_anchors(doc: &Document) -> AnchorAudit {
+    audit_anchors_with_resolver(doc, &|_, _| None)
+}
+
+/// Source-aware verification can override public note fragments while keeping
+/// the layout-only audit's heading/private-anchor inventory and traversal.
+/// Returning `None` retains the ordinary direct-fragment behavior; overrides
+/// keep the authored fragment spelling in unresolved findings.
+pub(crate) fn audit_anchors_with_resolver(
+    doc: &Document,
+    resolve: &impl Fn(&str, &BTreeSet<String>) -> Option<bool>,
+) -> AnchorAudit {
     let mut state = HeadingIdState::default();
     let mut ids: BTreeSet<String> = BTreeSet::new();
     let mut notes = BTreeSet::new();
@@ -44770,38 +44790,43 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
         resolved: 0,
         unresolved: Vec::new(),
     };
-    fn collect_links(blocks: &[Block], audit: &mut AnchorAudit, ids: &BTreeSet<String>) {
+    fn collect_links(
+        blocks: &[Block],
+        audit: &mut AnchorAudit,
+        ids: &BTreeSet<String>,
+        resolve: &impl Fn(&str, &BTreeSet<String>) -> Option<bool>,
+    ) {
         for block in blocks {
             match block {
                 Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-                    audit_inline_fragment_links(inlines, audit, ids);
+                    audit_inline_fragment_links(inlines, audit, ids, resolve);
                 }
-                Block::BlockQuote(inner) => collect_links(inner, audit, ids),
+                Block::BlockQuote(inner) => collect_links(inner, audit, ids, resolve),
                 Block::List(list) => {
                     for item in &list.items {
-                        collect_links(&item.blocks, audit, ids);
+                        collect_links(&item.blocks, audit, ids, resolve);
                     }
                 }
                 Block::DefinitionList(items) => {
                     for item in items {
                         for term in &item.terms {
-                            audit_inline_fragment_links(term, audit, ids);
+                            audit_inline_fragment_links(term, audit, ids, resolve);
                         }
                         for def in &item.definitions {
-                            audit_inline_fragment_links(def, audit, ids);
+                            audit_inline_fragment_links(def, audit, ids, resolve);
                         }
                     }
                 }
                 Block::FootnoteDefinition { blocks: inner, .. } => {
-                    collect_links(inner, audit, ids);
+                    collect_links(inner, audit, ids, resolve);
                 }
                 Block::Table(table) => {
                     for cell in &table.head {
-                        audit_inline_fragment_links(cell, audit, ids);
+                        audit_inline_fragment_links(cell, audit, ids, resolve);
                     }
                     for row in &table.rows {
                         for cell in row {
-                            audit_inline_fragment_links(cell, audit, ids);
+                            audit_inline_fragment_links(cell, audit, ids, resolve);
                         }
                     }
                 }
@@ -44809,7 +44834,7 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
             }
         }
     }
-    collect_links(&doc.blocks, &mut audit, &ids);
+    collect_links(&doc.blocks, &mut audit, &ids, resolve);
     audit
 }
 

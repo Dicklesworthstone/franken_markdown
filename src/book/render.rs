@@ -20,7 +20,9 @@ use crate::{
 mod chapter_preview;
 #[path = "pdf_links.rs"]
 mod pdf_links;
-pub(crate) use pdf_links::document::render as render_document_note_links;
+pub(crate) use pdf_links::document::{
+    audit as audit_document_note_links, render as render_document_note_links,
+};
 #[path = "site_publication.rs"]
 mod site_publication;
 #[path = "site_search.rs"]

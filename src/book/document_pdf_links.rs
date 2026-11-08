@@ -28,25 +28,7 @@ pub(crate) fn render(
         return Ok(None);
     }
     let source = crate::apply_profile(source, options.profile);
-    let aliases: BTreeMap<_, _> = footnote_anchors(&source)
-        .into_iter()
-        .map(|anchor| {
-            let target = if anchor.occurrences != 1 {
-                // A source heading and note sharing an HTML ID are ambiguous.
-                // Neither the generated heading slug nor the note may win.
-                None
-            } else {
-                match anchor.kind {
-                    AnchorKind::Footnote => Some(Target::Footnote(anchor.title)),
-                    AnchorKind::FootnoteBackreference => {
-                        Some(Target::FootnoteReference(anchor.title))
-                    }
-                    AnchorKind::Heading => None,
-                }
-            };
-            (anchor.id, target)
-        })
-        .collect();
+    let aliases = note_aliases(&source);
     let mut addressed = false;
     let mut reserved = BTreeSet::new();
     visit_links(&source.blocks, &mut |destination| {
@@ -101,6 +83,64 @@ pub(crate) fn render(
         .collect();
     rendered.bytes = wire::bind(rendered.bytes, &targets)?;
     Ok(Some(rendered))
+}
+
+/// Audit the prepared layout with the source aliases used by final binding.
+/// This shares the publication inventory, fragment decoder and note numbering
+/// without generating PDF objects or laying out the document a second time.
+pub(crate) fn audit(
+    source: &Document,
+    prepared: &crate::footnotes::PreparedPdfDocument<'_>,
+    options: &PdfOptions,
+) -> crate::pdf::AnchorAudit {
+    let source = crate::apply_profile(source, options.profile);
+    let aliases = note_aliases(&source);
+    let note_ids = crate::footnotes::page_note_ids(source.as_ref());
+    let references = crate::footnotes::page_note_references(&prepared.blocks);
+    crate::pdf::audit_anchors_with_resolver(prepared, &|destination, ids| {
+        let fragment = note_fragment(destination)?;
+        let resolved = match aliases.get(&fragment) {
+            Some(Some(Target::Footnote(id))) => note_ids.contains_key(id),
+            Some(Some(Target::FootnoteReference(id))) => note_ids
+                .get(id)
+                .and_then(|id| id.strip_prefix(crate::footnotes::PAGE_NOTE_PREFIX))
+                .and_then(|number| number.parse::<u32>().ok())
+                .is_some_and(|number| references.contains(&number)),
+            Some(Some(Target::Heading(_))) | Some(None) => false,
+            None => {
+                // Namespace-shaped headings still work, but only direct
+                // fragments use the ordinary PDF heading resolver. A query
+                // with no published note alias cannot bind a local target.
+                destination
+                    .trim_matches(|ch: char| ch.is_ascii_whitespace() || ch.is_control())
+                    .starts_with('#')
+                    && ids.contains(&fragment)
+            }
+        };
+        Some(resolved)
+    })
+}
+
+fn note_aliases(source: &Document) -> BTreeMap<String, Option<Target>> {
+    footnote_anchors(source)
+        .into_iter()
+        .map(|anchor| {
+            let target = if anchor.occurrences != 1 {
+                // A source heading and note sharing an HTML ID are ambiguous.
+                // Neither the generated heading slug nor the note may win.
+                None
+            } else {
+                match anchor.kind {
+                    AnchorKind::Footnote => Some(Target::Footnote(anchor.title)),
+                    AnchorKind::FootnoteBackreference => {
+                        Some(Target::FootnoteReference(anchor.title))
+                    }
+                    AnchorKind::Heading => None,
+                }
+            };
+            (anchor.id, target)
+        })
+        .collect()
 }
 
 fn note_fragment(destination: &str) -> Option<String> {

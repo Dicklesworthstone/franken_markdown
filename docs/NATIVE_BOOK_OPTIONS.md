@@ -28,6 +28,27 @@ cannot honor a pin. Font scale accepts the shared presets, positive
 multipliers, percentages, and CSS `px`/`pt` sizes, with the renderer's existing
 scale bounds.
 
+## Markdown authoring profiles
+
+`--profile commonmark-gfm` selects the same authoring profile as the
+single-document renderer and browser book sessions. Definition lists retain
+their literal paragraph text, and `<!-- pagebreak -->` remains an ordinary
+HTML comment. `--profile gfm-plus` enables structured definition lists and
+explicit page breaks. Omitting the flag retains the existing behavior with
+all supported extensions enabled.
+
+```sh
+fmd book ./manual --to both --out-dir ./publication --profile commonmark-gfm
+fmd book ./manual --to epub --out ./manual.epub --profile gfm-plus
+fmd book ./manual --check-links --profile commonmark-gfm --json
+```
+
+The selected profile applies to every chapter, including expanded includes,
+for HTML, PDF, combined output, and EPUB. Profiles share the parsed source,
+chapter identities, link targets, and source diagnostics; the read-only link
+check and `--deny-broken-links` keep the same navigation guarantees. Invalid
+profiles fail with exit 64 before reading configuration, chapters, or assets.
+
 ## Paper, margins, and contents
 
 PDF and combined publications accept explicit page geometry and presentation:

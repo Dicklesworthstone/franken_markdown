@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use super::render::site_search;
 use crate::config::FmdConfig;
 use crate::file_write::{OutputFile, write_outputs_staged};
-use crate::{Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions};
+use crate::{Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions, Profile};
 
 #[path = "../cli/book_inputs.rs"]
 mod inputs;
@@ -87,6 +87,9 @@ pub(crate) struct BookArgs {
     /// Default language; chapter frontmatter may override HTML/EPUB language.
     #[arg(long)]
     lang: Option<String>,
+    /// Markdown authoring profile: commonmark-gfm or gfm-plus (all extensions by default).
+    #[arg(long, value_name = "PROFILE", value_parser = options::parse_authoring_profile)]
+    profile: Option<Profile>,
     /// Complete replacement stylesheet for HTML/EPUB.
     #[arg(long)]
     css: Option<PathBuf>,
@@ -383,6 +386,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         toc_depth,
         html_font_format: publication.html_font_format,
         font_embedding: publication.font_embedding,
+        profile: args.profile,
         ..HtmlOptions::default()
     };
     let paths = output_paths(&args)?;
@@ -491,6 +495,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             metadata_epoch_seconds: metadata_epoch()?,
             image_assets: std::mem::take(&mut html_options.image_assets),
             font_assets: std::mem::take(&mut html_options.font_assets),
+            profile: args.profile,
             ..PdfOptions::default()
         };
         publication.apply_pdf(&mut pdf_options);

@@ -7,6 +7,16 @@ use std::path::PathBuf;
 use super::{BookArgs, BookTarget, Failure, error};
 use crate::{FontAssetSlot, FontAssets, FontScale, RenderWarning, Theme};
 
+/// Parse during argument admission, before configuration or source/asset I/O.
+/// Keep aliases and normalization identical to the single-document renderer.
+pub(super) fn parse_authoring_profile(value: &str) -> Result<crate::Profile, String> {
+    crate::Profile::parse(value).ok_or_else(|| {
+        format!(
+            "unknown markdown authoring profile: {value:?}. Valid choices: 'commonmark-gfm', 'gfm-plus'"
+        )
+    })
+}
+
 pub(super) struct Typography {
     pub theme: Theme,
     pub font_scale: Option<FontScale>,

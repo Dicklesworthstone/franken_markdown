@@ -1,4 +1,5 @@
 import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
+import { consumeBookPdfResult } from "./book_render_diagnostics.mjs";
 export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
@@ -729,6 +730,22 @@ export function createBookBindings(loadBookClass) {
       // A Proxy trap may dispose the session during admission. Never retain a
       // pre-validation raw handle across caller-controlled object inspection.
       const raw = this.#live();
+      const reported = archive.pdfA === "2b" ? "renderPdfArchivalReported"
+        : page === undefined ? "renderPdfReported" : "renderPdfWithPageReported";
+      if (typeof raw[reported] === "function") {
+        const args = archive.pdfA === "2b" ? [archive.pdfA, archive.pdfAStrict, pdfPageGeometry(page)]
+          : page === undefined ? [] : [pdfPageGeometry(page)];
+        try {
+          const sourceLength = raw.sourceLength;
+          const result = consumeBookPdfResult(raw[reported](...args), sourceLength);
+          return output(result.bytes, "pdf", sourceLength,
+            { ...archive, ...this.#profileReceipt, diagnostics: result.diagnostics });
+        } catch (error) {
+          error = normalizePdfPaginationError(error);
+          if (typeof error === "string") throw new Error(error.slice(0, 2048));
+          throw error;
+        }
+      }
       if (archive.pdfA === "2b") {
         if (typeof raw.renderPdfArchival !== "function") {
           throw updateError("UNSUPPORTED_BOOK_PDFA",

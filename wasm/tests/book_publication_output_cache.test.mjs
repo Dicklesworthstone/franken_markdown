@@ -313,6 +313,7 @@ test("actual worker bootstrap installs the cache for both book and preview reten
     const modules={ './book_retained.mjs':cache,
       './book_session.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_session.mjs', import.meta.url).pathname)},'utf8'),'session'),
       './book_source_diagnostics.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_source_diagnostics.mjs', import.meta.url).pathname)},'utf8'),'diagnostics'),
+      './book_render_diagnostics.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_render_diagnostics.mjs', import.meta.url).pathname)},'utf8'),'render-diagnostics'),
       './pdf_page.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../pdf_page.mjs', import.meta.url).pathname)},'utf8'),'page'),
       './render_typography.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../render_typography.mjs', import.meta.url).pathname)},'utf8'),'typography'),
       './book_worker.mjs':module('export const installBookWorker=globalThis.install','worker'),

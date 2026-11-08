@@ -2,6 +2,7 @@
 // The host owns source/settings/resources; this session owns a dedicated book
 // worker client. No Markdown/PDF parser, alternative renderer or network access.
 import { createBookCollectionCapture, bookCollectionResourceRevision } from "./book_worker.mjs";
+import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 
 const MAX_BYTES = 128 * 1024 * 1024;
 const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -30,8 +31,10 @@ function pdfResult(result, maximum, metadata, archive) {
     throw failure("INVALID_BOOK_PDF", "The PDF proof claims an unrequested archival emission policy.");
   // Do not call result.blob(): a host could close over subsequently mutated
   // bytes. Blob takes ownership of this exact view, including its byte offset.
+  const renderReceipt = bookRenderDiagnosticsReceipt(result, "pdf");
   const blob = new Blob([bytes], { type: "application/pdf" });
-  return Object.freeze({ ...metadata, ...(archive ?? {}), blob, size: blob.size, sourceLength: result.sourceLength });
+  return Object.freeze({ ...metadata, ...(archive ?? {}), ...renderReceipt,
+    blob, size: blob.size, sourceLength: result.sourceLength });
 }
 
 function filename(title) {

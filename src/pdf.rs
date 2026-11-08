@@ -2475,7 +2475,7 @@ pub fn render_with_emit(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
-    render_inner(doc, opts, pdf_a, false, emit, false).map(|profile| profile.bytes)
+    render_inner(doc, opts, pdf_a, false, emit, false, false).map(|profile| profile.bytes)
 }
 
 /// Render a document to PDF bytes while collecting stage-level attribution.
@@ -2493,6 +2493,7 @@ pub fn render_profiled(doc: &Document, opts: &PdfOptions) -> Result<PdfProfile> 
         crate::PdfASettings::OFF,
         true,
         PdfEmitOptions::default(),
+        false,
         false,
     )
     .map(|rendered| PdfProfile {
@@ -2514,7 +2515,7 @@ pub fn render_reported(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<PdfRenderReport> {
-    render_inner(doc, opts, pdf_a, false, emit, false).map(|rendered| PdfRenderReport {
+    render_inner(doc, opts, pdf_a, false, emit, false, false).map(|rendered| PdfRenderReport {
         bytes: rendered.bytes,
         pagination: rendered.pagination,
     })
@@ -2671,7 +2672,41 @@ fn render_warnings_for_input(
     input: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
 ) -> Vec<RenderWarning> {
-    let doc = input.document();
+    let faces = Faces::load(opts).ok();
+    let (mut warnings, has_inline_math) =
+        source_render_warnings(input.document(), opts, faces.as_ref());
+    if let Some(faces) = faces
+        && (opts.requests_optimal_pagination() || has_inline_math)
+    {
+        // Standalone inspection has no emitted layout to consult. Book render
+        // reports instead collect these findings in render_inner from the
+        // actual final lines and writer result, without a second layout pass.
+        let prepared = crate::transform_footnotes_for_pdf(input, opts);
+        let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
+        if let Ok((lines, paragraph_variants)) =
+            layout_with_pagination_report(&prepared.blocks, &effective, &faces, page)
+        {
+            inline_math_fit::append_warnings(&lines, &mut warnings);
+            if opts.requests_optimal_pagination() {
+                let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
+                PdfPaginationReport {
+                    page_breaks,
+                    paragraph_variants,
+                }
+                .append_warnings(&mut warnings);
+            }
+        }
+    }
+    warnings
+}
+
+/// Audit source fidelity using the faces already selected for this output.
+/// No document layout, fitting, pagination or PDF emission happens here.
+fn source_render_warnings(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: Option<&Faces>,
+) -> (Vec<RenderWarning>, bool) {
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
     let mut warnings = Vec::new();
@@ -2702,30 +2737,9 @@ fn render_warnings_for_input(
         }
     }
 
-    if let Ok(faces) = Faces::load(opts) {
-        // Pagination and inline-math fits need actual layout. Use the same
-        // profile/numbered-note preparation and final fitting as real emission;
-        // otherwise note reservations or fitted geometry could report a
-        // different fallback than the PDF that is actually written.
-        if opts.requests_optimal_pagination() || has_inline_math {
-            let prepared = crate::transform_footnotes_for_pdf(input, opts);
-            let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
-            if let Ok((lines, paragraph_variants)) =
-                layout_with_pagination_report(&prepared.blocks, &effective, &faces, page)
-            {
-                inline_math_fit::append_warnings(&lines, &mut warnings);
-                if opts.requests_optimal_pagination() {
-                    let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
-                    PdfPaginationReport {
-                        page_breaks,
-                        paragraph_variants,
-                    }
-                    .append_warnings(&mut warnings);
-                }
-            }
-        }
+    if let Some(faces) = faces {
         let mut text = Vec::new();
-        collect_text(&doc.blocks, &mut text, &supported_math, &faces);
+        collect_text(&doc.blocks, &mut text, &supported_math, faces);
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
         let mut sample = String::new();
@@ -2767,10 +2781,10 @@ fn render_warnings_for_input(
         // surfaces. Their positioned text needs the same source-level shaping
         // findings even when no corresponding text occurs in the body.
         if let Ok(Some(running)) =
-            running::resolve(doc, opts, &faces, PageGeom::from_theme(&opts.theme))
+            running::resolve(doc, opts, faces, PageGeom::from_theme(&opts.theme))
         {
             let mut running_text = Vec::new();
-            running.collect_positioning_sources(&faces, &mut running_text);
+            running.collect_positioning_sources(faces, &mut running_text);
             for (slot, source) in running_text {
                 text_positioning::prepare(faces.face(slot), &source).warnings(&mut warnings);
             }
@@ -2794,7 +2808,7 @@ fn render_warnings_for_input(
         }
     }
 
-    warnings
+    (warnings, has_inline_math)
 }
 
 fn collect_svg_image_text(image: &PdfImageData, out: &mut Vec<(u8, String)>) {
@@ -3061,6 +3075,7 @@ fn render_inner(
     profiled: bool,
     emit: PdfEmitOptions,
     collect_navigation: bool,
+    collect_warnings: bool,
 ) -> Result<RenderedPdf> {
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
@@ -3113,14 +3128,24 @@ fn render_inner(
     } else {
         source_navigation::SourceNavigation::default()
     };
+    let pagination = PdfPaginationReport {
+        page_breaks,
+        paragraph_variants,
+    };
+    let warnings = if collect_warnings {
+        let (mut warnings, _) = source_render_warnings(doc, &effective_opts, Some(&faces));
+        inline_math_fit::append_warnings(&lines, &mut warnings);
+        pagination.append_warnings(&mut warnings);
+        warnings
+    } else {
+        Vec::new()
+    };
     Ok(RenderedPdf {
         bytes,
         navigation,
         stages: profiler.finish(),
-        pagination: PdfPaginationReport {
-            page_breaks,
-            paragraph_variants,
-        },
+        pagination,
+        warnings,
     })
 }
 
@@ -3129,6 +3154,7 @@ struct RenderedPdf {
     navigation: source_navigation::SourceNavigation,
     stages: Vec<PdfStageSummary>,
     pagination: PdfPaginationReport,
+    warnings: Vec<RenderWarning>,
 }
 
 /// How the PDF writer turns laid-out lines into page objects.

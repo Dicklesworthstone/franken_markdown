@@ -34,6 +34,9 @@ export function createBookPdfPanel(root) {
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   status.style.overflowWrap = "anywhere";
+  const diagnostics = make("div", "book-pdf-diagnostics");
+  diagnostics.hidden = true;
+  diagnostics.setAttribute("aria-label", "PDF render diagnostics");
   make("p", "book-pdf-viewer-help", "Embedded PDF viewing depends on your browser. A blank or unavailable viewer does not prevent downloading the exact proof for inspection in your PDF viewer. No remote viewer or service is loaded. The proof is released on edits or page suspension; it is not a saved source project.");
   make("div", "book-pdf-viewport");
   publish.parentElement.insertBefore(panel, publish);
@@ -43,7 +46,7 @@ export function createBookPdfPanel(root) {
 export function createBookPdfControls({ root, controls, collection, worker,
   urls = URL, navigator = globalThis.navigator }) {
   const panel = createBookPdfPanel(root);
-  const ids = ["build", "cancel", "release", "download", "status", "viewport"];
+  const ids = ["build", "cancel", "release", "download", "status", "diagnostics", "viewport"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#book-pdf-${id}`)]));
   if (Object.values(el).some(value => !value)) throw new Error("Missing book PDF proof controls.");
   const session = createBookPdfProof({ controls, collection, worker });
@@ -60,6 +63,7 @@ export function createBookPdfControls({ root, controls, collection, worker,
     el.download.removeAttribute("href");
     el.download.removeAttribute("download");
     el.viewport.replaceChildren();
+    el.diagnostics.replaceChildren(); el.diagnostics.hidden = true;
     if (previous !== null) urls.revokeObjectURL(previous);
   }
   function active() { return !disposed && !suspended && !composing && !controls.sourceBusy; }
@@ -87,6 +91,17 @@ export function createBookPdfControls({ root, controls, collection, worker,
   // the live/draft profile. Emission is not independent conformance validation.
   const emissionStatus = proof => proof.pdfA === "2b"
     ? ` Writer receipt: PDF/A-2b${proof.pdfAStrict ? " with strict policy" : ""}. Not independent conformance validation.` : "";
+  function showDiagnostics(proof) {
+    const rows = [], findings = proof.diagnostics;
+    const paragraph = text => { const node = root.createElement("p"); node.textContent = text; rows.push(node); };
+    paragraph(findings === undefined
+      ? "PDF render diagnostics are unavailable in this native package. Rebuild the matching package to inspect missing figures, font coverage and layout fallbacks."
+      : findings.length === 0 ? "The PDF renderer reported no warnings for this proof."
+        : `PDF rendering: ${findings.length} finding(s). Review these before distributing the PDF.`);
+    for (const item of (findings ?? []).slice(0, 100)) paragraph(`${item.code}: ${item.message}`);
+    if (findings?.length > 100) paragraph("Showing the first 100 findings. The complete report remains on the retained proof.");
+    el.diagnostics.replaceChildren(...rows); el.diagnostics.hidden = false;
+  }
   function show(proof) {
     if (proof === shown && url !== null) {
       el.status.textContent = `Current PDF proof reused without rendering: ${proof.size.toLocaleString()} bytes. Nothing has been saved yet.`
@@ -123,6 +138,7 @@ export function createBookPdfControls({ root, controls, collection, worker,
       el.download.download = proof.filename;
       el.download.textContent = `Download this PDF proof (${proof.size.toLocaleString()} bytes)`;
       shown = proof;
+      showDiagnostics(proof);
       url = next;
       next = null;
       el.status.textContent = `PDF generated from ${proof.chapters} chapters: ${proof.size.toLocaleString()} bytes. Download this proof preserves exactly this output. Nothing has been saved yet.`

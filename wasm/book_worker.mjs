@@ -1,6 +1,7 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
 import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
+import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
@@ -422,6 +423,7 @@ export function createBookWorkerClient({
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength,
             sourceFormats.has(format) ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
+          const renderReceipt = bookRenderDiagnosticsReceipt(data, format);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
               throw bookError("WORKER_PROTOCOL_ERROR", "Book worker replied for a different chapter.");
@@ -435,7 +437,7 @@ export function createBookWorkerClient({
               bytes,
               sourceLength: data.sourceLength,
               ...(format === "pdf" && archive ? archive : {}),
-              ...fontReceipt, ...profileReceipt,
+              ...fontReceipt, ...profileReceipt, ...renderReceipt,
               ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
               ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
@@ -674,6 +676,7 @@ export function installBookWorker(scope, engine) {
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength,
         sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
+      const renderReceipt = bookRenderDiagnosticsReceipt(result, data.format);
       if (data.format === "pdf") {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))
           throw bookError("UNSUPPORTED_BOOK_PDFA", "The renderer did not acknowledge the requested PDF/A emission policy.");
@@ -702,7 +705,7 @@ export function installBookWorker(scope, engine) {
         envelope.retainedInputRevision = data.id;
         if (sourceSet) envelope.sourceSetApplied = true;
       }
-      scope.postMessage({ ...envelope, ...fontReceipt, ...profileReceipt, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
+      scope.postMessage({ ...envelope, ...fontReceipt, ...profileReceipt, ...renderReceipt, bytes, sourceLength: result.sourceLength }, [bytes.buffer]);
     } catch (error) {
       const previousMode = owned ? capture?.mode : null;
       if (owned) {

@@ -12,6 +12,9 @@ mod render_options;
 #[path = "browser_source_set.rs"]
 mod source_set;
 
+#[path = "browser_pdf_report.rs"]
+mod pdf_report;
+
 use super::{BookInput, BookRenderer, BookWorkspace};
 use crate::{DarkModePolicy, FontAssetSlot, FontFamily, RenderError};
 

@@ -1,5 +1,6 @@
 // Workbench ownership of one captured publication. The injected publisher owns
 // native rendering; this session owns only cancellation, receipts and Blob URLs.
+import { bookRenderDiagnosticsReceipt } from "../book_render_diagnostics.mjs";
 const EDITION_LIMIT = 128 * 1024 * 1024;
 const FORMATS = Object.freeze({
   pdf: Object.freeze({ mimeType: "application/pdf", filename: "book.pdf" }),
@@ -138,6 +139,7 @@ export function createBookEditionSession({
       publicationProgress,
       // Raw edits without notifications must not leave a visible clean verdict.
       linkReport: verification && current(verification) ? verification.report : null,
+      pdfDiagnostics: ready && current(ready) ? ready.pdfDiagnostics : undefined,
       downloads: Object.freeze(ready ? ready.downloads.slice() : []),
       byteLength: ready?.byteLength ?? 0, sourceLength: ready?.sourceLength ?? 0,
       errorCode, message,
@@ -256,7 +258,8 @@ export function createBookEditionSession({
         total += blob.size;
         if (total > EDITION_LIMIT)
           throw fail("OUTPUT_LIMIT", "Combined edition output exceeds 128 MiB.");
-        return { format, blob, ...expected };
+        const renderReceipt = bookRenderDiagnosticsReceipt(output, format);
+        return { format, blob, ...expected, ...renderReceipt };
       });
       if (total !== result.byteLength)
         throw fail("WORKER_PROTOCOL_ERROR", "Edition byte totals do not match the captured outputs.");
@@ -271,6 +274,7 @@ export function createBookEditionSession({
       // Keep the same immutable Blobs used by the individual downloads. Bundle
       // preparation neither rerenders nor asks output.blob() for different bytes.
       job.blobs = blobs.map(({ format, blob }) => ({ format, blob }));
+      job.pdfDiagnostics = blobs.find(output => output.format === "pdf")?.diagnostics;
       job.byteLength = total; job.sourceLength = result.sourceLength;
       ready = job; active = null; phase = "ready";
       verification = checked ? { checkpoint: job.checkpoint, report: checked } : null;

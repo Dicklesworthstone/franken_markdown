@@ -110,6 +110,64 @@ This additive API requires a rebuilt WASM package with
 `FmdBook.sourceDiagnostics`. Older packages return
 `UNSUPPORTED_BOOK_SOURCE_DIAGNOSTICS`, and ordinary rendering stays available.
 
+## PDF render diagnostics
+
+Matching browser packages attach a deeply immutable `diagnostics` array to each
+book PDF output. It describes the layout that produced those exact bytes:
+missing or unsupported images, font coverage, math/shaping fallbacks, inline
+math fitting and final pagination limitations. Ordinary exports show the first
+findings; PDF proofs and complete editions show up to 100 findings and retain
+the complete admitted report on the proof or edition state.
+
+```js
+import { createBook } from "@franken-suite/franken-markdown/book";
+
+const session = await createBook(chapters, { images, includeSources });
+try {
+  const pdf = session.renderPdf();
+  if (pdf.diagnostics === undefined) {
+    console.log("This native package cannot report PDF rendering findings.");
+  } else {
+    for (const finding of pdf.diagnostics) {
+      console.log(finding.code, finding.message);
+    }
+  }
+} finally {
+  session.dispose();
+}
+```
+
+An empty array means the renderer reported no findings. Absence means an older
+native package cannot produce this report; it is never converted to a clean
+verdict. Render failures and malformed new reports do not trigger a second
+legacy render. The retained book remains usable after a failed export.
+
+Reports stay with ordinary and PDF/A outputs, export-local paper settings,
+worker transfers, retained-cache hits and atomic multi-format publications.
+Warnings survive native-handle disposal and later EPUB/site exports. Cache
+admission charges both PDF bytes and the serialized diagnostic payload.
+
+These are document-level findings with `start = end = 0`; they do not claim
+an original chapter/include location. Parser diagnostics remain separate and
+keep their expanded-chapter coordinates. Clean navigation checks and PDF/A
+writer receipts do not certify rendering fidelity or conformance.
+
+The browser report admits at most 4096 findings, 4 MiB of JSON and 2048 UTF-8
+bytes per message. Native shortening or omission adds
+`book_render_diagnostics_truncated` explicitly. Report and message text is
+displayed as text, never interpreted as HTML.
+
+The additive raw bindings are `FmdBook.renderPdfReported()`,
+`renderPdfWithPageReported(geometry)` and
+`renderPdfArchivalReported(profile, strict, geometry)`. They return the existing
+owned `FmdRenderResult`; raw callers must free it after reading its bytes and
+`diagnosticsJson()`. The public book adapter handles that ownership. Native
+Rust callers can use `BookRenderer::render_pdf_reported()`,
+`render_pdf_with_options_reported()` or `render_pdf_pdfa_reported()` and receive
+`BookPdfRenderReport { bytes, pagination, warnings }` without browser display
+truncation. Reporting reuses loaded font faces, actual measured lines and the
+final pagination result; it performs no diagnostic-only second layout.
+
 ## Running logos in the book API
 
 The programmatic `book`/`book-worker` APIs accept a header or footer

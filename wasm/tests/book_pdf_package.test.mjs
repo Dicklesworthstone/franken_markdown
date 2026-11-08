@@ -10,7 +10,7 @@ const repo = dirname(wasm.replace(/[\\/]$/, ''));
 const read = path => readFileSync(path, 'utf8');
 // The proof helpers' full relative import closure, plus their documentation.
 const required = [
-  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
+  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_render_diagnostics.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
   // book_pdf_controls.mjs reads publishing-profile fields from the collection
   // module (a3ca221), which in turn uses the font asset store.
   'demo/book_pdf_controls.mjs', 'demo/book_collection.mjs', 'demo/book_font_assets.mjs', 'BOOK_PDF_PROOF.md',

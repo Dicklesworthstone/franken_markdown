@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::book::{Book, BookRenderer, paths};
+use crate::book::{Book, BookPdfRenderReport, BookRenderer, paths};
 use crate::search_index::{EntryKind, build_search_index};
 use crate::{
     Block, Document, Inline, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result,
@@ -34,23 +34,21 @@ pub(super) fn render(book: &Book, document: Document, options: &PdfOptions) -> R
     render_plan(plan, options)
 }
 
-/// Inspect the same assembled, navigation-prepared document that is rendered.
-/// Chapter-relative images, synthesized chapter landings and moved note bodies
-/// must all use their actual rendering context when diagnosing fallbacks.
-#[cfg(feature = "cli")]
-pub(super) fn render_report(
+/// Keep findings from the same chapter-resolved, prepared document, measured
+/// lines and writer result. Source inspection does not perform a second layout.
+pub(super) fn render_reported(
     book: &Book,
     document: Document,
     options: &PdfOptions,
     settings: PdfASettings,
-) -> Result<(Vec<u8>, Vec<crate::RenderWarning>)> {
+) -> Result<BookPdfRenderReport> {
     let plan = prepare_configured(book, document, options, settings)?;
-    let warnings = crate::pdf::render_warnings_for_prepared(
-        &crate::transform_footnotes_for_pdf(&plan.document, options),
-        options,
-    );
-    let bytes = render_plan_configured(plan, options, settings)?;
-    Ok((bytes, warnings))
+    let rendered = render_plan_complete(plan, options, settings, PdfEmitOptions::default(), true)?;
+    Ok(BookPdfRenderReport {
+        bytes: rendered.bytes,
+        pagination: rendered.pagination,
+        warnings: rendered.warnings,
+    })
 }
 
 impl BookRenderer {
@@ -69,6 +67,16 @@ impl BookRenderer {
     /// an `Off` profile is rejected rather than silently ignored.
     pub fn render_pdf_pdfa(&self, settings: PdfASettings) -> Result<Vec<u8>> {
         self.render_pdf_with_options(&self.options().pdf_options(), settings)
+    }
+
+    /// Emit a PDF/A-configured book with fidelity findings from the same
+    /// chapter-aware layout. Settings describe writer policy, not independent
+    /// conformance certification. Ordinary `OFF` output remains byte-identical.
+    ///
+    /// # Errors
+    /// See [`Self::render_pdf_pdfa`].
+    pub fn render_pdf_pdfa_reported(&self, settings: PdfASettings) -> Result<BookPdfRenderReport> {
+        self.render_pdf_with_options_reported(&self.options().pdf_options(), settings)
     }
 
     /// Render this parsed book with caller-borrowed PDF options and PDF/A settings.
@@ -90,6 +98,21 @@ impl BookRenderer {
         let document = super::book_pdf_document_with_assets(self.book(), &options.image_assets)?;
         let plan = prepare_configured(self.book(), document, options, settings)?;
         render_plan_configured(plan, options, settings)
+    }
+
+    /// Render with borrowed export-local options, retaining actual pagination
+    /// and source-fidelity findings without changing the retained book.
+    ///
+    /// # Errors
+    /// See [`Self::render_pdf_with_options`].
+    pub fn render_pdf_with_options_reported(
+        &self,
+        options: &PdfOptions,
+        settings: PdfASettings,
+    ) -> Result<BookPdfRenderReport> {
+        validate_settings(settings)?;
+        let document = super::book_pdf_document_with_assets(self.book(), &options.image_assets)?;
+        render_reported(self.book(), document, options, settings)
     }
 }
 
@@ -140,6 +163,16 @@ fn render_plan_with(
     settings: PdfASettings,
     emit: PdfEmitOptions,
 ) -> Result<Vec<u8>> {
+    render_plan_complete(plan, options, settings, emit, false).map(|rendered| rendered.bytes)
+}
+
+fn render_plan_complete(
+    plan: Plan,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    diagnostics: bool,
+) -> Result<crate::pdf::source_navigation::NavigationRender> {
     options.font_assets.validate()?;
     if settings.strict {
         // Match the ordinary archival entrypoint after chapter HTML lowering,
@@ -151,8 +184,17 @@ fn render_plan_with(
         profiled.as_ref(),
         options.footnote_backlinks,
     );
+    let mut rendered = crate::pdf::source_navigation::render_complete_with_diagnostics(
+        &prepared,
+        options,
+        settings,
+        emit,
+        false,
+        !plan.targets.is_empty(),
+        diagnostics,
+    )?;
     if plan.targets.is_empty() {
-        return crate::pdf::render_with_emit(&prepared, options, settings, emit);
+        return Ok(rendered);
     }
     let origins = crate::footnotes::heading_origins_for_pdf_paged(&profiled);
     let mut headings = Vec::new();
@@ -162,8 +204,7 @@ fn render_plan_with(
             "footnote preparation and heading provenance disagree",
         ));
     }
-    let (bytes, navigation) =
-        crate::pdf::source_navigation::render(&prepared, options, settings, emit)?;
+    let navigation = &rendered.navigation;
     let note_ids = if plan.targets.values().any(|target| {
         matches!(
             target,
@@ -204,7 +245,8 @@ fn render_plan_with(
             (uri.clone(), destination)
         })
         .collect();
-    wire::bind(bytes, &targets)
+    rendered.bytes = wire::bind(rendered.bytes, &targets)?;
+    Ok(rendered)
 }
 
 struct Plan {

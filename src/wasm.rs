@@ -538,14 +538,15 @@ impl WasmRenderOptions {
     }
 }
 
-/// Recoverable parser diagnostic for browser/editor hosts.
+/// Recoverable parser or rendering diagnostic for browser/editor hosts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WasmDiagnostic {
-    /// Stable parser classification when available; independent of message text.
+    /// Stable classification when available; independent of message text.
     pub code: Option<&'static str>,
     /// Stable severity spelling: `warning` or `error`.
     pub severity: &'static str,
-    /// Diagnostic byte start offset in the original Markdown.
+    /// Diagnostic byte start offset in the original Markdown. Render findings
+    /// with no source coordinate use an empty `0..0` range.
     pub start: usize,
     /// Diagnostic byte end offset in the original Markdown.
     pub end: usize,
@@ -565,7 +566,7 @@ pub struct WasmRenderOutput {
     pub extension: &'static str,
     /// Rendered bytes. HTML is UTF-8; PDF is binary.
     pub bytes: Vec<u8>,
-    /// Recoverable parser diagnostics collected before rendering.
+    /// Recoverable parser and rendering diagnostics.
     pub diagnostics: Vec<WasmDiagnostic>,
     /// Source size in bytes.
     pub source_len: usize,
@@ -653,6 +654,80 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
         diagnostics,
         source_len: markdown.len(),
     })
+}
+
+/// Convert one completed book emission into the shared browser result shape.
+/// Book parser findings retain their chapter coordinates in sourceDiagnostics;
+/// a render warning has no invented offset in the concatenated input files.
+#[cfg(feature = "wasm-bindgen")]
+pub(crate) fn book_pdf_output(
+    report: crate::book::BookPdfRenderReport,
+    source_len: usize,
+) -> WasmRenderOutput {
+    const MAX_FINDINGS: usize = 4096;
+    const MAX_MESSAGE_BYTES: usize = 2048;
+    const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+    // Leave room for one explicit incomplete-report finding, including escaped
+    // JSON and the largest possible decimal counters on supported targets.
+    const SUMMARY_RESERVE_BYTES: usize = 512;
+    let total = report.warnings.len();
+    let mut diagnostics = Vec::new();
+    let mut json_bytes = 2usize;
+    let mut shortened = 0usize;
+    for warning in report.warnings {
+        if diagnostics.len() >= MAX_FINDINGS - 1 {
+            break;
+        }
+        let mut message = warning.message();
+        let truncated = message.len() > MAX_MESSAGE_BYTES;
+        if truncated {
+            const SUFFIX: &str = "… (message shortened)";
+            let mut end = MAX_MESSAGE_BYTES - SUFFIX.len();
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+            message.push_str(SUFFIX);
+        }
+        let diagnostic = WasmDiagnostic {
+            code: Some(warning.code()),
+            severity: "warning",
+            start: 0,
+            end: 0,
+            message,
+        };
+        let entry_bytes = diagnostics_json(std::slice::from_ref(&diagnostic)).len() - 2
+            + usize::from(!diagnostics.is_empty());
+        if json_bytes + entry_bytes > MAX_JSON_BYTES - SUMMARY_RESERVE_BYTES {
+            break;
+        }
+        json_bytes += entry_bytes;
+        shortened += usize::from(truncated);
+        diagnostics.push(diagnostic);
+    }
+    let omitted = total - diagnostics.len();
+    if omitted != 0 || shortened != 0 {
+        diagnostics.push(WasmDiagnostic {
+            code: Some("book_render_diagnostics_truncated"),
+            severity: "warning",
+            start: 0,
+            end: 0,
+            message: format!(
+                "Book PDF diagnostic display is incomplete: {omitted} additional finding(s) \
+                 omitted and {shortened} displayed message(s) shortened to stay within \
+                 the browser report limits. The native BookPdfRenderReport retains \
+                 the complete typed findings."
+            ),
+        });
+    }
+    WasmRenderOutput {
+        format: WasmOutputFormat::Pdf,
+        mime_type: WasmOutputFormat::Pdf.mime_type(),
+        extension: WasmOutputFormat::Pdf.extension(),
+        bytes: report.bytes,
+        diagnostics,
+        source_len,
+    }
 }
 
 /// Admit the additive browser image-band ABI before changing settings or
@@ -842,5 +917,96 @@ mod render_warning_tests {
             "unexpected warnings: {:?}",
             out.diagnostics
         );
+    }
+}
+
+#[cfg(all(test, feature = "wasm-bindgen"))]
+mod book_report_tests {
+    use super::book_pdf_output;
+    use crate::book::BookPdfRenderReport;
+    use crate::{
+        PdfPageBreakReport, PdfPaginationReport, PdfPaginationStrategy, PdfParagraphVariantReport,
+        RenderWarning,
+    };
+
+    fn report(warnings: Vec<RenderWarning>) -> BookPdfRenderReport {
+        BookPdfRenderReport {
+            bytes: b"owned PDF bytes".to_vec(),
+            pagination: PdfPaginationReport {
+                page_breaks: PdfPageBreakReport {
+                    requested_optimal: false,
+                    strategy: PdfPaginationStrategy::Greedy,
+                    fallback: None,
+                },
+                paragraph_variants: PdfParagraphVariantReport::default(),
+            },
+            warnings,
+        }
+    }
+
+    #[test]
+    fn book_report_bounds_findings_and_preserves_stable_codes_without_source_offsets() {
+        let output = book_pdf_output(
+            report(vec![
+                RenderWarning::UnresolvedImage("missing.png".into());
+                5000
+            ]),
+            123,
+        );
+        assert_eq!(output.bytes, b"owned PDF bytes");
+        assert_eq!(output.source_len, 123);
+        assert_eq!(output.diagnostics.len(), 4096);
+        assert_eq!(output.diagnostics[0].code, Some("unresolved_image"));
+        assert_eq!(
+            output.diagnostics[4095].code,
+            Some("book_render_diagnostics_truncated")
+        );
+        assert!(
+            output.diagnostics[4095]
+                .message
+                .contains("905 additional finding(s) omitted")
+        );
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|finding| finding.start == 0 && finding.end == 0)
+        );
+        assert!(output.diagnostics_json().len() <= 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn book_report_bounds_utf8_messages_and_exact_escaped_json_with_an_explicit_summary() {
+        // Escapes cost more JSON bytes than UTF-8 bytes. The bound must admit
+        // actual wire size rather than estimate from message lengths alone.
+        let destination = "中\"\\\n\t".repeat(1000);
+        let output = book_pdf_output(
+            report(vec![RenderWarning::UnresolvedImage(destination); 3000]),
+            999,
+        );
+        assert!(output.diagnostics.len() < 3000);
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|finding| finding.message.len() <= 2048)
+        );
+        assert!(output.diagnostics_json().len() <= 4 * 1024 * 1024);
+        assert_eq!(
+            output.diagnostics.last().and_then(|finding| finding.code),
+            Some("book_render_diagnostics_truncated")
+        );
+        assert!(
+            output.diagnostics[0]
+                .message
+                .ends_with("… (message shortened)")
+        );
+    }
+
+    #[test]
+    fn clean_book_report_is_explicitly_audited_without_inventing_warnings() {
+        let output = book_pdf_output(report(Vec::new()), 0);
+        assert_eq!(output.diagnostics_json(), "[]");
+        assert_eq!(output.format.as_str(), "pdf");
     }
 }

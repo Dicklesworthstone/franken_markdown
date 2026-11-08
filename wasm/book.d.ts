@@ -1,4 +1,4 @@
-import type { FmdAuthoringProfile, FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
+import type { FmdAuthoringProfile, FmdDiagnostic, FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
 
 /** One chapter. Array order is reading order; paths are book-relative. */
 export interface BookFile {
@@ -147,6 +147,13 @@ export interface BookOutput {
   readonly sourceLength: number;
   /** An owned binary output, valid after session disposal. */
   readonly bytes: Uint8Array;
+  /** PDF findings from the layout that produced these bytes. An empty array
+   * means the renderer reported no findings; absence means the older native
+   * package cannot report them (or this is a non-PDF export). Document-scoped
+   * findings have start=end=0. Parser findings remain sourceDiagnostics().
+   * Truncated reports include book_render_diagnostics_truncated explicitly.
+   * Available after native-handle disposal and retained worker cache hits. */
+  readonly diagnostics?: readonly Readonly<FmdDiagnostic>[];
   /** Present on archival PDF output only. Records requested emission settings,
    * NOT independent PDF/A validation or certification. */
   readonly pdfA?: "2b";

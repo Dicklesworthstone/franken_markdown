@@ -43,16 +43,6 @@ pub(crate) struct SourceNavigation {
     pub note_references: BTreeMap<String, Destination>,
 }
 
-pub(crate) fn render(
-    doc: &Document,
-    options: &PdfOptions,
-    settings: PdfASettings,
-    emit: PdfEmitOptions,
-) -> Result<(Vec<u8>, SourceNavigation)> {
-    let rendered = render_complete(doc, options, settings, emit, false)?;
-    Ok((rendered.bytes, rendered.navigation))
-}
-
 /// Keep the same renderer result for ordinary, reported and profiled source
 /// navigation. Binding annotations changes neither pagination nor page paint.
 pub(crate) struct NavigationRender {
@@ -60,6 +50,7 @@ pub(crate) struct NavigationRender {
     pub navigation: SourceNavigation,
     pub stages: Vec<super::PdfStageSummary>,
     pub pagination: super::PdfPaginationReport,
+    pub warnings: Vec<super::RenderWarning>,
 }
 
 pub(crate) fn render_complete(
@@ -69,12 +60,36 @@ pub(crate) fn render_complete(
     emit: PdfEmitOptions,
     profiled: bool,
 ) -> Result<NavigationRender> {
-    let rendered = super::render_inner(doc, options, settings, profiled, emit, true)?;
+    render_complete_with_diagnostics(doc, options, settings, emit, profiled, true, false)
+}
+
+/// Book emission can retain the actual writer provenance and fidelity findings
+/// while avoiding source-destination collection when no links require binding.
+/// Diagnostics reuse loaded faces and measured lines; they never rerender.
+pub(crate) fn render_complete_with_diagnostics(
+    doc: &Document,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    profiled: bool,
+    collect_navigation: bool,
+    collect_warnings: bool,
+) -> Result<NavigationRender> {
+    let rendered = super::render_inner(
+        doc,
+        options,
+        settings,
+        profiled,
+        emit,
+        collect_navigation,
+        collect_warnings,
+    )?;
     Ok(NavigationRender {
         bytes: rendered.bytes,
         navigation: rendered.navigation,
         stages: rendered.stages,
         pagination: rendered.pagination,
+        warnings: rendered.warnings,
     })
 }
 

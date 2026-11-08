@@ -129,17 +129,28 @@ def main():
                     script = script.split('</script>', 1)[0]
                     page.set_content(markup)
                     page.evaluate("delete window.h")
-                    page.evaluate("""async ({core,view,coordinator,script}) => {
+                    page.evaluate("""async ({core,view,coordinator,script,dependencies}) => {
                       const url=source=>URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
-                      const a=url(core), b=url(coordinator);
+                      const urls = {};
+                      const rebind = source => {
+                        for (const [name, value] of Object.entries(urls))
+                          source = source.replaceAll(`"./${name}"`, JSON.stringify(value)).replaceAll(`"../${name}"`, JSON.stringify(value));
+                        return source;
+                      };
+                      for (const [name, source] of Object.entries(dependencies)) urls[name] = url(rebind(source));
+                      const a=url(rebind(core)), b=url(rebind(coordinator));
                       const expected='from "./book_edition.mjs";';
                       if(view.split(expected).length!==2)throw new Error('Unexpected module import');
                       const c=url(view.replace(expected,`from "${a}";`));
                       const d=url(script.replace("from '/wasm/demo/book_edition_controls.mjs'",`from "${c}"`).replace("from '/wasm/book_publication.mjs'",`from "${b}"`));
-                      try {await import(d)} finally {for(const u of [a,b,c,d])URL.revokeObjectURL(u)}
+                      try {await import(d)} finally {for(const u of [...Object.values(urls),a,b,c,d])URL.revokeObjectURL(u)}
                     }""", {"core": (ROOT / 'wasm/demo/book_edition.mjs').read_text(),
                             "view": (ROOT / 'wasm/demo/book_edition_controls.mjs').read_text(),
-                            "coordinator": (ROOT / 'wasm/book_publication.mjs').read_text(), "script": script})
+                            "coordinator": (ROOT / 'wasm/book_publication.mjs').read_text(), "script": script,
+                            "dependencies": {name: (ROOT / 'wasm' / name).read_text() for name in [
+                                'pdf_page.mjs', 'render_typography.mjs', 'book_source_diagnostics.mjs',
+                                'book_render_diagnostics.mjs', 'book_session.mjs',
+                            ]}})
                 else:
                     page.goto(f"http://127.0.0.1:{server.server_port}/fixture")
                 page.wait_for_function("window.h !== undefined")

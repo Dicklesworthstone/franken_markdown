@@ -37,6 +37,19 @@ const MAX_TOTAL_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_IMAGES: usize = 4096;
 const MAX_SITE_BYTES: usize = 256 * 1024 * 1024;
 
+/// A chapter-aware PDF and the fidelity findings from that exact emission.
+///
+/// Source warnings describe rendered content after profile selection, chapter
+/// asset resolution and footnote preparation. Pagination warnings use the final
+/// writer result, including fitting and generated contents pages. No second
+/// layout is run to predict whether the emitted PDF needed a fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookPdfRenderReport {
+    pub bytes: Vec<u8>,
+    pub pagination: crate::PdfPaginationReport,
+    pub warnings: Vec<crate::RenderWarning>,
+}
+
 /// Parse once, then render PDF, EPUB, or a complete HTML-site ZIP repeatedly.
 /// Assets are supplied as bytes, keyed by book-relative source paths. No
 /// filesystem, network, environment, or native runtime is accessed.
@@ -162,6 +175,18 @@ impl BookRenderer {
         render_book_pdf(&self.book, &self.options.pdf_options())
     }
 
+    /// Render one PDF with source-fidelity findings and actual pagination
+    /// provenance. Byte output is identical to [`Self::render_pdf`].
+    ///
+    /// Parser findings remain available separately in [`Self::source_diagnostics`]
+    /// with their chapter-specific source coordinates.
+    ///
+    /// # Errors
+    /// See [`Self::render_pdf`].
+    pub fn render_pdf_reported(&self) -> Result<BookPdfRenderReport> {
+        render_book_pdf_reported(&self.book, &self.options.pdf_options())
+    }
+
     /// Render one EPUB with one spine item per chapter and packaged images.
     ///
     /// # Errors
@@ -218,6 +243,17 @@ pub fn render_book_pdf(book: &Book, options: &PdfOptions) -> Result<Vec<u8>> {
     pdf_links::render(book, document, options)
 }
 
+/// Render a chapter-aware PDF and retain actual layout provenance and fidelity
+/// warnings. Images, citations and destinations use the same preparation and
+/// writer as [`render_book_pdf`]; reporting does not change output bytes.
+///
+/// # Errors
+/// See [`render_book_pdf`].
+pub fn render_book_pdf_reported(book: &Book, options: &PdfOptions) -> Result<BookPdfRenderReport> {
+    let document = book_pdf_document_with_assets(book, &options.image_assets)?;
+    pdf_links::render_reported(book, document, options, crate::PdfASettings::OFF)
+}
+
 /// Render once and read the actual emitted page count for the CLI receipt.
 /// This includes generated contents/landing pages and all footnote pages.
 #[cfg(feature = "cli")]
@@ -236,10 +272,10 @@ pub(super) fn render_book_pdf_counted_configured(
     settings: crate::PdfASettings,
 ) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
     let document = book_pdf_document_with_assets(book, &options.image_assets)?;
-    let (bytes, warnings) = pdf_links::render_report(book, document, options, settings)?;
-    let pages = pdf_links::page_count(&bytes)
+    let report = pdf_links::render_reported(book, document, options, settings)?;
+    let pages = pdf_links::page_count(&report.bytes)
         .ok_or_else(|| invalid("could not read the emitted PDF page count"))?;
-    Ok((bytes, pages, warnings))
+    Ok((report.bytes, pages, report.warnings))
 }
 
 /// Render a self-contained HTML page per chapter, shared navigation, a landing

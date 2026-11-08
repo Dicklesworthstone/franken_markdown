@@ -2,6 +2,7 @@
 // Capture and transport are injected by book-worker.js; this module neither
 // parses Markdown nor serializes publication formats or creates object URLs.
 import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
+import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 const LIMIT = 128 * 1024 * 1024;
 const TYPES = Object.freeze({
   pdf: ["application/pdf", "pdf"],
@@ -54,6 +55,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
   const profileReceipt = bookAuthoringProfileReceipt(value, profile);
   const fontReceipt = bookFontEmbeddingReceipt(value,
     format !== "pdf" && embedding === "full" ? "full" : "subset");
+  const renderReceipt = bookRenderDiagnosticsReceipt(value, format);
   // Own exactly this view before another export or disposal can recycle its
   // backing storage. The aggregate limit is an output limit, not a heap bound.
   const owned = bytes.slice(), [mimeType, extension] = TYPES[format];
@@ -61,7 +63,8 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
     revision,
     output: Object.freeze({
       format: `book-${format}`, bytes: owned, sourceLength: value.sourceLength,
-      mimeType, extension, ...(policy ?? {}), ...fontReceipt, ...profileReceipt, blob: () => new Blob([owned], { type: mimeType }),
+      mimeType, extension, ...(policy ?? {}), ...fontReceipt, ...profileReceipt, ...renderReceipt,
+      blob: () => new Blob([owned], { type: mimeType }),
     }),
   };
 }

@@ -60,11 +60,18 @@ def run():
           for (const [name, body] of Object.entries(dependencies)) {
             let source = body;
             for (const [path, url] of Object.entries(dependencyUrls))
-              source = source.replaceAll(`"./${path}"`, JSON.stringify(url));
+              source = source.replaceAll(`"./${path.split('/').pop()}"`, JSON.stringify(url)).replaceAll(`"../${path.split('/').pop()}"`, JSON.stringify(url));
             dependencyUrls[name] = moduleUrl(source);
           }
-          const coreUrl = moduleUrl(core.replace('"./book_worker.mjs"', JSON.stringify(dependencyUrls['book_worker.mjs'])));
-          const uiUrl = moduleUrl(ui.replace('"../book_pdf_proof.mjs"', JSON.stringify(coreUrl)));
+          const rebind = source => {
+            for (const [path, url] of Object.entries(dependencyUrls)) {
+              const leaf = path.split('/').pop();
+              source = source.replaceAll(`"./${leaf}"`, JSON.stringify(url)).replaceAll(`"../${leaf}"`, JSON.stringify(url));
+            }
+            return source;
+          };
+          const coreUrl = moduleUrl(rebind(core));
+          const uiUrl = moduleUrl(rebind(ui).replace('"../book_pdf_proof.mjs"', JSON.stringify(coreUrl)));
           const {createBookPdfControls} = await import(uiUrl);
           const {proofHost} = await import(moduleUrl(helper));
           const host = proofHost(); window.proofHost = host;
@@ -109,7 +116,8 @@ def run():
                 "helper": (ROOT / "tests/book_pdf_proof_helpers.mjs").read_text(),
                 "pdf": base64.b64encode(expected).decode(),
                 "dependencies": {name: (ROOT / name).read_text() for name in [
-                    "pdf_page.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
+                    "pdf_page.mjs", "render_typography.mjs", "book_source_diagnostics.mjs", "book_render_diagnostics.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
+                    "demo/book_font_assets.mjs", "demo/book_collection.mjs",
                 ]}})
 
         def check(name, condition):

@@ -4,8 +4,9 @@
 use wasm_bindgen::prelude::*;
 
 use super::super::{FmdBook, to_js};
-use crate::book::BookRenderer;
-use crate::{PageStyle, PdfASettings, RenderError, Result};
+use crate::book::{BookPdfRenderReport, BookRenderer};
+use crate::wasm_abi::{FmdRenderResult, book_pdf_render_result};
+use crate::{PageStyle, PdfASettings, PdfOptions, RenderError, Result};
 
 #[wasm_bindgen]
 impl FmdBook {
@@ -30,6 +31,24 @@ impl FmdBook {
     ) -> std::result::Result<Vec<u8>, JsValue> {
         render_archival(&self.renderer, profile, strict, &page_geometry).map_err(to_js)
     }
+
+    /// Emit the same archival book PDF with bounded rendering diagnostics from
+    /// its actual layout. Warnings do not claim independent PDF/A validation.
+    /// The returned FmdRenderResult is owned separately from this retained book.
+    ///
+    /// # Errors
+    /// Returns the same policy, geometry and writer failures as renderPdfArchival.
+    #[wasm_bindgen(js_name = renderPdfArchivalReported)]
+    pub fn render_pdf_archival_reported(
+        &self,
+        profile: &str,
+        strict: bool,
+        page_geometry: Vec<f64>,
+    ) -> std::result::Result<FmdRenderResult, JsValue> {
+        render_archival_reported(&self.renderer, profile, strict, &page_geometry)
+            .map(|report| book_pdf_render_result(report, self.source_length()))
+            .map_err(to_js)
+    }
 }
 
 // Keep admission and the actual writer call independent of JsValue so the
@@ -40,6 +59,26 @@ fn render_archival(
     strict: bool,
     geometry: &[f64],
 ) -> Result<Vec<u8>> {
+    let (options, settings) = archival_options(renderer, profile, strict, geometry)?;
+    renderer.render_pdf_with_options(&options, settings)
+}
+
+fn render_archival_reported(
+    renderer: &BookRenderer,
+    profile: &str,
+    strict: bool,
+    geometry: &[f64],
+) -> Result<BookPdfRenderReport> {
+    let (options, settings) = archival_options(renderer, profile, strict, geometry)?;
+    renderer.render_pdf_with_options_reported(&options, settings)
+}
+
+fn archival_options(
+    renderer: &BookRenderer,
+    profile: &str,
+    strict: bool,
+    geometry: &[f64],
+) -> Result<(PdfOptions, PdfASettings)> {
     let settings = match (profile, strict) {
         ("off", false) => PdfASettings::OFF,
         ("2b", false) => PdfASettings::a2b(),
@@ -55,13 +94,12 @@ fn render_archival(
     };
     let page = PageStyle::from_browser_geometry(geometry)
         .map_err(|message| RenderError::InvalidInput(message.to_string()))?;
-    let Some(mut page) = page else {
-        return renderer.render_pdf_pdfa(settings);
-    };
     let mut options = renderer.options().pdf_options();
-    page.baseline_grid = options.theme.page.baseline_grid;
-    options.theme.page = page;
-    renderer.render_pdf_with_options(&options, settings)
+    if let Some(mut page) = page {
+        page.baseline_grid = options.theme.page.baseline_grid;
+        options.theme.page = page;
+    }
+    Ok((options, settings))
 }
 
 #[cfg(test)]

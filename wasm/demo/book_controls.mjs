@@ -1,5 +1,6 @@
 import { bookError, createBookCollectionCapture, bookCollectionResourceRevision } from "../book_worker.mjs";
 import { normalizePdfPage } from "../pdf_page.mjs";
+import { bookRenderDiagnosticsReceipt } from "../book_render_diagnostics.mjs";
 import {
   createBookCollection,
   normalizeBookProject,
@@ -232,6 +233,14 @@ export function createBookControls({
     el.download.textContent = `Download ${output.filename}`;
     el.download.hidden = false;
     el.status.textContent = `Prepared ${output.filename}. Click Download to save it. Preparation alone has not saved any file.`;
+    if (output.pdf) {
+      const findings = output.diagnostics;
+      el.status.textContent += findings === undefined
+        ? " PDF render diagnostics are unavailable in this native package."
+        : findings.length === 0 ? " The PDF renderer reported no warnings."
+          : ` PDF rendering reported ${findings.length} finding(s): ${findings.slice(0, 3).map(item => `${item.code}: ${item.message}`).join("; ")}`
+            + (findings.length > 3 ? " Generate a PDF proof to review further findings." : "");
+    }
   }
   async function prepare(format) {
     let ticket = null;
@@ -255,7 +264,8 @@ export function createBookControls({
           .slice(0, 80) || "book") +
         "." +
         result.extension;
-      publish({ filename: name, blob: result.blob() }, ticket, revision, view);
+      const renderReceipt = bookRenderDiagnosticsReceipt(result, format);
+      publish({ filename: name, blob: result.blob(), pdf: format === "pdf", ...renderReceipt }, ticket, revision, view);
     } catch (error) {
       if (ticket === null || ticket === generation) report(error);
       throw error;

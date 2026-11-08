@@ -17,8 +17,8 @@ use crate::wasm::{self, WasmRenderOptions};
 use crate::{
     BookInput, DarkModePolicy, FontAssetSlot, Theme, ZipWriter, book_pdf_document, build_book,
     build_search_index, compute_diff, compute_doc_stats, inject_book_nav, parse_markdown,
-    render_epub, render_html_document, render_interactive_html, render_pdf_document,
-    rewrite_links_for_site, search_index_json,
+    render_epub, render_html_document, render_interactive_html, rewrite_links_for_site,
+    search_index_json,
 };
 
 mod pdf_page;
@@ -102,7 +102,7 @@ impl FmdRenderResult {
         self.bytes.clone()
     }
 
-    /// Recoverable parser diagnostics as stable JSON.
+    /// Recoverable parser and rendering diagnostics as stable JSON.
     #[wasm_bindgen(js_name = diagnosticsJson)]
     #[must_use]
     pub fn diagnostics_json(&self) -> String {
@@ -467,17 +467,9 @@ pub fn render_book_pdf(
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     options.toc = true;
     options.page_numbers = page_numbers;
-    let document = book_pdf_document(&book);
-    let bytes =
-        render_pdf_document(&document, &options.pdf_options()).map_err(render_error_to_js)?;
-    Ok(artifact_result(
-        "book-pdf",
-        "application/pdf",
-        "pdf",
-        bytes,
-        source_len,
-        "[]".to_string(),
-    ))
+    let report = crate::book::render_book_pdf_reported(&book, &options.pdf_options())
+        .map_err(render_error_to_js)?;
+    Ok(book_pdf_artifact_result(report, source_len))
 }
 
 /// Render Markdown to self-contained HTML using default browser-safe options.
@@ -1367,6 +1359,25 @@ fn render_result(output: wasm::WasmRenderOutput) -> FmdRenderResult {
         source_len: output.source_len,
         bytes: output.bytes,
     }
+}
+
+/// Retained books use the same owned result envelope as document rendering.
+pub(crate) fn book_pdf_render_result(
+    report: crate::book::BookPdfRenderReport,
+    source_len: usize,
+) -> FmdRenderResult {
+    render_result(wasm::book_pdf_output(report, source_len))
+}
+
+/// Keep the established one-shot book output format while sharing the exact
+/// same bounded rendering findings as the retained book methods.
+fn book_pdf_artifact_result(
+    report: crate::book::BookPdfRenderReport,
+    source_len: usize,
+) -> FmdRenderResult {
+    let mut result = book_pdf_render_result(report, source_len);
+    result.format = "book-pdf".to_string();
+    result
 }
 
 pub(crate) fn render_error_to_js(err: crate::RenderError) -> JsValue {

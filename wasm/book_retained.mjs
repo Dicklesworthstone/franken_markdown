@@ -1,6 +1,7 @@
 // Worker-private session reuse. Inputs are owned, normalized snapshots from the
 // transport; only the native BookSession parses Markdown or resolves includes.
 import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
+import { bookRenderDiagnosticsByteLength, bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 const error = (code, message) => Object.assign(new Error(message), { code });
 const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks" });
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
@@ -194,7 +195,8 @@ function workerOutput(result, format, embedding, profile) {
   const fontReceipt = bookFontEmbeddingReceipt(result,
     fontFormats.has(format) && embedding === "full" ? "full" : "subset");
   const profileReceipt = bookAuthoringProfileReceipt(result, format === "links" ? undefined : profile);
-  return Object.freeze({ bytes, sourceLength, ...archive, ...fontReceipt, ...profileReceipt,
+  const renderReceipt = bookRenderDiagnosticsReceipt(result, format);
+  return Object.freeze({ bytes, sourceLength, ...archive, ...fontReceipt, ...profileReceipt, ...renderReceipt,
     ...(previewMode === undefined ? {} : { previewMode }) });
 }
 
@@ -219,7 +221,7 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
   function clear() { generation++; discard(); renderer.clear(); }
   function evict(entry) {
     if (!outputs.delete(entry)) return;
-    bytes -= entry.value.bytes.byteLength; entry.owner.entries.delete(entry.key); evictions++;
+    bytes -= entry.size; entry.owner.entries.delete(entry.key); evictions++;
     if (!entry.owner.entries.size && history.delete(entry.owner)) historyUnits -= entry.owner.units;
   }
   function retire(bucket) {
@@ -290,17 +292,17 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
         misses++;
         const output = workerOutput(await produce(), kind, options.fontEmbedding, options.profile);
         fence();
-        if (cacheable && output.bytes.byteLength <= limits.maxEntryBytes
-            && output.bytes.byteLength <= limits.maxBytes) {
+        const size = output.bytes.byteLength + bookRenderDiagnosticsByteLength(output.diagnostics);
+        if (cacheable && size <= limits.maxEntryBytes && size <= limits.maxBytes) {
           let owned;
           // Admission is optional: allocation failure must not discard an
           // otherwise successful native export. Never retain a WASM-backed view.
           try { owned = copyBytes(output.bytes); } catch { /* Leave this result uncached. */ }
           if (owned) {
-            while (outputs.size >= limits.maxEntries || owned.byteLength > limits.maxBytes - bytes)
+            while (outputs.size >= limits.maxEntries || size > limits.maxBytes - bytes)
               evict(outputs.keys().next().value);
-            const entry = { owner: bucket, key, value: Object.freeze({ ...output, bytes: owned }) };
-            bucket.entries.set(key, entry); outputs.set(entry, true); bytes += owned.byteLength;
+            const entry = { owner: bucket, key, size, value: Object.freeze({ ...output, bytes: owned }) };
+            bucket.entries.set(key, entry); outputs.set(entry, true); bytes += size;
           }
         }
         return output;

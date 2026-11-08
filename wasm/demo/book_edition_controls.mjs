@@ -34,6 +34,8 @@ export function createBookEditionPanel(root) {
   label.append(strict, root.createTextNode(" Require clean internal navigation before publishing")); policy.append(label);
   const verification = make("div", "book-edition-verification");
   verification.hidden = true; verification.setAttribute("aria-label", "Edition navigation verification");
+  const diagnostics = make("div", "book-edition-diagnostics");
+  diagnostics.hidden = true; diagnostics.setAttribute("aria-label", "PDF render diagnostics");
   const actions = make("p"), prepare = make("button", "book-edition-prepare", "Prepare selected edition");
   const cancel = make("button", "book-edition-cancel", "Cancel / discard edition");
   prepare.type = cancel.type = "button"; cancel.disabled = true;
@@ -48,7 +50,7 @@ export function createBookEditionPanel(root) {
   const downloads = make("div", "book-edition-downloads");
   downloads.hidden = true; downloads.setAttribute("role", "group");
   downloads.setAttribute("aria-label", "Prepared edition downloads");
-  panel.append(heading, help, formats, policy, actions, status, verification, downloads);
+  panel.append(heading, help, formats, policy, actions, status, verification, diagnostics, downloads);
   parent.append(panel);
   return panel;
 }
@@ -63,7 +65,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     throw fail("INVALID_OPTIONS", "Edition controls require the workbench source host and collection.");
   const panel = createBookEditionPanel(root);
   if (mounted.has(panel)) throw fail("ALREADY_MOUNTED", "Edition controls are already installed.");
-  const names = ["prepare", "bundle", "cancel", "formats", "strict", "verification", "status", "downloads", ...choices.map(([key]) => key)];
+  const names = ["prepare", "bundle", "cancel", "formats", "strict", "verification", "diagnostics", "status", "downloads", ...choices.map(([key]) => key)];
   const el = Object.fromEntries(names.map(key => [key, root.querySelector(`#book-edition-${key}`)]));
   if (Object.values(el).some(node => !node)) throw fail("MISSING_CONTROLS", "Edition controls are incomplete.");
   let disposed = false, suspended = false, session = null;
@@ -112,6 +114,19 @@ export function createBookEditionControls({ root, controls, collection, publishe
     panel.setAttribute("aria-busy", String(state.busy));
     el.status.textContent = state.message;
     showVerification(state);
+    const findings = state.pdfDiagnostics;
+    const hasPdf = state.downloads.some(output => output.format === "pdf");
+    const rows = [];
+    const paragraph = text => { const node = root.createElement("p"); node.textContent = text; rows.push(node); };
+    if (hasPdf) {
+      paragraph(findings === undefined
+        ? "PDF render diagnostics are unavailable in this native package. Rebuild the matching package to inspect missing figures, font coverage and layout fallbacks."
+        : findings.length === 0 ? "The PDF renderer reported no warnings for this edition."
+          : `PDF rendering: ${findings.length} finding(s). Review these before distributing this edition.`);
+      for (const item of (findings ?? []).slice(0, 100)) paragraph(`${item.code}: ${item.message}`);
+      if (findings?.length > 100) paragraph(`Showing the first 100 findings. The complete report is available on the edition state.`);
+    }
+    el.diagnostics.replaceChildren(...rows); el.diagnostics.hidden = !hasPdf;
     const sameLinks = links.length === state.downloads.length
       && links.every((link, index) => link.getAttribute("href") === state.downloads[index].href);
     if (sameLinks) return;

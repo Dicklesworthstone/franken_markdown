@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Book PDFs expose fidelity diagnostics from the layout that actually produced
+  their bytes, including missing figures, font/math fallbacks and final
+  pagination limitations. Additive native and WASM reported exports reuse the
+  measured layout; browser workers, bounded caches, proofs and complete editions
+  retain immutable reports. Older packages expose diagnostics as unavailable,
+  and truncated browser reports say so explicitly. The native CLI now preserves
+  the final pagination findings in its book output receipt.
 - SVG exports link footnote citations to the complete note body and note
   labels back to the first painted citation. Ordinary `#fn-ID` and `#fnref-N`
   fragments resolve to actual note destinations. Typed transient provenance

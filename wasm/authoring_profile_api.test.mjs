@@ -218,10 +218,10 @@ test("concurrent dialects retain request identity and native failure is never re
   assert.equal(failed.calls.length, routes.length);
 });
 
-test("book and lightweight interactive exports reject unsupported authoring profiles", async () => {
+test("old book bindings and lightweight interactive exports refuse authoring profiles", async () => {
   const f = await fixture();
   await assert.rejects(f.api.renderBookPdf([{ path: "one.md", source: "Term\n: Definition" }], { profile: "gfm-plus" }),
-    { code: "INVALID_OPTIONS" });
+    { code: "UNSUPPORTED_WASM_PACKAGE" });
   await assert.rejects(f.api.renderInteractiveHtml("Term\n: Definition", { profile: "commonmark-gfm" }),
     /Unsupported interactive HTML option/);
   assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);

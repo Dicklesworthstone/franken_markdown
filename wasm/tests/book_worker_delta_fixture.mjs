@@ -6,7 +6,7 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createBookBindings } from "../book_session.mjs";
 import { createRetainedBook, installBookWorker } from "../book_worker.mjs";
 
-export function nativeFixture({ counters, old = false } = {}) {
+export function nativeFixture({ counters, old = false, oldProfile = false } = {}) {
   const stats = { creates: 0, updates: 0, exports: 0, frees: 0 };
   const bump = (key, index) => { stats[key]++; if (counters) Atomics.add(counters, index, 1); };
   const asset = bytes => ({ size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
@@ -23,6 +23,7 @@ export function nativeFixture({ counters, old = false } = {}) {
     }
     get chapterCount() { return this.files.length; }
     get sourceLength() { return [...this.files, ...this.includes].reduce((n, f) => n + Buffer.byteLength(f.source), 0); }
+    setAuthoringProfile(profile) { this.settings.profile = profile; }
     setMetadata(...value) { this.settings.metadata = value; }
     setTheme(...value) { this.settings.theme = value; }
     setCustomCss(value) { this.settings.css = value; }
@@ -66,6 +67,7 @@ export function nativeFixture({ counters, old = false } = {}) {
     free() { assert(!this.dead, "double free"); this.dead = true; bump("frees", 3); }
   }
   if (old) NativeBook.prototype.updateSources = undefined;
+  if (oldProfile) NativeBook.prototype.setAuthoringProfile = undefined;
   const engine = createBookBindings(async () => NativeBook);
   const preview = async api => api.renderBookSite(); // Routing double, not the HTML preview codec.
   const retained = createRetainedBook(engine, preview);

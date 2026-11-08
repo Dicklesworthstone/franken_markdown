@@ -46,6 +46,67 @@ pub fn render_book_site_publication(
     font_weights: Vec<u32>,
     font_embedding: Option<String>,
 ) -> std::result::Result<Vec<u8>, JsValue> {
+    render_book_site_publication_profiled(
+        paths,
+        sources,
+        include_paths,
+        include_sources,
+        expand_includes,
+        title,
+        font,
+        dark_mode,
+        font_scale,
+        lang,
+        custom_css,
+        toc,
+        toc_depth,
+        image_destinations,
+        image_bytes_flat,
+        image_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        font_embedding,
+        None,
+    )
+}
+
+/// Publish a site with an explicit authoring dialect and the complete resource contract.
+/// The earlier publication export keeps its exact signature and default bytes.
+///
+/// # Errors
+/// Rejects unknown dialects before constructing the book or copying asset payloads.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderBookSitePublicationProfiled)]
+pub fn render_book_site_publication_profiled(
+    paths: Vec<String>,
+    sources: Vec<String>,
+    include_paths: Vec<String>,
+    include_sources: Vec<String>,
+    expand_includes: bool,
+    title: Option<String>,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    font_scale: Option<f64>,
+    lang: Option<String>,
+    custom_css: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    font_embedding: Option<String>,
+    authoring_profile: Option<String>,
+) -> std::result::Result<Vec<u8>, JsValue> {
     let request = SiteRequest {
         paths,
         sources,
@@ -72,6 +133,7 @@ pub fn render_book_site_publication(
         ],
         font_weights,
         font_embedding,
+        authoring_profile,
     };
     build_renderer(request)
         .and_then(|renderer| renderer.render_site_publication())
@@ -99,6 +161,7 @@ struct SiteRequest {
     fonts: [Vec<u8>; 5],
     font_weights: Vec<u32>,
     font_embedding: Option<String>,
+    authoring_profile: Option<String>,
 }
 
 fn invalid(message: &str) -> RenderError {
@@ -197,6 +260,8 @@ fn validate_assets(request: &SiteRequest) -> Result<()> {
 // Keep the full admission/construction path callable without JsValue so native
 // tests can exercise failures without invoking browser-only imported functions.
 fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
+    let profile = crate::wasm_abi::parse_authoring_profile(request.authoring_profile.as_deref())
+        .map_err(invalid)?;
     if request.paths.is_empty()
         || request.paths.len() > 4096
         || request.include_paths.len() > 4096 - request.paths.len()
@@ -231,6 +296,7 @@ fn build_renderer(request: SiteRequest) -> Result<BookRenderer> {
         }
     }
     let mut options = WasmRenderOptions {
+        profile,
         font_embedding: request
             .font_embedding
             .as_deref()
@@ -453,5 +519,39 @@ mod tests {
         value.paths = vec!["a/b.md".into(), "a__b.md".into()];
         value.sources = vec!["# One".into(), "# Two".into()];
         assert!(build_renderer(value).is_err());
+    }
+    #[test]
+    fn explicit_authoring_profile_reaches_site_chapters_and_preserves_defaults() {
+        let source = "# Dialect\n\nTerm\n: Definition.\n";
+        let mut value = request();
+        value.sources = vec![source.into()];
+        let default = build_renderer(value)
+            .unwrap()
+            .render_site_publication()
+            .unwrap();
+        for (name, profile) in [
+            ("commonmark-gfm", crate::Profile::CommonMarkGfm),
+            ("gfm-plus", crate::Profile::GfmPlus),
+        ] {
+            let mut value = request();
+            value.sources = vec![source.into()];
+            value.authoring_profile = Some(name.into());
+            let renderer = build_renderer(value).unwrap();
+            assert_eq!(renderer.options().profile, Some(profile));
+            let output = renderer.render_site_publication().unwrap();
+            assert_eq!(output == default, name == "gfm-plus");
+        }
+        for profile in ["", " gfm-plus ", "commonmark", "GFM-PLUS"] {
+            let mut value = request();
+            value.authoring_profile = Some(profile.into());
+            // Profile admission must happen before even malformed asset arrays.
+            value.image_destinations = vec!["unused.svg".into()];
+            let error = build_renderer(value).err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("profile must be commonmark-gfm or gfm-plus")
+            );
+        }
     }
 }

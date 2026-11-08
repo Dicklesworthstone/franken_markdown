@@ -2,6 +2,8 @@
 import { renderHtml, renderPdf, renderSvg, renderEpub, renderBookPdf, renderBookSite,
   renderInteractiveHtml, createRenderer } from "./franken_markdown.js";
 import { renderDocumentBatch } from "./document-batch.js";
+import { createBook, renderBookChapterPreview, type BookOptions } from "./book.js";
+import { createBookWorker, createBookPublicationWorker } from "./book-worker.js";
 
 const source = "Term\n: Definition";
 await renderHtml(source, { profile: "commonmark-gfm", fontEmbedding: "full" });
@@ -20,7 +22,20 @@ await renderHtml(source, { profile: "gfm" });
 await renderPdf(source, { profile: true });
 // @ts-expect-error Lightweight interactive editing does not retain profiles.
 await renderInteractiveHtml(source, { profile: "commonmark-gfm" });
-// @ts-expect-error Book profile support is a separate contract.
 await renderBookPdf([{ path: "one.md", source }], { profile: "gfm-plus" });
-// @ts-expect-error Site exports do not yet accept a profile.
 await renderBookSite([{ path: "one.md", source }], { profile: "commonmark-gfm" });
+
+const bookFiles = [{ path: "one.md", source }];
+const bookOptions: BookOptions = { profile: "commonmark-gfm", pdfA: "2b", baselineGridPt: 12 };
+const book = await createBook(bookFiles, bookOptions);
+const bookProfile: BookOptions["profile"] = book.renderPdf().profile;
+const previewProfile: BookOptions["profile"] = (await renderBookChapterPreview(bookFiles, 0, bookOptions)).profile;
+const worker = createBookWorker();
+const workerProfile: BookOptions["profile"] = (await worker.render(bookFiles, "preview", bookOptions)).profile;
+const publication = createBookPublicationWorker();
+const edition = await publication.render(bookFiles, ["pdf", "epub", "site"], bookOptions);
+const publishedProfile: BookOptions["profile"] = edition.outputs[0]?.profile;
+// @ts-expect-error Book authoring profiles use the same strict canonical names.
+await createBook(bookFiles, { profile: "gfm" });
+void [bookProfile, previewProfile, workerProfile, publishedProfile];
+book.dispose(); worker.dispose(); publication.dispose();

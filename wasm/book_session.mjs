@@ -3,7 +3,7 @@ export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs"
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
 import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
-import { normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -163,6 +163,8 @@ function bookRunning(value) {
 }
 function bookRenderOptions(options) {
   const result = {};
+  const profile = normalizeAuthoringProfile(options.profile);
+  if (profile !== undefined) result.profile = profile;
   const embedding = options.fontEmbedding;
   // Defaults stay absent, preserving captures and old-package compatibility.
   if (embedding !== undefined && normalizeFontEmbedding(embedding) === "full")
@@ -248,6 +250,10 @@ function pdfOptionMethod(settings) {
     ? "setPdfOptionsWithRunningImages" : "setPdfOptions";
 }
 function requireBookOptions(target, settings) {
+  if (settings.profile !== undefined && typeof target?.setAuthoringProfile !== "function") {
+    throw updateError("UNSUPPORTED_BOOK_PROFILE",
+      "this WASM build lacks FmdBook.setAuthoringProfile; rebuild the matching package for book authoring profiles");
+  }
   if (settings.fontEmbedding === "full" && typeof target?.setFontEmbedding !== "function") {
     throw Object.assign(new Error(
       "this WASM build lacks FmdBook.setFontEmbedding; rebuild the matching package for full book fonts",
@@ -278,6 +284,19 @@ export function bookFontEmbeddingReceipt(result, expected) {
     ), { code: "UNSUPPORTED_BOOK_FONT_EMBEDDING" });
   }
   return embedding === "full" ? { fontEmbedding: "full" } : {};
+}
+
+/** Validate a successful native authoring-dialect receipt. Omitting the second
+ * argument validates and propagates shape only; an explicit undefined expectation
+ * requires the historical default to remain absent. */
+export function bookAuthoringProfileReceipt(result, expected) {
+  const profile = result?.profile;
+  if ((profile !== undefined && profile !== "commonmark-gfm" && profile !== "gfm-plus")
+      || (arguments.length > 1 && profile !== expected)) {
+    throw updateError("UNSUPPORTED_BOOK_PROFILE",
+      "The book exporter did not acknowledge the captured authoring profile; rebuild matching renderer and worker packages.");
+  }
+  return profile === undefined ? {} : { profile };
 }
 
 // PDF/A is an emission policy, not a claim of independent conformance. Keep
@@ -590,11 +609,14 @@ export function createBookBindings(loadBookClass) {
   class BookSession {
     #raw;
     #pdfOptions;
-    #fontReceipt;
+    #htmlReceipt;
+    #profileReceipt;
     #updating = false;
     constructor(raw, settings) {
       this.#raw = raw;
-      this.#fontReceipt = Object.freeze(settings.fontEmbedding === "full" ? { fontEmbedding: "full" } : {});
+      this.#profileReceipt = Object.freeze(bookAuthoringProfileReceipt(settings));
+      this.#htmlReceipt = Object.freeze({ ...this.#profileReceipt,
+        ...(settings.fontEmbedding === "full" ? { fontEmbedding: "full" } : {}) });
       this.#pdfOptions = Object.freeze({ page: settings.page,
         ...archivalOptions(settings.pdfA, settings.pdfAStrict) });
     }
@@ -723,11 +745,11 @@ export function createBookBindings(loadBookClass) {
           if (typeof error === "string") throw new Error(error.slice(0, 2048));
           throw error;
         }
-        return output(bytes, "pdf", raw.sourceLength, archive);
+        return output(bytes, "pdf", raw.sourceLength, { ...archive, ...this.#profileReceipt });
       }
       if (page === undefined) {
         try {
-          return output(raw.renderPdf(), "pdf", raw.sourceLength);
+          return output(raw.renderPdf(), "pdf", raw.sourceLength, this.#profileReceipt);
         } catch (error) {
           throw normalizePdfPaginationError(error);
         }
@@ -745,15 +767,15 @@ export function createBookBindings(loadBookClass) {
         if (typeof error === "string") throw new Error(error.slice(0, 2048));
         throw error;
       }
-      return output(bytes, "pdf", raw.sourceLength);
+      return output(bytes, "pdf", raw.sourceLength, this.#profileReceipt);
     }
     renderEpub() {
       const raw = this.#live();
-      return output(raw.renderEpub(), "epub", raw.sourceLength, this.#fontReceipt);
+      return output(raw.renderEpub(), "epub", raw.sourceLength, this.#htmlReceipt);
     }
     renderSite() {
       const raw = this.#live();
-      return output(raw.renderSite(), "site", raw.sourceLength, this.#fontReceipt);
+      return output(raw.renderSite(), "site", raw.sourceLength, this.#htmlReceipt);
     }
     get supportsChapterPreview() {
       return typeof this.#live().renderChapterPreview === "function";
@@ -777,7 +799,7 @@ export function createBookBindings(loadBookClass) {
       // Validate the native reply against the requested chapter, not merely
       // its declared schema. Rendering is read-only; failures do not edit source.
       parseBookChapterPreview(bytes, index, count);
-      return output(bytes, "chapterPreview", raw.sourceLength, this.#fontReceipt);
+      return output(bytes, "chapterPreview", raw.sourceLength, this.#htmlReceipt);
     }
     sourceDiagnostics() {
       const raw = this.#live();
@@ -890,6 +912,7 @@ export function createBookBindings(loadBookClass) {
     }
     try {
       requireBookOptions(raw, settings);
+      if (settings.profile !== undefined) raw.setAuthoringProfile(settings.profile);
       const pdf = pdfOptionArgs(settings);
       if (pdf !== null) raw[pdfOptionMethod(settings)](...pdf);
       if (settings.htmlFontFormat !== undefined) raw.setHtmlFontFormat(settings.htmlFontFormat);

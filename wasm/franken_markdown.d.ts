@@ -48,11 +48,13 @@ export interface FmdFontAsset {
   weight?: number;
 }
 
+export type FmdAuthoringProfile = "commonmark-gfm" | "gfm-plus";
+
 export interface FmdRenderOptions {
   /** Single-document authoring dialect. Omission retains the extended dialect.
    * commonmark-gfm keeps definition lists literal; gfm-plus enables them.
    * An explicit profile requires matching profiled WASM bindings. */
-  profile?: "commonmark-gfm" | "gfm-plus";
+  profile?: FmdAuthoringProfile;
   font?: FmdFont;
   darkMode?: FmdDarkMode;
   /** HTML/PDF/EPUB title; omitted metadata inherits source frontmatter with matching WASM bindings. */
@@ -221,7 +223,7 @@ export interface FmdSvgRenderOutput extends FmdRenderOutput {
  * than silently discarded. Parsing remains safe; raw HTML is not passed through.
  */
 export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
-  "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
+  "profile" | "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
   "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding"> {
   /** Expand selected sources in Rust (default true); never read external files. */
   expandIncludes?: boolean;
@@ -231,7 +233,14 @@ export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
   includeSources?: readonly FmdBookFile[];
   allowRawHtml?: false;
 }
+/** Book PDF output acknowledges an explicitly selected authoring dialect. */
+export interface FmdBookPdfOutput extends FmdRenderOutput {
+  readonly profile?: FmdAuthoringProfile;
+}
+
 export interface FmdBookSiteOutput extends Omit<FmdRenderOutput, "format" | "mimeType" | "extension"> {
+  /** Present after the matching native exporter applied an explicit authoring dialect. */
+  readonly profile?: FmdAuthoringProfile;
   /** Present after the matching native exporter successfully retained full fonts. */
   readonly fontEmbedding?: "full";
   format: "book-site";
@@ -275,7 +284,7 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict" | "profile">): Promise<FmdRenderOutput>;
+  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdBookPdfOutput>;
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -364,8 +373,8 @@ export function documentStats(markdown: string): Promise<FmdDocumentStats>;
  * For chapter-aware PDF/A emission, use renderBookPdf from the ./book entry. */
 export function renderBookPdf(
   files: FmdBookFile[],
-  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict" | "profile">,
-): Promise<FmdRenderOutput>;
+  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">,
+): Promise<FmdBookPdfOutput>;
 export function renderBookSite(
   files: readonly FmdBookFile[],
   options?: FmdBookSiteOptions,

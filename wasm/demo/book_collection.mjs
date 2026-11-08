@@ -15,6 +15,7 @@ export const BOOK_WORKBENCH_LIMITS = Object.freeze({
   projectBytes: 64 * MIB,
 });
 const L = BOOK_WORKBENCH_LIMITS;
+export const BOOK_SOURCE_PROJECT_VERSION = 7;
 const newlineView = (source) => source.replace(/\r\n?/g, "\n");
 export function bookPath(value) {
   if (
@@ -115,6 +116,7 @@ function sourceTree(value) {
 // Canonical, data-only fields already supported by the native book facade.
 // Deliberately excludes assets, include policy, CSS and metadata/page controls.
 export const BOOK_PUBLICATION_FIELDS = Object.freeze([
+  "profile",
   "typography", "baseFontSize", "headingScale", "tableFontSize", "tocDepth",
   "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds", "running", "htmlFontFormat", "fontEmbedding",
   "pdfA", "pdfAStrict",
@@ -185,7 +187,8 @@ export function normalizeBookProject(project) {
     !project ||
     typeof project !== "object" ||
     Array.isArray(project) ||
-    ![1, 2, 3, 4, 5, 6].includes(project.schemaVersion) ||
+    !Number.isInteger(project.schemaVersion) ||
+    project.schemaVersion < 1 || project.schemaVersion > BOOK_SOURCE_PROJECT_VERSION ||
     Object.keys(project).some((key) => !["schemaVersion", "files", "options"].includes(key))
   ) {
     throw bookError("INVALID_PROJECT", "Unsupported source-project schema.");
@@ -199,6 +202,11 @@ export function normalizeBookProject(project) {
   ) {
     throw bookError("INVALID_PROJECT", "Source roles require project schema version 2.");
   }
+  // A dialect changes source interpretation across every output. Older
+  // workbenches must reject the intent instead of reopening it as GFM+.
+  if (project.schemaVersion < 7 && project.options &&
+      Object.hasOwn(project.options, "profile"))
+    throw bookError("INVALID_PROJECT", "Authoring profiles require source-project schema version 7.");
   // The saved grid participates in pagination and must survive recovery. A
   // distinct version prevents older workbenches from accepting a weaker profile.
   if (project.schemaVersion < 6 && project.options &&
@@ -383,7 +391,8 @@ export function createBookCollection() {
       ...(role === "include" ? { role } : {}),
     }));
   const project = () => ({
-    schemaVersion: options.baselineGridPt !== undefined ? 6 : options.pdfA === "2b" ? 5
+    schemaVersion: options.profile !== undefined ? BOOK_SOURCE_PROJECT_VERSION
+      : options.baselineGridPt !== undefined ? 6 : options.pdfA === "2b" ? 5
       : BOOK_PUBLICATION_FIELDS.some(key => options[key] !== undefined) ? 4
       : options.page !== undefined ? 3 : files.some((file) => file.role === "include") ? 2 : 1,
     files: sources(),

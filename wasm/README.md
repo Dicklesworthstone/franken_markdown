@@ -242,7 +242,17 @@ generated from matching source. Older packages reject it with
 `UNSUPPORTED_WASM_PACKAGE` instead of silently rendering the wrong dialect.
 Requests that omit the profile retain their original binding signatures.
 Unknown spellings and blank values fail with `INVALID_OPTIONS` before rendering.
-Book exports and editable interactive HTML do not accept this option.
+Book PDF, EPUB, offline-site and chapter/full-book previews also accept the same
+`profile` option. Retained `book`/`book-worker` sessions preserve it through
+source edits, source-set replacements and multi-format publications. A changed
+dialect invalidates retained output; successful rendered book outputs include
+`profile` only when explicitly selected. Retained books require
+`FmdBook.setAuthoringProfile`; older native or worker packages fail with
+`UNSUPPORTED_BOOK_PROFILE` when they cannot honor or acknowledge it. The root
+one-shot helpers require `renderBookPdfConfiguredProfiled` and
+`renderBookSitePublicationProfiled`, reporting `UNSUPPORTED_WASM_PACKAGE` for
+older packages. See [book authoring dialects and saved projects](BOOK.md#markdown-authoring-dialects).
+Editable interactive HTML does not accept this option.
 
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
 (including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and

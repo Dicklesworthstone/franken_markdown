@@ -9,7 +9,7 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 let serial = 0;
 const dataModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 
-async function fixture(advanced = true, complete = advanced, grid = complete, short = false) {
+async function fixture(advanced = true, complete = advanced, grid = complete, short = false, profiled = complete) {
   const bindingUrl = dataModule(`// isolated generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, fail: null, badDiagnostics: false };
     export default async function init() { state.loads++; await state.wait; }
@@ -28,6 +28,8 @@ async function fixture(advanced = true, complete = advanced, grid = complete, sh
     export const renderBookPdfConfiguredGrid = ${grid ? "(...args) => output('book-grid', args)" : "undefined"};
     ${complete ? `Object.defineProperty(renderBookPdfConfiguredAdvanced, "length", { value: ${short ? 36 : 37} });` : ""}
     ${grid ? `Object.defineProperty(renderBookPdfConfiguredGrid, "length", { value: ${short ? 37 : 38} });` : ""}
+    export const renderBookPdfConfiguredProfiled = ${profiled ? "(...args) => output('book-profiled', args)" : "undefined"};
+    ${profiled ? `Object.defineProperty(renderBookPdfConfiguredProfiled, "length", { value: ${short ? 38 : 39} });` : ""}
     export const renderBookPdf = (...args) => output('book-legacy', args);
     export const renderPdfConfiguredPage = (...args) => output('pdf-page', args);
     export const renderPdfConfiguredMulti = (...args) => output('pdf', args);
@@ -456,4 +458,54 @@ test("old book packages refuse requested grids before asset access and invalid g
   await assert.rejects(current.api.renderBookPdf(chapters(), { baselineGridPt: 12, fitToPages: 3 }),
     { code: "INVALID_OPTIONS", message: /pdf_baseline_grid_incompatible:/ });
   assert.equal(old.state.loads, 0); assert.equal(current.state.loads, 0);
+});
+
+
+test("profiled book PDFs keep paper, typography, running content and exact asset views", async () => {
+  const { api, state } = await fixture();
+  let release;
+  state.wait = new Promise(resolve => { release = resolve; });
+  const image = new Uint8Array([9, 1, 2, 8]), font = new Uint8Array([7, 3, 4, 6]);
+  let reads = 0;
+  const options = { get profile() { reads++; return reads === 1 ? "commonmark-gfm" : "gfm-plus"; },
+    page: page(), baselineGridPt: 13.125, optimalPagination: true, footnoteBacklinks: true,
+    title: "Book", author: "Author", metadataEpochSeconds: 0, toc: false, lang: "fr",
+    running: { header: { left: "{title}", image: { dest: "logo.svg", position: "right", heightPt: 24 } },
+      footer: { center: "{page}/{pages}", rule: true }, skipFirstPage: true },
+    pdfImages: [{ destination: "logo.svg", bytes: image.subarray(1, 3) }],
+    fontAssets: [{ slot: "body-bold", weight: 550, bytes: font.subarray(1, 3) }] };
+  const pending = api.renderBookPdf(chapters(), options);
+  image.fill(9); font.fill(8); options.page.size.widthPt = 900; options.running.header.left = "Changed";
+  release(); const output = await pending, call = state.calls.at(-1), args = call.args;
+  assert.equal(reads, 1); assert.equal(call.kind, "book-profiled"); assert.equal(args.length, 39);
+  assert.equal(output.profile, "commonmark-gfm");
+  assert.deepEqual([...args[10]], [1, 2]); assert.deepEqual([...args[13]], [3, 4]);
+  assert.deepEqual([...args[17]], [0, 550, 0, 0, 0]);
+  assert.deepEqual([...args[28]], [720, 540, 18, 24, 30, 36]);
+  assert.deepEqual(args[29], ["{title}", "", "", "", "{page}/{pages}", ""]);
+  assert.deepEqual(args[33], ["logo.svg", ""]); assert.deepEqual([...args[34]], [1, 0]);
+  assert.deepEqual([...args[35]], [24, 0]); assert.equal(args[36], "optimal-pagination,footnote-backlinks");
+  assert.deepEqual(args.slice(37), [13.125, "commonmark-gfm"]);
+  await api.renderBookPdf(chapters(), { profile: "gfm-plus" });
+  assert.deepEqual(state.calls.at(-1).args.slice(37), [0, "gfm-plus"]);
+  const ordinary = await api.renderBookPdf(chapters());
+  assert(!Object.hasOwn(ordinary, "profile")); assert.equal(state.calls.at(-1).kind, "book-legacy");
+  assert.equal(state.calls.at(-1).args.length, 8);
+});
+
+test("invalid or unsupported book PDF profiles fail before assets and never fall back", async () => {
+  const f = await fixture();
+  for (const profile of [null, "", "gfm", "GFM-PLUS", true])
+    await assert.rejects(f.api.renderBookPdf(chapters(), { profile,
+      get pdfImages() { assert.fail("invalid profile reached assets"); } }), { code: "INVALID_OPTIONS" });
+  assert.equal(f.state.loads, 0);
+  for (const old of [await fixture(true, true, true, false, false), await fixture(true, true, true, true)]) {
+    await assert.rejects(old.api.renderBookPdf(chapters(), { profile: "gfm-plus",
+      get fontAssets() { assert.fail("unsupported profile reached fonts"); } }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(old.state.loads, 0); assert.equal(old.state.calls.length, 0);
+    await old.api.renderBookPdf(chapters()); assert.equal(old.state.calls[0].kind, "book-legacy");
+  }
+  f.state.fail = "native authoring refusal";
+  await assert.rejects(f.api.renderBookPdf(chapters(), { profile: "commonmark-gfm" }), /native authoring refusal/);
+  assert.deepEqual(f.state.calls.map(call => call.kind), ["book-profiled"]);
 });

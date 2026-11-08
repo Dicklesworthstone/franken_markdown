@@ -4,7 +4,7 @@
 // No network, output files, substituted engine, or third-party ZIP dependency.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { inflateRawSync } from "node:zlib";
+import { inflateRawSync, inflateSync } from "node:zlib";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -63,9 +63,49 @@ function unzip(bytes) {
   return entries;
 }
 
+// The one-shot site uses the default WOFF1 container. Full embedding preserves
+// every original SFNT table, not its unwrapped base64 spelling. Decode with
+// Node's zlib independently of the renderer and compare every table byte.
+function containsCompleteFont(html, source) {
+  const sfnt = Buffer.from(source);
+  if (html.includes(`data:font/otf;base64,${sfnt.toString("base64")}`)) return true;
+  const expected = new Map(), count = sfnt.readUInt16BE(4);
+  for (let i = 0; i < count; i++) {
+    const at = 12 + 16 * i, offset = sfnt.readUInt32BE(at + 8), size = sfnt.readUInt32BE(at + 12);
+    assert(offset + size <= sfnt.length);
+    expected.set(sfnt.toString("latin1", at, at + 4), {
+      checksum: sfnt.readUInt32BE(at + 4), bytes: sfnt.subarray(offset, offset + size),
+    });
+  }
+  for (const match of html.matchAll(/data:font\/woff;base64,([A-Za-z0-9+/=]+)/g)) {
+    const woff = Buffer.from(match[1], "base64");
+    assert(woff.length >= 44); assert.equal(woff.readUInt32BE(0), 0x774f4646);
+    assert.equal(woff.readUInt32BE(8), woff.length);
+    if (woff.readUInt32BE(4) !== sfnt.readUInt32BE(0) || woff.readUInt16BE(12) !== count) continue;
+    assert(44 + 20 * count <= woff.length);
+    const seen = new Set(); let same = true;
+    for (let i = 0; i < count; i++) {
+      const at = 44 + 20 * i, tag = woff.toString("latin1", at, at + 4);
+      const offset = woff.readUInt32BE(at + 4), compressed = woff.readUInt32BE(at + 8);
+      const size = woff.readUInt32BE(at + 12), checksum = woff.readUInt32BE(at + 16);
+      assert(offset + compressed <= woff.length && compressed <= size);
+      assert(!seen.has(tag)); seen.add(tag);
+      const expectedTable = expected.get(tag);
+      if (!expectedTable || checksum !== expectedTable.checksum || size !== expectedTable.bytes.length) {
+        same = false; break;
+      }
+      const payload = woff.subarray(offset, offset + compressed);
+      const decoded = compressed < size ? inflateSync(payload, { maxOutputLength: size }) : payload;
+      if (!decoded.equals(expectedTable.bytes)) { same = false; break; }
+    }
+    if (same && seen.size === expected.size) return true;
+  }
+  return false;
+}
+
 async function main() {
   const packageDir = path.resolve(process.argv[2] || fileURLToPath(new URL(".", import.meta.url)));
-  const { init, renderBookSite } = await import(pathToFileURL(path.join(packageDir, "franken_markdown.js")));
+  const { init, renderBookSite, renderBookPdf } = await import(pathToFileURL(path.join(packageDir, "franken_markdown.js")));
   await init(await readFile(path.join(packageDir, "pkg/franken_markdown_bg.wasm")));
   const chapters = [
     { path: "guide/start.md", source: "---\ntitle: Opening\nlang: de\n---\n# Shared\n\n[Next](../appendix/end.md#shared)\n\n{{#include snippet.md}}\n\n![First](figure.svg)\n\n<script>alert(1)</script>\n" },
@@ -123,6 +163,127 @@ async function main() {
   assert.ok(first.includes("./~fmd-search.html") && second.includes("./~fmd-search.html"));
   assert.ok(text("index.html").includes("Offline manual"));
   assert.deepEqual(output.bytes, (await renderBookSite(chapters, options)).bytes);
+  // Exercise the matching generated native book package, not substituted
+  // bindings. Definitions in an include prove that one captured dialect reaches
+  // every expanded chapter and every output path.
+  const book = await import(pathToFileURL(path.join(packageDir, "book.js")));
+  const bindings = await import(pathToFileURL(path.join(packageDir, "pkg/franken_markdown.js")));
+  const { prepareBookInput } = await import(pathToFileURL(path.join(packageDir, "book_session.mjs")));
+  const { createRetainedBook } = await import(pathToFileURL(path.join(packageDir, "book_retained.mjs")));
+  const { renderBookPreview, renderBookSessionChapterPreview, parseBookPreview } =
+    await import(pathToFileURL(path.join(packageDir, "book_site_preview.mjs")));
+  assert.equal(bindings.renderBookPdfConfiguredProfiled.length, 39);
+  assert.equal(bindings.renderBookSitePublicationProfiled.length, 24);
+  assert.equal(typeof bindings.FmdBook.prototype.setAuthoringProfile, "function");
+  const font = new Uint8Array(await readFile(new URL("../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url)));
+  const profiledChapters = chapters.map(file => ({ ...file, source: `${file.source}\nLocal term\n: Local definition with **emphasis**.\n` }));
+  // Replacement CSS deliberately owns all styles, including font faces; the
+  // earlier fixture proves that contract. Request generated CSS for font proof.
+  const profiledOptions = { ...options, customCss: undefined, fontEmbedding: "full",
+    includeSources: [{ path: "guide/snippet.md", source: "Included term\n: Included definition.\n" }],
+    fontAssets: [{ slot: "body-regular", bytes: font }] };
+  const bookOptions = { ...profiledOptions, images: profiledOptions.pdfImages, htmlFontFormat: "ttf",
+    metadataEpochSeconds: 0, page: { size: "letter", margins: 36 }, baselineGridPt: 13.125,
+    footnoteBacklinks: true };
+  delete bookOptions.pdfImages;
+  const prior = new Map();
+  for (const profile of [undefined, "gfm-plus", "commonmark-gfm"]) {
+    const configured = profile === undefined ? {} : { profile };
+    const site = await renderBookSite(profiledChapters, { ...profiledOptions, ...configured });
+    assert.equal(site.profile, profile);
+    const siteEntries = unzip(site.bytes), pageHtml = siteEntries.get("guide__start.html").toString("utf8");
+    assert.equal(pageHtml.includes("<dl>"), profile !== "commonmark-gfm");
+    assert(pageHtml.includes("Included definition."));
+    assert(pageHtml.includes(Buffer.from(firstSvg).toString("base64")));
+    assert(containsCompleteFont(pageHtml, font), "all complete host CFF tables retained by profiled site");
+    const session = await book.createBook(profiledChapters, { ...bookOptions, ...configured });
+    try {
+      const pdf = session.renderPdf(), epub = session.renderEpub(), retainedSite = session.renderSite();
+      for (const output of [pdf, epub, retainedSite]) assert.equal(output.profile, profile);
+      const retainedPage = unzip(retainedSite.bytes).get("guide__start.html").toString("utf8");
+      assert(retainedPage.includes(`data:font/otf;base64,${Buffer.from(font).toString("base64")}`),
+        "retained site preserves exact complete host CFF bytes with the requested raw container");
+      const epubEntries = unzip(epub.bytes);
+      const content = [...epubEntries].filter(([name]) => name.endsWith(".xhtml")).map(([, bytes]) => bytes.toString("utf8")).join("\n");
+      assert.equal(content.includes("<dl>"), profile !== "commonmark-gfm");
+      assert(content.includes("Included definition."));
+      assert([...epubEntries.values()].some(bytes => bytes.equals(Buffer.from(font))), "complete host CFF retained in EPUB");
+      for (const svg of [firstSvg, secondSvg])
+        assert([...epubEntries.values()].some(bytes => bytes.equals(Buffer.from(svg))), "host SVG retained in EPUB");
+      assert(pdf.bytes.subarray(0, 5).every((byte, i) => byte === encode("%PDF-")[i]));
+      const pdfText = Buffer.from(pdf.bytes).toString("latin1");
+      assert(/\/MediaBox\s*\[0 0 612 792\]/.test(pdfText), "profile preserves requested paper");
+      assert(pdfText.includes("/FontFile3"), "profile preserves host CFF PDF embedding");
+      const selected = session.renderChapterPreview(0);
+      assert.equal(selected.profile, profile);
+      assert.equal(JSON.parse(new TextDecoder().decode(selected.bytes)).html.includes("<dl>"), profile !== "commonmark-gfm");
+      const preview = await renderBookPreview({ renderBookSite: () => retainedSite }, profiledChapters,
+        { ...bookOptions, ...configured });
+      assert.equal(preview.profile, profile);
+      assert.equal(parseBookPreview(preview.bytes).pages[0].html.includes("<dl>"), profile !== "commonmark-gfm");
+      for (const [format, bytes] of [["root-site", site.bytes], ["pdf", pdf.bytes], ["epub", epub.bytes], ["site", retainedSite.bytes]]) {
+        if (profile === undefined) prior.set(format, bytes);
+        else if (profile === "gfm-plus") assert.deepEqual(bytes, prior.get(format), `${format} default/GFM+ byte parity`);
+        else assert.notDeepEqual(bytes, prior.get(format), `${format} honors CommonMark/GFM`);
+      }
+      session.updateSources([{ path: "guide/snippet.md", source: "Revised term\n: Revised definition.\n" }]);
+      const revised = session.renderChapterPreview(0);
+      assert.equal(revised.profile, profile);
+      const revisedHtml = JSON.parse(new TextDecoder().decode(revised.bytes)).html;
+      assert(revisedHtml.includes("Revised definition."));
+      assert.equal(revisedHtml.includes("<dl>"), profile !== "commonmark-gfm");
+      if (profile === "commonmark-gfm") {
+        const archival = session.renderPdf({ pdfA: "2b", pdfAStrict: true });
+        assert.equal(archival.profile, profile); assert.equal(archival.pdfA, "2b");
+        assert.equal(archival.pdfAStrict, true);
+        assert(Buffer.from(archival.bytes).toString("latin1").includes("pdfaid:part"));
+      }
+    } finally { session.dispose(); }
+  }
+  // The root PDF ABI has a distinct 39-argument contract. Keep all configured
+  // paper, grid, font and image settings while selecting its authoring dialect.
+  const pdfChapters = [{ path: "one.md", source: "# PDF dialect\n\nTerm\n: Definition.\n\n![Asset](figure.svg)\n" }];
+  const pdfOptions = { metadataEpochSeconds: 0, toc: false, pageNumbers: true,
+    page: { size: "letter", margins: 36 }, baselineGridPt: 13.125,
+    pdfImages: [{ destination: "figure.svg", bytes: encode(firstSvg) }],
+    fontAssets: [{ slot: "body-regular", bytes: font }], footnoteBacklinks: true };
+  const ordinaryPdf = await renderBookPdf(pdfChapters, pdfOptions);
+  assert.deepEqual((await renderBookPdf(pdfChapters, { ...pdfOptions, profile: "gfm-plus" })).bytes, ordinaryPdf.bytes);
+  const commonPdf = await renderBookPdf(pdfChapters, { ...pdfOptions, profile: "commonmark-gfm" });
+  assert.equal(commonPdf.profile, "commonmark-gfm"); assert.notDeepEqual(commonPdf.bytes, ordinaryPdf.bytes);
+  assert.notDeepEqual(commonPdf.bytes, (await renderBookPdf(pdfChapters,
+    { ...pdfOptions, profile: "commonmark-gfm", pdfImages: [], fontAssets: [] })).bytes, "profiled PDF keeps host resources");
+  for (const profile of [null, "", "gfm", " commonmark-gfm "])
+    for (const render of [renderBookPdf, renderBookSite, book.renderBookEpub])
+      await assert.rejects(render(pdfChapters, { profile,
+        get pdfImages() { assert.fail("invalid profile read images"); },
+        get images() { assert.fail("invalid profile read images"); } }), { code: "INVALID_OPTIONS" });
+  // Direct generated callers also reject invalid dialects transactionally.
+  const raw = new bindings.FmdBook(["one.md"], ["Term\n: Definition\n"]);
+  try {
+    raw.setAuthoringProfile("commonmark-gfm");
+    const before = raw.renderChapterPreview(0);
+    assert.throws(() => raw.setAuthoringProfile("gfm"));
+    assert.deepEqual(raw.renderChapterPreview(0), before);
+    raw.setAuthoringProfile(undefined);
+    assert(JSON.parse(new TextDecoder().decode(raw.renderChapterPreview(0))).html.includes("<dl>"));
+  } finally { raw.free(); }
+  let creations = 0;
+  const retained = createRetainedBook({ async createBook(...args) { creations++; return book.createBook(...args); } },
+    renderBookPreview, renderBookSessionChapterPreview);
+  try {
+    const captured = prepareBookInput(profiledChapters, { ...bookOptions, profile: "commonmark-gfm" });
+    const result = await retained.render(captured.files, captured.options, "chapter-preview", 0);
+    assert.equal(result.profile, "commonmark-gfm");
+    const edited = prepareBookInput(profiledChapters.map((file, i) => i ? file : { ...file, source: `${file.source}\nChanged.\n` }),
+      { ...bookOptions, profile: "commonmark-gfm" });
+    assert.equal((await retained.render(edited.files, edited.options, "pdf")).profile, "commonmark-gfm");
+    assert.equal(creations, 1, "source edits reuse a native book with its dialect");
+    const switched = prepareBookInput(edited.files, { ...bookOptions, profile: "gfm-plus" });
+    assert.equal((await retained.render(switched.files, switched.options, "site")).profile, "gfm-plus");
+    assert.equal(creations, 2, "a dialect change rebuilds the retained native book");
+  } finally { retained.clear(); }
+  process.stderr.write("PASS real-WASM book profiles: default/GFM+ byte parity; strict definitions in PDF/EPUB/site/previews; host resources; retained edits; PDF/A; invalid-profile rejection\n");
   process.stderr.write("PASS real-WASM site: links, assets, includes, CSS, language, receipt, search, ZIP CRCs and determinism\n");
 }
 

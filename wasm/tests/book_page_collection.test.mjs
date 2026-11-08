@@ -96,12 +96,11 @@ test("page-bearing projects require v3 and malformed geometry rejects before rep
     assert.throws(() => book.replaceProject({ schemaVersion: 3, files: [], options: { page: geometry } }));
     assert.deepEqual(book.snapshot(), before); assert.equal(book.revision, revision);
   }
-  // Versions 5 (PDF/A) and 6 (baseline grids) retain the page geometry contract.
-  // Schema 6 was introduced in 6a6fea5 and is documented in BOOK.md; it is no
-  // longer an unknown-version negative. Unknown versions must still refuse.
-  for (const schemaVersion of [5, 6])
+  // PDF/A, baseline-grid and authoring-dialect schemas all retain geometry.
+  // Supported schema admission must not admit unknown future versions.
+  for (const schemaVersion of [5, 6, 7])
     assert.deepEqual(normalizeBookProject({ schemaVersion, files: [], options: { page: page() } }).options.page, normalizePdfPage(page()));
-  assert.throws(() => normalizeBookProject({ schemaVersion: 7, files: [] }), { code: "INVALID_PROJECT" });
+  assert.throws(() => normalizeBookProject({ schemaVersion: 8, files: [] }), { code: "INVALID_PROJECT" });
 });
 
 test("schema 6 preserves combined page geometry and baseline grids through source-project recovery", async () => {
@@ -124,7 +123,8 @@ test("schema 6 preserves combined page geometry and baseline grids through sourc
   assert.equal(serializeBookProject(target.project()), serialized);
   // Admitting the supported schema cannot permit older readers to discard a
   // grid, or permit malformed geometry to overwrite the current source.
-  for (const schemaVersion of [1, 2, 3, 4, 5, 7]) {
+  assert.deepEqual(normalizeBookProject({ ...project, schemaVersion: 7 }).options, project.options);
+  for (const schemaVersion of [1, 2, 3, 4, 5, 8]) {
     assert.throws(() => book.replaceProject({ ...project, schemaVersion }), { code: "INVALID_PROJECT" });
     assert.deepEqual(book.snapshot(), before);
     assert.equal(book.revision, revision);

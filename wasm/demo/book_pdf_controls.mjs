@@ -274,6 +274,11 @@ export function createBookPublicationPanel(root) {
   make("h2", "title", "Typography and publishing profile");
   make("p", "help", "Edit a draft, then Apply publishing profile. Only applied settings are used by exports, PDF proofs and saved projects. Applying never edits source text, changes paper geometry, or starts a render. Blank numeric fields use native defaults. Discard reloads the applied profile; page suspension discards drafts.");
   const layout = make("fieldset"); make("legend", null, "Layout and output", layout);
+  select(layout, "profile", "Markdown authoring dialect", [
+    ["", "Native default (GFM+)"], ["gfm-plus", "GFM+ authoring extensions"],
+    ["commonmark-gfm", "CommonMark + GFM"],
+  ]);
+  make("p", "profile-help", "GFM+ enables authoring extensions such as definition lists. CommonMark + GFM keeps their source text literal. The selected dialect applies to chapter previews and every book export.", layout);
   const grid = make("div", null, undefined, layout); grid.className = "grid";
   for (const [id, label] of PUBLICATION_NUMBERS) {
     const cell = make("div", null, undefined, grid);
@@ -341,7 +346,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   const panel = createBookPublicationPanel(root);
   const checkIds = ["codeLineNumbers", "skipFirstPage", ...PUBLICATION_FLAGS.map(([token]) => `type-${token}`),
     ...PUBLICATION_BANDS.map(band => `${band}-rule`)];
-  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "htmlFontFormat", "fontEmbedding", "pdfPolicy",
+  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "profile", "htmlFontFormat", "fontEmbedding", "pdfPolicy",
     ...PUBLICATION_BANDS.flatMap(band => [...PUBLICATION_SLOTS, "image", "position", "height"].map(slot => `${band}-${slot}`))];
   const ids = [...checkIds, ...valueIds, "apply", "discard", "defaults", "status", "resources", "current"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${publicationId(id)}`)]));
@@ -370,6 +375,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   }
   function write(value) {
     for (const [id] of PUBLICATION_NUMBERS) el[id].value = value[id] === undefined ? "" : String(value[id]);
+    el.profile.value = value.profile ?? "";
     el.codeLineNumbers.checked = value.codeLineNumbers === true;
     el.htmlFontFormat.value = value.htmlFontFormat ?? "";
     el.fontEmbedding.value = value.fontEmbedding ?? "";
@@ -429,6 +435,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   }
   function draft() {
     const value = Object.fromEntries(PUBLICATION_NUMBERS.map(([id]) => [id, number(id)]));
+    value.profile = el.profile.value || undefined;
     const originalFlags = new Set((loadedProfile.typography ?? "").split(",").map(token => token.trim()));
     const flagsUnchanged = PUBLICATION_FLAGS.every(([token]) => el[`type-${token}`].checked === originalFlags.has(token));
     value.typography = flagsUnchanged ? loadedProfile.typography

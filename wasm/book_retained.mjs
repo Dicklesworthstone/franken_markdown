@@ -1,6 +1,6 @@
 // Worker-private session reuse. Inputs are owned, normalized snapshots from the
 // transport; only the native BookSession parses Markdown or resolves includes.
-import { bookFontEmbeddingReceipt } from "./book_session.mjs";
+import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
 const error = (code, message) => Object.assign(new Error(message), { code });
 const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks" });
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
@@ -13,7 +13,7 @@ function sameOptions(a, b) {
   for (const key of ["title", "author", "lang", "customCss", "toc", "pageNumbers", "font",
     "darkMode", "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
     "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
-    "htmlFontFormat", "fontEmbedding", "pdfA", "pdfAStrict"]) {
+    "htmlFontFormat", "fontEmbedding", "profile", "pdfA", "pdfAStrict"]) {
     if (a[key] !== b[key]) return false;
   }
   if (JSON.stringify(a.page) !== JSON.stringify(b.page)
@@ -122,6 +122,7 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
         throw error("UNSUPPORTED_BOOK_PDFA", "The book renderer did not acknowledge the requested PDF/A emission policy.");
       bookFontEmbeddingReceipt(result,
         fontFormats.has(format) && options.fontEmbedding === "full" ? "full" : "subset");
+      bookAuthoringProfileReceipt(result, format === "links" ? undefined : options.profile);
       cached.input = input;
       return result;
     } catch (cause) {
@@ -147,7 +148,7 @@ const optionKeys = new Set([
   "title", "author", "lang", "customCss", "toc", "pageNumbers", "font", "darkMode",
   "fontScale", "expandIncludes", "typography", "baseFontSize", "headingScale",
   "tableFontSize", "tocDepth", "fitToPages", "baselineGridPt", "codeLineNumbers", "metadataEpochSeconds",
-  "htmlFontFormat", "fontEmbedding", "page", "running", "images", "fontAssets", "includeSources",
+  "htmlFontFormat", "fontEmbedding", "profile", "page", "running", "images", "fontAssets", "includeSources",
   "pdfA", "pdfAStrict",
 ]);
 const sameSources = (a, b) => samePaths(a, b) && a.every((file, i) => file.source === b[i].source);
@@ -171,7 +172,7 @@ function outputCacheLimits(value) {
   }
   return limits;
 }
-function workerOutput(result, format, embedding) {
+function workerOutput(result, format, embedding, profile) {
   const bytes = result?.bytes, sourceLength = result?.sourceLength;
   if (!(bytes instanceof Uint8Array)
       || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
@@ -192,7 +193,8 @@ function workerOutput(result, format, embedding) {
   }
   const fontReceipt = bookFontEmbeddingReceipt(result,
     fontFormats.has(format) && embedding === "full" ? "full" : "subset");
-  return Object.freeze({ bytes, sourceLength, ...archive, ...fontReceipt,
+  const profileReceipt = bookAuthoringProfileReceipt(result, format === "links" ? undefined : profile);
+  return Object.freeze({ bytes, sourceLength, ...archive, ...fontReceipt, ...profileReceipt,
     ...(previewMode === undefined ? {} : { previewMode }) });
 }
 
@@ -286,7 +288,7 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
           }
         }
         misses++;
-        const output = workerOutput(await produce(), kind, options.fontEmbedding);
+        const output = workerOutput(await produce(), kind, options.fontEmbedding, options.profile);
         fence();
         if (cacheable && output.bytes.byteLength <= limits.maxEntryBytes
             && output.bytes.byteLength <= limits.maxBytes) {

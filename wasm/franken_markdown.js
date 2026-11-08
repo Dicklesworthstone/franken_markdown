@@ -799,17 +799,22 @@ export async function renderBookSite(files, options = {}) {
   // A render-only package must refuse this feature before inspecting caller
   // source or options, including the font-policy getter. Either supported site
   // ABI admits ordinary requests; full font embedding still requires the new one.
-  const render = wasmBindings.renderBookSitePublication;
-  const legacyRender = typeof render === "function" ? null
+  const ordinaryRender = wasmBindings.renderBookSitePublication;
+  const legacyRender = typeof ordinaryRender === "function"
+      || typeof wasmBindings.renderBookSitePublicationProfiled === "function" ? null
     : requireBrowserBinding("renderBookSite", "wasm-book");
+  const profile = normalizeAuthoringProfile(options?.profile);
+  const render = profile === undefined ? ordinaryRender
+    : requireBrowserBinding("renderBookSitePublicationProfiled", "book-site authoring profiles");
+  if (profile !== undefined) requireBindingArguments(render, 24, "Book-site authoring profiles");
   const requestedEmbedding = options?.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
   if (fontEmbedding === "full") {
-    requireBrowserBinding("renderBookSitePublication", "full book-site font embedding");
-    requireBindingArguments(render, 23, "Full book-site font embedding");
+    if (profile === undefined) requireBrowserBinding("renderBookSitePublication", "full book-site font embedding");
+    requireBindingArguments(render, profile === undefined ? 23 : 24, "Full book-site font embedding");
   }
   // Capture the complete publication before initialization can yield to edits.
-  const prepared = bookSiteArguments(files, options, fontEmbedding);
+  const prepared = bookSiteArguments(files, options, fontEmbedding, profile);
   if (typeof render !== "function" && prepared.requiresPublication) {
     throw Object.assign(new Error(
       "Book site assets, includes, CSS, language and navigation require a WASM package rebuilt from matching source",
@@ -818,7 +823,7 @@ export async function renderBookSite(files, options = {}) {
   await init();
   try {
     if (typeof render !== "function") {
-      const legacy = normalizeResult(legacyRender(...prepared.legacyArgs));
+      const legacy = normalizeResult((legacyRender ?? requireBrowserBinding("renderBookSite", "wasm-book"))(...prepared.legacyArgs));
       // Preserve old packages for basic exports, but never claim they gained
       // canonical cross-chapter navigation/search merely by replacing JS.
       return Object.freeze({ ...legacy, diagnostics: [...legacy.diagnostics, {
@@ -842,20 +847,23 @@ export async function renderBookSite(files, options = {}) {
       bytes, format: "book-site", mimeType: "application/zip", extension: "zip",
       sourceLength: prepared.sourceLength, diagnosticsJson: () => "[]",
     });
-    return fontEmbedding === "full" ? Object.freeze({ ...output, fontEmbedding: "full" }) : output;
+    return fontEmbedding === "full" || profile !== undefined ? Object.freeze({ ...output,
+      ...(fontEmbedding === "full" ? { fontEmbedding: "full" } : {}),
+      ...(profile === undefined ? {} : { profile }),
+    }) : output;
   } catch (error) {
     if (typeof error === "string") throw new Error(error.slice(0, 2048));
     throw error;
   }
 }
 
-function bookSiteArguments(files, options, fontEmbedding) {
+function bookSiteArguments(files, options, fontEmbedding, profile) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("book site options must be an object");
   }
   const allowed = ["font", "darkMode", "title", "customCss", "fontScale", "typeSize",
     "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "includeSources", "expandIncludes",
-    "allowRawHtml", "fontEmbedding"];
+    "allowRawHtml", "fontEmbedding", "profile"];
   for (const key of Reflect.ownKeys(options)) {
     if (!allowed.includes(key)) {
       const field = Object.getOwnPropertyDescriptor(options, key);
@@ -944,19 +952,22 @@ function bookSiteArguments(files, options, fontEmbedding) {
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
       fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
       fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
-      ...(fontEmbedding === "full" ? [fontEmbedding] : [])],
+      ...(profile !== undefined ? [fontEmbedding, profile] : fontEmbedding === "full" ? [fontEmbedding] : [])],
   };
 }
 
 export async function renderBookPdf(files, options = {}) {
   if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function"
       && typeof wasmBindings.renderBookPdfConfiguredAdvanced !== "function"
-      && typeof wasmBindings.renderBookPdfConfiguredGrid !== "function") {
+      && typeof wasmBindings.renderBookPdfConfiguredGrid !== "function"
+      && typeof wasmBindings.renderBookPdfConfiguredProfiled !== "function") {
     requireBrowserBinding("renderBookPdf", "wasm-book");
   }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
-  const render = prepared.grid > 0
+  const render = prepared.profile !== undefined
+    ? requireBrowserBinding("renderBookPdfConfiguredProfiled", "book PDF authoring profiles")
+    : prepared.grid > 0
     ? requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support")
     : prepared.complete
     ? requireBrowserBinding("renderBookPdfConfiguredAdvanced", "wasm-book with typography and running content")
@@ -968,12 +979,13 @@ export async function renderBookPdf(files, options = {}) {
     throw error;
   }
   if (prepared.strictPagination || prepared.footnoteBacklinks) {
-    requireBindingArguments(render, prepared.grid > 0 ? 38 : 37,
+    requireBindingArguments(render, prepared.profile !== undefined ? 39 : prepared.grid > 0 ? 38 : 37,
       prepared.footnoteBacklinks ? "PDF footnote backlinks" : "Strict PDF pagination");
   }
   await init();
   try {
-    return normalizeResult(render(...prepared.args));
+    const output = normalizeResult(render(...prepared.args));
+    return prepared.profile === undefined ? output : Object.freeze({ ...output, profile: prepared.profile });
   } catch (error) {
     throw normalizePdfPaginationError(error);
   }
@@ -983,8 +995,11 @@ export async function renderBookPdf(files, options = {}) {
 // TOC/page-number defaults and narrow ABI. Only configured requests need the
 // additive ABI; neither images nor newer options may silently disappear.
 function bookPdfArguments(files, options) {
-  if (options.profile !== undefined)
-    throw Object.assign(new TypeError("Markdown authoring profiles are supported by single-document exports, not book PDF exports"), { code: "INVALID_OPTIONS" });
+  const profile = normalizeAuthoringProfile(options.profile);
+  if (profile !== undefined) {
+    const render = requireBrowserBinding("renderBookPdfConfiguredProfiled", "book PDF authoring profiles");
+    requireBindingArguments(render, 39, "Book PDF authoring profiles");
+  }
   if (options.pdfA !== undefined || options.pdfAStrict !== undefined)
     throw new TypeError("Book PDF/A emission requires renderBookPdf from the ./book entry point");
   const grid = normalizeBaselineGridPt(options.baselineGridPt);
@@ -992,7 +1007,7 @@ function bookPdfArguments(files, options) {
   validateBaselineGridFit(grid, target);
   // A requested grid must not be dropped by older packages, and refusal must
   // precede source normalization and all host asset validation/copying.
-  if (grid > 0) requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support");
+  if (grid > 0 && profile === undefined) requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support");
   const {
     page, font, darkMode, title, author, metadataEpochSeconds,
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
@@ -1010,7 +1025,7 @@ function bookPdfArguments(files, options) {
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
   const bands = pdfRunningOption(normalizePdfRunning(running));
-  const complete = typesetting !== undefined || bands !== null || grid > 0;
+  const complete = profile !== undefined || typesetting !== undefined || bands !== null || grid > 0;
   const geometry = pdfPageGeometry(page);
   if (!Array.isArray(files) || files.length === 0 || files.length > 4096) {
     throw new RangeError("book needs 1..=4096 source files");
@@ -1074,7 +1089,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete, grid, strictPagination, footnoteBacklinks,
+    advanced, complete, grid, strictPagination, footnoteBacklinks, profile,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
@@ -1084,7 +1099,7 @@ function bookPdfArguments(files, options) {
       ...(complete ? [bands?.slots ?? [], bands?.headerRule ?? false, bands?.footerRule ?? false,
         bands?.skipFirstPage ?? false, bands?.imageDestinations ?? [],
         bands?.imagePositions ?? new Uint32Array(), bands?.imageHeights ?? new Uint32Array(),
-        typesetting] : []), ...(grid > 0 ? [grid] : [])],
+        typesetting] : []), ...(profile !== undefined ? [grid ?? 0, profile] : grid > 0 ? [grid] : [])],
   };
 }
 

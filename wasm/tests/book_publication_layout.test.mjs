@@ -72,7 +72,7 @@ test("grid-bearing projects require version 6 even when a concealed grid spells 
   const project = normalizeBookProject({ schemaVersion: 6, files: [],
     options: { baselineGridPt: 14, pdfA: "2b", pdfAStrict: true } });
   assert.equal(project.options.baselineGridPt, 14); assert.equal(project.options.pdfAStrict, true);
-  assert.throws(() => normalizeBookProject({ ...project, schemaVersion: 7 }), { code: "INVALID_PROJECT" });
+  assert.throws(() => normalizeBookProject({ ...project, schemaVersion: 8 }), { code: "INVALID_PROJECT" });
 });
 
 test("source-only and portable project round trips preserve grids and explicit resource authority", async t => {

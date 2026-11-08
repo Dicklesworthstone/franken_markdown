@@ -40,13 +40,19 @@ export function createBookFileControls({ root, controls, collection, window,
   const fields = new Set(["chapter-source", "chapter-path", "source-role", "title", "author", "lang",
     "font", "dark-mode", "font-scale", "toc", "page-numbers"]);
   const busy = () => disposed || suspended || composing.size > 0 || controls.sourceBusy;
-  // Source schemas 1-4 can describe the same project. Use the current schema
-  // solely for identity; disk output keeps the serializer's ordinary schema.
-  const projectKey = project => serializeBookProject({ ...project, schemaVersion: 4 });
+  // Supported schemas can describe the same project. The canonical codec
+  // writes its version first; exclude only that header from the identity.
+  // Keep validation at the actual version so later publishing fields are
+  // never downgraded to an older schema just to compare saved source.
+  const projectKey = (project, source = serializeBookProject(project)) => {
+    const prefix = `{"schemaVersion":${project.schemaVersion},`;
+    if (!source.startsWith(prefix)) throw new TypeError("Source-project codec returned a noncanonical header.");
+    return source.slice(prefix.length);
+  };
   function read() {
     if (cachedRevision !== collection.revision || cachedSource === null) {
       const project = collection.project();
-      const source = serializeBookProject(project), key = projectKey(project);
+      const source = serializeBookProject(project), key = projectKey(project, source);
       cachedSource = source; cachedKey = key; cachedRevision = collection.revision;
     }
     return { source: cachedSource, key: cachedKey, stamp: controls.checkpoint() };

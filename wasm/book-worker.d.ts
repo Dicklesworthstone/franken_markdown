@@ -7,6 +7,8 @@ export interface BookWorkerCapture {
   readonly retainedInputRevision?: number;
 }
 export interface BookPreviewOutput extends BookWorkerCapture {
+  /** Explicit authoring dialect acknowledged by the retained native renderer. */
+  readonly profile?: BookOptions["profile"];
   /** Successful complete-font preview receipt; omitted for subsets. */
   readonly fontEmbedding?: "full";
   readonly format: "book-preview";

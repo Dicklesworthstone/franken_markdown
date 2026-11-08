@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Browser books retain an explicit `commonmark-gfm` or `gfm-plus` dialect
+  across chapter previews, PDF/EPUB/site exports, source updates, workers and
+  atomic publications. The workbench exposes a dialect selector and saves
+  explicit choices in source-project schema 7. Additive native bindings and
+  matched output receipts reject unsupported or stale package combinations;
+  omitted profiles keep existing defaults and older project schemas.
 - Authors can place `<!-- pagebreak -->` on its own line to request an
   explicit PDF page boundary, including in books, includes and nested
   containers. HTML/EPUB preserve the print boundary, Flow shows its source
@@ -31,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Connected source-project files preserve their actual schema during save
+  comparison, allowing PDF/A, baseline-grid and authoring-dialect settings to
+  survive verified disk saves. Equivalent supported versions share source
+  identity while external file edits still block overwrites.
 - HTML and EPUB mathematics preserve complete conditions inside TeX text
   boxes, including nested subscripts, fractions, text styling, colors and
   explicit spacing. Ordinary text and equation labels share one semantic

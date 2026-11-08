@@ -156,6 +156,99 @@ pub fn render_book_pdf_configured_grid(
     typography: Option<String>,
     baseline_grid_pt: f64,
 ) -> Result<FmdRenderResult, JsValue> {
+    render_book_pdf_configured_profiled(
+        paths,
+        sources,
+        font,
+        dark_mode,
+        title,
+        author,
+        metadata_epoch_seconds,
+        allow_raw_html,
+        code_line_numbers,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        base_font_size,
+        heading_scale,
+        table_font_size,
+        page_numbers,
+        font_scale,
+        lang,
+        toc,
+        toc_depth,
+        fit_to_pages,
+        microtype_protrusion,
+        page_geometry,
+        running_slots,
+        header_rule,
+        footer_rule,
+        skip_first_page,
+        running_image_destinations,
+        running_image_positions,
+        running_image_heights,
+        typography,
+        baseline_grid_pt,
+        None,
+    )
+}
+
+/// Render a book with the complete PDF contract and an explicit authoring dialect.
+/// Omitting the dialect preserves the historical extension-enabled default.
+///
+/// # Errors
+/// Rejects unknown dialects before source parsing or per-asset copying.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "wasm-book", wasm_bindgen(js_name = renderBookPdfConfiguredProfiled))]
+pub fn render_book_pdf_configured_profiled(
+    paths: Vec<String>,
+    sources: Vec<String>,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    metadata_epoch_seconds: Option<f64>,
+    allow_raw_html: bool,
+    code_line_numbers: bool,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    base_font_size: Option<f64>,
+    heading_scale: Option<f64>,
+    table_font_size: Option<f64>,
+    page_numbers: bool,
+    font_scale: Option<f64>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    fit_to_pages: Option<u32>,
+    microtype_protrusion: bool,
+    page_geometry: Vec<f64>,
+    running_slots: Vec<String>,
+    header_rule: bool,
+    footer_rule: bool,
+    skip_first_page: bool,
+    running_image_destinations: Vec<String>,
+    running_image_positions: Vec<u32>,
+    running_image_heights: Vec<u32>,
+    typography: Option<String>,
+    baseline_grid_pt: f64,
+    authoring_profile: Option<String>,
+) -> Result<FmdRenderResult, JsValue> {
+    let profile = super::super::parse_authoring_profile(authoring_profile.as_deref())
+        .map_err(JsValue::from_str)?;
     let grid = admit_grid(baseline_grid_pt, fit_to_pages).map_err(render_error_to_js)?;
     let running = book_presentation(
         typography.as_deref(),
@@ -212,6 +305,7 @@ pub fn render_book_pdf_configured_grid(
         page_geometry,
     )?
     .with_running(running);
+    options.profile = profile;
     options.theme.page.baseline_grid = grid;
     // Admission already checked the bounded token list. Apply it after the
     // legacy settings so expansion-only can override conservative protrusion,
@@ -378,5 +472,87 @@ mod tests {
         )
         .expect("grid ABI");
         assert_eq!(actual.bytes, expected);
+    }
+    #[test]
+    fn profiled_book_pdf_matches_native_and_retains_paper_grid_and_typography() {
+        let source = "# Dialect\n\nTerm\n: Definition with **emphasis**.\n";
+        let inputs = [crate::BookInput {
+            path: "one.md".into(),
+            source: source.into(),
+        }];
+        let mut ordinary = None;
+        for profile in [None, Some("gfm-plus"), Some("commonmark-gfm")] {
+            let rendered = super::render_book_pdf_configured_profiled(
+                vec!["one.md".into()],
+                vec![source.into()],
+                None,
+                None,
+                Some("Book".into()),
+                Some("Author".into()),
+                Some(0.0),
+                false,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Some(12.0),
+                Some(1.3),
+                Some(10.0),
+                true,
+                Some(1.0),
+                Some("en".into()),
+                false,
+                Some(2),
+                None,
+                false,
+                vec![612.0, 792.0, 36.0, 36.0, 36.0, 36.0],
+                Vec::new(),
+                false,
+                false,
+                false,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Some("footnote-backlinks".into()),
+                13.125,
+                profile.map(str::to_string),
+            )
+            .expect("profiled ABI");
+            let mut book = crate::book::BookRenderer::from_sources(&inputs, &[]).expect("book");
+            let options = book.options_mut();
+            options.title = Some("Book".into());
+            options.author = Some("Author".into());
+            options.metadata_epoch_seconds = Some(0);
+            options.base_font_size = Some(12.0);
+            options.heading_scale = Some(1.3);
+            options.table_font_size = Some(10.0);
+            options.page_numbers = true;
+            options.font_scale = Some(1.0);
+            options.lang = Some("en".into());
+            options.toc = false;
+            options.toc_depth = Some(2);
+            options.theme.page =
+                crate::PageStyle::from_browser_geometry(&[612.0, 792.0, 36.0, 36.0, 36.0, 36.0])
+                    .expect("paper")
+                    .expect("explicit paper");
+            options.theme.page.baseline_grid =
+                Some(crate::BaselineGrid::from_points(13.125).expect("grid"));
+            options
+                .apply_typography_tokens(Some("footnote-backlinks"))
+                .expect("typography");
+            options.profile = crate::wasm_abi::parse_authoring_profile(profile).expect("profile");
+            assert_eq!(rendered.bytes(), book.render_pdf().expect("native PDF"));
+            match profile {
+                None => ordinary = Some(rendered.bytes()),
+                Some("gfm-plus") => assert_eq!(Some(rendered.bytes()), ordinary),
+                _ => assert_ne!(Some(rendered.bytes()), ordinary),
+            }
+        }
     }
 }

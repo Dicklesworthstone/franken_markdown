@@ -24,8 +24,8 @@ use crate::{
 mod pdf_page;
 pub use pdf_page::{
     render_book_pdf_configured_advanced, render_book_pdf_configured_grid,
-    render_book_pdf_configured_page, render_pdf_configured_grid, render_pdf_configured_page,
-    render_pdf_configured_profiled,
+    render_book_pdf_configured_page, render_book_pdf_configured_profiled,
+    render_pdf_configured_grid, render_pdf_configured_page, render_pdf_configured_profiled,
 };
 
 mod epub;
@@ -43,7 +43,9 @@ pub use svg::{render_svg_configured_profiled, render_svg_configured_resources};
 /// Keep authoring-profile admission separate from the archival PDF profile.
 /// In particular, omission preserves the historical extension-enabled default;
 /// it is not the same as explicitly selecting CommonMark/GFM.
-fn parse_authoring_profile(value: Option<&str>) -> Result<Option<crate::Profile>, &'static str> {
+pub(crate) fn parse_authoring_profile(
+    value: Option<&str>,
+) -> Result<Option<crate::Profile>, &'static str> {
     match value {
         None => Ok(None),
         Some("commonmark-gfm") => Ok(Some(crate::Profile::CommonMarkGfm)),

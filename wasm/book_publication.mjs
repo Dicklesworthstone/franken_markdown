@@ -1,7 +1,7 @@
 // Atomic multi-format publication over one private retained worker client.
 // Capture and transport are injected by book-worker.js; this module neither
 // parses Markdown nor serializes publication formats or creates object URLs.
-import { bookFontEmbeddingReceipt } from "./book_session.mjs";
+import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
 const LIMIT = 128 * 1024 * 1024;
 const TYPES = Object.freeze({
   pdf: ["application/pdf", "pdf"],
@@ -28,7 +28,7 @@ function publicationFormats(value) {
   return formats;
 }
 
-function publicationOutput(value, format, remaining, previousRevision, sourceLength, archive, embedding) {
+function publicationOutput(value, format, remaining, previousRevision, sourceLength, archive, embedding, profile) {
   const bytes = value?.bytes, revision = value?.retainedInputRevision;
   if (!Number.isSafeInteger(revision) || revision < 1)
     throw error("UNSUPPORTED_BOOK_PUBLICATION", "Rebuild the matching worker for captured multi-format publication.");
@@ -51,6 +51,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
       throw error("UNSUPPORTED_BOOK_PDFA", "The publication did not acknowledge the captured PDF/A emission policy; no edition was published.");
   } else if (pdfA !== undefined || pdfAStrict !== undefined)
     throw error("WORKER_PROTOCOL_ERROR", "An edition output claims an unrequested PDF/A emission policy.");
+  const profileReceipt = bookAuthoringProfileReceipt(value, profile);
   const fontReceipt = bookFontEmbeddingReceipt(value,
     format !== "pdf" && embedding === "full" ? "full" : "subset");
   // Own exactly this view before another export or disposal can recycle its
@@ -60,7 +61,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
     revision,
     output: Object.freeze({
       format: `book-${format}`, bytes: owned, sourceLength: value.sourceLength,
-      mimeType, extension, ...(policy ?? {}), ...fontReceipt, blob: () => new Blob([owned], { type: mimeType }),
+      mimeType, extension, ...(policy ?? {}), ...fontReceipt, ...profileReceipt, blob: () => new Blob([owned], { type: mimeType }),
     }),
   };
 }
@@ -147,7 +148,7 @@ export function createBookPublicationClient({
       // Reserve before format proxies, option/source getters, signal adapters
       // or the worker factory can reenter this public operation.
       active = operation;
-      let selected, input, strictLinks, archive, embedding;
+      let selected, input, strictLinks, archive, embedding, profile;
       try {
         selected = publicationFormats(formats);
         strictLinks = request?.strictLinks;
@@ -179,6 +180,7 @@ export function createBookPublicationClient({
         archive = input.options.pdfA === "2b"
           ? Object.freeze({ pdfA: "2b", pdfAStrict: input.options.pdfAStrict === true }) : null;
         embedding = input.options.fontEmbedding;
+        profile = input.options.profile;
         if (signal?.aborted) { onAbort(); return; }
       } catch (cause) {
         finish(cause);
@@ -231,7 +233,7 @@ export function createBookPublicationClient({
                 ? await client.render(input.files, format, input.options, { signal: abort.signal })
                 : await client.renderSourceUpdate([], format, { expectedRevision: revision }, { signal: abort.signal });
               if (stopped()) return;
-              const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength, archive, embedding);
+              const admitted = publicationOutput(result, format, maxOutputBytes - total, revision, sourceLength, archive, embedding, profile);
               if (stopped()) return;
               revision = admitted.revision;
               sourceLength = admitted.output.sourceLength;

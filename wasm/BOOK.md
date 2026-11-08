@@ -10,6 +10,58 @@ The workbench combines the existing Rust `FmdBook` renderer with an ordered loca
 collection and dedicated module workers. It adds no Markdown renderer, ZIP writer,
 browser-print PDF, third-party dependency, network loader, or server-side storage.
 
+## Markdown authoring dialects
+
+Choose **Markdown authoring dialect** under **Typography and publishing profile**
+and apply the setting to use one dialect across PDF, EPUB, offline-site exports,
+and chapter or full-book previews. **CommonMark + GFM** keeps extension syntax
+such as definition lists as literal paragraphs. **GFM+ authoring extensions**
+enables their structured rendering. **Native default (GFM+)** preserves the
+existing extension-enabled behavior and leaves the explicit option absent.
+
+The programmatic API uses the same strict canonical names:
+
+```js
+import { createBook } from "@franken-suite/franken-markdown/book";
+
+const session = await createBook(chapters, { profile: "commonmark-gfm" });
+try {
+  const pdf = session.renderPdf();
+  const epub = session.renderEpub();
+  const site = session.renderSite();
+  const chapter = session.renderChapterPreview(0);
+  console.assert([pdf, epub, site, chapter].every(output =>
+    output.profile === "commonmark-gfm"));
+} finally {
+  session.dispose();
+}
+```
+
+The dialect applies after Rust expands includes and remains attached to retained
+source updates and source-set replacements. It also reaches ordinary and archival
+PDF exports with paper overrides, while image/font ownership, typography and
+`pdfA` emission policy keep their existing contracts. Workers and multi-format
+publication accept the same `BookOptions.profile`. They verify both the captured
+dialect and each rendered output, so mixed renderer/worker versions cannot
+silently publish another dialect. Source-only link and parser diagnostics remain
+source reports and do not claim a rendered dialect.
+
+Explicit selection requires the additive `FmdBook.setAuthoringProfile` method.
+An older native package fails with `UNSUPPORTED_BOOK_PROFILE` before constructing
+or configuring a retained book. The root `renderBookPdf` and `renderBookSite`
+helpers support the same option through the new 39-argument
+`renderBookPdfConfiguredProfiled` and 24-argument
+`renderBookSitePublicationProfiled` exports. Their older-package error is
+`UNSUPPORTED_WASM_PACKAGE`. Unknown spellings, blank values and coercions fail
+with `INVALID_OPTIONS`; omitting `profile` retains the original call signatures.
+
+An explicit dialect, including `gfm-plus`, is saved with source-project schema
+version **7**. Local-library saves, portable backups and connected-file saves
+retain that version and selection. Older workbenches reject the project instead
+of discarding its interpretation. Clearing the selection restores the lowest
+schema required by the remaining settings. Changing the applied dialect retires
+prepared downloads and cached previews; source edits retain the selected dialect.
+
 ## Parser diagnostics for published chapters
 
 **Check expanded chapter parsing** in the workbench reports parser warnings for
@@ -179,8 +231,8 @@ source project as a separate backup before leaving. `book.fmdbook.json` records
 ordered source paths/text, source roles, and settings. Chapter-only projects keep
 schema version 1; include-only files require version 2, PDF paper settings
 version 3, publishing profiles version 4, PDF/A emission settings version 5,
-and an enabled PDF baseline grid version 6. The current workbench reads all six
-versions and writes the lowest version that preserves the applied settings.
+an enabled PDF baseline grid version 6, and an explicit Markdown authoring
+dialect version 7. The current workbench reads all seven versions and writes the lowest version that preserves the applied settings.
 It is plain unencrypted JSON. Images, fonts,
 worker state, handles, and access grants are deliberately excluded. Keep original
 image files separately. Reopening a project requires confirmation, clears all

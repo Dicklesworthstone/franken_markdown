@@ -170,6 +170,18 @@ impl FmdBook {
         options.lang = nonblank(language);
     }
 
+    /// Select the Markdown authoring dialect shared by every book export.
+    /// `undefined` restores the historical extension-enabled default. This does
+    /// not reparse sources, change their revision, or clear host assets.
+    ///
+    /// # Errors
+    /// Unknown or blank dialects leave the retained settings unchanged.
+    #[wasm_bindgen(js_name = setAuthoringProfile)]
+    pub fn set_authoring_profile(&mut self, profile: Option<String>) -> Result<(), JsValue> {
+        authoring_profile(self.renderer.options_mut(), profile.as_deref())
+            .map_err(JsValue::from_str)
+    }
+
     /// Replace HTML/EPUB CSS. `undefined` restores the built-in stylesheet;
     /// an empty string deliberately requests no stylesheet rules.
     #[wasm_bindgen(js_name = setCustomCss)]
@@ -547,6 +559,16 @@ fn font_scale(scale: f64) -> Result<f32, &'static str> {
     Ok(narrowed)
 }
 
+// Validate before mutation so invalid direct ABI calls preserve retained state.
+fn authoring_profile(
+    options: &mut crate::wasm::WasmRenderOptions,
+    value: Option<&str>,
+) -> Result<(), &'static str> {
+    let profile = crate::wasm_abi::parse_authoring_profile(value)?;
+    options.profile = profile;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -746,5 +768,61 @@ mod tests {
         );
         assert!(theme_settings("missing", "auto").is_err());
         assert!(theme_settings("sans", "missing").is_err());
+    }
+    #[test]
+    fn authoring_profiles_survive_source_edits_and_all_book_exports() {
+        let source = "# Dialect\n\nTerm\n: Definition with **emphasis**.\n";
+        let mut book = FmdBook::new(vec!["one.md".into()], vec![source.into()]).unwrap();
+        let ordinary_site = book.render_site().unwrap();
+        let ordinary_epub = book.render_epub().unwrap();
+        let ordinary_pdf = book.render_pdf().unwrap();
+        book.set_authoring_profile(Some("gfm-plus".into())).unwrap();
+        assert_eq!(book.render_site().unwrap(), ordinary_site);
+        assert_eq!(book.render_epub().unwrap(), ordinary_epub);
+        assert_eq!(book.render_pdf().unwrap(), ordinary_pdf);
+        book.set_authoring_profile(Some("commonmark-gfm".into()))
+            .unwrap();
+        assert_ne!(book.render_site().unwrap(), ordinary_site);
+        assert_ne!(book.render_epub().unwrap(), ordinary_epub);
+        assert_ne!(book.render_pdf().unwrap(), ordinary_pdf);
+        let preview = String::from_utf8(book.render_chapter_preview(0.0).unwrap()).unwrap();
+        assert!(!preview.contains("<dl>"));
+        assert!(preview.contains("Definition with"));
+        assert_eq!(book.source_revision(), 0);
+        book.update_sources(
+            vec!["one.md".into()],
+            vec![format!("{source}\nChanged.")],
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(book.source_revision(), 1);
+        assert_eq!(
+            book.renderer.options().profile,
+            Some(crate::Profile::CommonMarkGfm)
+        );
+        assert!(
+            !String::from_utf8(book.render_chapter_preview(0.0).unwrap())
+                .unwrap()
+                .contains("<dl>")
+        );
+        book.set_authoring_profile(None).unwrap();
+        assert_eq!(book.source_revision(), 1);
+        assert!(
+            String::from_utf8(book.render_chapter_preview(0.0).unwrap())
+                .unwrap()
+                .contains("<dl>")
+        );
+    }
+
+    #[test]
+    fn invalid_authoring_profiles_leave_retained_options_unchanged() {
+        let mut options = crate::wasm::WasmRenderOptions::default();
+        authoring_profile(&mut options, Some("commonmark-gfm")).unwrap();
+        for value in ["", " ", "gfm", "CommonMark-GFM", " gfm-plus "] {
+            assert!(authoring_profile(&mut options, Some(value)).is_err());
+            assert_eq!(options.profile, Some(crate::Profile::CommonMarkGfm));
+        }
+        authoring_profile(&mut options, None).unwrap();
+        assert_eq!(options.profile, None);
     }
 }

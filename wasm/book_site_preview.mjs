@@ -1,6 +1,6 @@
 // Read the Rust book engine's classic ZIP subset, not arbitrary user archives.
 // Markdown parsing, chapter addressing, transclusion and HTML remain Rust-owned.
-import { bookFontEmbeddingReceipt, parseBookChapterPreview } from "./book_session.mjs";
+import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, parseBookChapterPreview } from "./book_session.mjs";
 
 export const BOOK_PREVIEW_LIMITS = Object.freeze({
   archiveBytes: 64 * 1024 * 1024,
@@ -284,8 +284,10 @@ function checkedPreview(value) {
  */
 export async function renderBookPreview(engine, files, options) {
   const embedding = options?.fontEmbedding === "full" ? "full" : "subset";
+  const profile = options?.profile;
   const site = await engine.renderBookSite(files, options);
-  const receipt = bookFontEmbeddingReceipt(site, embedding);
+  const receipt = { ...bookFontEmbeddingReceipt(site, embedding),
+    ...bookAuthoringProfileReceipt(site, profile) };
   const preview = await decodeBookSiteArchive(site.bytes);
   const parts = ['{"schema":"fmd-book-preview-v1","pages":['];
   let total = parts[0].length;
@@ -343,12 +345,12 @@ export async function renderBookSessionChapterPreview(session, selected = 0) {
     throw error("INVALID_CHAPTER_INDEX", "Choose a chapter in the current book.");
   if (session.supportsChapterPreview === true) {
     const result = await session.renderChapterPreview(selected);
-    const receipt = bookFontEmbeddingReceipt(result);
+    const receipt = { ...bookFontEmbeddingReceipt(result), ...bookAuthoringProfileReceipt(result) };
     parseBookChapterPreview(result.bytes, selected, count);
     return { bytes: result.bytes, sourceLength: result.sourceLength, previewMode: "native-chapter", ...receipt };
   }
   const site = await session.renderSite();
-  const receipt = bookFontEmbeddingReceipt(site);
+  const receipt = { ...bookFontEmbeddingReceipt(site), ...bookAuthoringProfileReceipt(site) };
   const preview = await decodeBookSiteArchive(site.bytes);
   if (preview.pages.length !== count) throw invalid();
   const value = { schema: "fmd-book-chapter-preview-v1", selected,
@@ -365,10 +367,12 @@ export async function renderBookSessionChapterPreview(session, selected = 0) {
 
 export async function renderBookSelectedPreview(engine, files, options, selected = 0) {
   const embedding = options?.fontEmbedding === "full" ? "full" : "subset";
+  const profile = options?.profile;
   const session = await engine.createBook(files, options);
   try {
     const result = await renderBookSessionChapterPreview(session, selected);
     bookFontEmbeddingReceipt(result, embedding);
+    bookAuthoringProfileReceipt(result, profile);
     return result;
   }
   finally { session.dispose(); }

@@ -1,4 +1,4 @@
-import type { FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
+import type { FmdAuthoringProfile, FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
 
 /** One chapter. Array order is reading order; paths are book-relative. */
 export interface BookFile {
@@ -44,6 +44,9 @@ export interface BookRunningContent {
 }
 
 export interface BookOptions {
+  /** Authoring dialect for PDF, EPUB, site and previews. Omitted preserves the
+   * extension-enabled default. Explicit values require FmdBook.setAuthoringProfile. */
+  profile?: FmdAuthoringProfile;
   /** Expand includes in Rust (default true). False preserves literal source. */
   expandIncludes?: boolean;
   /** Explicit include-only UTF-8 files; never chapters or EPUB spine items.
@@ -131,6 +134,8 @@ export interface BookOptions {
 }
 
 export interface BookOutput {
+  /** Present after the native renderer applied an explicit authoring dialect. */
+  readonly profile?: FmdAuthoringProfile;
   /** Successful complete-font export receipt; omitted on PDF and subsets. */
   readonly fontEmbedding?: "full";
   readonly format: "book-pdf" | "book-epub" | "book-site";
@@ -365,6 +370,8 @@ export interface BookChapterPreview {
   readonly html: string;
 }
 export interface BookChapterPreviewOutput {
+  /** Explicit authoring dialect applied to the selected chapter. */
+  readonly profile?: FmdAuthoringProfile;
   /** Successful complete-font preview receipt; omitted for subsets. */
   readonly fontEmbedding?: "full";
   readonly format: "book-chapter-preview";

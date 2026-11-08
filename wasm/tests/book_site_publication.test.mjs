@@ -10,7 +10,7 @@ const pageModule = new URL("../pdf_page.mjs", import.meta.url).href;
 const asModule = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const files = () => [{ path: "guide/start.md", source: "# Start" }, { path: "end.md", source: "# End" }];
 let serial = 0;
-async function fixture(available = true, fullFonts = true) {
+async function fixture(available = true, fullFonts = true, profiled = available, shortProfile = false) {
   const url = asModule(`// Explicit generated-binding double ${++serial}
     export const state = { calls: [], loads: 0, freed: 0, wait: null, failure: null,
       badDiagnostics: false, output: new Uint8Array([80, 75, 3, 4, 1, 2]) };
@@ -18,6 +18,9 @@ async function fixture(available = true, fullFonts = true) {
     export const renderBookSitePublication = ${available ? "(...args) => { state.calls.push({kind:'site',args}); if(state.failure) throw state.failure; return state.output; }" : "undefined"};
     if (typeof renderBookSitePublication === "function")
       Object.defineProperty(renderBookSitePublication, "length", { value: ${fullFonts ? 23 : 22} });
+    export const renderBookSitePublicationProfiled = ${profiled ? "(...args) => { state.calls.push({kind:'profiled-site',args}); if(state.failure) throw state.failure; return state.output; }" : "undefined"};
+    if (typeof renderBookSitePublicationProfiled === "function")
+      Object.defineProperty(renderBookSitePublicationProfiled, "length", { value: ${shortProfile ? 23 : 24} });
     function result(kind,args) {
       state.calls.push({kind,args});
       if(state.failure) throw state.failure;
@@ -283,5 +286,50 @@ test("full site policy refuses old publishers before asset getters or initializa
     const options = { fontEmbedding: "full", get fontAssets() { assert.fail("asset getter reached"); } };
     await assert.rejects(api.renderBookSite(files(), options), { code: "UNSUPPORTED_WASM_PACKAGE" });
     assert.equal(state.loads, 0); assert.equal(state.calls.length, 0);
+  }
+});
+
+
+test("profiled site exports preserve includes, resources and full-font settings in the additive ABI", async () => {
+  const { api, state } = await fixture();
+  for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+    let release;
+    state.wait = new Promise(resolve => { release = resolve; });
+    const image = new Uint8Array([9, 1, 2, 8]), font = new Uint8Array([7, 3, 4, 6]);
+    let profileReads = 0;
+    const options = { get profile() { profileReads++; return profileReads === 1 ? profile : "wrong"; },
+      title: "Manual", customCss: "p{}", fontEmbedding: "full", toc: true,
+      includeSources: [{ path: "shared.md", source: "Shared" }],
+      pdfImages: [{ destination: "guide/image.svg", bytes: image.subarray(1, 3) }],
+      fontAssets: [{ slot: "body-bold", weight: 550, bytes: font.subarray(1, 3) }] };
+    const pending = api.renderBookSite(files(), options);
+    options.includeSources[0].source = "Too late"; image.fill(9); font.fill(8);
+    release(); const output = await pending, call = state.calls.at(-1);
+    assert.equal(profileReads, 1); assert.equal(call.kind, "profiled-site");
+    assert.equal(call.args.length, 24); assert.deepEqual(call.args.slice(22), ["full", profile]);
+    assert.deepEqual(call.args[3], ["Shared"]); assert.equal(call.args[10], "p{}");
+    assert.deepEqual([...call.args[14]], [1, 2]); assert.deepEqual([...call.args[17]], [3, 4]);
+    assert.deepEqual([...call.args[21]], [0, 550, 0, 0, 0]);
+    assert.equal(output.profile, profile); assert.equal(output.fontEmbedding, "full");
+  }
+  await api.renderBookSite(files(), { profile: "gfm-plus" });
+  assert.deepEqual(state.calls.at(-1).args.slice(22), [undefined, "gfm-plus"]);
+  const ordinary = await api.renderBookSite(files());
+  assert(!Object.hasOwn(ordinary, "profile")); assert.equal(state.calls.at(-1).kind, "site");
+  assert.equal(state.calls.at(-1).args.length, 22);
+});
+
+test("invalid or unsupported site profiles fail before asset getters and initialization", async () => {
+  const current = await fixture();
+  for (const profile of [null, "", "gfm", "GFM-PLUS", true])
+    await assert.rejects(current.api.renderBookSite(files(), { profile,
+      get pdfImages() { assert.fail("invalid profile reached assets"); } }), { code: "INVALID_OPTIONS" });
+  assert.equal(current.state.loads, 0);
+  for (const f of [await fixture(true, true, false), await fixture(true, true, true, true)]) {
+    for (const profile of ["commonmark-gfm", "gfm-plus"])
+      await assert.rejects(f.api.renderBookSite(files(), { profile,
+        get fontAssets() { assert.fail("unsupported profile reached fonts"); } }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(f.state.loads, 0); assert.equal(f.state.calls.length, 0);
+    await f.api.renderBookSite(files()); assert.equal(f.state.calls[0].kind, "site");
   }
 });

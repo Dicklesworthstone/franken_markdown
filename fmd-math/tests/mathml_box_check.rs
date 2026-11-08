@@ -49,6 +49,10 @@ const FORMULAS: &[&str] = &[
     r"a_{ij} = b^{k}_{l}",
     r"\checkmark \circlearrowleft \circlearrowright \hbar \nmid \mathbb{Z}",
     r"1 \minus 2 + e^{\minus t}",
+    r"\text{a $\pi$ b}",
+    r"\textbf{a $\frac{1}{2}+x^2$ b}",
+    r"x_{\textbf{a $\pi$ b}}",
+    r"\text{\underline{a $\pi$ b}}",
 ];
 
 /// Strings at the edge of the grammar. Both paths must agree on each:

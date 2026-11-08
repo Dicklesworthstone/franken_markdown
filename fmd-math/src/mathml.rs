@@ -74,6 +74,10 @@ pub fn mathml_well_formed(xml: &str) -> Result<(), String> {
 
 struct Writer {
     buf: String,
+    /// Text faces apply only to text tokens; a math island starts its own
+    /// mathematical font context even inside a styled text argument.
+    in_text: bool,
+    text_variant: Option<&'static str>,
     /// amsmath's `\if@display` for [`NodeKind::DisplayKern`]: a block
     /// root, or inside a display island.
     in_display: bool,
@@ -83,6 +87,8 @@ impl Writer {
     fn with_capacity(cap: usize, in_display: bool) -> Self {
         Self {
             buf: String::with_capacity(cap),
+            in_text: false,
+            text_variant: None,
             in_display,
         }
     }
@@ -112,6 +118,13 @@ impl Writer {
     #[inline(always)]
     fn text(&mut self, s: &str) {
         push_escaped(&mut self.buf, s, false);
+    }
+
+    fn open_mtext(&mut self) {
+        match self.text_variant {
+            Some(variant) => self.open("mtext", &[("mathvariant", variant)]),
+            None => self.open("mtext", &[]),
+        }
     }
 
     #[inline(always)]
@@ -164,7 +177,13 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             w.close("mrow");
         }
         NodeKind::Symbol { ch, class } | NodeKind::AmsSymbol { ch, class, .. } => {
-            emit_symbol(w, *ch, *class)
+            if w.in_text {
+                w.open_mtext();
+                w.char_text(*ch);
+                w.close("mtext");
+            } else {
+                emit_symbol(w, *ch, *class);
+            }
         }
         NodeKind::BigOp { ch, .. } => {
             w.open("mo", &[("movablelimits", "true")]);
@@ -219,18 +238,18 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
                 w.close("mo");
             }
         }
-        NodeKind::Text { body } => emit_mtext_nodes(w, body),
+        NodeKind::Text { body } => emit_mtext_nodes(w, body, style),
         NodeKind::TextRun { text, .. } => {
-            w.open("mtext", &[]);
+            w.open_mtext();
             w.text(text);
             w.close("mtext");
         }
         NodeKind::TextEllipsis => {
-            w.open("mtext", &[]);
+            w.open_mtext();
             w.text("...");
             w.close("mtext");
         }
-        NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body),
+        NodeKind::TextStyled { style: ts, body } => emit_text_styled(w, *ts, body, style),
         NodeKind::MathIsland { body, display } => {
             let inner_style = if *display {
                 Style::Display
@@ -238,11 +257,15 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
                 Style::Text
             };
             let outer = w.in_display;
+            let outer_text = (w.in_text, w.text_variant);
             w.in_display |= *display;
+            w.in_text = false;
+            w.text_variant = None;
             w.open("mrow", &[]);
             emit_run(w, body, inner_style, None, None);
             w.close("mrow");
             w.in_display = outer;
+            (w.in_text, w.text_variant) = outer_text;
         }
         NodeKind::StyleChange(_)
         | NodeKind::AlignChange(_)
@@ -722,31 +745,55 @@ fn emit_left_right(w: &mut Writer, left: &Delim, right: &Delim, body: &[Node], s
     w.close("mrow");
 }
 
-fn emit_mtext_nodes(w: &mut Writer, body: &[Node]) {
-    w.open("mtext", &[]);
-    collect_text(w, body);
-    w.close("mtext");
+fn emit_mtext_nodes(w: &mut Writer, body: &[Node], style: Style) {
+    let variant = w.text_variant;
+    emit_text_body(w, body, style, variant);
 }
 
-fn collect_text(w: &mut Writer, body: &[Node]) {
+fn emit_text_body(w: &mut Writer, body: &[Node], style: Style, variant: Option<&'static str>) {
+    let outer = (w.in_text, w.text_variant);
+    w.in_text = true;
+    w.text_variant = variant;
+    let start = w.buf.len();
+    w.open_mtext();
+    if collect_text(w, body) {
+        w.close("mtext");
+    } else {
+        // A single token cannot contain MathML structure. Discard the
+        // tentative flat token and use the complete node walk instead.
+        w.buf.truncate(start);
+        w.open("mrow", &[]);
+        emit_run(w, body, style, None, None);
+        w.close("mrow");
+    }
+    (w.in_text, w.text_variant) = outer;
+}
+
+/// False means the body contains structure or a scoped text face; the
+/// caller then emits the complete tree instead of silently dropping it.
+fn collect_text(w: &mut Writer, body: &[Node]) -> bool {
     for n in body {
         match &n.kind {
             NodeKind::TextRun { text, .. } => w.text(text),
             NodeKind::TextEllipsis => w.text("..."),
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
-            NodeKind::List(items) | NodeKind::Text { body: items } => collect_text(w, items),
-            NodeKind::TextStyled { body, .. } => collect_text(w, body),
+            NodeKind::List(items) | NodeKind::Text { body: items } => {
+                if !collect_text(w, items) {
+                    return false;
+                }
+            }
             NodeKind::Space(_) | NodeKind::Skip(_) | NodeKind::DisplayKern { .. } => {
                 w.buf.push(' ');
             }
             NodeKind::Logo(kind) => w.text(logo_text(*kind)),
             NodeKind::Tie => w.buf.push('\u{00A0}'),
-            _ => {}
+            _ => return false,
         }
     }
+    true
 }
 
-fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
+fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node], style: Style) {
     let variant = match ts {
         TextStyle::Bold => "bold",
         TextStyle::Emph | TextStyle::Italic => "italic",
@@ -754,9 +801,13 @@ fn emit_text_styled(w: &mut Writer, ts: TextStyle, body: &[Node]) {
         TextStyle::Typewriter => "monospace",
         TextStyle::SansSerif => "sans-serif",
     };
-    w.open("mtext", &[("mathvariant", variant)]);
-    collect_text(w, body);
-    w.close("mtext");
+    if ts == TextStyle::Underline {
+        w.open("menclose", &[("notation", "bottom")]);
+    }
+    emit_text_body(w, body, style, Some(variant));
+    if ts == TextStyle::Underline {
+        w.close("menclose");
+    }
 }
 
 fn math_font_variant(font: MathFont) -> &'static str {

@@ -1,7 +1,7 @@
 // smoke.mjs — headless node proof that the GENERATED wasm-bindgen module loads
 // and renders (bead 3i5.6). Imports the assembled package wrapper (which loads
-// ./pkg/franken_markdown_bg.wasm), calls capabilities/renderHtml/renderPdf, and
-// writes the wasm-side outputs for the parity comparison done by the gate.
+// ./pkg/franken_markdown_bg.wasm), exercises the real document exporters, and
+// writes the wasm-side HTML/PDF outputs for the parity comparison done by the gate.
 //
 // Usage: node smoke.mjs <pkgDir> <wasmPath> <outDir> <epoch> <md...>
 //   pkgDir   assembled package dir containing franken_markdown.js + pkg/
@@ -9,10 +9,11 @@
 //   outDir   where to write <stem>.wasm.html / <stem>.wasm.pdf
 //   epoch    SOURCE_DATE_EPOCH-equivalent integer for deterministic PDF metadata
 //   md...    one or more markdown file paths (the corpus)
+import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateRawSync } from "node:zlib";
 
 const [pkgDir, wasmPath, outDir, epochArg, ...corpus] = process.argv.slice(2);
 if (!pkgDir || !wasmPath || !outDir || corpus.length === 0) {
@@ -47,6 +48,24 @@ async function expectThrow(label, fn) {
 
 const wrapperUrl = pathToFileURL(`${pkgDir}/franken_markdown.js`).href;
 const mod = await import(wrapperUrl);
+
+// These use the real package before initialization. Invalid dialects must be
+// refused before touching host resources or trying to instantiate the module.
+const documentMethods = ["renderHtml", "renderPdf", "renderSvg", "renderEpub"];
+let invalidProfileResourceReads = 0;
+for (const method of documentMethods) {
+  for (const profile of [null, "", "gfm", "GFM-PLUS", " gfm-plus ", "2b"]) {
+    await assert.rejects(mod[method]("Term\n: Definition", {
+      profile,
+      get pdfImages() {
+        invalidProfileResourceReads++;
+        throw new Error("invalid profile reached resource capture");
+      },
+    }), { code: "INVALID_OPTIONS" }, `${method} rejects ${JSON.stringify(profile)}`);
+  }
+}
+assert.equal(invalidProfileResourceReads, 0);
+console.log("smoke: invalid authoring profiles rejected before initialization/resources");
 
 // Load the GENERATED module from its real .wasm bytes (not the native adapter).
 const wasmBytes = readFileSync(wasmPath);
@@ -121,7 +140,7 @@ await expectThrow("non-integer metadataEpochSeconds", () =>
 console.log("smoke: negative-path ok");
 
 // Multiple PDF image assets must ALL embed (the multi-image ABI path). Build two
-// distinct minimal 1x1 RGB PNGs in-process (CRCs are not verified by the decoder).
+// distinct valid 1x1 RGB PNGs in-process, also consumed by the stricter SVG path.
 console.log("smoke: multi-image checks");
 function tinyPng(r, g, b) {
   const be32 = (n) => {
@@ -129,8 +148,15 @@ function tinyPng(r, g, b) {
     a.writeUInt32BE(n >>> 0);
     return a;
   };
-  const chunk = (type, data) =>
-    Buffer.concat([be32(data.length), Buffer.from(type, "latin1"), data, be32(0)]);
+  const chunk = (type, data) => {
+    const payload = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    let crc = 0xffffffff;
+    for (const byte of payload) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return Buffer.concat([be32(data.length), payload, be32((crc ^ 0xffffffff) >>> 0)]);
+  };
   const ihdr = Buffer.concat([be32(1), be32(1), Buffer.from([8, 2, 0, 0, 0])]);
   const idat = deflateSync(Buffer.from([0, r, g, b]));
   return new Uint8Array(
@@ -163,6 +189,173 @@ if (!dec.decode(padded.bytes).includes("<title>  Padded Title  </title>")) {
   fail("renderHtml must pass a padded title verbatim (no trimming)");
 }
 console.log("smoke: verbatim-metadata ok");
+
+// Inspect EPUB records independently with Node's DEFLATE, rather than trusting
+// the renderer's own archive decoder or merely comparing ZIP signatures.
+function zipEntries(bytes) {
+  const zip = Buffer.from(bytes), entries = new Map();
+  let at = 0;
+  while (at + 4 <= zip.length && zip.readUInt32LE(at) === 0x04034b50) {
+    assert.ok(at + 30 <= zip.length, "complete ZIP local header");
+    assert.equal(zip.readUInt16LE(at + 6) & 9, 0, "no encryption/data descriptors");
+    const method = zip.readUInt16LE(at + 8), compressed = zip.readUInt32LE(at + 18);
+    const size = zip.readUInt32LE(at + 22), nameEnd = at + 30 + zip.readUInt16LE(at + 26);
+    const start = nameEnd + zip.readUInt16LE(at + 28), end = start + compressed;
+    assert.ok(nameEnd <= start && end <= zip.length, "complete ZIP entry");
+    const name = zip.subarray(at + 30, nameEnd).toString("utf8");
+    assert.ok(!entries.has(name), `unique ZIP entry: ${name}`);
+    assert.ok(method === 0 || method === 8, "stored or DEFLATE ZIP entry");
+    const value = method === 0 ? zip.subarray(start, end) : inflateRawSync(zip.subarray(start, end));
+    assert.equal(value.length, size, `uncompressed size: ${name}`);
+    entries.set(name, value);
+    at = end;
+  }
+  assert.ok(entries.size > 0, "EPUB contains real archive entries");
+  return entries;
+}
+
+// Follow the writer's xref: binary font/image streams may contain text that
+// resembles PDF syntax, so annotation checks must use actual object boundaries.
+function pdfObjects(bytes) {
+  const pdf = Buffer.from(bytes), marker = pdf.lastIndexOf("startxref");
+  assert.ok(marker >= 0, "PDF has a cross-reference offset");
+  const offset = Number(/^\s*(\d+)/u.exec(pdf.subarray(marker + 9).toString("ascii"))?.[1]);
+  assert.ok(Number.isSafeInteger(offset) && offset > 0 && offset < marker);
+  const lines = pdf.subarray(offset, marker).toString("ascii").split(/\r?\n/u);
+  assert.equal(lines[0], "xref");
+  const [first, count] = lines[1].trim().split(/\s+/u).map(Number);
+  assert.equal(first, 0);
+  assert.ok(Number.isSafeInteger(count) && count > 1);
+  assert.equal(lines[2].trim(), "0000000000 65535 f");
+  const positions = [];
+  for (let id = 1; id < count; id++) {
+    const row = /^(\d{10}) 00000 n\s*$/u.exec(lines[id + 2]);
+    assert.ok(row, `xref entry ${id}`);
+    const start = Number(row[1]);
+    assert.ok(start > 0 && start < offset);
+    assert.ok(pdf.subarray(start).toString("ascii", 0, 32).startsWith(`${id} 0 obj`));
+    positions.push({ id, start });
+  }
+  assert.equal(lines[count + 2], "trailer");
+  positions.sort((a, b) => a.start - b.start);
+  return new Map(positions.map(({ id, start }, index) => {
+    const end = positions[index + 1]?.start ?? offset;
+    assert.ok(end > start, "unique PDF object offsets");
+    return [id, pdf.subarray(start, end)];
+  }));
+}
+
+console.log("smoke: generated authoring-profile rendering");
+const profileSource = "# Profile source\n\nTerm\n: A **definition** with a [link](https://example.com).\n\n"
+  + "> Nested term\n> : Nested definition.\n\nClaim.[^n]\n\n![Profile chart](profile.png)\n\n"
+  + "[^n]: Supporting evidence.\n\n<script>alert('unsafe')</script>\n";
+const profileImage = tinyPng(30, 110, 190);
+const profileFont = new Uint8Array(readFileSync(new URL(
+  "../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url,
+)));
+const profileResources = {
+  pdfImages: [{ destination: "profile.png", bytes: profileImage }],
+  fontAssets: [{ slot: "body-regular", bytes: profileFont }],
+};
+const profileOptions = {
+  renderHtml: { ...profileResources, title: "Profiles", htmlFontFormat: "ttf", fontEmbedding: "full" },
+  renderPdf: { ...profileResources, title: "Profiles", metadataEpochSeconds: epoch,
+    page: { size: { widthPt: 420, heightPt: 600 },
+      margins: { topPt: 36, rightPt: 30, bottomPt: 36, leftPt: 30 } },
+    running: { header: { left: "{title}", image: { dest: "profile.png", position: "right", heightPt: 12 } },
+      footer: { right: "{page}/{pages}" } },
+    baselineGridPt: 12.5, footnoteBacklinks: true },
+  renderSvg: { ...profileResources, maxWidthPt: 360 },
+  renderEpub: { ...profileResources, title: "Profiles", fontEmbedding: "full" },
+};
+const profiledOutputs = new Map();
+for (const method of documentMethods) {
+  const outputs = [];
+  for (const profile of [undefined, "gfm-plus", "commonmark-gfm"]) {
+    const options = profile === undefined ? profileOptions[method] : { ...profileOptions[method], profile };
+    const output = await mod[method](profileSource, options);
+    assert.equal(output.sourceLength, Buffer.byteLength(profileSource), `${method} source ownership`);
+    assert.ok(Array.isArray(output.diagnostics));
+    outputs.push(output);
+  }
+  assert.ok(bytesEqual(outputs[0].bytes, outputs[1].bytes), `${method}: default = explicit gfm-plus`);
+  assert.ok(!bytesEqual(outputs[0].bytes, outputs[2].bytes), `${method}: commonmark-gfm changes definitions`);
+  profiledOutputs.set(method, outputs);
+}
+
+function checkDefinitions(text, extended, label) {
+  assert.equal(text.includes("<dl>"), extended, `${label}: selected definition-list structure`);
+  assert.ok(text.includes("<strong>definition</strong>"), `${label}: inline semantics retained`);
+  assert.ok(text.includes("Nested definition."), `${label}: nested source retained`);
+  assert.ok(!text.includes("<script>"), `${label}: profile cannot enable raw HTML`);
+}
+const imageUri = "data:image/png;base64," + Buffer.from(profileImage).toString("base64");
+const fontUri = "data:font/otf;base64," + Buffer.from(profileFont).toString("base64");
+for (let index = 0; index < 3; index++) {
+  const label = ["default", "gfm-plus", "commonmark-gfm"][index];
+  const html = dec.decode(profiledOutputs.get("renderHtml")[index].bytes);
+  checkDefinitions(html, index !== 2, `HTML ${label}`);
+  assert.ok(html.includes(imageUri), `HTML ${label}: exact host image`);
+  assert.ok(html.includes(fontUri), `HTML ${label}: exact full host font`);
+  const archive = zipEntries(profiledOutputs.get("renderEpub")[index].bytes);
+  const chapter = archive.get("OEBPS/chapter-1.xhtml");
+  assert.ok(chapter, `EPUB ${label}: content document`);
+  checkDefinitions(chapter.toString("utf8"), index !== 2, `EPUB ${label}`);
+  assert.ok([...archive.values()].some(bytes => bytesEqual(bytes, profileImage)), `EPUB ${label}: exact host image`);
+  assert.ok([...archive.values()].some(bytes => bytesEqual(bytes, profileFont)), `EPUB ${label}: exact full host font`);
+  const svg = dec.decode(profiledOutputs.get("renderSvg")[index].bytes);
+  assert.ok(svg.includes(imageUri), `SVG ${label}: host image retained`);
+  const pdfOutput = profiledOutputs.get("renderPdf")[index];
+  const pdf = Buffer.from(pdfOutput.bytes).toString("latin1");
+  assert.ok(pdf.includes("/MediaBox [0 0 420 600]"), `PDF ${label}: page ABI slots retained`);
+  assert.ok(pdf.includes("/Alt (Profile chart)") && pdf.includes("/Subtype /Image"), `PDF ${label}: image retained`);
+  assert.ok(pdf.includes("/FontFile3"), `PDF ${label}: supplied CFF font retained`);
+  assert.ok(!pdf.includes("/OutputIntents"), `PDF ${label}: authoring profile does not enable PDF/A`);
+  assert.equal(Object.hasOwn(pdfOutput, "pdfA"), false);
+}
+const svgWithoutHostFont = await mod.renderSvg(profileSource, {
+  ...profileOptions.renderSvg, profile: "commonmark-gfm", fontAssets: [],
+});
+assert.ok(!bytesEqual(svgWithoutHostFont.bytes, profiledOutputs.get("renderSvg")[2].bytes),
+  "SVG profile consumes host font outlines");
+assert.ok(profileImage.byteLength > 0 && profileFont.byteLength > 0, "host resources stay owned by the caller");
+const archivedProfile = await mod.renderPdf(profileSource, {
+  ...profileOptions.renderPdf, profile: "commonmark-gfm", pdfA: "2b", pdfAStrict: true,
+});
+assert.equal(archivedProfile.pdfA, "2b");
+assert.equal(archivedProfile.pdfAStrict, true);
+assert.ok(Buffer.from(archivedProfile.bytes).includes("/OutputIntents"));
+console.log("smoke: authoring profiles, native structure, resources and independent PDF/A ok");
+
+// Exercise the other newly shipped render paths through generated WASM too.
+const taggedSource = "$$\nx\\tag*{Energy}\n$$\n";
+const taggedHtml = dec.decode((await mod.renderHtml(taggedSource)).bytes);
+assert.ok(taggedHtml.includes('class="fmd-tagged-equation"') && taggedHtml.includes("Energy"));
+const taggedSvg = await mod.renderSvg(taggedSource);
+assert.equal((dec.decode(taggedSvg.bytes).match(/<use href="#g/gu) ?? []).length, 7,
+  "tagged SVG paints the equation and all six label glyphs");
+assert.ok(!taggedSvg.diagnostics.some(item => /unsupported.*math|math.*unsupported/iu.test(item.message)));
+const noteSource = "[Read](#fn-note) [Return](#fnref-1)\n\nClaim.[^note]\n\n[^note]: Evidence.\n";
+const notePdf = await mod.renderPdf(noteSource, {
+  profile: "commonmark-gfm", metadataEpochSeconds: epoch, footnoteBacklinks: true,
+});
+const noteObjects = pdfObjects(notePdf.bytes);
+const destinations = [...noteObjects.values()]
+  .filter(object => object.subarray(0, 100).includes("/Type /Annot /Subtype /Link"))
+  .map(object => {
+    const dictionary = object.toString("ascii");
+    assert.ok(!dictionary.includes("/S /URI"), "public note fragments are PDF destinations");
+    const match = /\/Dest \[(\d+) 0 R \/XYZ null ([\d.]+) null\]/u.exec(dictionary);
+    assert.ok(match, "each note navigation annotation resolves");
+    assert.ok(noteObjects.get(Number(match[1]))?.includes("/Type /Page "));
+    return match[0];
+  });
+assert.equal(destinations.length, 4, "ordinary note links, citation and backlink all render");
+assert.equal(destinations[0], destinations[2], "ordinary read link reaches the actual note");
+assert.equal(destinations[1], destinations[3], "ordinary return link reaches the actual citation");
+assert.notEqual(destinations[0], destinations[1]);
+assert.ok(!Buffer.from(notePdf.bytes).includes("fmd-book-pdf-nav/"), "temporary actions never escape");
+console.log("smoke: generated equation tags and note/citation destinations ok");
 
 console.log(
   "smoke: ok — generated wasm module loaded, rendered deterministically, and enforced the API contract.",

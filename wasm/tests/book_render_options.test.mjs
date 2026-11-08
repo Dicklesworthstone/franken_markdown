@@ -48,14 +48,14 @@ const api = createBookBindings(async () => RecordingBook);
 const decoded = result => JSON.parse(new TextDecoder().decode(result.bytes));
 const full = () => ({
   title: "Manual", author: "Writer", lang: "de", toc: true, pageNumbers: true,
-  typography: "homogeneous, antiriver,pareto", optimalPagination: true, strictPagination: true, microtype: "expansion",
+  typography: "homogeneous, antiriver,pareto", optimalPagination: true, strictPagination: true, footnoteBacklinks: true, microtype: "expansion",
   baseFontSize: 12, headingScale: 1.3, tableFontSize: 9, tocDepth: 3, fitToPages: 4,
   codeLineNumbers: true, metadataEpochSeconds: 0, htmlFontFormat: "woff2",
   running: { header: { left: "{title}", right: "{author}", rule: true },
     footer: { center: "{page}/{pages}", right: "{date}", rule: true }, skipFirstPage: true },
   page: { size: "letter" },
 });
-const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,expansion",
+const PDF_ARGS = ["homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,footnote-backlinks,expansion",
   12, 1.3, 9, 3, 4, true, 0, ["{title}", "", "{author}", "", "{page}/{pages}", "{date}"], true, true, true];
 
 if (!isMainThread) {
@@ -148,6 +148,7 @@ if (!isMainThread) {
     const pending = delayed.createBook(files, options);
     options.typography = "unknown";
     options.strictPagination = false;
+    options.footnoteBacklinks = false;
     options.baseFontSize = 99;
     options.running.header.left = "changed";
     options.page.size = "a4";
@@ -181,6 +182,7 @@ if (!isMainThread) {
     for (const option of [
       { typography: ["pareto"] }, { typography: "pareto,misspelled" }, { typography: " ".repeat(257) },
       { optimalPagination: "false" }, { strictPagination: "true" }, { strictPagination: null }, { microtype: "unknown" }, { microtypeProtrusion: 1 },
+      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 },
       { baseFontSize: 5.999999999 }, { headingScale: 2.000000001 }, { tableFontSize: NaN },
       { tocDepth: 1.5 }, { fitToPages: 0 }, { fitToPages: 0x100000000 },
       { metadataEpochSeconds: -1 }, { metadataEpochSeconds: Number.MAX_SAFE_INTEGER + 1 },
@@ -301,6 +303,7 @@ if (!isMainThread) {
       options.images = [{ destination: "figure.png", bytes }];
       const pending = client.render(FILES, "pdf", options);
       options.strictPagination = false;
+      options.footnoteBacklinks = false;
       options.running.header.left = "too late";
       options.metadataEpochSeconds = 100;
       const result = decoded(await pending);
@@ -353,6 +356,28 @@ if (!isMainThread) {
     } finally { session.dispose(); }
   });
 
+  test("retained backlinks are canonical and old token parsers refuse the request without leaking a book", async () => {
+    const flagged = prepareBookInput(FILES, { footnoteBacklinks: true });
+    assert.deepEqual(flagged, prepareBookInput(FILES, { typography: " footnote-backlinks " }));
+    assert.equal(Object.hasOwn(flagged.options, "footnoteBacklinks"), false);
+    assert.equal(flagged.options.typography, "footnote-backlinks");
+    assert.deepEqual(prepareBookInput(FILES, { footnoteBacklinks: false }), prepareBookInput(FILES, {}));
+    assert.equal(prepareBookInput(FILES, { typography: "footnote-backlinks", footnoteBacklinks: false })
+      .options.typography, "footnote-backlinks", "false cannot erase an explicitly requested token");
+    class OldTokens extends RecordingBook {
+      setPdfOptions(...args) {
+        if (args[0]?.includes("footnote-backlinks")) throw "unknown typography option 'footnote-backlinks'";
+        super.setPdfOptions(...args);
+      }
+    }
+    const old = createBookBindings(async () => OldTokens);
+    const created = state.created, freed = state.freed;
+    await assert.rejects(old.createBook(FILES, { footnoteBacklinks: true }), /unknown typography option 'footnote-backlinks'/);
+    assert.equal(state.created, created + 1); assert.equal(state.freed, freed + 1);
+    const ordinary = await old.createBook(FILES, { footnoteBacklinks: false });
+    assert.equal(decoded(ordinary.renderPdf()).pdf, undefined); ordinary.dispose();
+  });
+
   test("typed retained-book refusal crosses a real worker without poisoning its next request", async () => {
     const client = createBookWorkerClient({ workerFactory: () => workerEndpoint(false, false, false, true),
       timeoutMs: 10000 });
@@ -392,6 +417,7 @@ if (!isMainThread) {
     const variants = [{}, { htmlFontFormat: "woff2" }, { htmlFontFormat: "ttf" },
       { tocDepth: 2 }, { tocDepth: 3 }, { typography: "pareto" }, { typography: "antiriver" },
       { strictPagination: true }, { strictPagination: false },
+      { footnoteBacklinks: true }, { footnoteBacklinks: false },
       { baseFontSize: 12 }, { headingScale: 1.3 }, { tableFontSize: 9 }, { fitToPages: 3 },
       { codeLineNumbers: true }, { metadataEpochSeconds: 0 },
       { baselineGridPt: 13.125 }, { baselineGridPt: 14 },

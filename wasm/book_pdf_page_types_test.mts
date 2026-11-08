@@ -4,13 +4,14 @@ import type { FmdPdfPage } from "./franken_markdown.js";
 
 const files: readonly BookFile[] = [{ path: "one.md", source: "# One" }];
 const page: FmdPdfPage = { size: "a4", orientation: "landscape", margins: { leftPt: 24 } };
-const options: BookOptions = { strictPagination: true, baselineGridPt: 13.125, page, pageNumbers: true };
+const options: BookOptions = { strictPagination: true, footnoteBacklinks: true, baselineGridPt: 13.125, page, pageNumbers: true };
 const session = await createBook(files, options);
 session.renderPdf();
 session.renderPdf({ page });
 session.renderPdf({ page: { size: { widthPt: 720, heightPt: 540 }, margins: 0 } });
 session.renderPdf({ page: {} });
 await renderBookPdf(files, options);
+await renderBookPdf(files, { footnoteBacklinks: false });
 // @ts-expect-error Both custom dimensions are required.
 session.renderPdf({ page: { size: { widthPt: 612 } } });
 // @ts-expect-error Margins cannot be coerced strings.
@@ -25,5 +26,9 @@ session.dispose();
 await createBook(files, { baselineGridPt: "14" });
 // @ts-expect-error Strict pagination is a boolean stored at book creation.
 await createBook(files, { strictPagination: "true" });
+// @ts-expect-error Backlinks are a boolean stored at book creation.
+await createBook(files, { footnoteBacklinks: "true" });
+// @ts-expect-error Retained backlink settings are not per-render overrides.
+session.renderPdf({ footnoteBacklinks: false });
 // @ts-expect-error Retained publishing settings are not per-render overrides.
 session.renderPdf({ strictPagination: false });

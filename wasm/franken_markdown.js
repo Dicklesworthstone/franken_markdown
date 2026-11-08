@@ -138,7 +138,7 @@ export async function renderPdf(markdown, options = {}) {
   const typography = typographyOption(options);
   if (typography !== undefined) {
     const count = archival.pdfA ? 38 : baselineGridPt > 0 ? 37 : running?.hasImages ? 36 : running ? 33 : geometry.length ? 29 : 28;
-    requireBindingArguments(render, count, "PDF typography and optimal pagination");
+    requireBindingArguments(render, count, "PDF typography, pagination and footnote backlinks");
   }
   const source = archival.pdfA ? String(markdown) : undefined;
   const imageInput = options.pdfImages, fontInput = options.fontAssets;
@@ -271,7 +271,7 @@ function admitArchivalPdfAssets(images, fonts) {
   }
 }
 
-// Opt-in typography/pagination switches as the comma-separated tokens the
+// Opt-in typography, pagination and navigation as the comma-separated tokens the
 // core accepts; undefined keeps the default (all off).
 function typographyOption(options) {
   const tokens = [];
@@ -284,6 +284,10 @@ function typographyOption(options) {
   if (strict !== undefined && typeof strict !== "boolean")
     throw new TypeError("strictPagination must be a boolean");
   if (strict) tokens.push("strict-pagination");
+  const backlinks = options.footnoteBacklinks;
+  if (backlinks !== undefined && typeof backlinks !== "boolean")
+    throw new TypeError("footnoteBacklinks must be a boolean");
+  if (backlinks) tokens.push("footnote-backlinks");
   if (options.microtype === "expansion") tokens.push("expansion");
   else if (options.microtype !== undefined && !["disabled", "protrusion"].includes(options.microtype)) {
     throw new RangeError(`microtype must be "disabled", "protrusion" or "expansion"`);
@@ -936,8 +940,9 @@ export async function renderBookPdf(files, options = {}) {
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
-  if (prepared.strictPagination) {
-    requireBindingArguments(render, prepared.grid > 0 ? 38 : 37, "Strict PDF pagination");
+  if (prepared.strictPagination || prepared.footnoteBacklinks) {
+    requireBindingArguments(render, prepared.grid > 0 ? 38 : 37,
+      prepared.footnoteBacklinks ? "PDF footnote backlinks" : "Strict PDF pagination");
   }
   await init();
   try {
@@ -964,7 +969,7 @@ function bookPdfArguments(files, options) {
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
     baseFontSize, headingScale, tableFontSize, pageNumbers,
     fontScale, typeSize, lang, toc = true, tocDepth,
-    microtype, microtypeProtrusion, typography, optimalPagination, strictPagination, running,
+    microtype, microtypeProtrusion, typography, optimalPagination, strictPagination, footnoteBacklinks, running,
   } = options;
   if (optimalPagination !== undefined && typeof optimalPagination !== "boolean")
     throw new TypeError("optimalPagination must be a boolean");
@@ -972,6 +977,7 @@ function bookPdfArguments(files, options) {
     typography: typography === undefined ? undefined : normalizePdfTypography(typography),
     optimalPagination,
     strictPagination,
+    footnoteBacklinks,
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
   const bands = pdfRunningOption(normalizePdfRunning(running));
@@ -1039,7 +1045,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete, grid, strictPagination,
+    advanced, complete, grid, strictPagination, footnoteBacklinks,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),

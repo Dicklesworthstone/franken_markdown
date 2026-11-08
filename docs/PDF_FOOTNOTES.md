@@ -30,6 +30,50 @@ link to its note.
   notes moved to the Notes section and references from one note to another.
   Note destinations are not bookmarks.
 
+## Return to a citation
+
+Enable `--pdf-footnote-backlinks` to make the existing superscript label at the
+start of each note return to that note's first linked citation. The label
+keeps its normal colour and typography; no arrow, extra text or line is added.
+The option is off by default, preserving existing PDF output.
+
+The native flag works with render, watch, batch and book PDF output. Set a
+persistent default with `fmd config set pdf_footnote_backlinks true`; pass
+`--pdf-footnote-backlinks=false` to override that default for one invocation.
+Rust callers set `PdfOptions::footnote_backlinks` or
+`WasmRenderOptions::footnote_backlinks` to `true`. JavaScript document, book
+and interactive export options use `footnoteBacklinks: true`, as does the MCP
+`fmd.render_pdf` tool.
+
+Browser hosts need a matching rebuilt JavaScript/WASM package whose native
+typography parser accepts `footnote-backlinks`. Older bindings or token parsers
+reject an explicit backlink request; they do not retry without return links.
+Omitting the option or setting `footnoteBacklinks: false` preserves the existing
+browser ABI. Saved offline workspaces carry the option with their captured
+runtime, so their embedded package must support the token too.
+
+Return destinations use the actual final page and line position after
+pagination, fitting and TOC insertion. A repeated citation returns to the
+first citation in the document body. A note referenced only from another note
+returns to its first citation in note-number order. Body citations take
+precedence even when an earlier page-bottom note also cites that definition.
+Repeated table headers return to the first painted occurrence. The same
+rules apply to full notes moved into the trailing Notes section and to PDF/A
+output. Unreferenced notes retain their plain labels and have no return link.
+
+PDF book links can also address the HTML-compatible citation anchors, such as
+`chapter.md#fnref-1`, without enabling automatic return labels. These numbers
+follow each chapter's first-use order; the merged book's global note numbers
+do not change the meaning of a source link. Links to `chapter.md#fn-label`
+still address the note itself. Both forms bind to actual rendered destinations,
+including note-to-note citations and endnote fallback. Missing or ambiguous
+anchors remain unresolved, and a heading that merely starts with `fnref-`
+remains a heading.
+
+A citation nested inside an ordinary link is printed without a second,
+nested link. Return navigation uses the first citation with its own rendered
+note link; it does not invent a destination for a missing citation.
+
 ## Endnotes instead
 
 Hosts that want every note in a trailing Notes section prepare the document
@@ -71,3 +115,14 @@ chapter links, repeated note labels, note headings interleaved with body
 headings, nested alerts/lists, PDF/A, TOC and tall-note fallback. It independently
 reads xref/page objects, annotation rectangles, font character maps and page
 streams to verify note placement and the destination of each visible link.
+Its return-navigation fixtures also cover first-use identity when paint order
+differs, repeated table headers, cycles, actual multipage endnotes, unchanged
+text geometry, emitter determinism and chapter-scoped `fnref-N` targets.
+`tests/book_pdf_footnote_links.rs` keeps missing and ambiguous citation anchors
+from capturing unrelated destinations.
+
+The browser adapter regressions cover root/book exports, worker and Flow
+transport, retained-output caching, and offline/source-project round trips with
+explicit native binding doubles and real Node workers. They verify option
+ownership and forwarding; the Rust suites above inspect emitted PDF navigation.
+These adapter tests do not execute a newly generated WASM engine.

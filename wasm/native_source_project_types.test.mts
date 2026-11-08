@@ -8,7 +8,7 @@ const source: FmdNativeSourceProjectOutput = createNativeSourceProject('# Docume
   font: 'serif', fontScale: 1.125, allowRawHtml: false, metadataEpochSeconds: 0,
   page: {size: 'a4', margins: 36},
   typography: {homogeneous: true, antiriver: false, pareto: true},
-  optimalPagination: true, strictPagination: true, baselineGridPt: 13.375,
+  optimalPagination: true, strictPagination: true, footnoteBacklinks: true, baselineGridPt: 13.375,
   microtype: 'expansion',
   pdfImages: [{destination: 'chart.png', bytes: new DataView(new ArrayBuffer(8))}],
   fontAssets: [{slot: 'body-regular', bytes: new Uint8Array([1]), weight: 525}],
@@ -16,6 +16,7 @@ const source: FmdNativeSourceProjectOutput = createNativeSourceProject('# Docume
 const inputs: FmdNativeSourceProjectInput[] = [source.text(), source.bytes, source.bytes.buffer as ArrayBuffer, new DataView(new ArrayBuffer(0))];
 const project = readNativeSourceProject(inputs[0]);
 project.options.title = 'Changed';
+project.options.footnoteBacklinks = false;
 project.options.pdfImages?.push({destination: 'next.png', bytes: new Uint8Array([2])});
 if (project.options.fontAssets?.[0]) project.options.fontAssets[0].weight = 400;
 const reencoded = createNativeSourceProject(project.source, project.options);
@@ -38,6 +39,8 @@ const publication: FmdRenderOutput = source;
 createNativeSourceProject('', {allowRawHtml: true});
 // @ts-expect-error Pagination policy is a boolean, not a truthy string.
 createNativeSourceProject('', {strictPagination: 'true'});
+// @ts-expect-error Backlink policy is a boolean, not a truthy string.
+createNativeSourceProject('', {footnoteBacklinks: 'true'});
 // @ts-expect-error Only native microtype modes are admitted.
 createNativeSourceProject('', {microtype: 'automatic'});
 // @ts-expect-error Blob reading must be explicit before this synchronous API.

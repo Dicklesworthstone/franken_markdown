@@ -188,6 +188,24 @@ test("strict pagination token prevents cached non-strict bytes from satisfying a
   assert.equal(h.stats.exports.length, 3, "returning to non-strict policy rebuilds the retained book");
   h.cached.clear();
 });
+test("backlink settings invalidate cached PDF bytes and equivalent explicit tokens reuse the capture", async () => {
+  const h = fixture(), input = capture();
+  const ordinary = prepareBookInput(input.files, input.options);
+  const linked = prepareBookInput(input.files, { ...input.options, footnoteBacklinks: true });
+  const explicit = prepareBookInput(input.files, { ...input.options, typography: "optimal-pagination,footnote-backlinks" });
+  assert.deepEqual(linked, explicit);
+  assert.deepEqual(prepareBookInput(input.files, { ...input.options, footnoteBacklinks: false }), ordinary);
+  try {
+    const before = await h.render(ordinary), after = await h.render(linked);
+    assert.notDeepEqual(after.bytes, before.bytes);
+    assert.deepEqual(after.bytes, (await h.fresh(linked, "pdf")).bytes);
+    assert.equal(h.stats.exports.length, 2); assert.equal(h.stats.creates, 2);
+    assert.deepEqual((await h.render(explicit)).bytes, after.bytes);
+    assert.equal(h.stats.exports.length, 2, "canonical aliases share the same owned output");
+    assert.deepEqual((await h.render(ordinary)).bytes, before.bytes);
+    assert.equal(h.stats.exports.length, 3); assert.equal(h.stats.creates, 3);
+  } finally { h.cached.clear(); }
+});
 for (const [name, change] of Object.entries(settingsChanges)) test(`render dependency invalidation: ${name}`, async () => {
   const h = fixture(); await h.render(); const next = capture(); change(next);
   // These are already-normalized-input tests, not native option admission.

@@ -172,6 +172,7 @@ function bookRenderOptions(options) {
   const typography = options.typography;
   const optimal = options.optimalPagination;
   const strict = options.strictPagination;
+  const backlinks = options.footnoteBacklinks;
   const microtype = options.microtype;
   const protrusion = options.microtypeProtrusion;
   const tokens = [];
@@ -179,7 +180,7 @@ function bookRenderOptions(options) {
     if (typeof typography !== "string") throw new TypeError("typography must be a comma-separated string");
     bookTextBytes(typography, 256);
     for (const token of typography.split(",").map(token => token.trim()).filter(Boolean)) {
-      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination", "protrusion", "expansion"].includes(token)) {
+      if (!["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination", "footnote-backlinks", "protrusion", "expansion"].includes(token)) {
         throw new TypeError(`Unknown typography token: '${token}'`);
       }
       tokens.push(token);
@@ -187,6 +188,7 @@ function bookRenderOptions(options) {
   }
   if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");
   if (boolean(strict, "strictPagination")) tokens.push("strict-pagination");
+  if (boolean(backlinks, "footnoteBacklinks")) tokens.push("footnote-backlinks");
   if (microtype !== undefined) {
     if (!["off", "protrusion", "expansion", "all"].includes(microtype)) {
       throw new TypeError("microtype must be off, protrusion, expansion, or all");

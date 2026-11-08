@@ -163,6 +163,8 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
    * a PAGINATION_* code (for example PAGINATION_INFEASIBLE or
    * PAGINATION_BUDGET_EXCEEDED). Requires a matching WASM token parser. */
   strictPagination?: boolean;
+  /** Link PDF note numbers back to their first citation. Default false. */
+  footnoteBacklinks?: boolean;
   /** Opt-in PDF body baseline spacing in points, 1..144 (rounded to 0.001 pt).
    * Omitted/0 keeps the grid disabled. Incompatible with fitToPages. Requires
    * matching baseline-grid WASM bindings; old packages fail explicitly. */

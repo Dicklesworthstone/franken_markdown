@@ -12,12 +12,13 @@ const gate = () => {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 };
-async function fixture({ archival = 39, hold, failure } = {}) {
+async function fixture({ archival = 39, hold, failure, shortTypography = false, oldTokens = false } = {}) {
   const calls = [];
   let inits = 0, frees = 0;
   const render = name => (...args) => {
     calls.push({ name, args });
     if (name === "archival" && failure) throw failure;
+    if (oldTokens && args.includes("footnote-backlinks")) throw "unknown typography option 'footnote-backlinks'";
     return { format: "pdf", mimeType: "application/pdf", extension: "pdf",
       sourceLength: utf8(args[0]).length, bytes: utf8(`native-double:${name}`),
       diagnosticsJson: () => "[]", free() { frees++; } };
@@ -34,6 +35,8 @@ async function fixture({ archival = 39, hold, failure } = {}) {
     accessibilityAudit() {}, capabilities() {}, documentStats() {}, searchIndex() {},
     renderSemanticDiffHtml() {}, semanticDiff() {},
   };
+  for (const [name, count] of [["Multi", 28], ["Page", 29], ["Grid", 37], ["Running", 33], ["RunningImages", 36]])
+    Object.defineProperty(bindings[`renderPdfConfigured${name}`], "length", { value: count - Number(shortTypography) });
   if (archival !== null) {
     bindings.renderPdfConfiguredArchival = render("archival");
     Object.defineProperty(bindings.renderPdfConfiguredArchival, "length", { value: archival });
@@ -86,6 +89,54 @@ for (const options of [{}, { pdfA: "off" }, { pdfAStrict: false }, { pdfA: "off"
     assert.equal(Object.hasOwn(output, "pdfAStrict"), false);
   });
 
+const backlinkRoutes = [
+  ["ordinary", {}, 28, 27],
+  ["page", { page: { size: "a4" } }, 29, 28],
+  ["running", { running: { footer: { center: "{page}" } } }, 33, 32],
+  ["running-images", { running: { header: { image: { dest: "logo" } } } }, 36, 35],
+  ["grid", { baselineGridPt: 12 }, 37, 35],
+  ["archival", { pdfA: "2b" }, 38, 35],
+  ["archival", { pdfA: "2b", baselineGridPt: 12 }, 39, 35],
+];
+test("footnote backlinks reach every PDF ABI while false and omission preserve existing calls", async () => {
+  const f = await fixture();
+  for (const [name, options, count, index] of backlinkRoutes) {
+    await f.api.renderPdf("note[^1]\n\n[^1]: first", { ...options, footnoteBacklinks: true });
+    const requested = f.calls.at(-1);
+    assert.equal(requested.name, name); assert.equal(requested.args.length, count);
+    assert.equal(requested.args[index], "footnote-backlinks", name);
+    await f.api.renderPdf("note", options);
+    const omitted = f.calls.at(-1);
+    await f.api.renderPdf("note", { ...options, footnoteBacklinks: false });
+    assert.deepEqual(f.calls.at(-1), omitted, `${name}: false must preserve the default ABI`);
+    assert.equal(omitted.args[index], undefined);
+  }
+});
+
+test("footnote backlinks reject invalid booleans and old ABIs before assets or initialization", async () => {
+  const f = await fixture(), old = await fixture({ shortTypography: true, archival: 37 });
+  let reads = 0;
+  for (const [, options] of backlinkRoutes) {
+    for (const footnoteBacklinks of [null, 1, "true"]) {
+      await assert.rejects(f.api.renderPdf("source", { ...options, footnoteBacklinks,
+        get pdfImages() { reads++; throw Error("assets must not be read"); } }), /footnoteBacklinks must be a boolean/);
+    }
+    await assert.rejects(old.api.renderPdf("source", { ...options, footnoteBacklinks: true,
+      get pdfImages() { reads++; throw Error("assets must not be read"); } }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
+  assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(old.inits, 0);
+  assert.equal(f.calls.length, 0); assert.equal(old.calls.length, 0);
+});
+
+test("older native token parsers refuse backlinks without retrying an unlinked PDF", async () => {
+  const f = await fixture({ oldTokens: true });
+  for (const [name, options] of backlinkRoutes) {
+    const before = f.calls.length;
+    await assert.rejects(f.api.renderPdf("note", { ...options, footnoteBacklinks: true }), /unknown typography option 'footnote-backlinks'/);
+    assert.equal(f.calls.length, before + 1); assert.equal(f.calls.at(-1).name, name);
+  }
+});
+
 test("archival export captures all source, assets, metadata, typography, paper and running content before init yields", async () => {
   const hold = gate(), f = await fixture({ hold });
   const image = new Uint8Array([90, 1, 2, 91]), font = new Uint8Array([92, 3, 4, 93]);
@@ -98,12 +149,12 @@ test("archival export captures all source, assets, metadata, typography, paper a
     fontAssets: [{ slot: "body-regular", bytes: font.subarray(1, 3), weight: 550 }],
     baseFontSize: 12, headingScale: 1.3, tableFontSize: 9, pageNumbers: true, codeLineNumbers: true,
     toc: true, tocDepth: 4, typography: { homogeneous: true, antiriver: true, pareto: true },
-    optimalPagination: true, strictPagination: true, microtype: "expansion", baselineGridPt: 13.125 };
+    optimalPagination: true, strictPagination: true, footnoteBacklinks: true, microtype: "expansion", baselineGridPt: 13.125 };
   let source = "# Before";
   const pending = f.api.renderPdf({ toString: () => source }, options);
   source = "changed"; options.title = "After"; options.pdfA = "off"; options.pdfAStrict = false;
   options.baselineGridPt = 14; options.page.size.widthPt = 900;
-  options.typography.pareto = false; options.running.header.left = "changed";
+  options.typography.pareto = false; options.footnoteBacklinks = false; options.running.header.left = "changed";
   image.fill(8); font.fill(9); hold.resolve();
   const output = await pending, args = f.calls[0].args;
   assert.equal(output.pdfA, "2b"); assert.equal(output.pdfAStrict, true);
@@ -117,7 +168,7 @@ test("archival export captures all source, assets, metadata, typography, paper a
   assert.deepEqual(args[28], ["{title}", "", "", "", "{page}/{pages}", ""]);
   assert.deepEqual(args.slice(29, 32), [true, false, true]);
   assert.deepEqual(args[32], ["logo.png", ""]);
-  assert.match(args[35], /homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,expansion/);
+  assert.equal(args[35], "homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,footnote-backlinks,expansion");
   assert.deepEqual(args.slice(36), ["2b", true, 13.125]);
 });
 

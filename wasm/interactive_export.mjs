@@ -86,7 +86,7 @@ function captureOptions(input) {
   const allowed = new Set(['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth',
     'pdfImages', 'fontAssets', 'allowRawHtml', 'page', 'typography', 'optimalPagination',
-    'strictPagination', 'baselineGridPt', 'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict']);
+    'strictPagination', 'footnoteBacklinks', 'baselineGridPt', 'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict']);
   record(input, 'workspace options');
   for (const key of Object.keys(input)) if (!allowed.has(key)) {
     throw new TypeError(`Unsupported native workspace option: ${key}`);
@@ -100,7 +100,7 @@ function captureOptions(input) {
   normalizePdfArchival(pdfA, pdfAStrict);
   if (pdfA !== undefined) pdfSettings.pdfA = pdfA;
   if (pdfAStrict !== undefined) pdfSettings.pdfAStrict = pdfAStrict;
-  for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
+  for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'microtypeProtrusion']) {
     const value = input[key];
     if (value !== undefined) {
       if (typeof value !== 'boolean') throw new TypeError(key + ' must be boolean');

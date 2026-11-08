@@ -14,6 +14,8 @@ const mime = { pdf: "application/pdf", html: "text/html; charset=utf-8", epub: "
 
 function nativeRendererDouble(mode) {
   return format => async (source, options) => {
+    if (options.footnoteBacklinks && mode === "old-footnote-tokens")
+      throw new Error("unknown typography option 'footnote-backlinks'");
     if (options.pdfA === "2b" && mode === "unsupported")
       throw Object.assign(new Error("archival binding unavailable"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (options.pdfA === "2b" && mode === "refuse") throw new Error("pdf_a_file_uri: strict refusal");
@@ -96,16 +98,17 @@ if (!isMainThread) {
   for (const strict of [false, true]) test(`document workers preserve archival receipts and complete options: strict=${strict}`, async t => {
     const api = document(t), bytes = new Uint8Array([90, 1, 2, 91]);
     const options = { pdfA: "2b", pdfAStrict: strict, title: "Before", page: { size: "a4", margins: 36 },
-      typography: { pareto: true }, strictPagination: true, baselineGridPt: 13.125, microtype: "expansion",
+      typography: { pareto: true }, strictPagination: true, footnoteBacklinks: true, baselineGridPt: 13.125, microtype: "expansion",
       running: { footer: { center: "{page}" } }, pdfImages: [{ destination: "logo", bytes: bytes.subarray(1, 3) }] };
     const pending = api.renderPdf("# Original 😀", options);
     options.pdfA = "off"; options.pdfAStrict = !strict; options.title = "After";
-    options.typography.pareto = false; options.page.margins = 0; bytes.fill(9);
+    options.typography.pareto = false; options.footnoteBacklinks = false; options.page.margins = 0; bytes.fill(9);
     const output = await pending, captured = decode(output);
     assert.equal(output.pdfA, "2b"); assert.equal(output.pdfAStrict, strict);
     assert.equal(output.filename("report"), "report.pdf"); assert.equal(output.blob().size, output.bytes.length);
     assert.equal(captured.options.pdfA, "2b"); assert.equal(captured.options.pdfAStrict, strict);
     assert.equal(captured.options.title, "Before"); assert.equal(captured.options.typography.pareto, true);
+    assert.equal(captured.options.footnoteBacklinks, true);
     assert.equal(captured.options.page.margins.topPt, 36); assert.equal(captured.options.baselineGridPt, 13.125);
     assert.deepEqual(captured.options.pdfImages, [{ destination: "logo", bytes: [1, 2] }]);
     assert.equal(bytes.byteLength, 4); assert.equal(api.pendingBytes, 0);
@@ -121,14 +124,36 @@ if (!isMainThread) {
   });
 
   test("all publication outputs retain their own successful emission policy", async t => {
-    const api = document(t), options = { pdfA: "2b", pdfAStrict: true };
-    const pending = publication(api, options); options.pdfA = "off"; options.pdfAStrict = false;
+    const api = document(t), options = { pdfA: "2b", pdfAStrict: true, footnoteBacklinks: true };
+    const pending = publication(api, options); options.pdfA = "off"; options.pdfAStrict = false; options.footnoteBacklinks = false;
     const edition = await pending;
     assert.deepEqual(edition.outputs.map(output => output.format), ["html", "pdf", "epub"]);
     assert.deepEqual(edition.outputs.map(output => [output.pdfA, output.pdfAStrict]),
       [[undefined, undefined], ["2b", true], [undefined, undefined]]);
     assert.equal(edition.totalBytes, edition.outputs.reduce((sum, output) => sum + output.bytes.length, 0));
     assert.equal(decode(edition.outputs[1]).options.pdfAStrict, true);
+    assert.deepEqual(edition.outputs.map(output => decode(output).options.footnoteBacklinks), [undefined, true, undefined]);
+  });
+
+  for (const kind of ["document", "flow"]) test(`${kind} workers capture backlink true, false and omission for ordinary PDFs`, async t => {
+    const api = kind === "flow" ? await flow(t) : document(t);
+    for (const value of [undefined, true, false]) {
+      const options = value === undefined ? {} : { footnoteBacklinks: value };
+      const pending = kind === "flow" ? api.exportDocument("pdf", options, api.token) : api.renderPdf("note", options);
+      options.footnoteBacklinks = !value;
+      const captured = decode(await pending).options;
+      assert.equal(Object.hasOwn(captured, "footnoteBacklinks"), value !== undefined);
+      assert.equal(captured.footnoteBacklinks, value);
+    }
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  for (const kind of ["document", "flow"]) test(`${kind} workers propagate an old native backlink-token refusal`, async t => {
+    const api = kind === "flow" ? await flow(t, { mode: "old-footnote-tokens" }) : document(t, { mode: "old-footnote-tokens" });
+    const options = { footnoteBacklinks: true };
+    await assert.rejects(kind === "flow" ? api.exportDocument("pdf", options, api.token) : api.renderPdf("note", options),
+      { code: kind === "flow" ? "EXPORT_FAILED" : "RENDER_FAILED", message: /unknown typography option 'footnote-backlinks'/ });
+    assert.equal(api.pendingBytes, 0);
   });
 
   for (const mode of ["ignore", "downgrade", "unexpected"]) for (const batch of [false, true])
@@ -158,25 +183,30 @@ if (!isMainThread) {
     const api = createWorkerRenderer({ workerFactory() { factories++; throw Error("unexpected start"); } });
     const asset = { destination: "image", get bytes() { getters++; return new Uint8Array([1]); } };
     for (const options of [{ pdfA: "3b" }, { pdfAStrict: true }, { pdfA: "off", pdfAStrict: true },
-      { pdfA: "2b", pdfAStrict: "true" }, { pdfA: "2b", baselineGridPt: 12, fitToPages: 2 }])
+      { pdfA: "2b", pdfAStrict: "true" }, { pdfA: "2b", baselineGridPt: 12, fitToPages: 2 },
+      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 }])
       await assert.rejects(api.renderPdf("x", { ...options, pdfImages: [asset] }), { code: "INVALID_OPTIONS" });
-    for (const format of ["html", "epub", "svg", "interactive-html"])
+    for (const format of ["html", "epub", "svg", "interactive-html"]) {
       await assert.rejects(api.render(format, "x", { pdfA: "2b" }), { code: "INVALID_OPTIONS" });
+      await assert.rejects(api.render(format, "x", { footnoteBacklinks: true }), { code: "INVALID_OPTIONS" });
+    }
     await assert.rejects(api.renderPdf("x", { get pdfA() { getters++; return "2b"; } }), { code: "INVALID_OPTIONS" });
     assert.equal(factories, 0); assert.equal(getters, 0); api.dispose();
   });
 
   for (const strict of [false, true]) test(`Flow workers retain policy in single and atomic exports: strict=${strict}`, async t => {
-    const api = await flow(t), options = { pdfA: "2b", pdfAStrict: strict, typography: { pareto: true }, baselineGridPt: 12 };
+    const api = await flow(t), options = { pdfA: "2b", pdfAStrict: strict, typography: { pareto: true }, footnoteBacklinks: true, baselineGridPt: 12 };
     const pending = api.exportDocument("pdf", options, api.token);
-    options.pdfA = "off"; options.pdfAStrict = !strict; options.typography.pareto = false;
+    options.pdfA = "off"; options.pdfAStrict = !strict; options.typography.pareto = false; options.footnoteBacklinks = false;
     const output = await pending;
     assert.equal(output.pdfA, "2b"); assert.equal(output.pdfAStrict, strict);
     assert.equal(decode(output).options.typography.pareto, true);
+    assert.equal(decode(output).options.footnoteBacklinks, true);
     assert.equal(output.revision, api.token.revision);
-    const edition = await flowPublication(api, { pdfA: "2b", pdfAStrict: strict });
+    const edition = await flowPublication(api, { pdfA: "2b", pdfAStrict: strict, footnoteBacklinks: false });
     assert.deepEqual(edition.map(output => [output.pdfA, output.pdfAStrict]),
       [[undefined, undefined], ["2b", strict], [undefined, undefined]]);
+    assert.deepEqual(edition.map(output => decode(output).options.footnoteBacklinks), [undefined, false, undefined]);
     const ordinary = await api.exportDocument("pdf", { pdfA: "off" }, api.token);
     assert.equal(Object.hasOwn(ordinary, "pdfA"), false); assert.equal(api.pendingBytes, 0);
   });
@@ -209,9 +239,15 @@ if (!isMainThread) {
     const token = { revision: "1", layoutRevision: "1" };
     const normalized = normalizeFlowExport("pdf", { pdfA: "2b" }, token)[1];
     assert.equal(normalized.pdfA, "2b"); assert.equal(normalized.pdfAStrict, false); assert(Object.isFrozen(normalized));
-    for (const format of ["html", "epub", "svg"])
+    for (const format of ["html", "epub", "svg"]) {
       assert.throws(() => normalizeFlowExport(format, { pdfA: "off" }, token), { code: "INVALID_OPTIONS" });
-    for (const options of [{ pdfA: "3b" }, { pdfAStrict: true }, { pdfA: "2b", pdfAStrict: 1 }])
-      assert.throws(() => normalizeFlowExport("pdf", options, token), { code: "INVALID_OPTIONS" });
+      assert.throws(() => normalizeFlowExport(format, { footnoteBacklinks: true }, token), { code: "INVALID_OPTIONS" });
+    }
+    let reads = 0;
+    const asset = { destination: "image", get bytes() { reads++; return new Uint8Array([1]); } };
+    for (const options of [{ pdfA: "3b" }, { pdfAStrict: true }, { pdfA: "2b", pdfAStrict: 1 },
+      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 }])
+      assert.throws(() => normalizeFlowExport("pdf", { ...options, pdfImages: [asset] }, token), { code: "INVALID_OPTIONS" });
+    assert.equal(reads, 0);
   });
 }

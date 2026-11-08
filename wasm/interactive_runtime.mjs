@@ -40,7 +40,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
-    'typography', 'optimalPagination', 'strictPagination', 'baselineGridPt',
+    'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'baselineGridPt',
     'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
   function settingData(value, keys = settingKeys) {
     // Inspect descriptors before reading values: accessors, inherited options,
@@ -87,7 +87,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     if (value.pdfA !== undefined && !['off', '2b'].includes(value.pdfA)) throw new TypeError('pdfA must be off or 2b');
     if (value.pdfAStrict !== undefined && typeof value.pdfAStrict !== 'boolean') throw new TypeError('pdfAStrict must be boolean');
     if (value.pdfAStrict && value.pdfA !== '2b') throw new TypeError('pdfAStrict requires pdfA: 2b');
-    for (const key of ['optimalPagination', 'strictPagination', 'microtypeProtrusion']) {
+    for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'microtypeProtrusion']) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
     }
     if (value.typography !== undefined) {
@@ -144,6 +144,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     for (const key of ['homogeneous', 'antiriver', 'pareto']) if (settings.typography?.[key]) tokens.push(key);
     if (settings.optimalPagination) tokens.push('optimal-pagination');
     if (settings.strictPagination) tokens.push('strict-pagination');
+    if (settings.footnoteBacklinks) tokens.push('footnote-backlinks');
     if (settings.microtype === 'expansion') tokens.push('expansion');
     return tokens.length ? tokens.join(',') : undefined;
   }

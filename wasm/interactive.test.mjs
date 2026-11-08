@@ -52,14 +52,15 @@ function pdfBindings(archival = 39) {
 test('PDF typesetting and archival policy are owned before init and reopen separately from shell settings',async()=>{
   reset();let release;state.gate=new Promise(resolve=>{release=resolve;});
   const options={title:'Owned',font:'serif',fontScale:1.25,author:'A',
-    typography:{homogeneous:true,pareto:true},optimalPagination:true,strictPagination:true,
+    typography:{homogeneous:true,pareto:true},optimalPagination:true,strictPagination:true,footnoteBacklinks:true,
     baselineGridPt:13.375,microtype:'expansion',pdfA:'2b',pdfAStrict:true};
   const pending=renderOfflineWorkspace('Source',runtime(),options);
   options.typography.pareto=false;options.baselineGridPt=24;options.title='Later';
-  options.pdfA='off';options.pdfAStrict=false;release();
+  options.pdfA='off';options.pdfAStrict=false;options.footnoteBacklinks=false;release();
   const p=payload(await pending);
   assert.deepEqual(p.options.typography,{homogeneous:true,pareto:true});
   assert.equal(p.options.baselineGridPt,13.375);assert.equal(p.options.strictPagination,true);
+  assert.equal(p.options.footnoteBacklinks,true);
   assert.equal(p.options.microtype,'expansion');assert.equal(p.options.title,'Owned');
   assert.equal(p.options.pdfA,'2b');assert.equal(p.options.pdfAStrict,true);
   assert.deepEqual(state.calls.find(call=>call.kind==='render').options,{title:'Owned',lang:undefined});
@@ -69,7 +70,22 @@ test('PDF typesetting and archival policy are owned before init and reopen separ
   assert.deepEqual(f.calls.map(call=>call.name),['renderPdfConfiguredArchival']);
   assert.deepEqual(f.calls[0].args.slice(36),['2b',true,13.375]);
   assert.equal(f.calls[0].args[3],'Owned');
-  assert.equal(f.calls[0].args[35],'homogeneous,pareto,optimal-pagination,strict-pagination,expansion');
+  assert.equal(f.calls[0].args[35],'homogeneous,pareto,optimal-pagination,strict-pagination,footnote-backlinks,expansion');
+});
+
+test('offline backlink policy preserves omission and explicit false across save and reopen',async()=>{
+  for(const options of [{},{footnoteBacklinks:false},{footnoteBacklinks:true}]) {
+    reset();
+    const p=payload(await renderOfflineWorkspace('Source',runtime(),options)),f=pdfBindings(null);
+    const renderer=createNativeWorkspaceRenderer(f.bindings,p);
+    assert.equal(Object.hasOwn(p.options,'footnoteBacklinks'),Object.hasOwn(options,'footnoteBacklinks'));
+    assert.equal(p.options.footnoteBacklinks,options.footnoteBacklinks);
+    const reopened=payload(await renderOfflineWorkspace('Source',runtime(),renderer.settings));
+    assert.deepEqual(reopened,p);
+    createNativeWorkspaceRenderer(f.bindings,reopened).pdf('Source');
+    assert.equal(f.calls[0].args.length,options.footnoteBacklinks?28:27);
+    assert.equal(f.calls[0].args[27],options.footnoteBacklinks?'footnote-backlinks':undefined);
+  }
 });
 
 test('archival policy spelling survives saved workspace reopening and a second export',async()=>{
@@ -117,7 +133,8 @@ test('saved archival workspaces refuse missing or too-old native bindings withou
 
 test('invalid or incompatible PDF typesetting is refused before runtime initialization',async()=>{
   for(const options of [{baselineGridPt:12,fitToPages:2},{baselineGridPt:145},
-    {strictPagination:'true'},{typography:{pareto:1}},{microtype:'unknown'},{fitToPages:0}]) {
+    {strictPagination:'true'},{footnoteBacklinks:'true'},{footnoteBacklinks:null},{footnoteBacklinks:1},
+    {typography:{pareto:1}},{microtype:'unknown'},{fitToPages:0}]) {
     reset();await assert.rejects(renderOfflineWorkspace('x',runtime(),options));assert.equal(state.calls.length,0);
   }
 });

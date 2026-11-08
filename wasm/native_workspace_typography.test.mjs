@@ -14,8 +14,8 @@ const encoder = new TextEncoder();
 const plain = value => JSON.parse(JSON.stringify(value));
 const source = '\ufeff# Exact pages\r\n\r\nMeasured café 😀\r';
 const all = {typography: {homogeneous: true, antiriver: true, pareto: true},
-  optimalPagination: true, strictPagination: true, microtype: 'expansion', baselineGridPt: 13.375};
-const tokens = 'homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,expansion';
+  optimalPagination: true, strictPagination: true, footnoteBacklinks: true, microtype: 'expansion', baselineGridPt: 13.375};
+const tokens = 'homogeneous,antiriver,pareto,optimal-pagination,strict-pagination,footnote-backlinks,expansion';
 const geometry = [792, 612, 24, 36, 48, 60];
 function payload(options = {}) {
   return {version: 1, options: {font: 'serif', fontScale: 1.25, title: 'Owned', ...options},
@@ -72,7 +72,7 @@ test('typography selects the trailing multi/page tokens while explicit disabled 
     assert.equal(args.length, pageGeometry ? 29 : 28); assert.equal(args.at(-1), tokens);
     createNativeWorkspaceRenderer(f.bindings, payload({pageGeometry, baselineGridPt: 0,
       typography: {homogeneous: false}, strictPagination: false, optimalPagination: false,
-      microtype: 'disabled', microtypeProtrusion: false})).pdf(source);
+      footnoteBacklinks: false, microtype: 'disabled', microtypeProtrusion: false})).pdf(source);
     assert.equal(f.calls.at(-1)[1].length, pageGeometry ? 28 : 27);
   }
 });
@@ -91,6 +91,7 @@ test('unsupported grid/token bindings refuse before assets are decoded or a docu
     [{baselineGridPt: 12}, 'renderPdfConfiguredGrid', null],
     [{baselineGridPt: 12}, 'renderPdfConfiguredGrid', 36],
     [{strictPagination: true}, 'renderPdfConfiguredMulti', 27],
+    [{footnoteBacklinks: true}, 'renderPdfConfiguredMulti', 27],
     [{typography: {pareto: true}, pageGeometry: geometry}, 'renderPdfConfiguredPage', 28],
     [{microtype: 'expansion'}, 'renderPdfConfiguredMulti', 27],
   ]) {
@@ -105,7 +106,9 @@ test('unsupported grid/token bindings refuse before assets are decoded or a docu
 test('settings transactions deeply own typography and preserve committed exports through rollback', () => {
   const f = fixture(), p = payload(), renderer = createNativeWorkspaceRenderer(f.bindings, p);
   const patch = plain(all), tx = renderer.stageSettings(patch); patch.typography.pareto = false;
+  patch.footnoteBacklinks = false;
   assert.equal(tx.settings.typography.pareto, true); assert(Object.isFrozen(tx.settings.typography));
+  assert.equal(tx.settings.footnoteBacklinks, true);
   renderer.pdf('before'); assert.equal(f.calls.at(-1)[1].length, 27);
   tx.html('pending'); assert.equal(f.calls.at(-1)[0], 'html');
   tx.commit(); renderer.pdf('after'); assert.equal(f.calls.at(-1)[1][35], tokens);
@@ -118,11 +121,42 @@ test('invalid typography and fixed-grid/fitting conflicts cannot mutate settings
   const getter = {}; Object.defineProperty(getter, 'pareto', {enumerable: true, get() {reads++; return true;}});
   const invalid = [{typography: getter}, {typography: {unknown: true}}, {typography: []},
     {typography: {pareto: 1}}, {strictPagination: 1}, {optimalPagination: 'yes'}, {microtypeProtrusion: 0},
+    {footnoteBacklinks: 'true'}, {footnoteBacklinks: null}, {footnoteBacklinks: 1},
     {microtype: 'unknown'}, {baselineGridPt: 0.5}, {baselineGridPt: 145}, {baselineGridPt: NaN},
     {fitToPages: 0}, {fitToPages: 1.5}, {fitToPages: 0x100000000}, {fitToPages: 2, baselineGridPt: 12}];
   const before = renderer.settings;
   for (const patch of invalid) assert.throws(() => renderer.stageSettings(patch));
+  const bad = payload({footnoteBacklinks: 'true'});
+  Object.defineProperty(bad, 'images', {get() {reads++; throw Error('assets must not be decoded');}});
+  assert.throws(() => createNativeWorkspaceRenderer(f.bindings, bad), /footnoteBacklinks must be boolean/);
   assert.equal(renderer.settings, before); assert.equal(f.calls.length, 0); assert.equal(reads, 0);
+});
+
+test('backlink-only settings toggle and round trip without changing omitted or explicitly disabled documents', () => {
+  const f = fixture(), renderer = createNativeWorkspaceRenderer(f.bindings, payload());
+  renderer.stageSettings({footnoteBacklinks: true}).commit();
+  renderer.pdf(source); assert.equal(f.calls.at(-1)[1][27], 'footnote-backlinks');
+  renderer.stageSettings({footnoteBacklinks: false}).commit();
+  renderer.pdf(source); assert.equal(f.calls.at(-1)[1].length, 27);
+  for (const options of [{}, {footnoteBacklinks: false}, {footnoteBacklinks: true}]) {
+    const project = createNativeSourceProject(source, options);
+    const restored = readNativeSourceProject(project.bytes);
+    assert.equal(Object.hasOwn(restored.options, 'footnoteBacklinks'), Object.hasOwn(options, 'footnoteBacklinks'));
+    assert.equal(restored.options.footnoteBacklinks, options.footnoteBacklinks);
+    assert.deepEqual(createNativeSourceProject(restored.source, restored.options).bytes, project.bytes);
+  }
+});
+
+test('saved backlink requests propagate old token-parser failures without retrying default output', () => {
+  const f = fixture(); let renders = 0;
+  const old = (...args) => {
+    renders++; assert.equal(args[27], 'footnote-backlinks');
+    throw "unknown typography option 'footnote-backlinks'";
+  };
+  Object.defineProperty(old, 'length', {value: 28}); f.bindings.renderPdfConfiguredMulti = old;
+  const renderer = createNativeWorkspaceRenderer(f.bindings, payload({footnoteBacklinks: true}));
+  assert.throws(() => renderer.pdf(source), /unknown typography option 'footnote-backlinks'/);
+  assert.equal(renders, 1);
 });
 
 test('native project round trips retain PDF settings, omission and editable owned nested options', () => {
@@ -139,6 +173,7 @@ test('saved codec independently refuses malformed typesetting and never executes
   const codec = createNativeSourceProjectCodec(); let reads = 0;
   const getter = {}; Object.defineProperty(getter, 'antiriver', {enumerable: true, get() {reads++; return true;}});
   for (const options of [{typography: getter}, {strictPagination: 'true'}, {microtype: 'invalid'},
+    {footnoteBacklinks: 'true'}, {footnoteBacklinks: null}, {footnoteBacklinks: 1},
     {baselineGridPt: -1}, {fitToPages: 0}, {baselineGridPt: 12, fitToPages: 1}]) {
     const p = payload(options); assert.throws(() => codec.encode({source, options: p.options, images: p.images, fonts: p.fonts}),
       {code: 'INVALID_SOURCE_PROJECT'});
@@ -151,10 +186,12 @@ test('exported and reopened native HTML preserves the complete typesetting reque
   const exporter = await createWorkspaceExporterWithLoader({wasm: Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0), bindings: 'trusted fixture'}, async () => f.bindings);
   const result = exporter.render(source, {...all, page: {size: 'a4', margins: 24}});
   const p = saved(result); assert.deepEqual(p.options.typography, all.typography);
+  assert.equal(p.options.footnoteBacklinks, true);
   const reopened = createNativeWorkspaceRenderer(f.bindings, JSON.parse(JSON.stringify(p)));
   reopened.pdf('revised'); assert.equal(f.calls.at(-1)[1][35], tokens); assert.equal(f.calls.at(-1)[1][36], 13.375);
   const project = createNativeSourceProject(source, all);
-  assert.deepEqual(saved(exporter.renderProject(project.bytes)).options.typography, all.typography);
+  const reexported = saved(exporter.renderProject(project.bytes));
+  assert.deepEqual(reexported.options.typography, all.typography); assert.equal(reexported.options.footnoteBacklinks, true);
 });
 
 test('serialized renderer and codec retain typography without imports or outer lexical helpers', () => {
@@ -198,12 +235,12 @@ test('real disposable workers retain strict pagination reason codes and can reco
       if (a === 'refuse') throw JSON.stringify({code:'PAGINATION_INFEASIBLE',reason:'infeasible',message:'caption cannot fit'});
       return {bytes:new TextEncoder().encode('%PDF-'+B),mimeType:'application/pdf',diagnosticsJson:()=> '[]',free(){}};
     }`;
-  const p = {...payload({strictPagination: true}), bindings, wasm: 'AGFzbQEAAAA='};
+  const p = {...payload({strictPagination: true, footnoteBacklinks: true}), bindings, wasm: 'AGFzbQEAAAA='};
   const worker = createWorkspacePreviewWorker(createNativeWorkspaceRenderer, p, {workerFactory, timeoutMs: 10000});
   try {
     const state = {options: p.options, images: p.images};
     await assert.rejects(worker.exportDocument('pdf', 'refuse', state), {code: 'PAGINATION_INFEASIBLE', reason: 'infeasible'});
     const result = await worker.exportDocument('pdf', source, state);
-    assert.equal(new TextDecoder().decode(result.bytes), '%PDF-strict-pagination');
+    assert.equal(new TextDecoder().decode(result.bytes), '%PDF-strict-pagination,footnote-backlinks');
   } finally {worker.dispose();}
 });

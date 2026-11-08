@@ -539,6 +539,8 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   /** Require exact final PDF page breaking; implies optimalPagination.
    * Default false. Native refusals preserve their PAGINATION_* error code. */
   strictPagination?: boolean;
+  /** Link PDF note numbers back to their first citation. Default false. */
+  footnoteBacklinks?: boolean;
 }
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;

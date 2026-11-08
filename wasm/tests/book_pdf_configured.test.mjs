@@ -49,6 +49,47 @@ async function fixture(advanced = true, complete = advanced, grid = complete, sh
 const chapters = () => [{ path: "guide/one.md", source: "# One" }, { path: "two.md", source: "# Two" }];
 const page = () => ({ size: { widthPt: 720, heightPt: 540 }, margins: { topPt: 18, rightPt: 24, bottomPt: 30, leftPt: 36 } });
 
+test("root book backlinks are captured by complete and grid bindings without changing false/default ABIs", async () => {
+  const { api, state } = await fixture();
+  for (const extra of [{}, { page: page() }, { running: { footer: { center: "{page}" } } }, { baselineGridPt: 12 }]) {
+    let release;
+    state.wait = new Promise(resolve => { release = resolve; });
+    const options = { ...extra, footnoteBacklinks: true };
+    const pending = api.renderBookPdf(chapters(), options);
+    options.footnoteBacklinks = false;
+    release(); await pending;
+    const requested = state.calls.at(-1);
+    assert.equal(requested.kind, extra.baselineGridPt ? "book-grid" : "book-complete");
+    assert.equal(requested.args.length, extra.baselineGridPt ? 38 : 37);
+    assert.equal(requested.args[36], "footnote-backlinks");
+    await api.renderBookPdf(chapters(), extra);
+    const omitted = state.calls.at(-1);
+    await api.renderBookPdf(chapters(), options);
+    assert.deepEqual(state.calls.at(-1), omitted, "false must retain the exact ordinary call");
+  }
+  const legacy = await fixture(false);
+  await legacy.api.renderBookPdf(chapters(), { footnoteBacklinks: false });
+  assert.equal(legacy.state.calls[0].kind, "book-legacy");
+  assert.equal(legacy.state.calls[0].args.length, 8);
+});
+
+test("root book backlinks reject invalid booleans, old arity and unsupported tokens without fallback", async () => {
+  const { api, state } = await fixture();
+  const assets = [null]; let reads = 0;
+  Object.defineProperty(assets, "0", { get() { reads++; throw Error("invalid options must precede asset admission"); } });
+  for (const footnoteBacklinks of [null, 1, "true"])
+    await assert.rejects(api.renderBookPdf(chapters(), { footnoteBacklinks, pdfImages: assets }), /footnoteBacklinks must be a boolean/);
+  assert.equal(reads, 0); assert.equal(state.loads, 0);
+  const old = await fixture(true, true, true, true);
+  for (const extra of [{}, { baselineGridPt: 12 }])
+    await assert.rejects(old.api.renderBookPdf(chapters(), { ...extra, footnoteBacklinks: true }),
+      { code: "UNSUPPORTED_WASM_PACKAGE", message: /footnote backlinks/ });
+  assert.equal(old.state.loads, 0); assert.equal(old.state.calls.length, 0);
+  state.fail = "unknown typography option 'footnote-backlinks'";
+  await assert.rejects(api.renderBookPdf(chapters(), { footnoteBacklinks: true }), /unknown typography option 'footnote-backlinks'/);
+  assert.deepEqual(state.calls.map(call => call.kind), ["book-complete"]);
+});
+
 test("root basic exports preserve eight-argument legacy ABI, defaults and output ownership", async () => {
   for (const available of [false, true]) {
     const { api, state } = await fixture(available);

@@ -213,6 +213,7 @@ pub struct BatchOptions {
 #[derive(Clone)]
 pub(crate) struct BatchShell {
     remote_image_timeout_secs: Option<u64>,
+    embed_remote_images: bool,
     svg_width_pt: Option<f32>,
     warnings: Arc<Mutex<Vec<BatchWarning>>>,
 }
@@ -224,9 +225,14 @@ pub(crate) struct BatchWarning {
 }
 
 impl BatchShell {
-    pub(crate) fn new(remote_image_timeout_secs: Option<u64>, svg_width_pt: Option<f32>) -> Self {
+    pub(crate) fn new(
+        remote_image_timeout_secs: Option<u64>,
+        embed_remote_images: bool,
+        svg_width_pt: Option<f32>,
+    ) -> Self {
         Self {
             remote_image_timeout_secs,
+            embed_remote_images,
             svg_width_pt,
             warnings: Arc::new(Mutex::new(Vec::new())),
         }
@@ -1108,10 +1114,57 @@ fn render_one(
         );
     }
 
+    // Native HTML/EPUB embedding is explicit authority, never a consequence
+    // of calling the public offline batch API. Resolve before rendering so
+    // combined output shares one snapshot, including failed fetch attempts.
+    let shared_images = if options
+        .shell
+        .as_ref()
+        .is_some_and(|shell| shell.embed_remote_images)
+        && (format.wants_html() || matches!(format, OutputFormat::Epub))
+    {
+        let mut images = options.html.image_assets.clone();
+        if let Err(e) = append_auto_image_assets_for_input(
+            input,
+            &doc,
+            &mut images,
+            if matches!(format, OutputFormat::Epub) {
+                "EPUB"
+            } else {
+                "HTML"
+            },
+            options.max_pdf_image_bytes,
+            &mut input_paths,
+        ) {
+            return failed(input, FileErrorKind::Input, e);
+        }
+        if let Some(timeout_secs) = options
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.remote_image_timeout_secs)
+            && !append_remote_image_assets_for_input(
+                input,
+                &doc,
+                &mut images,
+                options.max_pdf_image_bytes,
+                timeout_secs,
+                cancelled,
+                warnings,
+            )
+        {
+            return FileEntry::skipped(input);
+        }
+        Some(images)
+    } else {
+        None
+    };
+
     let mut rendered = Vec::new();
     if format.wants_html() {
         let mut html_opts = options.html_for(frontmatter.as_ref());
-        if let Err(e) = append_auto_image_assets_for_input(
+        if let Some(images) = &shared_images {
+            html_opts.image_assets.clone_from(images);
+        } else if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut html_opts.image_assets,
@@ -1141,7 +1194,9 @@ fn render_one(
     }
     if format.wants_pdf() {
         let mut pdf_opts = options.pdf_for(frontmatter.as_ref());
-        if let Err(e) = append_auto_image_assets_for_input(
+        if let Some(images) = &shared_images {
+            pdf_opts.image_assets.clone_from(images);
+        } else if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut pdf_opts.image_assets,
@@ -1152,7 +1207,8 @@ fn render_one(
             return failed(input, FileErrorKind::Input, e);
         }
         if let Some(shell) = &options.shell {
-            if let Some(timeout_secs) = shell.remote_image_timeout_secs
+            if shared_images.is_none()
+                && let Some(timeout_secs) = shell.remote_image_timeout_secs
                 && !append_remote_image_assets_for_input(
                     input,
                     &doc,
@@ -1201,7 +1257,9 @@ fn render_one(
 
     if matches!(format, OutputFormat::Epub) {
         let mut epub_opts = options.html_for(frontmatter.as_ref());
-        if let Err(e) = append_auto_image_assets_for_input(
+        if let Some(images) = &shared_images {
+            epub_opts.image_assets.clone_from(images);
+        } else if let Err(e) = append_auto_image_assets_for_input(
             input,
             &doc,
             &mut epub_opts.image_assets,

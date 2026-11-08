@@ -629,10 +629,32 @@ fmd --text '<markdown>' --out out.html
 | `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/GIF/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
 | `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/GIF/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicitly mapped or auto-loaded local image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
-| `--no-remote-images` | Do not fetch remote http(s) image destinations for PDF output; they degrade to alt text with a warning |
-| `--remote-image-timeout-secs <n>` | Per-image timeout for remote PDF image fetches (default `20`) |
+| `--embed-remote-images` | Opt in to embedding remote HTTP(S) images in HTML/EPUB and book exports. Combined HTML/PDF shares one snapshot; books fetch each URL once across chapters. Explicit `--pdf-image` mappings win. Also available in watch and batch |
+| `--no-remote-images` | Disable automatic PDF/SVG remote fetching; other outputs keep their offline preparation defaults. Conflicts with `--embed-remote-images` |
+| `--remote-image-timeout-secs <n>` | Per-image timeout for authorized remote image fetches (default `20`; zero uses one second). Book commands require `--embed-remote-images` when setting this timeout |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
+
+### Portable image exports
+
+Use `--embed-remote-images` when a saved HTML document, EPUB, or book should
+carry its remote figures. For example:
+
+```bash
+fmd report.md --embed-remote-images --out portable.html
+fmd report.md --to both --embed-remote-images --out portable.html
+fmd report.md --to epub --embed-remote-images --out portable.epub
+fmd book chapters --to epub --embed-remote-images --out book.epub
+```
+
+HTML and EPUB preparation stays offline by default; ordinary PDF/SVG retains
+its existing automatic downloads. When embedding is requested, repeated images
+and combined outputs reuse one fetched snapshot. Books reuse it across chapters.
+The existing timeout, byte cap, explicit-image precedence, and batch cancellation
+apply. Failed downloads warn and retain the format's normal fallback; HTML may
+keep the unresolved source URL, while EPUB preserves an accessible placeholder.
+The core and browser/WASM APIs continue to accept bytes without fetching.
+See [remote image publishing](docs/REMOTE_IMAGES.md) for the complete policy.
 
 ### PDF baseline grids
 
@@ -767,6 +789,7 @@ fmd batch <inputs...> [--to html|pdf|both] [--out-dir DIR] [--workers N]
 | `--mem-budget <bytes>` | Soft concurrency cap: workers ≈ `bytes / 64 MiB-per-job` (a static per-job estimate, not measured resident memory) |
 | `--timeout <secs>` | Wall-clock deadline; on expiry the run cancels at the next per-file checkpoint and the receipt is marked `cancelled` |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per auto-loaded local PNG/SVG/JPEG/GIF image asset for HTML and PDF batch renders |
+| `--embed-remote-images` | Embed HTTP(S) images in HTML/EPUB; combined output shares one fetched snapshot per input. Conflicts with `--no-remote-images` |
 | `--continue-on-error` | Record per-file failures in the receipt instead of failing the whole run |
 | `--font`, `--css`, and the render style flags | Shared theme and style overrides (`--toc`, `--font-scale`, `--microtype`, typography, PDF running headers/footers, `--pdf-font`, ...), as in `render`. `--pdf-a` and `--svg-width-pt` are render-only |
 | `--json` | Emit the deterministic batch receipt JSON to stdout |

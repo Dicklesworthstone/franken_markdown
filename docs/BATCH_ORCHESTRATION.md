@@ -42,6 +42,7 @@ fmd batch <inputs...> [--to html|pdf|both|epub|svg] [--out-dir DIR]
                       [--mem-budget BYTES] [--continue-on-error]
                       [--timeout SECS] [--max-pdf-image-bytes BYTES]
                       [--no-remote-images] [--remote-image-timeout-secs SECS]
+                      [--embed-remote-images]
                       [--svg-width-pt POINTS]
                       [--json] [--font sans|serif] [--css FILE] [--no-config]
 ```
@@ -73,10 +74,16 @@ fmd batch <inputs...> [--to html|pdf|both|epub|svg] [--out-dir DIR]
   precedence, including bindings whose bytes cannot be decoded. Downloads honor
   `--max-pdf-image-bytes` and the per-image wall-clock timeout (default 20 seconds;
   zero uses one second). `--no-remote-images` disables fetching. Failed downloads
-  keep alt text and report warnings; they do not fail an otherwise renderable
-  document. HTML keeps its original remote URLs, including in combined output;
-  HTML-only and EPUB jobs do not fetch. Public library batch entry points
-  remain offline and accept image bytes through existing options.
+  report warnings and retain the renderer's normal fallback; they do not fail
+  an otherwise renderable document. By default HTML keeps its original remote
+  URLs, including in combined output, and HTML-only and EPUB jobs do not fetch.
+  `--embed-remote-images` explicitly enables HTML/EPUB fetching and embedding.
+  Combined output then shares one asset snapshot; even failed destinations are
+  attempted only once for the complete document. The flag conflicts with
+  `--no-remote-images`. A batch deadline cancels pending HTML/EPUB preparation
+  through the same interruptible downloader, leaving previous publications
+  intact. Public library batch entry points remain offline and accept image
+  bytes through existing options. See [remote image publishing](REMOTE_IMAGES.md).
 - **SVG poster geometry**: `--to svg --svg-width-pt POINTS` sets each poster's
   physical width and viewBox before layout, matching ordinary rendering. The
   supported range is 144..=14400 points; the existing SVG resolver substitutes

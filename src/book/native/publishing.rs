@@ -115,6 +115,19 @@ pub(super) struct PublishingArgs {
     /// Repeat; later mappings replace earlier ones. Paths resolve from cwd.
     #[arg(long = "pdf-image", value_name = "DEST=PATH")]
     pdf_images: Vec<String>,
+    /// Fetch and embed remote http(s) images once for the complete book.
+    /// HTML, PDF and EPUB share the same bytes. Default off; explicit
+    /// --pdf-image mappings take precedence.
+    #[arg(long, conflicts_with = "no_remote_images")]
+    embed_remote_images: bool,
+    /// Keep book image resolution offline (the default). Conflicts with
+    /// --embed-remote-images; explicit image mappings still work.
+    #[arg(long)]
+    no_remote_images: bool,
+    /// Timeout per remote image in seconds (default 20; zero means one).
+    /// Requires --embed-remote-images. Image bytes also obey --max-pdf-image-bytes.
+    #[arg(long, requires = "embed_remote_images")]
+    remote_image_timeout_secs: Option<u64>,
     /// PDF/A identification and output intent: 2b or off.
     #[arg(long = "pdf-a", value_name = "PROFILE")]
     pdf_a: Option<String>,
@@ -127,6 +140,7 @@ pub(super) struct Publishing {
     pub html_font_format: HtmlFontFormat,
     pub font_embedding: crate::FontEmbedding,
     pub pdf_a: PdfASettings,
+    pub remote_image_timeout_secs: Option<u64>,
     explicit_toc: Option<bool>,
     configured_toc: Option<bool>,
     pdf: PdfOptions,
@@ -302,17 +316,14 @@ pub(super) fn prepare(
         .pdf_images
         .iter()
         .map(|spec| {
-            let (destination, path) = spec
-                .split_once('=')
-                .ok_or_else(|| error(64, "usage_error", "--pdf-image requires DEST=PATH"))?;
-            if destination.trim().is_empty() || path.trim().is_empty() {
-                return Err(error(
-                    64,
-                    "usage_error",
-                    "--pdf-image needs a nonempty DEST and PATH",
-                ));
-            }
-            Ok((destination.trim().to_owned(), PathBuf::from(path.trim())))
+            let hints: Vec<_> = args
+                .pdf_header_image
+                .as_deref()
+                .into_iter()
+                .chain(args.pdf_footer_image.as_deref())
+                .collect();
+            crate::cli::parse_pdf_image_spec(spec, &hints)
+                .map_err(|message| error(64, "usage_error", message))
         })
         .collect::<Result<_, Failure>>()?;
     Ok(Publishing {
@@ -329,6 +340,10 @@ pub(super) fn prepare(
             .and_then(crate::FontEmbedding::parse)
             .unwrap_or_default(),
         pdf_a,
+        remote_image_timeout_secs: (args.embed_remote_images && !args.no_remote_images).then_some(
+            args.remote_image_timeout_secs
+                .unwrap_or(crate::cli::DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS),
+        ),
         explicit_toc: args.toc,
         configured_toc: defaults.toc,
         pdf,

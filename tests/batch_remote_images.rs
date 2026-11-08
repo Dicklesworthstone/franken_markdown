@@ -972,3 +972,197 @@ fn input_and_source_protection_failures_do_not_fetch_remote_images() {
     );
     assert!(String::from_utf8_lossy(&run.stdout).contains("refusing to overwrite"));
 }
+
+#[test]
+fn opted_in_html_epub_and_combined_jobs_embed_the_same_assets_as_single_render() {
+    let server = ImageServer::start();
+    let dir = Directory::new();
+    let url = server.url("/figure.png");
+    dir.write("source.md", "# Publication\n\n{{#include figure.txt}}\n");
+    dir.write(
+        "figure.txt",
+        format!("![Figure]({url})\n\n<img src='{url}' alt='Repeated'>\n"),
+    );
+    for format in ["html", "epub", "both"] {
+        let extension = if format == "epub" { "epub" } else { "html" };
+        let single = format!("single.{extension}");
+        succeeded(&dir.run(&[
+            "source.md",
+            "--to",
+            format,
+            "--embed-remote-images",
+            "--out",
+            &single,
+        ]));
+        let output = dir.run(&[
+            "batch",
+            "source.md",
+            "--to",
+            format,
+            "--embed-remote-images",
+            "--out-dir",
+            "embedded",
+            "--json",
+        ]);
+        succeeded(&output);
+        assert!(warning_codes(&output).is_empty());
+        assert!(
+            dir.bytes(&single) == dir.bytes(&format!("embedded/source.{extension}")),
+            "single/batch resource parity for {format}"
+        );
+        if format == "epub" {
+            assert!(
+                dir.bytes(&single)
+                    .windows(RED.len())
+                    .any(|bytes| bytes == RED),
+                "EPUB must package the actual PNG"
+            );
+        } else {
+            let html = dir.text(&single);
+            assert_eq!(html.matches("data:image/png;base64,").count(), 2);
+            assert!(!html.contains("src=\"http://127.0.0.1"));
+        }
+        if format == "both" {
+            assert_eq!(image_count(&dir.bytes("embedded/source.pdf")), 1);
+            assert!(dir.bytes("single.pdf") == dir.bytes("embedded/source.pdf"));
+        }
+    }
+    assert_eq!(
+        server.requests(),
+        ["/figure.png"; 6],
+        "one snapshot per document, including combined output"
+    );
+}
+
+#[test]
+fn opted_in_batch_overrides_and_conflicting_flags_do_not_fetch() {
+    let server = ImageServer::start();
+    let dir = Directory::new();
+    let url = server.url("/figure.png?version=7");
+    dir.write("source.md", format!("![Figure]({url})\n"));
+    dir.write("image=blue.png", BLUE);
+    let mapping = format!("{url}=image=blue.png");
+    let output = dir.run(&[
+        "batch",
+        "source.md",
+        "--to",
+        "both",
+        "--out-dir",
+        "mapped",
+        "--embed-remote-images",
+        "--pdf-image",
+        &mapping,
+    ]);
+    succeeded(&output);
+    assert!(
+        dir.text("mapped/source.html")
+            .contains(&franken_markdown::html::base64_encode(BLUE))
+    );
+    assert_eq!(image_count(&dir.bytes("mapped/source.pdf")), 1);
+    let saved = dir.bytes("mapped/source.html");
+    let rejected = dir.run(&[
+        "batch",
+        "source.md",
+        "--to",
+        "both",
+        "--out-dir",
+        "mapped",
+        "--embed-remote-images",
+        "--no-remote-images",
+    ]);
+    assert_eq!(rejected.status.code(), Some(64));
+    assert_eq!(dir.bytes("mapped/source.html"), saved);
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn failed_opted_in_combined_fetch_is_not_retried_for_the_pdf_sibling() {
+    let server = ImageServer::start();
+    let dir = Directory::new();
+    let url = server.url("/missing.png");
+    dir.write(
+        "source.md",
+        format!("![Missing]({url})\n\n![Repeated]({url})\n"),
+    );
+    let output = dir.run(&[
+        "batch",
+        "source.md",
+        "--to",
+        "both",
+        "--out-dir",
+        "out",
+        "--embed-remote-images",
+        "--json",
+    ]);
+    succeeded(&output);
+    assert_eq!(
+        warning_codes(&output)
+            .iter()
+            .filter(|code| *code == "remote_image_fetch_failed")
+            .count(),
+        1
+    );
+    assert_eq!(server.requests(), ["/missing.png"]);
+    assert!(dir.text("out/source.html").contains("alt=\"Missing\""));
+    assert_eq!(image_count(&dir.bytes("out/source.pdf")), 0);
+}
+
+#[test]
+fn opted_in_batch_deadlines_cancel_before_html_epub_or_combined_publication() {
+    for format in ["html", "epub", "both"] {
+        let server = ImageServer::start();
+        let dir = Directory::new();
+        dir.write(
+            "source.md",
+            format!(
+                "![Slow]({})\n\n![Never requested]({})\n",
+                server.url("/slow.png"),
+                server.url("/figure.png")
+            ),
+        );
+        let extension = if format == "epub" { "epub" } else { "html" };
+        let path = format!("out/source.{extension}");
+        dir.write(&path, b"previous complete publication");
+        dir.write("out/source.pdf", b"previous complete PDF");
+        let started = Instant::now();
+        let output = dir.run(&[
+            "batch",
+            "source.md",
+            "--to",
+            format,
+            "--out-dir",
+            "out",
+            "--embed-remote-images",
+            "--workers",
+            "1",
+            "--timeout",
+            "1",
+            "--remote-image-timeout-secs",
+            "20",
+            "--json",
+        ]);
+        assert_eq!(
+            output.status.code(),
+            Some(70),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "pending {format} fetch must be interruptible"
+        );
+        let receipt = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            receipt.contains("\"ok\":0,\"failed\":0,\"skipped\":1,\"cancelled\":true"),
+            "{receipt}"
+        );
+        assert!(
+            warning_codes(&output).is_empty(),
+            "cancellation is not an ordinary image fallback"
+        );
+        assert_eq!(server.requests(), ["/slow.png"]);
+        server.wait_disconnected();
+        assert_eq!(dir.bytes(&path), b"previous complete publication");
+        assert_eq!(dir.bytes("out/source.pdf"), b"previous complete PDF");
+    }
+}

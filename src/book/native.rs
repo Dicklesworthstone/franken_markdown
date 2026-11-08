@@ -27,6 +27,8 @@ mod options;
 mod preflight;
 #[path = "native/publishing.rs"]
 mod publishing;
+#[path = "native/remote_images.rs"]
+mod remote_images;
 
 const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -356,6 +358,15 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         &mut loaded.protected_paths,
         args.max_pdf_image_bytes,
     )?;
+    if let Some(timeout_secs) = publication.remote_image_timeout_secs {
+        remote_images::load(
+            &loaded.book,
+            &mut loaded.images,
+            &mut loaded.warnings,
+            args.max_pdf_image_bytes,
+            timeout_secs,
+        )?;
+    }
     let image_count = loaded.images.len();
     let font_assets = typography.load_fonts(&mut loaded.protected_paths)?;
     if !matches!(args.to, BookTarget::Pdf | BookTarget::Both) {

@@ -43,7 +43,7 @@ pub(crate) fn remote_image_url(destination: &str) -> Option<&str> {
     None
 }
 
-pub(super) fn fetch_remote_image(
+pub(crate) fn fetch_remote_image(
     url: &str,
     max_bytes: u64,
     timeout_secs: u64,
@@ -496,8 +496,9 @@ fn finish_fetch(
 
 pub(crate) fn warning_message(url: &str, reason: &str) -> String {
     format!(
-        "fetching remote image '{url}': {reason}; rendered as alt text \
-         (map it with --pdf-image '{url}=PATH' or silence fetching with --no-remote-images)"
+        "fetching remote image '{url}': {reason}; image was not embedded \
+         (map it with --pdf-image '{url}=PATH'; to disable fetching, omit \
+         --embed-remote-images and use --no-remote-images)"
     )
 }
 

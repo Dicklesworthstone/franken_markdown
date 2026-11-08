@@ -201,6 +201,24 @@ other typography controls change; deselect it explicitly to return to the
 ordinary pagination policy. This setting is independent of PDF/A strict writer
 policy.
 
+**PDF text and table spacing** exposes the shared theme's literal line height
+and table padding. Enable theme spacing to use the theme values, or enter a
+body line-height multiplier (`1`..`4`), horizontal table padding, or vertical
+table padding (`0`..`8` em per side, measured against the table font size).
+Entering an override enables theme spacing. Blank fields restore the theme
+value; zero table padding removes that padding. Clear all three overrides
+before turning theme spacing off. This controls PDF layout independently of
+the baseline grid. **Link PDF footnote numbers back to their first citation**
+adds return navigation from each note to its first body reference.
+
+These controls use the existing native typography settings and project format.
+Apply commits the whole valid draft at once; invalid values remain editable
+without changing the applied profile. Editing one control preserves unrelated
+loaded settings, including duplicate token order and the renderer's last-value
+semantics. **Use native defaults in draft**, followed by Apply, removes every
+publishing override. Source projects and portable backups restore the controls
+along with their applied settings; resource authorization is unchanged.
+
 ## Complete workflow
 
 Add `.md`/`.markdown` files, PNG/JPEG/SVG image files, or a folder. Folder import

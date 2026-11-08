@@ -1,4 +1,5 @@
 import { createBookPdfProof } from "../book_pdf_proof.mjs";
+import { normalizePdfTypographyToken } from "../render_typography.mjs";
 import { BOOK_PUBLICATION_FIELDS, normalizeBookPublication } from "./book_collection.mjs";
 
 /** Install a native-viewer surface without touching the restricted HTML-site
@@ -226,12 +227,48 @@ const PUBLICATION_NUMBERS = [
   ["fitToPages", "PDF page-count target (optional integer; not a guarantee)"],
   ["metadataEpochSeconds", "PDF metadata epoch (nonnegative seconds; 0 is valid)"],
 ];
-const PUBLICATION_FLAGS = [
+const PUBLICATION_QUALITY_FLAGS = [
   ["homogeneous", "Gradual adjacent-line demerits"], ["antiriver", "Reduce whitespace rivers"],
   ["pareto", "Pareto line breaking"], ["optimal-pagination", "Optimal pagination"],
   ["strict-pagination", "Strict pagination (stop export if optimal layout cannot be completed)"],
   ["protrusion", "Margin protrusion"], ["expansion", "Glyph expansion"],
 ];
+const PUBLICATION_FLAGS = [...PUBLICATION_QUALITY_FLAGS,
+  ["theme-spacing", "Use theme line spacing and table padding in PDF"],
+  ["footnote-backlinks", "Link PDF footnote numbers back to their first citation"],
+];
+const PUBLICATION_SPACING = [
+  ["line-height", "PDF body line height (1–4 × font size)"],
+  ["table-padding-x", "PDF table horizontal padding (0–8 em per side)"],
+  ["table-padding-y", "PDF table vertical padding (0–8 em per side)"],
+];
+const PUBLICATION_TOKEN_ORDER = new Map([...PUBLICATION_FLAGS, ...PUBLICATION_SPACING]
+  .map(([key], index) => [key, index]));
+const typographyKey = token => token.split("=", 1)[0];
+const typographyTokens = value => (value ?? "").split(",").map(token => token.trim())
+  .filter(Boolean).map(normalizePdfTypographyToken);
+
+/** Edit token owners, not the whole profile. Unchanged token order and duplicate
+ * values matter: Rust applies the last numeric/microtype setting it encounters.
+ * New controls use the panel's stable order without sorting existing tokens. */
+function editTypographyTokens(tokens, changes) {
+  const remaining = new Map(changes), result = [];
+  for (const token of tokens) {
+    const key = typographyKey(token);
+    if (!changes.has(key)) result.push(token);
+    else if (remaining.has(key)) {
+      if (remaining.get(key) !== undefined) result.push(remaining.get(key));
+      remaining.delete(key);
+    }
+  }
+  for (const [key, order] of PUBLICATION_TOKEN_ORDER) {
+    const token = remaining.get(key);
+    if (token === undefined) continue;
+    const index = result.findIndex(value => PUBLICATION_TOKEN_ORDER.get(typographyKey(value)) > order);
+    result.splice(index < 0 ? result.length : index, 0, token);
+  }
+  return result.join(",");
+}
 const PUBLICATION_BANDS = ["header", "footer"];
 const PUBLICATION_SLOTS = ["left", "center", "right"];
 const publicationKey = value => JSON.stringify(Object.fromEntries(BOOK_PUBLICATION_FIELDS
@@ -290,6 +327,7 @@ export function createBookPublicationPanel(root) {
   }
   make("p", "grid-help", "A positive baseline spacing aligns PDF body text to a shared grid. Clear the page-count target before enabling a grid. Spacing is rounded once by the renderer to 0.001 pt; blank or 0 uses ordinary line spacing.", layout);
   check(layout, "codeLineNumbers", "PDF code line numbers");
+  check(layout, "type-footnote-backlinks", PUBLICATION_FLAGS.find(([key]) => key === "footnote-backlinks")[1]);
   select(layout, "htmlFontFormat", "HTML-site font container (EPUB uses the source font format)",
     [["", "Native default"], ["ttf", "Raw font (.ttf/.otf)"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
   select(layout, "fontEmbedding", "HTML/EPUB font embedding",
@@ -302,9 +340,20 @@ export function createBookPublicationPanel(root) {
   ]);
   policy.setAttribute("aria-describedby", `${publicationId("archival-help")} ${publicationId("status")}`);
   make("p", "archival-help", "PDF only: EPUB and HTML output are unchanged. These are native writer settings, not PDF/A validation or certification. Strict writer policy is separate from checking internal book links. Unsupported packages or rejected archival exports fail without falling back to ordinary PDF. Applied archival settings require source-project version 5; older workbenches must be upgraded to reopen those projects.", archival);
+  const spacing = make("fieldset"); make("legend", null, "PDF text and table spacing", spacing);
+  check(spacing, "type-theme-spacing", PUBLICATION_FLAGS.find(([key]) => key === "theme-spacing")[1]);
+  make("p", "spacing-help", "Use the shared theme's body line height and table padding, or enter explicit values below. Each override enables theme spacing. Blank fields use the theme value; 0 removes table padding. Clear all three overrides before turning theme spacing off. Table padding uses the table font size. These settings affect PDF only and are separate from the body baseline grid.", spacing);
+  const spacingGrid = make("div", null, undefined, spacing); spacingGrid.className = "grid";
+  for (const [token, label] of PUBLICATION_SPACING) {
+    const cell = make("div", null, undefined, spacingGrid);
+    const input = field(cell, "input", `type-${token}`, label);
+    input.type = "text"; input.inputMode = "decimal"; input.maxLength = 64;
+    input.autocomplete = "off"; input.spellcheck = false; input.placeholder = "Theme value";
+    input.setAttribute("aria-describedby", `${publicationId("spacing-help")} ${publicationId("status")}`);
+  }
   const quality = make("fieldset"); make("legend", null, "Optional native typography", quality);
   make("p", null, "These switches request the native layout algorithms; they do not guarantee a page count or faster rendering. Strict pagination also enables optimal pagination and stops PDF export when that layout cannot be completed. Inspect the actual PDF proof.", quality);
-  for (const [token, label] of PUBLICATION_FLAGS) check(quality, `type-${token}`, label);
+  for (const [token, label] of PUBLICATION_QUALITY_FLAGS) check(quality, `type-${token}`, label);
   make("p", "running-help", "Running headers and footers affect PDF only. Templates accept {title}, {author}, {page} and {pages}; template validation and margin fitting belong to the renderer. Each slot permits 4096 UTF-8 bytes. Logos reference already imported book images, never URLs or implicit file access. Missing references survive source-only restores until reauthorized.");
   for (const band of PUBLICATION_BANDS) {
     const group = make("fieldset"); make("legend", null, `PDF ${band}`, group);
@@ -346,16 +395,18 @@ export function createBookPublicationControls({ root, controls, collection }) {
   const panel = createBookPublicationPanel(root);
   const checkIds = ["codeLineNumbers", "skipFirstPage", ...PUBLICATION_FLAGS.map(([token]) => `type-${token}`),
     ...PUBLICATION_BANDS.map(band => `${band}-rule`)];
-  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), "profile", "htmlFontFormat", "fontEmbedding", "pdfPolicy",
+  const valueIds = [...PUBLICATION_NUMBERS.map(([id]) => id), ...PUBLICATION_SPACING.map(([token]) => `type-${token}`),
+    "profile", "htmlFontFormat", "fontEmbedding", "pdfPolicy",
     ...PUBLICATION_BANDS.flatMap(band => [...PUBLICATION_SLOTS, "image", "position", "height"].map(slot => `${band}-${slot}`))];
   const ids = [...checkIds, ...valueIds, "apply", "discard", "defaults", "status", "resources", "current"];
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${publicationId(id)}`)]));
   if (Object.values(el).some(node => !node)) throw new Error("Missing publishing profile controls.");
   let disposed = false, suspended = false, applying = false, stale = false;
-  let baseline = "", signatureAtLoad = "", loadedProfile = {}, loadedViews = new Map();
+  let baseline = "", signatureAtLoad = "", loadedProfile = {}, loadedViews = new Map(), loadedChecks = new Map();
+  let loadedTokens = [], resetTypography = false;
   const composing = new Set(), logoKeys = new Map(), unlisten = [];
   const configuration = () => collection.renderConfigurationRevision;
-  const signature = () => JSON.stringify([...checkIds.map(id => el[id].checked), ...valueIds.map(id => el[id].value)]);
+  const signature = () => JSON.stringify([resetTypography, ...checkIds.map(id => el[id].checked), ...valueIds.map(id => el[id].value)]);
   const blocked = () => disposed || suspended || composing.size > 0 || controls.sourceBusy;
   const check = () => {
     if (disposed || suspended) throw publicationFailure("PROFILE_CLOSED", "Publishing profile controls are not active.");
@@ -380,8 +431,11 @@ export function createBookPublicationControls({ root, controls, collection }) {
     el.htmlFontFormat.value = value.htmlFontFormat ?? "";
     el.fontEmbedding.value = value.fontEmbedding ?? "";
     el.pdfPolicy.value = value.pdfA === "2b" ? (value.pdfAStrict ? "2b-strict" : "2b") : "off";
-    const flags = new Set((value.typography ?? "").split(",").map(token => token.trim()));
+    const tokens = typographyTokens(value.typography), flags = new Set(tokens);
     for (const [token] of PUBLICATION_FLAGS) el[`type-${token}`].checked = flags.has(token);
+    const numeric = new Map(tokens.filter(token => token.includes("=")).map(token => token.split("=")));
+    for (const [token] of PUBLICATION_SPACING) el[`type-${token}`].value = numeric.get(token) ?? "";
+    if (numeric.size) el["type-theme-spacing"].checked = true;
     el.skipFirstPage.checked = value.running?.skipFirstPage === true;
     for (const band of PUBLICATION_BANDS) {
       const data = value.running?.[band] ?? {};
@@ -395,7 +449,9 @@ export function createBookPublicationControls({ root, controls, collection }) {
   function load() {
     loadedProfile = JSON.parse(publicationKey(collection.options));
     write(loadedProfile);
+    loadedTokens = typographyTokens(loadedProfile.typography); resetTypography = false;
     loadedViews = new Map(valueIds.map(id => [id, el[id].value]));
+    loadedChecks = new Map(checkIds.map(id => [id, el[id].checked]));
     baseline = configuration(); signatureAtLoad = signature(); stale = false;
   }
   function refresh() {
@@ -433,13 +489,35 @@ export function createBookPublicationControls({ root, controls, collection }) {
     if (!Number.isFinite(value)) throw publicationFailure("INVALID_OPTIONS", `${id} is too large.`);
     return value;
   }
+  function draftTypography() {
+    const tokens = resetTypography ? [] : loadedTokens, changes = new Map();
+    for (const [token] of PUBLICATION_FLAGS) {
+      const id = `type-${token}`, before = !resetTypography && loadedChecks.get(id);
+      if (el[id].checked !== before) changes.set(token, el[id].checked ? token : undefined);
+    }
+    let hasSpacing = false;
+    for (const [token] of PUBLICATION_SPACING) {
+      const id = `type-${token}`, raw = el[id].value.trim();
+      if (raw.length > 64) throw publicationFailure("INVALID_OPTIONS", `${token} is too long.`);
+      // Reuse native token admission, including ranges at host precision and
+      // decimal/exponent spelling. Zero padding is a value, not a default.
+      const selected = raw ? normalizePdfTypographyToken(`${token}=${raw}`) : undefined;
+      hasSpacing ||= selected !== undefined;
+      if (resetTypography || el[id].value !== loadedViews.get(id)) changes.set(token, selected);
+    }
+    if (hasSpacing && !el["type-theme-spacing"].checked)
+      throw publicationFailure("INVALID_OPTIONS", "Clear the line-height and table-padding overrides before turning theme spacing off.");
+    // A loaded numeric override can enable spacing without an explicit flag.
+    // Removing its last value must honor the still-selected theme checkbox.
+    if (!hasSpacing && el["type-theme-spacing"].checked && !tokens.includes("theme-spacing"))
+      changes.set("theme-spacing", "theme-spacing");
+    return !resetTypography && !changes.size ? loadedProfile.typography
+      : editTypographyTokens(tokens, changes) || undefined;
+  }
   function draft() {
     const value = Object.fromEntries(PUBLICATION_NUMBERS.map(([id]) => [id, number(id)]));
     value.profile = el.profile.value || undefined;
-    const originalFlags = new Set((loadedProfile.typography ?? "").split(",").map(token => token.trim()));
-    const flagsUnchanged = PUBLICATION_FLAGS.every(([token]) => el[`type-${token}`].checked === originalFlags.has(token));
-    value.typography = flagsUnchanged ? loadedProfile.typography
-      : PUBLICATION_FLAGS.filter(([token]) => el[`type-${token}`].checked).map(([token]) => token).join(",");
+    value.typography = draftTypography();
     value.codeLineNumbers = el.codeLineNumbers.checked;
     value.htmlFontFormat = el.htmlFontFormat.value || undefined;
     value.fontEmbedding = el.fontEmbedding.value || undefined;
@@ -502,7 +580,7 @@ export function createBookPublicationControls({ root, controls, collection }) {
   }
   function discard() { check(); load(); review(); }
   function defaults() {
-    check(); load(); write({}); review();
+    check(); load(); resetTypography = true; write({}); review();
     if (!stale) el.status.textContent = "Native defaults are staged in the draft. Apply to remove publishing overrides; metadata, source, paper and resources will be preserved.";
   }
   const run = fn => {
@@ -516,7 +594,12 @@ export function createBookPublicationControls({ root, controls, collection }) {
   };
   on(el.apply, "click", () => run(apply)); on(el.discard, "click", () => run(discard)); on(el.defaults, "click", () => run(defaults));
   for (const id of [...checkIds, ...valueIds]) {
-    on(el[id], "input", review); on(el[id], "change", review);
+    const edit = () => {
+      if (PUBLICATION_SPACING.some(([token]) => id === `type-${token}`) && el[id].value.trim())
+        el["type-theme-spacing"].checked = true;
+      review();
+    };
+    on(el[id], "input", edit); on(el[id], "change", edit);
     on(el[id], "compositionstart", () => { composing.add(id); refresh(); });
     on(el[id], "compositionend", () => { composing.delete(id); review(); });
   }

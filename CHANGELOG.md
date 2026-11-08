@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Book publishing controls expose literal PDF line spacing, horizontal and
+  vertical table padding, and footnote return links. Editing one option keeps
+  unrelated imported typography settings intact, including numeric precedence;
+  native defaults now clear all typography overrides. Source and portable
+  projects restore these controls without changing resource authorization.
 - Browser books retain an explicit `commonmark-gfm` or `gfm-plus` dialect
   across chapter previews, PDF/EPUB/site exports, source updates, workers and
   atomic publications. The workbench exposes a dialect selector and saves

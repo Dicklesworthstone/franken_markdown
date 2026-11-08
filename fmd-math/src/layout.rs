@@ -656,6 +656,19 @@ impl Engine {
                     }
                     NodeKind::TextStyled { style, body } => {
                         self.text_flow(body, text_style_ctx(*style, ctx), paragraph, flow)?;
+                        // This scoped flow bypasses atom_items, so preserve
+                        // the same closing \check@icr it applies to ordinary
+                        // slanted text, including \nocorrlist punctuation.
+                        if let Some(correction) =
+                            slanted_text_correction(node, items.get(index + 1), ctx)
+                        {
+                            flow.pending.push(LineItem::Glue(GlueSpec {
+                                natural: correction,
+                                stretch: 0.0,
+                                shrink: 0.0,
+                                breakable: false,
+                            }));
+                        }
                     }
                     _ => unreachable!("display containment only traverses text groups"),
                 }

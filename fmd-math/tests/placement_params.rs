@@ -3766,6 +3766,30 @@ fn consecutive_displays_and_boxed_text_follow_tex_modes() {
 }
 
 #[test]
+fn display_flow_keeps_slanted_text_corrections_and_punctuation_controls() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    let x_of = |l: &Layout, ch: char| l.glyphs.iter().find(|g| g.ch == ch).unwrap().x;
+    for command in ["textit", "emph"] {
+        let corrected = format!(r"\begin{{center}}\{command}{{B $$y$$ c}}ZZZZ\end{{center}}");
+        let period = format!(r"\begin{{center}}\{command}{{B $$y$$ c}}.ZZZZ\end{{center}}");
+        let corrected = e.typeset_text_with_macros(&corrected, &pack).unwrap();
+        let period = e.typeset_text_with_macros(&period, &pack).unwrap();
+        // Independent showboxes give widths 29.60246pt and 31.81444pt.
+        // Compare offsets within the final line: centering cannot hide
+        // the closing italic kern, and a period must suppress that kern.
+        let advance = x_of(&corrected, 'Z') - x_of(&corrected, 'c');
+        let uncorrected = x_of(&period, '.') - x_of(&period, 'c');
+        assert!(
+            (advance - uncorrected - 0.056_528).abs() < 1e-5,
+            "{command}"
+        );
+        assert!((corrected.width - 2.960_246).abs() < 1e-4, "{command}");
+        assert!((period.width - 3.181_444).abs() < 1e-4, "{command}");
+    }
+}
+
+#[test]
 fn display_flow_preserves_scoped_color_size_and_source_spans() {
     let pack = fmd_math::MacroSet::pack("default").unwrap();
     let source = r"\begin{center}Before {\color{red}\small inner $$x$$ middle} After\end{center}";

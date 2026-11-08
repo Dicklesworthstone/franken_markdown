@@ -219,6 +219,7 @@ impl Engine {
             text_mode: !align_rows,
             text_kerns,
             decl_size: 1.0,
+            display_glue: DisplayGlue::Normal,
             line_stretch: 1.0,
             align_rows,
             in_display: align_rows,
@@ -303,6 +304,9 @@ struct LayCtx<'a> {
     /// the style's own factor, exactly like LaTeX's current size setting
     /// the design size every fontdimen is read from.
     decl_size: f64,
+    /// Normal/small/footnote size declarations reset the display skip
+    /// registers; other sizes retain their current values (size10.clo).
+    display_glue: DisplayGlue,
     /// \baselinestretch for subsequent stacked lines (\doublespacing).
     line_stretch: f64,
     /// Whether stacked `\\` lines are the Tex surface's align* rows, which
@@ -328,6 +332,13 @@ struct LayCtx<'a> {
 
 type WideAccentWidths = RefCell<HashMap<WideAccentWidthKey, Vec<WideAccentWidth>>>;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum DisplayGlue {
+    Normal,
+    Small,
+    Footnote,
+}
+
 struct WideAccentWidth {
     node: Node,
     width: f64,
@@ -342,6 +353,7 @@ struct WideAccentWidthKey {
     text_mode: bool,
     text_kerns: bool,
     decl_size: u64,
+    display_glue: DisplayGlue,
     line_stretch: u64,
     align_rows: bool,
     in_display: bool,
@@ -393,6 +405,25 @@ enum LineItem {
     Glue(GlueSpec),
 }
 
+/// A paragraph row keeps the first and last baseline separately: a
+/// multi-row display is not an inline vcenter with one baseline.
+struct TextRow<'a> {
+    boxx: MBox,
+    ctx: LayCtx<'a>,
+    display: bool,
+    display_indent: f64,
+    baseline_span: f64,
+    above: f64,
+    below: f64,
+}
+
+struct TextFlow<'a> {
+    pending: Vec<LineItem>,
+    space_factor: u16,
+    rows: Vec<TextRow<'a>>,
+    after_display: bool,
+}
+
 impl Engine {
     /// Lay out a horizontal list: split at `\\` into stacked lines; within
     /// a line, walk atoms with their effective classes, inserting the
@@ -412,6 +443,9 @@ impl Engine {
         ctx: LayCtx,
         paragraph: Option<Paragraph>,
     ) -> Result<MBox, MathError> {
+        if ctx.text_mode && items.iter().any(Node::contains_text_display) {
+            return self.display_paragraph(&[items], ctx, paragraph);
+        }
         let mut lines: Vec<(MBox, LayCtx)> = Vec::new();
         let mut ctx = ctx;
         let mut sources: Vec<&[Node]> = items
@@ -439,6 +473,246 @@ impl Engine {
         };
         let align = paragraph.map_or(LineAlign::Left, |p| p.align);
         self.stack_lines(lines, align, jot)
+    }
+
+    /// Text displays interrupt the paragraph, including through scoped
+    /// groups. Ordinary paragraphs still use the unchanged inline path.
+    fn display_paragraph(
+        &self,
+        sources: &[&[Node]],
+        ctx: LayCtx,
+        paragraph: Option<Paragraph>,
+    ) -> Result<MBox, MathError> {
+        let mut flow = TextFlow {
+            pending: Vec::new(),
+            space_factor: 1000,
+            rows: Vec::new(),
+            after_display: false,
+        };
+        let mut ctx = ctx;
+        for (index, source) in sources.iter().enumerate() {
+            if index != 0 {
+                self.end_text_line(&mut flow, ctx, paragraph, false);
+            }
+            ctx = self.text_flow(source, ctx, paragraph, &mut flow)?;
+        }
+        if !flow.pending.is_empty() || !flow.after_display {
+            self.end_text_line(&mut flow, ctx, paragraph, true);
+        }
+        let align = paragraph.map_or(LineAlign::Left, |p| p.align);
+        let mut width = flow
+            .rows
+            .iter()
+            .map(|row| row.boxx.width)
+            .fold(0.0, f64::max);
+        let line_width = paragraph.map_or(ctx.line_width.unwrap_or(width), |p| p.width);
+        if matches!(align, LineAlign::Left) {
+            for row in &flow.rows {
+                if row.display {
+                    let ink_width = row.boxx.width - row.display_indent;
+                    width = width.max((line_width - ink_width).max(0.0) / 2.0 + ink_width);
+                }
+            }
+        }
+        let origin = match align {
+            LineAlign::Left => 0.0,
+            LineAlign::Center => (line_width - width).max(0.0) / 2.0,
+            LineAlign::Right => (line_width - width).max(0.0),
+        };
+        let mut children = Vec::new();
+        let mut baseline = 0.0_f64;
+        let mut previous: Option<(f64, f64, f64)> = None;
+        let mut height = 0.0_f64;
+        let mut depth = 0.0_f64;
+        for row in flow.rows {
+            if let Some((last_depth, span, below)) = previous {
+                let natural = self.baseline_skip_at(&row.ctx) * row.ctx.line_stretch;
+                // lineskiplimit is zero: use lineskip only when the
+                // natural interline glue is negative, not merely small.
+                let occupied = last_depth + row.boxx.height;
+                let pitch = if natural < occupied {
+                    occupied + self.consts.line_skip * row.ctx.size()
+                } else {
+                    natural
+                };
+                baseline -= span + pitch + below + row.above;
+            } else {
+                height = row.boxx.height;
+            }
+            let dx = if row.display {
+                (line_width - (row.boxx.width - row.display_indent)).max(0.0) / 2.0
+                    - row.display_indent
+                    - origin
+            } else {
+                match align {
+                    LineAlign::Left => 0.0,
+                    LineAlign::Center => (line_width - row.boxx.width).max(0.0) / 2.0 - origin,
+                    LineAlign::Right => (line_width - row.boxx.width).max(0.0) - origin,
+                }
+            };
+            depth = -baseline + row.boxx.depth;
+            previous = Some((
+                row.boxx.depth - row.baseline_span,
+                row.baseline_span,
+                row.below,
+            ));
+            children.push(Positioned {
+                dx,
+                dy: baseline,
+                node: MNode::Box(row.boxx),
+            });
+        }
+        Ok(MBox {
+            kind: BoxKind::Vertical,
+            width,
+            height,
+            depth,
+            children,
+        })
+    }
+
+    fn end_text_line<'a>(
+        &self,
+        flow: &mut TextFlow<'a>,
+        ctx: LayCtx<'a>,
+        paragraph: Option<Paragraph>,
+        force: bool,
+    ) {
+        if flow.after_display && flow.pending.is_empty() && !force {
+            return;
+        }
+        while matches!(flow.pending.last(), Some(LineItem::Glue(glue)) if glue.breakable) {
+            flow.pending.pop();
+        }
+        let boxx = self.assemble_line(std::mem::take(&mut flow.pending), ctx);
+        let mut lines = Vec::new();
+        paragraph_lines(boxx, ctx, paragraph, &mut lines);
+        flow.rows
+            .extend(lines.into_iter().map(|(boxx, ctx)| TextRow {
+                boxx,
+                ctx,
+                display: false,
+                display_indent: 0.0,
+                baseline_span: 0.0,
+                above: 0.0,
+                below: 0.0,
+            }));
+        flow.space_factor = 1000;
+        flow.after_display = false;
+    }
+
+    fn text_flow<'a>(
+        &self,
+        items: &[Node],
+        mut ctx: LayCtx<'a>,
+        paragraph: Option<Paragraph>,
+        flow: &mut TextFlow<'a>,
+    ) -> Result<LayCtx<'a>, MathError> {
+        let mut start = 0;
+        for (index, node) in items.iter().enumerate() {
+            if !node.contains_text_display() && !matches!(node.kind, NodeKind::Linebreak) {
+                continue;
+            }
+            ctx = self.line_items(
+                &items[start..index],
+                ctx,
+                &mut flow.pending,
+                &mut flow.space_factor,
+            )?;
+            if node.is_text_display() {
+                let consecutive = flow.after_display && flow.pending.is_empty();
+                if !consecutive {
+                    self.end_text_line(flow, ctx, paragraph, true);
+                }
+                let (boxx, baseline_span, display_indent) = self.text_display(node, ctx)?;
+                let line_width =
+                    paragraph.map_or(ctx.line_width.unwrap_or(LINE_WIDTH), |p| p.width);
+                let display_left = (line_width - (boxx.width - display_indent)).max(0.0) / 2.0;
+                let short = (consecutive
+                    || (paragraph.is_none_or(|p| matches!(p.align, LineAlign::Left))
+                        && flow.rows.last().is_some_and(|last| {
+                            last.boxx.width
+                                + 2.0 * self.interword_font(ctx).param(6) * ctx.text_size()
+                                <= display_left
+                        })))
+                    && !matches!(&node.kind, NodeKind::Environment { name, .. } if name != "equation*");
+                let (above, below) = self.display_skips(ctx, short);
+                flow.rows.push(TextRow {
+                    boxx,
+                    ctx,
+                    display: true,
+                    display_indent,
+                    baseline_span,
+                    above,
+                    below,
+                });
+                flow.after_display = true;
+                flow.space_factor = 1000;
+            } else {
+                match &node.kind {
+                    NodeKind::Linebreak => self.end_text_line(flow, ctx, paragraph, false),
+                    NodeKind::List(body) => {
+                        self.text_flow(body, ctx, paragraph, flow)?;
+                    }
+                    NodeKind::TextStyled { style, body } => {
+                        self.text_flow(body, text_style_ctx(*style, ctx), paragraph, flow)?;
+                    }
+                    _ => unreachable!("display containment only traverses text groups"),
+                }
+            }
+            start = index + 1;
+        }
+        self.line_items(
+            &items[start..],
+            ctx,
+            &mut flow.pending,
+            &mut flow.space_factor,
+        )
+    }
+
+    /// Natural (unstretched) size10.clo display glue, in base ems.
+    fn display_skips(&self, ctx: LayCtx, short: bool) -> (f64, f64) {
+        let (long, short_below) = match ctx.display_glue {
+            DisplayGlue::Small => (0.85, 0.4),
+            DisplayGlue::Footnote => (0.6, 0.3),
+            DisplayGlue::Normal => (1.0, 0.6),
+        };
+        if short {
+            (0.0, short_below * ctx.line_stretch)
+        } else {
+            (long * ctx.line_stretch, long * ctx.line_stretch)
+        }
+    }
+
+    fn text_display(&self, node: &Node, ctx: LayCtx) -> Result<(MBox, f64, f64), MathError> {
+        if let NodeKind::Environment { name, spec, rows } = &node.kind {
+            let mut plan = self.environment_plan(name, spec.as_deref(), ctx, node.span)?;
+            plan.grid.first_baseline = true;
+            plan.grid.text_display = true;
+            let mut boxx = self.grid(rows, plan.cells, &plan.grid, node.span)?;
+            let span = boxx
+                .children
+                .iter()
+                .map(|child| -child.dy)
+                .fold(0.0, f64::max);
+            // A display halign's initial centring kern contributes to its
+            // natural advance; trailing fill is glue. Keep that advance
+            // separate from the formula's ink width when centring rows.
+            let indent = (ctx.line_width.unwrap_or(LINE_WIDTH) - boxx.width).max(0.0) / 2.0;
+            // Bare typeset_text has no declared paragraph measure: keep
+            // its standalone formula advance (including amsmath kerns).
+            if name != "equation*" && ctx.line_width.is_some() {
+                for child in &mut boxx.children {
+                    child.dx += indent;
+                }
+                boxx.width += indent;
+                Ok((boxx, span, indent))
+            } else {
+                Ok((boxx, span, 0.0))
+            }
+        } else {
+            Ok((self.lay_node(node, ctx)?.boxx, 0.0, 0.0))
+        }
     }
 
     /// Stack laid lines, each with the context it ended in: baseline to
@@ -507,11 +781,14 @@ impl Engine {
     fn baseline_skip_at(&self, ctx: &LayCtx) -> f64 {
         let declared = [
             (0.5, 0.6),
+            (0.7, 0.8),
             (0.8, 0.95),
             (0.9, 1.1),
             (1.2, 1.4),
             (1.44, 1.8),
+            (1.728, 2.2),
             (2.074, 2.5),
+            (2.488, 3.0),
         ]
         .iter()
         .find(|(size, _)| (ctx.decl_size - size).abs() < 1e-9)
@@ -527,20 +804,38 @@ impl Engine {
     /// runs and the assembly pass are methods of their own (see
     /// [`Self::lay_node`]).
     fn line<'a>(&self, items: &[Node], outer: LayCtx<'a>) -> Result<(MBox, LayCtx<'a>), MathError> {
+        let mut laid_items = Vec::new();
+        let mut space_factor = 1000;
+        let ctx = self.line_items(items, outer, &mut laid_items, &mut space_factor)?;
+        Ok((self.assemble_line(laid_items, ctx), ctx))
+    }
+
+    fn line_items<'a>(
+        &self,
+        items: &[Node],
+        outer: LayCtx<'a>,
+        laid_items: &mut Vec<LineItem>,
+        space_factor: &mut u16,
+    ) -> Result<LayCtx<'a>, MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
-        let mut laid_items: Vec<LineItem> = Vec::new();
         // TeX's \spacefactor: the characters before a space size it.
-        let mut space_factor = 1000_u16;
         for (index, (node, class)) in items.iter().zip(classes).enumerate() {
-            let factor_before = space_factor;
-            space_factor = space_factor_through(std::slice::from_ref(node), space_factor);
+            let factor_before = *space_factor;
+            *space_factor = space_factor_through(std::slice::from_ref(node), *space_factor);
             match &node.kind {
                 NodeKind::StyleChange(style) => {
                     ctx = ctx.map(|_| StyleCtx::new(*style));
                 }
                 NodeKind::SizeChange(factor) => {
                     ctx.decl_size = *factor;
+                    if (*factor - 1.0).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Normal;
+                    } else if (*factor - 0.9).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Small;
+                    } else if (*factor - 0.8).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Footnote;
+                    }
                 }
                 NodeKind::LineSpacing(stretch) => {
                     ctx.line_stretch = *stretch;
@@ -599,13 +894,13 @@ impl Engine {
                         class.unwrap_or(AtomClass::Ord),
                         factor_before,
                         ctx,
-                        &mut laid_items,
+                        laid_items,
                     )?;
                 }
-                _ => self.atom_items(node, items.get(index + 1), class, ctx, &mut laid_items)?,
+                _ => self.atom_items(node, items.get(index + 1), class, ctx, laid_items)?,
             }
         }
-        Ok((self.assemble_line(laid_items, ctx), ctx))
+        Ok(ctx)
     }
 
     /// An explicit space's glue.
@@ -1093,17 +1388,7 @@ impl Engine {
         span: Span,
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
-        let styled = LayCtx {
-            text_mode: true,
-            alphabet: Some(match style {
-                TextStyle::Bold => MathFont::Bold,
-                TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
-                TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
-                TextStyle::Typewriter => MathFont::Typewriter,
-                TextStyle::SansSerif => MathFont::SansSerif,
-            }),
-            ..ctx
-        };
+        let styled = text_style_ctx(style, ctx);
         let inner = self.hlist(body, styled)?;
         if matches!(style, TextStyle::Underline) {
             Ok(Laid {
@@ -1299,6 +1584,20 @@ impl Engine {
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
         let paragraph = ctx.line_width.map(|width| Paragraph { width, align });
+        if ctx.text_mode && lines.iter().any(Node::contains_text_display) {
+            let sources: Vec<_> = lines
+                .iter()
+                .map(|line| match &line.kind {
+                    NodeKind::List(items) => items.as_slice(),
+                    _ => std::slice::from_ref(line),
+                })
+                .collect();
+            return Ok(Laid {
+                boxx: self.display_paragraph(&sources, ctx, paragraph)?,
+                italic: 0.0,
+                char_glyph: None,
+            });
+        }
         let mut laid = Vec::new();
         let mut line_ctx = ctx;
         for line in lines {
@@ -3437,10 +3736,15 @@ impl Engine {
         }
         // An array row is at least as tall and deep as its \@arstrut, which
         // follows the text size in force, not the math style.
-        let (strut_h, strut_d) = grid.array_stretch.map_or((0.0, 0.0), |stretch| {
-            let skip = c.baseline_skip * stretch * cell_ctx.decl_size;
+        let (strut_h, strut_d) = if grid.text_display {
+            let skip = self.baseline_skip_at(&cell_ctx) * cell_ctx.line_stretch;
             (0.7 * skip, 0.3 * skip)
-        });
+        } else {
+            grid.array_stretch.map_or((0.0, 0.0), |stretch| {
+                let skip = c.baseline_skip * stretch * cell_ctx.decl_size;
+                (0.7 * skip, 0.3 * skip)
+            })
+        };
         let row_h: Vec<f64> = cells
             .iter()
             .map(|r| r.iter().map(|b| b.height).fold(strut_h, f64::max))
@@ -3484,10 +3788,22 @@ impl Engine {
             let pitch = if grid.array_stretch.is_some() {
                 row_d[i - 1] + row_h[i]
             } else {
-                let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
+                let natural = if grid.text_display {
+                    self.baseline_skip_at(&cell_ctx) * cell_ctx.line_stretch + grid.jot * size
+                } else {
+                    (c.baseline_skip + grid.jot) * grid.row_factor * size
+                };
                 // \openup\jot raises the \lineskip floor too.
                 let min_gap = row_d[i - 1] + row_h[i] + (c.line_skip + grid.jot) * size;
-                natural.max(min_gap)
+                if grid.text_display {
+                    if natural < row_d[i - 1] + row_h[i] {
+                        min_gap
+                    } else {
+                        natural
+                    }
+                } else {
+                    natural.max(min_gap)
+                }
             };
             baselines[i] = baselines[i - 1] - pitch;
         }
@@ -3883,6 +4199,7 @@ impl Engine {
             text_mode: ctx.text_mode,
             text_kerns: ctx.text_kerns,
             decl_size: ctx.decl_size.to_bits(),
+            display_glue: ctx.display_glue,
             line_stretch: ctx.line_stretch.to_bits(),
             align_rows: ctx.align_rows,
             in_display: ctx.in_display,
@@ -4989,6 +5306,9 @@ struct Grid {
     /// Keep the first row's baseline (the Tex surface's align* rows)
     /// instead of `\vcenter`ing the grid on the axis.
     first_baseline: bool,
+    /// A paragraph-level amsmath display uses text struts and the
+    /// declared size's baseline skip, rather than an inline vcenter.
+    text_display: bool,
     /// LaTeX's `array` rows: every row carries `\@arstrut` (height
     /// 0.7\baselineskip, depth 0.3\baselineskip, both times this
     /// `\arraystretch`), and rows stack depth to height with no
@@ -5022,6 +5342,7 @@ impl Grid {
     fn centered(col_sep: f64) -> Self {
         Self {
             first_baseline: false,
+            text_display: false,
             array_stretch: None,
             display_width: None,
             align: AlignRule::AllCenter,
@@ -5256,6 +5577,21 @@ fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
         | NodeKind::Fragment(_) => factor,
         _ => 1000,
     })
+}
+
+/// The group-scoped text face, shared by inline and paragraph layout.
+fn text_style_ctx(style: TextStyle, ctx: LayCtx<'_>) -> LayCtx<'_> {
+    LayCtx {
+        text_mode: true,
+        alphabet: Some(match style {
+            TextStyle::Bold => MathFont::Bold,
+            TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
+            TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
+            TextStyle::Typewriter => MathFont::Typewriter,
+            TextStyle::SansSerif => MathFont::SansSerif,
+        }),
+        ..ctx
+    }
 }
 
 /// A laid paragraph line, broken when a [`Paragraph`] is given and the

@@ -227,6 +227,10 @@ struct Parser<'s> {
     ligatures: bool,
     /// The physics package's function arguments apply (`MacroSet::physics`).
     physics: bool,
+    /// Boxed text (`\text`, `\underline`, cancel): TeX's restricted
+    /// horizontal mode handles adjacent dollars as two inline shifts,
+    /// never as a display opener.
+    restricted_text: bool,
     /// Token indices of the delimiters closing the physics arguments being
     /// parsed. xparse consumes them, so `\argclose` follows the argument
     /// instead and amsmath's dots see no closing delimiter.
@@ -253,6 +257,7 @@ impl<'s> Parser<'s> {
             depth: 0,
             ligatures: true,
             physics: false,
+            restricted_text: false,
             argument_closes: Vec::new(),
             unclosed_arguments,
             close_table: std::cell::OnceCell::new(),
@@ -1192,11 +1197,11 @@ impl<'s> Parser<'s> {
             }
             Cmd::Radical => self.radical(span),
             Cmd::Text => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(NodeKind::Text { body }, span.union(body_span)))
             }
             Cmd::TextStyled(style) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::TextStyled { style, body },
                     span.union(body_span),
@@ -1394,7 +1399,11 @@ impl<'s> Parser<'s> {
 
     /// The braced argument of `\text`-class commands: text mode. A single
     /// character is tolerated (`\text x`).
-    fn text_island_argument(&mut self, name: &str) -> Result<(Vec<Node>, Span), MathError> {
+    fn text_island_argument(
+        &mut self,
+        name: &str,
+        boxed: bool,
+    ) -> Result<(Vec<Node>, Span), MathError> {
         self.skip_spaces();
         let Some(tok) = self.peek().cloned() else {
             return Err(MathError::Malformed {
@@ -1407,8 +1416,11 @@ impl<'s> Parser<'s> {
                 self.pos += 1;
                 // `\text{…}` and its kin are boxes: horizontal mode from the
                 // first token, so a leading space is glue (`n\text{ terms}`).
-                let (items, reason) =
-                    self.descend(tok.span.start, |p| p.text_list(false, true, false))?;
+                let outer_restricted = self.restricted_text;
+                self.restricted_text |= boxed;
+                let parsed = self.descend(tok.span.start, |p| p.text_list(false, true, false));
+                self.restricted_text = outer_restricted;
+                let (items, reason) = parsed?;
                 match reason {
                     Reason::EndGroup(close) => Ok((items, tok.span.union(close))),
                     Reason::EndOfInput => Err(MathError::Malformed {
@@ -2197,13 +2209,15 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::MathShift => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     // An immediately adjacent second '$' opens display
                     // mathematics ($$…$$).
-                    let display = matches!(self.peek().map(|t| t.kind), Some(TokKind::MathShift));
+                    let display = !self.restricted_text
+                        && matches!(self.peek().map(|t| t.kind), Some(TokKind::MathShift));
                     if display {
+                        unskip(&mut items, &mut run, &mut run_spans);
                         self.pos += 1;
                     }
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     let (body, reason) =
                         self.descend(tok.span.start, |p| p.math_list(Stops::default()))?;
                     let close_end = match reason {
@@ -2387,6 +2401,9 @@ impl<'s> Parser<'s> {
                         };
                     }
                     let node = self.text_control_word(name, tok.span)?;
+                    if node.is_text_display() {
+                        unskip(&mut items, &mut run, &mut run_spans);
+                    }
                     items.push(node);
                 }
             }
@@ -2413,7 +2430,7 @@ impl<'s> Parser<'s> {
                 span,
             }),
             Cmd::TextStyled(style) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, false)?;
                 Ok(Node::new(
                     NodeKind::TextStyled { style, body },
                     span.union(body_span),
@@ -2422,7 +2439,7 @@ impl<'s> Parser<'s> {
             // `\underline` in text mode is a styling island, not the math
             // accent.
             Cmd::Accent(AccentKind::UnderLine) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::TextStyled {
                         style: TextStyle::Underline,
@@ -2432,12 +2449,12 @@ impl<'s> Parser<'s> {
                 ))
             }
             Cmd::Text => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(NodeKind::List(body), span.union(body_span)))
             }
             // In text mode cancel.sty strikes `\hbox{…}`: a text body.
             Cmd::Cancel(kind) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::Cancel {
                         kind,
@@ -2466,7 +2483,7 @@ impl<'s> Parser<'s> {
             }
             Cmd::TextColor => {
                 let (color, color_span) = self.color_arguments(name, span)?;
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, false)?;
                 let mut items = vec![Node::new(NodeKind::ColorChange(color), color_span)];
                 items.extend(body);
                 Ok(Node::new(
@@ -2686,23 +2703,28 @@ fn dots_next(kind: Option<TokKind<'_>>) -> DotsNext {
 /// `\color{…}`, `\centering` …) set nothing, so a space after one at a line
 /// start is still dropped, as is a space after `\\`.
 fn line_begun(items: &[Node], started: bool) -> bool {
-    let breaks = |node: &Node| matches!(node.kind, NodeKind::Linebreak);
-    let sets_material = |node: &Node| {
-        !matches!(
-            node.kind,
+    items.iter().fold(started, |begun, node| {
+        if node.is_text_display() {
+            return false;
+        }
+        match &node.kind {
+            NodeKind::Linebreak => false,
+            // An ordinary group counts as material, even `{}`: the
+            // corpus deliberately uses it to retain a leading space.
+            // Only a group containing a display can end this text line.
+            NodeKind::List(body) | NodeKind::TextStyled { body, .. }
+                if body.iter().any(Node::contains_text_display) =>
+            {
+                line_begun(body, begun)
+            }
             NodeKind::StyleChange(_)
-                | NodeKind::SizeChange(_)
-                | NodeKind::ColorChange(_)
-                | NodeKind::AlignChange(_)
-                | NodeKind::LineSpacing(_)
-        )
-    };
-    items
-        .iter()
-        .rev()
-        .take_while(|node| !breaks(node))
-        .any(sets_material)
-        || (started && !items.iter().any(breaks))
+            | NodeKind::SizeChange(_)
+            | NodeKind::ColorChange(_)
+            | NodeKind::AlignChange(_)
+            | NodeKind::LineSpacing(_) => begun,
+            _ => true,
+        }
+    })
 }
 
 /// TeX's `\unskip` at the end of a line: the last glue goes, whether a

@@ -3612,6 +3612,206 @@ fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
     lines
 }
 
+#[test]
+fn text_displays_end_the_line_and_keep_tex_vertical_skips() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent article/10pt showbox: 12pt baselines plus 10pt above
+    // and below a centred display. An explicit break before it keeps an
+    // empty line; a break immediately after it does not add another one.
+    for (source, math_y, after_y) in [
+        (r"Before $$x$$ After", -2.2, -4.4),
+        (r"Before\\$$x$$ After", -3.4, -5.6),
+        (r"Before $$x$$\\After", -2.2, -4.4),
+        (r"{Before $$x$$ After}", -2.2, -4.4),
+        (r"\textbf{Before $$x$$ After}", -2.2, -4.4),
+        (r"\small Before $$x$$ After", -1.95, -3.9),
+    ] {
+        let input = format!(r"\begin{{center}}{source}\end{{center}}");
+        let layout = engine().typeset_text_with_macros(&input, &pack).unwrap();
+        assert!(
+            (glyph_y(&layout, 'x') - math_y).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'A') - after_y).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        // The bundled bold face has a small existing glyph depth of its
+        // own. Check the final line's bounds independently of that font
+        // metric; the baseline assertions above remain TeX's exact ones.
+        let ending = if source.starts_with(r"\textbf") {
+            r"\textbf{After}"
+        } else if source.starts_with(r"\small") {
+            r"\small After"
+        } else {
+            "After"
+        };
+        let ending_depth = engine()
+            .typeset_text_with_macros(ending, &pack)
+            .unwrap()
+            .depth;
+        assert!(
+            (layout.depth + after_y - ending_depth).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+    }
+    for source in [r"Before $x$ After", r"Before $\displaystyle x$ After"] {
+        let layout = engine().typeset_text_with_macros(source, &pack).unwrap();
+        assert_eq!(glyph_y(&layout, 'x'), 0.0, "{source}");
+        assert_eq!(glyph_y(&layout, 'A'), 0.0, "{source}");
+    }
+}
+
+#[test]
+fn text_displays_use_short_skips_and_the_declared_line_width() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // A left-aligned short preceding line selects 0pt / 6pt skips.
+    // The display is centred on the declared 345pt line, not on the
+    // short text's natural width. Independent TeX showbox: x's advance
+    // is 5.71527pt, so its left edge is 169.64236pt.
+    let layout = engine()
+        .typeset_text_with_macros(r"Before $$x$$ After", &pack)
+        .unwrap();
+    let x = layout.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    assert!((x.x - 16.964236).abs() < 1e-5, "{x:?}");
+    assert!((x.y + 1.2).abs() < EPS, "{x:?}");
+    assert!((glyph_y(&layout, 'A') + 3.0).abs() < EPS);
+}
+
+#[test]
+fn paragraph_display_grids_keep_first_and_last_row_baselines() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    for environment in ["align*", "gather*"] {
+        let source = format!(
+            r"\begin{{center}}Before \begin{{{environment}}}x\\y\end{{{environment}}} After\end{{center}}"
+        );
+        let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+        assert!(
+            (glyph_y(&layout, 'x') + 2.2).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'y') + 3.7).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'A') + 5.9).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!((layout.depth - 5.9).abs() < EPS, "{source}: {layout:?}");
+    }
+    let layout = engine()
+        .typeset_text_with_macros(
+            r"\begin{center}Before $$\frac{a}{b}$$ After\end{center}",
+            &pack,
+        )
+        .unwrap();
+    assert!((layout.depth - 4.674673).abs() < 1e-5, "{layout:?}");
+}
+
+#[test]
+fn consecutive_displays_and_boxed_text_follow_tex_modes() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let layout = engine()
+        .typeset_text_with_macros(r"\begin{center}Before $$x$$ $$y$$ After\end{center}", &pack)
+        .unwrap();
+    // No intervening paragraph line: the second display selects the
+    // short skips even though surrounding ordinary lines are centred.
+    assert!((glyph_y(&layout, 'x') + 2.2).abs() < EPS);
+    assert!((glyph_y(&layout, 'y') + 4.4).abs() < EPS);
+    assert!((glyph_y(&layout, 'A') + 6.2).abs() < EPS);
+    for command in ["underline", "text", "cancel"] {
+        // In restricted horizontal mode the two adjacent dollars enter
+        // and immediately leave inline math. The intervening x is TEXT:
+        // the independent underline showbox names T1/cmr/m/n/10, and its
+        // width is 62.67914pt, not the 63.11792pt of the math-italic x.
+        let boxed = format!(r"\{command}{{Before $$x$$ After}}");
+        let plain = format!(r"\{command}{{Before x After}}");
+        let boxed = engine().typeset_text_with_macros(&boxed, &pack).unwrap();
+        let plain = engine().typeset_text_with_macros(&plain, &pack).unwrap();
+        assert_eq!(
+            (boxed.width, boxed.height, boxed.depth),
+            (plain.width, plain.height, plain.depth),
+            "{command}"
+        );
+        assert!(
+            (boxed.width - 6.267914).abs() < 1e-5,
+            "{command}: {boxed:?}"
+        );
+        assert_eq!(glyph_y(&boxed, 'A'), 0.0, "{command}");
+        assert_eq!(
+            boxed
+                .glyphs
+                .iter()
+                .map(|g| (g.ch, g.x, g.y, g.size))
+                .collect::<Vec<_>>(),
+            plain
+                .glyphs
+                .iter()
+                .map(|g| (g.ch, g.x, g.y, g.size))
+                .collect::<Vec<_>>(),
+            "{command}"
+        );
+    }
+    // Text styling entered from mathematics is a box too, whereas the
+    // same command in an ordinary paragraph permits a real display.
+    let styled = engine()
+        .typeset(r"\textbf{Before $$x$$ After}", Style::Display)
+        .unwrap();
+    let x = styled.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    let after = styled.glyphs.iter().find(|g| g.ch == 'A').unwrap();
+    assert_eq!(x.face, after.face);
+    assert_eq!(x.y, 0.0);
+    assert_eq!(after.y, 0.0);
+}
+
+#[test]
+fn display_flow_preserves_scoped_color_size_and_source_spans() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let source = r"\begin{center}Before {\color{red}\small inner $$x$$ middle} After\end{center}";
+    let layout = engine().typeset_text_with_macros(source, &pack).unwrap();
+    let x = layout.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    let after = layout.glyphs.iter().find(|g| g.ch == 'A').unwrap();
+    assert_eq!(x.size, 0.9);
+    let color = x.color.unwrap();
+    assert_eq!((color.r, color.g, color.b), (1.0, 0.0, 0.0));
+    assert_eq!(after.size, 1.0);
+    assert!(after.color.is_none());
+    assert_eq!(&source[x.span.start..x.span.end], "x");
+    assert_eq!(&source[after.span.start..after.span.end], "A");
+    // The size in force at the display governs its above skip; after
+    // leaving the group, the resumed line uses the outer 12pt baseline.
+    assert!((x.y + 1.95).abs() < EPS);
+    assert!((after.y + 4.0).abs() < EPS);
+}
+
+#[test]
+fn display_skips_and_grid_struts_follow_setspace() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent default-template showboxes: setspace's everydisplay
+    // stretches all four display skips, as well as the text baselines.
+    for (body, depth) in [
+        (r"\doublespacing Before $$x$$ After", 7.334833),
+        (
+            r"\doublespacing Before \begin{align*}x\\y\end{align*} After",
+            9.635242,
+        ),
+        (r"\doublespacing \small Before $$x$$ After", 6.501327),
+        (
+            r"\begin{flushleft}\doublespacing Before $$x$$ After\end{flushleft}",
+            5.001023,
+        ),
+    ] {
+        let source = format!(r"\begin{{center}}{body}\end{{center}}");
+        let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+        assert!((layout.depth - depth).abs() < 1e-4, "{body}: {layout:?}");
+        assert!(
+            (glyph_y(&layout, 'A') + depth).abs() < 1e-4,
+            "{body}: {layout:?}"
+        );
+    }
+}
+
 /// TeX's lines of a `\centering` paragraph at 345 pt, as `(natural width
 /// in pt, characters)` from `\showbox` and each line's `\unhcopy` (OT1
 /// T1 EC with the template's font control in `article`), against fmd-math's

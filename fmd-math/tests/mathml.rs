@@ -359,6 +359,25 @@ fn mixed_text_restores_math_mode_and_preserves_scoped_declarations() {
     );
 }
 
+#[test]
+fn mixed_text_keeps_faces_on_logos_and_nonbreaking_spaces() {
+    for (source, face) in [
+        (r"\textbf{\TeX~$\pi$}", "bold"),
+        (r"\textit{\TeX~$\pi$}", "italic"),
+        (r"\texttt{\TeX~$\pi$}", "monospace"),
+    ] {
+        let xml = to_mathml(&parse_text(source).unwrap(), false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        for text in ["TeX", "\u{00A0}"] {
+            assert!(
+                xml.contains(&format!(r#"<mtext mathvariant="{face}">{text}</mtext>"#)),
+                "{source}: text face lost: {xml}"
+            );
+        }
+        assert!(xml.contains("<mi>π</mi>"), "{source}: {xml}");
+    }
+}
+
 struct Lcg(u64);
 
 impl Lcg {

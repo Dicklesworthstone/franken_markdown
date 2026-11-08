@@ -304,12 +304,12 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             emit_node(w, &branches[style.choice_index()], style);
         }
         NodeKind::Logo(kind) => {
-            w.open("mtext", &[]);
+            w.open_mtext();
             w.text(logo_text(*kind));
             w.close("mtext");
         }
         NodeKind::Tie => {
-            w.open("mtext", &[]);
+            w.open_mtext();
             w.buf.push('\u{00A0}');
             w.close("mtext");
         }

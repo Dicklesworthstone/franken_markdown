@@ -17,11 +17,11 @@ The archive contains:
   metadata lives outside `sources/`, so an include file named
   `book.fmdbook.json` cannot collide with it.
 
-Extract `sources/` to work with ordinary UTF-8 files in an editor. Open
-`book.fmdbook.json` through the workbench's existing project import to recover
-the captured project. It is a snapshot: editing extracted files afterward does
-not also update the project JSON. Use the existing file/folder import or source
-reconciliation workflow to bring those later edits back.
+Extract the complete ZIP to work with ordinary UTF-8 files in an editor. Keep
+`book.fmdbook.json` alongside `sources/`. **Reopen editable source folder** brings
+the current files back with the manifest's saved order, roles and settings, as
+described below. Opening the JSON alone still restores its embedded snapshot;
+editing extracted files does not update that snapshot automatically.
 
 Current raw editor text, path and role are captured without modifying the source
 collection or applying pending publishing drafts. An unchanged textarea's
@@ -49,6 +49,50 @@ and composition ownership block preparation; page suspension/disposal cancels
 work and revokes its URL. Silent editor changes are checked again before
 publication and download activation. A cancelled older operation cannot replace
 a newer download or change a connected folder.
+
+## Reopen an externally edited source folder
+
+After editing the extracted files, use **Reopen editable source folder** in the
+import section. Select the folder containing `book.fmdbook.json` and `sources/`,
+choose **Review selected folder**, then **Reopen reviewed folder**. The review
+lists the source paths in saved order and identifies files changed since the
+manifest was written. Reopening asks before replacing current work.
+
+Current `sources/<path>` files provide the text, including exact BOMs, CRLF/CR/LF
+endings, empty files and Unicode. The existing source-project manifest provides
+paths, order, chapter/include-only roles and applied publishing settings. A
+missing current source is an error; its older embedded text is never substituted.
+To change the source list, use the workbench's existing add/remove/rename controls
+or update the source-project manifest explicitly. Unlisted files are counted and
+ignored, without reading their contents or authorizing images or fonts.
+
+The complete selection must belong to one root folder. The picker-supplied root
+name is removed once; nested source paths remain unchanged. Portable path
+validation for required files is shared with source ZIP export: duplicate paths,
+case/NFC aliases, reserved names, traversal and file/directory collisions that
+affect a required path are rejected. Unrelated asset names may contain characters
+such as `#` or `%`; their contents are never read. The manifest's identity is
+checked before reading it. Required source files are admitted together before their
+contents are read. The ordinary source reader and project codec retain their
+UTF-8, schema and byte limits. Up to 4096 selected files are admitted, with at most
+4096 UTF-8 bytes per relative selected path and 4 MiB of selected path metadata.
+The book itself remains limited to 128 chapters and 128 include-only sources,
+4 MiB per source, 16 MiB combined source/path bytes and 64 MiB of manifest JSON.
+
+Reading and review do not change the current collection. Confirmation installs
+one validated project through the existing source host, clears old image/font
+grants and prepared exports, and detaches unrelated connected-project and local
+library identities. Reauthorize resources separately or restore a portable
+backup when their bytes are needed. The folder picker grants no persistent
+filesystem handle; reopening does not connect a writable folder or write files.
+
+Editing, switching projects, changing the selected folder, importing other
+sources, text composition, cancellation or page suspension retires the review.
+The source/project identity and exact selected File objects are checked again
+before installation, including after asynchronous confirmation. File reading has
+a 30-second deadline. A cancelled or late operation cannot replace newer work.
+The flow needs a browser folder picker, but no direct filesystem API, rendering
+engine, server or network request.
 
 ## Save directly to a connected folder
 

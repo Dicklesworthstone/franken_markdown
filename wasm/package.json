@@ -206,6 +206,8 @@
     "demo/book_directory_controls.mjs",
     "demo/book_source_archive.mjs",
     "demo/book_source_archive_controls.mjs",
+    "demo/book_source_folder.mjs",
+    "demo/book_source_folder_controls.mjs",
     "BOOK_DIRECTORY.md",
     "demo/book_search_controls.mjs",
     "BOOK_EDITING.md",

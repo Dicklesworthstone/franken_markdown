@@ -4,7 +4,8 @@ export const BOOK_SOURCE_ARCHIVE_LIMITS = Object.freeze({ files: 256, fileBytes:
   sourceBytes: 16 * 1024 * 1024, projectBytes: 64 * 1024 * 1024,
   archiveBytes: 81 * 1024 * 1024 });
 export const BOOK_SOURCE_ARCHIVE_PROJECT = "book.fmdbook.json";
-const ROOT = "sources/", L = BOOK_SOURCE_ARCHIVE_LIMITS;
+export const BOOK_SOURCE_ARCHIVE_ROOT = "sources/";
+const ROOT = BOOK_SOURCE_ARCHIVE_ROOT, L = BOOK_SOURCE_ARCHIVE_LIMITS;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const own = (object, key) => {
   const field = object && Object.getOwnPropertyDescriptor(object, key);

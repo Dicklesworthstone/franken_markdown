@@ -78,10 +78,11 @@ const host=component('source'), facade=Object.assign({},host,{sourceFacade:true}
 const publisher={dispose(){calls.push('publisher.dispose')}};
 const bindings={
  '../book-worker.js':{createBookWorker(options){const worker={options};ordinary.push(worker);return worker},createBookPublicationWorker(){calls.push('publisher.create');return publisher}},
- './book_collection.mjs':{createBookCollection:()=>collection,normalizeBookProject(){},readBookProject(){},serializeBookProject(){}},
+ './book_collection.mjs':{createBookCollection:()=>collection,normalizeBookProject(){},readBookProject(){},readBookSourceFile(){},serializeBookProject(){}},
  './book_controls.mjs':{createBookControls(args){received.source=args;return host}},
  './book_file_controls.mjs':{createBookFileControls(args){assert.equal(args.controls,host);return {...component('files'),controls:facade}}},
  './book_directory_controls.mjs':{createBookDirectoryControls(args){assert.equal(args.controls,facade);return component('directory')}},
+ './book_source_folder_controls.mjs':{createBookSourceFolderControls(args){assert.equal(args.controls,facade);return component('sourceFolder')}},
  './book_edition_controls.mjs':{createBookEditionControls(args){received.edition=args;if(failure)throw new Error('installation fixture');return {...component('edition'),dispose(){calls.push('edition.dispose');publisher.dispose()}}}},
  './book_image_controls.mjs':{createBookImagePanel(){},createBookImageControls:()=>component('images')},
  './book_font_controls.mjs':{createBookFontPanel(){},createBookFontControls:()=>component('fonts')},

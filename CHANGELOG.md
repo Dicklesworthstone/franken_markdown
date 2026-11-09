@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The book workbench reopens externally edited source folders using current
+  Markdown files and the exported manifest's chapter order, include-only roles
+  and applied settings. A cancellable review validates the entire selection
+  before replacing the book; intervening edits invalidate the review. Images
+  and fonts require separate authorization. See [Book source folders](wasm/BOOK_DIRECTORY.md).
 - SVG exports render linked tables of contents at explicit Markdown markers
   or automatically before the first body heading, with depth filtering and
   exact heading identity. Native commands, MCP, browser workers and Flow share

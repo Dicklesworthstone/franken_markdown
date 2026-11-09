@@ -785,6 +785,17 @@ async function read(file) {
   }
   return buffer;
 }
+/** The ordinary source importer and manifest-aware folder reopening share the
+ * same local-file admission and exact UTF-8 decoding. No path is opened here. */
+export async function readBookSourceFile(file) {
+  localFile(file, L.chapterBytes);
+  const bytes = await read(file);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw bookError("INVALID_UNICODE", "A source file is not UTF-8; no files were imported.");
+  }
+}
 /** Folder imports preserve relative paths beneath the selected root. Unknown
  * extensions are counted, never interpreted or granted authority. No sorting:
  * array order remains explicit, and the UI can reorder chapters afterward.
@@ -854,15 +865,9 @@ export async function readBookFiles(selected, { folder = false, role = "chapter"
     ...(role === "include" ? { includeSources: [] } : {}),
   };
   for (const { file, path, kind } of admitted) {
-    const bytes = await read(file);
-    if (kind === "image") result.images.push({ destination: path, bytes: new Uint8Array(bytes) });
+    if (kind === "image") result.images.push({ destination: path, bytes: new Uint8Array(await read(file)) });
     else {
-      let source;
-      try {
-        source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      } catch {
-        throw bookError("INVALID_UNICODE", "A source file is not UTF-8; no files were imported.");
-      }
+      const source = await readBookSourceFile(file);
       (kind === "include" ? result.includeSources : result.chapters).push({ path, source });
     }
   }

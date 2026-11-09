@@ -313,6 +313,14 @@ roles and applied settings. It works without direct folder access or WASM and
 preserves unchanged BOMs and line endings. It contains source only; use portable
 backup for images and fonts. See [source ZIP and connected folders](BOOK_DIRECTORY.md).
 
+After editing those extracted files externally, choose **Reopen editable source
+folder**, select the folder containing `book.fmdbook.json` and `sources/`, and
+review it before reopening. Current files supply the text; the manifest restores
+source roles, reading order and applied settings. Missing or ambiguous paths fail
+without replacing the book. Reopening clears old image/font grants and requires
+confirmation; unrelated files are ignored without being read. Opening the JSON
+alone continues to restore its embedded source snapshot.
+
 The collection starts in memory with **autosave off**. The optional local book
 library adds named saves, recent revision recovery, and opt-in autosave; see
 [LIBRARY.md](LIBRARY.md) for its conflict and retention rules. Keep a downloaded

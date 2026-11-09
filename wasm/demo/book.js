@@ -1,5 +1,5 @@
 import { createBookWorker, createBookPublicationWorker } from "../book-worker.js";
-import { createBookCollection, normalizeBookProject, readBookProject, serializeBookProject } from "./book_collection.mjs";
+import { createBookCollection, normalizeBookProject, readBookProject, readBookSourceFile, serializeBookProject } from "./book_collection.mjs";
 import { createBookControls } from "./book_controls.mjs";
 import { createBookImageControls, createBookImagePanel } from "./book_image_controls.mjs";
 import { createBookFontControls, createBookFontPanel } from "./book_font_controls.mjs";
@@ -20,6 +20,7 @@ import { createBookSourceFormattingControls } from "./book_source_formatting.mjs
 
 import { createBookFileControls } from "./book_file_controls.mjs";
 import { createBookDirectoryControls } from "./book_directory_controls.mjs";
+import { createBookSourceFolderControls } from "./book_source_folder_controls.mjs";
 import { createBookEditionControls } from "./book_edition_controls.mjs";
 
 const collection = createBookCollection();
@@ -34,6 +35,7 @@ let library = null,
   sourceFormatting = null,
   projectFiles = null,
   sourceDirectory = null,
+  sourceFolder = null,
   edition = null,
   inspection = null,
   links = null,
@@ -68,6 +70,18 @@ try {
   const status = document.querySelector("#book-directory-status") ?? document.querySelector("#status");
   if (status) status.textContent =
     "Direct source-folder saving is unavailable. Project files, source downloads and portable backups remain available.";
+}
+// Reopen external source edits with the manifest's roles, order and settings.
+try {
+  sourceFolder = createBookSourceFolderControls({ root: document, controls, collection,
+    projectCodec: { normalizeBookProject, readBookProject, readBookSourceFile },
+    confirm: text => window.confirm(text),
+    onProjectOpened: () => { library?.detach(); sourceHistory?.reset(); },
+  });
+} catch {
+  const status = document.querySelector("#book-source-folder-status") ?? document.querySelector("#status");
+  if (status) status.textContent =
+    "Editable source-folder reopening is unavailable. Source-project import and ordinary folder import remain available.";
 }
 // Source history owns no renderer and survives presentation/resource edits.
 try {
@@ -220,6 +234,7 @@ try {
 
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
+    sourceFolder?.suspend();
     sourceFormatting?.suspend();
     edition?.suspend();
     sourceDirectory?.suspend();
@@ -237,6 +252,7 @@ window.addEventListener("pagehide", (event) => {
     library?.suspend();
     controls.suspend();
   } else {
+    sourceFolder?.dispose();
     sourceFormatting?.dispose();
     edition?.dispose();
     sourceDirectory?.dispose();
@@ -257,6 +273,7 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
+    sourceFolder?.resume();
     sourceFormatting?.resume();
     edition?.resume();
     sourceDirectory?.resume();

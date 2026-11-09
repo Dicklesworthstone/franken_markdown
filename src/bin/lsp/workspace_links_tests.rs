@@ -74,6 +74,26 @@ fn logical_uri_identity_preserves_encoding_and_platform_boundaries() {
             TARGET,
         ),
         ("file:///c:/manual/a.md", "b.md", "file:///C:/manual/b.md"),
+        (
+            "file:///C:/docs/a.md",
+            "/images/a.png",
+            "file:///C:/images/a.png",
+        ),
+        (
+            "file:///D:/docs/a.md",
+            "/C:/images/a.png",
+            "file:///C:/images/a.png",
+        ),
+        (
+            "file:///C:/docs/a.md",
+            "/D%3A/images/a.png",
+            "file:///C:/D%3A/images/a.png",
+        ),
+        (
+            "file:///D:/docs/a.md",
+            "/%43:/images/a.png",
+            "file:///D:/C%3A/images/a.png",
+        ),
         ("file://HOST/share/a.md", "b.md", "file://host/share/b.md"),
         (ORIGIN, "caf%C3%A9.md", "file:///manual/guide/café.md"),
         (
@@ -176,6 +196,7 @@ fn malformed_and_external_urls_do_not_gain_open_buffer_authority() {
             .is_none()
     );
     assert!(addressed("file:///C:/a.md", "../topic.md").is_none());
+    assert!(addressed("file:///C:/docs/a.md", "/../topic.md").is_none());
     assert!(file_uri("file:///manual/a.md?revision=2").is_none());
     assert!(file_uri("file:///manual/a.md#draft").is_none());
 }

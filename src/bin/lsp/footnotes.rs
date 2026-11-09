@@ -24,6 +24,10 @@ const MAX_SYMBOLS: usize = 4096;
 const MAX_PROBE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LINKS: usize = 32768;
 const MAX_LINK_BYTES: usize = 1024 * 1024;
+const INCOMPLETE_MAPPING: Failure = (
+    -32803,
+    "footnote source mapping could not be proven complete",
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -265,10 +269,7 @@ impl Inventory {
             || mapped != count
             || kinds.iter().filter(|kind| kind.is_some()).count() != count
         {
-            return Err((
-                -32803,
-                "footnote source mapping could not be proven complete",
-            ));
+            return Err(INCOMPLETE_MAPPING);
         }
         let notes = candidates
             .into_iter()
@@ -293,19 +294,31 @@ pub(super) fn completion_labels(
     source: &str,
     selected: SourceSpan,
 ) -> Result<Option<Vec<String>>, Failure> {
-    let mut inventory = Inventory::parse(source, candidates(source)?)?;
-    if !inventory.notes.iter().any(|note| {
-        note.kind == Kind::Reference && note.candidate.label == selected
-    }) {
+    let mut inventory = match Inventory::parse(source, candidates(source)?) {
+        Ok(inventory) => inventory,
+        // A lexical candidate can straddle a closing code delimiter. The bulk
+        // probe then cannot prove ownership; completion must offer no edit.
+        // Rename retains the strict error, and resource errors still propagate.
+        Err(INCOMPLETE_MAPPING) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !inventory
+        .notes
+        .iter()
+        .any(|note| note.kind == Kind::Reference && note.candidate.label == selected)
+    {
         return Ok(None);
     }
     inventory.notes.sort_by_key(|note| note.order);
     let mut seen = std::collections::BTreeSet::new();
     Ok(Some(
-        inventory.notes.into_iter()
+        inventory
+            .notes
+            .into_iter()
             .filter(|note| note.kind == Kind::Definition)
             .filter_map(|note| {
-                seen.insert(note.candidate.id.clone()).then_some(note.candidate.id)
+                seen.insert(note.candidate.id.clone())
+                    .then_some(note.candidate.id)
             })
             .collect(),
     ))

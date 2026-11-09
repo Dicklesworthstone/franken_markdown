@@ -144,7 +144,24 @@ fn local_parser_and_anchor_findings_survive_cross_document_refresh() {
     let source = "[local](#absent) [remote](b.md#topic)\n\n```rust\nunfinished";
     let initial = open(&mut server, A, source, 1);
     let local = entries(report(&initial, A).unwrap()).to_vec();
-    assert!(local.iter().any(|finding| finding.get("code").is_none()));
+    let fence = local
+        .iter()
+        .find(|finding| finding.get("code").and_then(Json::as_str) == Some("unclosed_fence"))
+        .unwrap();
+    assert_eq!(fence.get("severity").and_then(Json::as_u64), Some(2));
+    assert_eq!(
+        fence.get("range"),
+        Some(&object([
+            (
+                "start",
+                object([("line", number(2)), ("character", number(0))]),
+            ),
+            (
+                "end",
+                object([("line", number(3)), ("character", number(10))]),
+            ),
+        ])),
+    );
     assert!(codes(report(&initial, A).unwrap()).contains(&"missing_anchor"));
     let broken = open(&mut server, B, "# Elsewhere", 1);
     let combined = entries(report(&broken, A).unwrap());

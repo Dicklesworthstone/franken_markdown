@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language server repairs link and image destinations in opened Markdown
+  documents before client-owned file and folder renames. Versioned edits retain
+  original source coordinates while rebasing moved documents and preserving
+  incoming targets, queries and fragments. Simultaneous moves, extension/index
+  aliases and Windows drive boundaries share bounded URI resolution; complete
+  parser proofs reject unsafe rewrites. See [File rename](docs/LSP_FILE_RENAME.md).
 - SVG fenced code uses the shared syntax lexer and theme palette, including
   multiline tokens, supplied fonts and high-contrast appearances. Colors are
   applied after shaping, preserving glyph positions, wrapping and panel
@@ -103,6 +109,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Footnote completion offers no edit when a lexical candidate straddles a
+  literal code boundary and parser ownership cannot be proven. Rename keeps
+  its strict refusal, and completion budget failures remain explicit.
 - Connected source-project files preserve their actual schema during save
   comparison, allowing PDF/A, baseline-grid and authoring-dialect settings to
   survive verified disk saves. Equivalent supported versions share source

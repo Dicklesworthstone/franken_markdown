@@ -8,10 +8,10 @@ use super::Buffer;
 type Failure = (i32, &'static str);
 type Target<'a> = (&'a str, &'a str);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FileKey {
-    authority: String,
-    parts: Vec<String>,
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FileKey {
+    pub authority: String,
+    pub parts: Vec<String>,
 }
 
 fn decode_component(raw: &str) -> Option<String> {
@@ -70,7 +70,7 @@ fn append(parts: &mut Vec<String>, path: &str) -> Option<bool> {
     Some(directory)
 }
 
-fn file_uri(uri: &str) -> Option<(FileKey, bool)> {
+pub(super) fn file_uri(uri: &str) -> Option<(FileKey, bool)> {
     if uri.len() > 8192
         || !uri.get(..5)?.eq_ignore_ascii_case("file:")
         || uri.contains(['?', '#', '\\'])
@@ -105,7 +105,7 @@ fn file_uri(uri: &str) -> Option<(FileKey, bool)> {
     Some((key, directory))
 }
 
-fn addressed(origin: &str, destination: &str) -> Option<(FileKey, bool)> {
+pub(super) fn addressed(origin: &str, destination: &str) -> Option<(FileKey, bool)> {
     if destination.is_empty() || destination.len() > 8192 {
         return None;
     }
@@ -126,7 +126,19 @@ fn addressed(origin: &str, destination: &str) -> Option<(FileKey, bool)> {
         return None;
     }
     if path.starts_with('/') {
+        // A rooted file URL inherits its Windows drive unless the destination
+        // explicitly supplies one. Dropping it silently retargets moved C:
+        // documents to D: when the same rooted spelling is kept after a move.
+        let inherited_drive = key.parts.first().filter(|part| drive(part)).cloned();
+        let explicit_drive = path
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .is_some_and(drive);
         key.parts.clear();
+        if !explicit_drive && let Some(drive) = inherited_drive {
+            key.parts.push(drive);
+        }
     } else {
         key.parts.pop();
     }
@@ -154,6 +166,30 @@ fn select<'a>(
     Ok(Some((uri, &buffer.text)))
 }
 
+/// Shared fallback identities for navigation and file-operation edits. An
+/// exact opened file must be considered before these extension/index aliases.
+pub(super) fn alternative_targets(key: &FileKey, directory: bool) -> Vec<FileKey> {
+    if !directory && key.parts.last().is_none_or(|name| name.contains('.')) {
+        return Vec::new();
+    }
+    let mut candidates = Vec::with_capacity(6);
+    if !directory {
+        for extension in [".md", ".markdown"] {
+            let mut candidate = key.clone();
+            if let Some(name) = candidate.parts.last_mut() {
+                name.push_str(extension);
+            }
+            candidates.push(candidate);
+        }
+    }
+    for name in ["index.md", "index.markdown", "README.md", "README.markdown"] {
+        let mut candidate = key.clone();
+        candidate.parts.push(name.to_string());
+        candidates.push(candidate);
+    }
+    candidates
+}
+
 pub(super) fn resolve<'a>(
     documents: &'a BTreeMap<String, Buffer>,
     origin: &str,
@@ -174,24 +210,7 @@ pub(super) fn resolve<'a>(
             (candidate == &key).then_some((*uri, *buffer))
         }));
     }
-    if !directory && key.parts.last().is_none_or(|name| name.contains('.')) {
-        return Ok(None);
-    }
-    let mut candidates = Vec::with_capacity(6);
-    if !directory {
-        for extension in [".md", ".markdown"] {
-            let mut candidate = key.clone();
-            if let Some(name) = candidate.parts.last_mut() {
-                name.push_str(extension);
-            }
-            candidates.push(candidate);
-        }
-    }
-    for name in ["index.md", "index.markdown", "README.md", "README.markdown"] {
-        let mut candidate = key.clone();
-        candidate.parts.push(name.to_string());
-        candidates.push(candidate);
-    }
+    let candidates = alternative_targets(&key, directory);
     select(
         opened
             .iter()

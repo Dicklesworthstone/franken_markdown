@@ -94,6 +94,15 @@ definition additionally requires exact AST equality after restoring its original
 destination. No guessed inline source map or independent Markdown grammar is
 used. See `LSP_LINK_NAVIGATION.md` for the algorithm, budgets and exclusions.
 
+## File and folder rename edits
+
+Clients supporting versioned workspace edits and file-operation requests can
+ask `workspace/willRenameFiles` to maintain Markdown links and image paths in
+opened buffers. The server plans simultaneous moves, updates incoming links,
+rebases outgoing relative destinations and returns edits against the old URIs
+before the client moves files. See [file rename](LSP_FILE_RENAME.md) for parser
+ownership, alias handling, unopened-file scope and explicit include refusals.
+
 ## Synchronization and limits
 
 Versions must increase; stale versions are ignored. An empty change array is a

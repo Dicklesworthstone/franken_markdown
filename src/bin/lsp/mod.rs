@@ -2,6 +2,7 @@
 //! Only explicitly opened buffers participate: no network, file reads, or transclusion.
 
 mod diagnostics;
+mod file_rename;
 mod footnotes;
 mod heading_rename;
 mod label_completion;
@@ -106,6 +107,7 @@ struct Server {
     hierarchical_symbols: bool,
     folding_limit: Option<usize>,
     versioned_edits: bool,
+    file_renames: bool,
 }
 
 impl Server {
@@ -167,6 +169,15 @@ impl Server {
                 .and_then(|edit| edit.get("documentChanges"))
                 .and_then(Json::as_bool)
                 .unwrap_or(false);
+            self.file_renames = self.versioned_edits
+                && message
+                    .get("params")
+                    .and_then(|params| params.get("capabilities"))
+                    .and_then(|capabilities| capabilities.get("workspace"))
+                    .and_then(|workspace| workspace.get("fileOperations"))
+                    .and_then(|operations| operations.get("willRename"))
+                    .and_then(Json::as_bool)
+                    .unwrap_or(false);
             self.phase = Phase::Running;
             return vec![response(
                 id,
@@ -182,6 +193,14 @@ impl Server {
                             ("definitionProvider", Json::Bool(true)),
                             ("referencesProvider", Json::Bool(true)),
                             ("documentHighlightProvider", Json::Bool(true)),
+                            (
+                                "workspace",
+                                if self.file_renames {
+                                    file_rename::capability()
+                                } else {
+                                    object([])
+                                },
+                            ),
                             (
                                 "renameProvider",
                                 if self.versioned_edits {
@@ -248,6 +267,20 @@ impl Server {
         let empty = object([]);
         let params = message.get("params").unwrap_or(&empty);
         if let Some(id) = id {
+            if method == "workspace/willRenameFiles" {
+                let result = if self.file_renames {
+                    file_rename::request(&self.documents, params)
+                } else {
+                    Err((
+                        -32601,
+                        "file rename requires willRename and versioned documentChanges support",
+                    ))
+                };
+                return vec![match result {
+                    Ok(result) => response(id, result),
+                    Err((code, reason)) => error(id, code, reason),
+                }];
+            }
             if method == "workspace/symbol" {
                 return vec![match workspace_symbols::request(&self.documents, params) {
                     Ok(result) => response(id, result),

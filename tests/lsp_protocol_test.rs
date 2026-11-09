@@ -65,6 +65,114 @@ fn array(value: &Json) -> &[Json] {
 }
 
 #[test]
+fn real_file_rename_returns_old_uri_versioned_edits_and_reads_current_revisions() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true},"fileOperations":{"willRename":true}}}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///docs/README.md","languageId":"markdown","version":7,"text":"😀 [go](chapter.md#part)\r\n"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///docs/chapter.md","languageId":"markdown","version":4,"text":"# Part\n\n![art](image.png)\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///docs/chapter.md","newUri":"file:///manual/renamed.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///docs/chapter.md","newUri":"file:///manual/renamed.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///docs/README.md","version":8},"contentChanges":[{"text":"😀 [go](chapter.md#next)\r\n"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///docs/chapter.md","newUri":"file:///manual/renamed.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let result = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result"))
+            .ok_or("missing result")
+    };
+    let operation = result(1)?
+        .get("capabilities")
+        .and_then(|caps| caps.get("workspace"))
+        .and_then(|workspace| workspace.get("fileOperations"))
+        .and_then(|operations| operations.get("willRename"))
+        .ok_or("missing file operation capability")?;
+    let filters = array(operation.get("filters").ok_or("missing filters")?);
+    assert_eq!(filters.len(), 1);
+    assert_eq!(
+        filters[0].get("scheme").and_then(Json::as_str),
+        Some("file")
+    );
+    assert_eq!(
+        filters[0]
+            .get("pattern")
+            .and_then(|pattern| pattern.get("glob"))
+            .and_then(Json::as_str),
+        Some("**/*")
+    );
+    assert_eq!(
+        result(2)?,
+        result(3)?,
+        "planning a move must not relocate or edit buffers"
+    );
+    for (id, version, fragment) in [(2, 7, "part"), (4, 8, "next")] {
+        let changes = array(
+            result(id)?
+                .get("documentChanges")
+                .ok_or("missing changes")?,
+        );
+        assert_eq!(changes.len(), 2);
+        for (uri, version, line, start, end, replacement) in [
+            (
+                "file:///docs/README.md",
+                version,
+                0,
+                8,
+                23,
+                format!("../manual/renamed.md#{fragment}"),
+            ),
+            (
+                "file:///docs/chapter.md",
+                4,
+                2,
+                7,
+                16,
+                "../docs/image.png".to_string(),
+            ),
+        ] {
+            let change = changes
+                .iter()
+                .find(|change| {
+                    change
+                        .get("textDocument")
+                        .and_then(|doc| doc.get("uri"))
+                        .and_then(Json::as_str)
+                        == Some(uri)
+                })
+                .ok_or("missing old URI")?;
+            assert_eq!(
+                change
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("version"))
+                    .and_then(Json::as_u64),
+                Some(version)
+            );
+            let edits = array(change.get("edits").ok_or("missing edits")?);
+            assert_eq!(edits.len(), 1);
+            assert_eq!(
+                edits[0].get("newText").and_then(Json::as_str),
+                Some(replacement.as_str())
+            );
+            let range = edits[0].get("range").ok_or("missing range")?;
+            for (side, column) in [("start", start), ("end", end)] {
+                let position = range.get(side).ok_or("missing position")?;
+                assert_eq!(position.get("line").and_then(Json::as_u64), Some(line));
+                assert_eq!(
+                    position.get("character").and_then(Json::as_u64),
+                    Some(column)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn real_label_completion_returns_exact_edits_and_reads_live_document_revisions() -> TestResult {
     let (status, replies) = session(&[
         r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"###,
@@ -79,12 +187,24 @@ fn real_label_completion_returns_exact_edits_and_reads_live_document_revisions()
     ])?;
     assert!(status.success());
     let result = |id| {
-        replies.iter().find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
-            .and_then(|reply| reply.get("result")).ok_or("missing completion result")
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result"))
+            .ok_or("missing completion result")
     };
-    let triggers = result(1)?.get("capabilities").and_then(|v| v.get("completionProvider"))
-        .and_then(|v| v.get("triggerCharacters")).ok_or("missing triggers")?;
-    assert_eq!(array(triggers).iter().filter_map(Json::as_str).collect::<Vec<_>>(), ["#", "[", "^"]);
+    let triggers = result(1)?
+        .get("capabilities")
+        .and_then(|v| v.get("completionProvider"))
+        .and_then(|v| v.get("triggerCharacters"))
+        .ok_or("missing triggers")?;
+    assert_eq!(
+        array(triggers)
+            .iter()
+            .filter_map(Json::as_str)
+            .collect::<Vec<_>>(),
+        ["#", "[", "^"]
+    );
     for (id, label, line, start, end, inserted) in [
         (2, "[^research]", 0, 11, 20, "research"),
         (3, "manual", 4, 8, 10, "manual"),
@@ -99,7 +219,10 @@ fn real_label_completion_returns_exact_edits_and_reads_live_document_revisions()
         for (side, column) in [("start", start), ("end", end)] {
             let position = range.get(side).ok_or("missing edit position")?;
             assert_eq!(position.get("line").and_then(Json::as_u64), Some(line));
-            assert_eq!(position.get("character").and_then(Json::as_u64), Some(column));
+            assert_eq!(
+                position.get("character").and_then(Json::as_u64),
+                Some(column)
+            );
         }
     }
     Ok(())

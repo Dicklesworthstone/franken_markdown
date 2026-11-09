@@ -46,6 +46,11 @@ Non-file schemes and protocol-relative URLs are not followed. Relative file
 links in opaque buffers such as `untitled:` have no inferred directory.
 Same-document links continue to work in those buffers.
 
+Editor-initiated file and folder moves can also return versioned source edits
+through [`workspace/willRenameFiles`](LSP_FILE_RENAME.md). That provider reuses
+these URI and alias rules while preserving exact image-resource identities and
+checking every edited document's Markdown structure.
+
 ## Revisions, limits, and scope
 
 Every request uses current synchronized buffers. A target renamed by an accepted

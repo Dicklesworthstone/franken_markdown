@@ -56,7 +56,8 @@ const disk = "red fox follows small bird near short tree\r\n";
 async function setup(t, texts = [base, local, disk]) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-paragraph-controls-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  for (const name of ["book_directory_controls.mjs", "book_source_merge.mjs"])
+  for (const name of ["book_directory_controls.mjs", "book_source_merge.mjs", "book_zip.mjs",
+    "book_source_archive.mjs", "book_source_archive_controls.mjs"])
     await copyFile(new URL(`../demo/${name}`, import.meta.url), join(dir, name));
   await writeFile(join(dir, "book_directory_session.mjs"), directoryBoundary);
   const { createBookDirectoryControls } = await import(pathToFileURL(join(dir, "book_directory_controls.mjs")));

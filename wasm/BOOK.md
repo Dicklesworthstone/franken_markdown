@@ -307,6 +307,12 @@ snapshot are checked again before publication and download activation.
 
 ## Keep the source
 
+**Prepare source ZIP** downloads all chapters and include-only files as an
+editable `sources/` tree, together with `book.fmdbook.json` for reading order,
+roles and applied settings. It works without direct folder access or WASM and
+preserves unchanged BOMs and line endings. It contains source only; use portable
+backup for images and fonts. See [source ZIP and connected folders](BOOK_DIRECTORY.md).
+
 The collection starts in memory with **autosave off**. The optional local book
 library adds named saves, recent revision recovery, and opt-in autosave; see
 [LIBRARY.md](LIBRARY.md) for its conflict and retention rules. Keep a downloaded

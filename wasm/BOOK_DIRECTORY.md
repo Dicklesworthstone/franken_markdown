@@ -1,4 +1,56 @@
-# Save a book's source files to a local folder
+# Download or save a book's source files
+
+## Download an editable source ZIP
+
+The **Editable source ZIP** panel downloads the complete chapter and include-only
+source tree without requiring direct folder access, a secure-context crypto API,
+or a working rendering engine. Choose **Prepare source ZIP**, then **Download
+source ZIP**. Preparation creates a download link; it does not save a file by
+itself.
+
+The archive contains:
+
+- `sources/`: every source file at its original relative path, including nested
+  folders and empty files. Includes and links retain their original text.
+- `book.fmdbook.json`: the existing source-project format, with captured source,
+  chapter order, chapter/include roles, and applied publishing settings. This
+  metadata lives outside `sources/`, so an include file named
+  `book.fmdbook.json` cannot collide with it.
+
+Extract `sources/` to work with ordinary UTF-8 files in an editor. Open
+`book.fmdbook.json` through the workbench's existing project import to recover
+the captured project. It is a snapshot: editing extracted files afterward does
+not also update the project JSON. Use the existing file/folder import or source
+reconciliation workflow to bring those later edits back.
+
+Current raw editor text, path and role are captured without modifying the source
+collection or applying pending publishing drafts. An unchanged textarea's
+LF-normalized view preserves original BOMs and CRLF/CR endings. Actual edits use
+the current editor string. The project uses committed publishing settings, even
+when an unrelated settings draft is unfinished.
+
+This is a **source-only backup**. No image/font bytes, filesystem permissions,
+connected handles or URLs are stored. Applied settings may retain asset paths;
+those references grant no access. Use the separate portable backup to keep
+authorized images and fonts.
+
+The workbench's existing limits apply: 128 chapters and 128 include-only sources,
+4 MiB per source, and 16 MiB of source/path bytes. The source-project JSON is
+bounded to 64 MiB; the final ZIP is bounded to 81 MiB including that duplicate
+source representation and archive metadata. Paths must be portable: traversal,
+reserved platform names, case/Unicode-equivalent names, and file/directory
+collisions are rejected. Unicode filenames and exact file contents are preserved.
+The deterministic ZIP uses STORE entries with fixed timestamps and CRC-32; it
+does not compress or alter source bytes.
+
+ZIP preparation yields during checksum work and can be cancelled. Source,
+selection, applied-setting or project changes retire the prepared link. Import
+and composition ownership block preparation; page suspension/disposal cancels
+work and revokes its URL. Silent editor changes are checked again before
+publication and download activation. A cancelled older operation cannot replace
+a newer download or change a connected folder.
+
+## Save directly to a connected folder
 
 The book workbench's **Connected source folder** panel saves chapters and
 include-only sources as ordinary UTF-8 files beneath a directory you explicitly

@@ -1,11 +1,12 @@
 import { createBookSourceMerger } from "./book_source_merge.mjs";
 import { BOOK_DIRECTORY_LIMITS, BookDirectoryError, createBookDirectorySession } from "./book_directory_session.mjs";
+import { createBookSourceArchiveControls } from "./book_source_archive_controls.mjs";
 
 /** Source-folder saves capture source without applying publishing drafts.
  * Refresh uses the existing atomic source transaction, never project recovery.
  * Neither path acquires resources, starts rendering, nor owns a project file.
  */
-export function createBookDirectoryControls({ root, controls, collection, window }) {
+export function createBookDirectoryControls({ root, controls, collection, window, projectCodec }) {
   if (![controls?.checkpoint, collection?.subscribe].every(fn => typeof fn === "function")
       || !Number.isSafeInteger(collection?.sourceProjectRevision))
     throw new TypeError("Source folders require a source host with project identity tracking.");
@@ -302,13 +303,21 @@ export function createBookDirectoryControls({ root, controls, collection, window
     if (controls.sourceBusy) { finish(false); session.changed(); }
     refresh();
   });
+  // Archive downloads have no filesystem authority. Older source-only hosts
+  // can keep folder I/O without supplying a project codec for the new export.
+  const sourceArchive = projectCodec ? createBookSourceArchiveControls({ root, controls, collection,
+    projectCodec, urls: window?.URL ?? globalThis.URL }) : null;
   refresh();
   return Object.freeze({ bind, save, refresh: () => refreshSources(), reconcile: () => refreshSources(true), detach, get state() { return session.state; },
-    suspend() { if (!disposed) { suspended = true; composing.clear(); detach(); refresh(); } },
-    resume() { if (!disposed) { suspended = false; projectEpoch = collection.sourceProjectRevision; refresh(); } },
+    prepareArchive() {
+      if (!sourceArchive) throw new BookDirectoryError("UNSUPPORTED_SOURCE_ARCHIVE", "This source host must provide its project codec for ZIP downloads.");
+      return sourceArchive.prepare();
+    },
+    suspend() { if (!disposed) { sourceArchive?.suspend(); suspended = true; composing.clear(); detach(); refresh(); } },
+    resume() { if (!disposed) { suspended = false; projectEpoch = collection.sourceProjectRevision; sourceArchive?.resume(); refresh(); } },
     dispose() {
       if (disposed) return;
-      finish(false); disposed = true; unsubscribe(); unsubscribeBusy?.();
+      sourceArchive?.dispose(); finish(false); disposed = true; unsubscribe(); unsubscribeBusy?.();
       for (const remove of listeners) remove(); session.dispose(); composing.clear();
       for (const button of Object.values(buttons)) button.disabled = true;
     },

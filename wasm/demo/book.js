@@ -61,7 +61,9 @@ try {
 // Folder ownership follows the collection's project epoch, including identical
 // project replacements through file/library/portable routes. It owns no worker.
 try {
-  sourceDirectory = createBookDirectoryControls({ root: document, controls, collection, window });
+  sourceDirectory = createBookDirectoryControls({ root: document, controls, collection, window,
+    projectCodec: { normalizeBookProject, serializeBookProject },
+  });
 } catch {
   const status = document.querySelector("#book-directory-status") ?? document.querySelector("#status");
   if (status) status.textContent =

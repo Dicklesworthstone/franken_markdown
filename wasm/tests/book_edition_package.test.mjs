@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const feature = ["demo/book_edition.mjs", "demo/book_edition_controls.mjs", "book_render_diagnostics.mjs", "BOOK_EDITION.md"];
+const feature = ["demo/book_edition.mjs", "demo/book_zip.mjs", "demo/book_edition_controls.mjs", "book_render_diagnostics.mjs", "BOOK_EDITION.md"];
 const read = path => readFileSync(join(root, path), "utf8");
 
 test("package manifest includes the complete edition module closure", () => {

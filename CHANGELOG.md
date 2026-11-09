@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The book workbench downloads editable source ZIPs without folder-access or
+  rendering-engine support. Archives retain exact source bytes under `sources/`
+  plus a reopenable source-only project with order, roles and applied settings.
+  Bounded, cancellable preparation rejects portable-path collisions and retires
+  stale downloads when the source changes. Existing edition ZIP bytes remain
+  unchanged. See [Book source folders](wasm/BOOK_DIRECTORY.md).
 - EPUB citations, trailing notes and return links carry source-owned EPUB and
   accessibility semantics. Deterministic note targets avoid collisions with
   body and note headings while preserving authored link destinations, chapter

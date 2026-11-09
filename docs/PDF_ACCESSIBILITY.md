@@ -28,7 +28,7 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 |---|---|---|
 | `#` … `######` heading | `/H1` … `/H6` | Exact level from the source heading, independent of the type scale |
 | Paragraph | `/P` | Wrapped lines share a single `/P`, including across page boundaries; every `/MCR` names its actual page |
-| Bullet / ordered / task list | `/L` → `/LI` → `/LBody` → `/P` | Nested lists produce nested `/L`, to arbitrary depth |
+| Bullet / ordered / task list | `/L` → `/LI`, with sibling `/Lbl` and `/LBody` children | Markers are selectable labels; body paragraphs, headings, tables, code, figures and nested lists keep their own structure |
 | Blockquote | `/BlockQuote` | Nested quotes nest; content keeps its own `/P`/`/L`/… inside |
 | Pipe table | `/Table` → `/TR` → `/TH`\|`/TD` | Complete rectangular grid, including blank cells and entirely blank rows |
 | Table header cell | `/TH` with a stable `/ID` and `/A << /O /Table /Scope /Column >>` | Column scope; blank headers retain their column positions |
@@ -112,6 +112,29 @@ The renderer's existing normalized grid width also supplies missing cells in
 ragged host-created tables. Financial footing strokes remain artifacts rather
 than invented data rows.
 
+## List labels and numbering
+
+Each source list item has one `/Lbl` before its `/LBody`. Bullets, ordinal
+numbers and checked/unchecked task markers belong to that label; ordinary body
+text that happens to resemble a marker is still body text. Label identity is
+carried from layout rather than inferred from painted characters.
+
+The enclosing `/L` records `/A << /O /List /ListNumbering /Disc >>` for ordinary
+bullets and `/Decimal` for numbered lists. Lists containing custom task markers
+use `/None`, including mixed task/ordinary lists. Nested lists keep their own
+numbering metadata and source hierarchy.
+
+A continued item retains the same label and body across pages. If an oversized
+ordinal itself wraps, its physical fragments belong to one logical `/Lbl`.
+Empty items retain an empty `/LBody` without invisible filler text. Headings,
+code, tables, quotes and linked figures at the beginning of an item preserve
+their own body roles instead of absorbing the label. This structure applies to
+ordinary and PDF/A output and to both PDF emitters.
+
+`tests/pdf_list_accessibility_test.rs` decodes emitted structures, marked-content
+ownership and ToUnicode text to verify these cases; the list geometry suites
+independently cover their placement and pagination.
+
 ## Known limitations
 
 These are deliberate consequences of a small, line-based, dependency-free writer.
@@ -120,9 +143,6 @@ They are safe (they never corrupt the tree) and are candidates for future beads.
 - **Complex table headers and spanning cells** are not represented by the
   Markdown AST. Header associations cover its single column-header row; row
   headers, multiple header tiers, and row/column spans remain unsupported.
-- **List markers** (bullet/number/checkbox) are part of the item's first line
-  text, not a separate `/Lbl` element, and ordered vs. bullet lists both tag as
-  `/L` without an explicit `/ListNumbering` attribute.
 
 ## Non-goals
 

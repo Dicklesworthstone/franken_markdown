@@ -946,6 +946,7 @@ pub(super) fn draw_page(
                     fill: Fill::Muted,
                     strike: false,
                     task: None,
+                    list_label: false,
                     width: *width,
                     expansion_permille: 0,
                 };

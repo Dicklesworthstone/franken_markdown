@@ -728,7 +728,11 @@ fn quote_candidate_admission_requires_consistent_complete_ancestry() {
         quoted[1].page_break_before = true;
         assert!(!eligible(&quoted, paragraph));
         quoted[1].page_break_before = false;
-        quoted[0].list_path.push(ListMark { list: 1, item: 1 });
+        quoted[0].list_path.push(ListMark {
+            list: 1,
+            item: 1,
+            numbering: ListNumbering::Disc,
+        });
         assert!(!eligible(&quoted, paragraph));
     }
 }

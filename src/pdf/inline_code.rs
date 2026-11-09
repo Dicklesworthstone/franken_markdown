@@ -19,6 +19,7 @@ pub(super) fn push_token(source: &str, strike: bool, link: Option<u32>, out: &mu
             space: false,
             hard_break: false,
             literal: true,
+            list_label: false,
             link,
             strike,
         });

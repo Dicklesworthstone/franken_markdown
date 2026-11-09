@@ -466,6 +466,7 @@ pub(super) fn append_fitted_line(
             && last.link == tok.link
             && last.strike == tok.strike
             && last.literal == tok.literal
+            && last.list_label == tok.list_label
         {
             last.text.push_str(&tok.text);
         } else {
@@ -505,6 +506,7 @@ pub(super) fn append_fitted_line(
                 },
                 strike: run.strike,
                 task: None,
+                list_label: run.list_label,
                 width,
                 expansion_permille: 0,
             });

@@ -56,6 +56,7 @@ mod joint_pagination;
 mod jpeg_color;
 mod jpeg_orientation;
 mod list_geometry;
+mod list_labels;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
 mod native_compression;
 mod page_note_grid;
@@ -281,6 +282,9 @@ struct Seg {
     /// a vector checkbox and emits the `[x]`/`[ ]` text invisibly so
     /// extraction and assistive tech still see the state.
     task: Option<bool>,
+    /// Source list-label provenance, preserved independently of painted text.
+    /// Markers are not inferred from bullets, ordinals or checkbox strings.
+    list_label: bool,
     /// Shaped layout advance, used to size decorations and subsequent segments.
     width: f32,
     /// Microtype expansion (Hàn Thế Thành / pdfTeX): per-glyph horizontal
@@ -360,6 +364,34 @@ struct ListMark {
     list: u32,
     /// Unique id of the enclosing list item (the item's flow group).
     item: u32,
+    numbering: ListNumbering,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ListNumbering {
+    Decimal,
+    Disc,
+    None,
+}
+
+impl ListNumbering {
+    fn of(list: &List) -> Self {
+        if list.items.iter().any(|item| item.task.is_some()) {
+            Self::None
+        } else if list.ordered {
+            Self::Decimal
+        } else {
+            Self::Disc
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Decimal => "Decimal",
+            Self::Disc => "Disc",
+            Self::None => "None",
+        }
+    }
 }
 
 /// One laid-out line: a baseline-aligned row of styled segments, or a rule.
@@ -2272,6 +2304,9 @@ struct Tok {
     /// Literal inline-code source: spaces are glyphs, never prose glue, and
     /// line breaking must not add hyphens. Retained through font fallback.
     literal: bool,
+    /// Only layout-created list labels carry this semantic role. Keeping it
+    /// through token splitting prevents a wrapped ordinal becoming body text.
+    list_label: bool,
     /// Interned index (per-render [`LinkIntern`]) of the active link target
     /// when this token came from safe inline link content; `None` = no link.
     /// Index equality is exactly link-target equality (content-keyed intern),
@@ -3528,6 +3563,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     fill: Fill::Black,
                     strike: false,
                     task: None,
+                    list_label: false,
                     width: run.width,
                     expansion_permille: 0,
                 });
@@ -3614,6 +3650,7 @@ fn append_pdf_toc_page(
             fill: Fill::Muted,
             strike: false,
             task: None,
+            list_label: false,
             width: dots_w,
             expansion_permille: 0,
         };
@@ -3629,6 +3666,7 @@ fn append_pdf_toc_page(
         fill: Fill::Black,
         strike: false,
         task: None,
+        list_label: false,
         width: page_w,
         expansion_permille: 0,
     };
@@ -4692,6 +4730,7 @@ struct ListFrame {
     list: u32,
     /// Current item's flow group (set per item as the loop advances).
     item: u32,
+    numbering: ListNumbering,
 }
 
 struct LayoutCx<'a> {
@@ -5045,6 +5084,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     fill: Fill::Black,
                     strike: false,
                     task: None,
+                    list_label: false,
                     width: 0.0,
                     expansion_permille: 0,
                 });
@@ -17287,6 +17327,7 @@ struct CellRun {
     text: String,
     link: Option<u32>,
     strike: bool,
+    list_label: bool,
     width: f32,
 }
 
@@ -17345,6 +17386,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     space: false,
                     hard_break: false,
                     literal: tok.literal,
+                    list_label: tok.list_label,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17361,6 +17403,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     space: false,
                     hard_break: false,
                     literal: tok.literal,
+                    list_label: tok.list_label,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17529,6 +17572,7 @@ fn build_cell_line_owned(
                 && !is_inline_object(r.slot)
                 && r.link == t.link
                 && r.strike == t.strike
+                && r.list_label == t.list_label
         });
         if merge {
             if let Some(last) = runs.last_mut() {
@@ -17541,6 +17585,7 @@ fn build_cell_line_owned(
                 text,
                 link: t.link,
                 strike: t.strike,
+                list_label: t.list_label,
                 width: 0.0,
             });
         }
@@ -17681,6 +17726,7 @@ fn wrap_cell_styled(
                         space: false,
                         hard_break: false,
                         literal: t.literal,
+                        list_label: t.list_label,
                         link: t.link,
                         strike: t.strike,
                     };
@@ -17712,6 +17758,7 @@ fn wrap_cell_styled(
                     space: false,
                     hard_break: false,
                     literal: t.literal,
+                    list_label: t.list_label,
                     link: t.link,
                     strike: t.strike,
                 });
@@ -18745,6 +18792,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                         fill,
                         strike: run.strike,
                         task: None,
+                        list_label: false,
                         width: run.width,
                         expansion_permille: 0,
                     });
@@ -18934,6 +18982,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
     cx.list_stack.push(ListFrame {
         list: list_id,
         item: 0,
+        numbering: ListNumbering::of(list),
     });
 
     for (item, marker) in list.items.iter().zip(marker_layouts) {
@@ -18951,6 +19000,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             fill: Fill::Black,
             strike: false,
             task: item.task,
+            list_label: true,
             width: marker.width,
             expansion_permille: 0,
         };
@@ -19060,6 +19110,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             .map(|frame| ListMark {
                 list: frame.list,
                 item: frame.item,
+                numbering: frame.numbering,
             })
             .collect();
         for line in &mut out[item_start_line..] {
@@ -19139,6 +19190,7 @@ fn tokenize(
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link,
                 strike,
             }),
@@ -19148,6 +19200,7 @@ fn tokenize(
                 space: true,
                 hard_break: true,
                 literal: false,
+                list_label: false,
                 link,
                 strike,
             }),
@@ -19175,6 +19228,7 @@ fn push_math_token(
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link,
             strike,
         });
@@ -19254,6 +19308,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link,
                     strike,
                 });
@@ -19264,6 +19319,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link,
                 strike,
             });
@@ -19277,6 +19333,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link,
             strike,
         });
@@ -19378,6 +19435,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && tok.link == last.link
                 && tok.strike == last.strike
                 && tok.literal == last.literal
+                && tok.list_label == last.list_label
             {
                 last.text.push_str(&tok.text);
             } else {
@@ -19409,6 +19467,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         let link = tok.link;
         let strike = tok.strike;
         let literal = tok.literal;
+        let list_label = tok.list_label;
         let replaced = runs.len();
         toks.splice(
             i..=i,
@@ -19418,6 +19477,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 space: false,
                 hard_break: false,
                 literal,
+                list_label,
                 link,
                 strike,
             }),
@@ -20101,6 +20161,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
                     space: false,
                     hard_break: false,
                     literal: tok.literal,
+                    list_label: tok.list_label,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -20446,6 +20507,7 @@ impl<'a> PdfWordSplitter<'a> {
                     space: tok.space,
                     hard_break: tok.hard_break,
                     literal: tok.literal,
+                    list_label: tok.list_label,
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -21718,6 +21780,7 @@ fn build_segs_adjusted(
         let slot = first.tok.slot;
         let link = first.tok.link;
         let strike = first.tok.strike;
+        let list_label = first.tok.list_label;
         // Run extent: consecutive same-slot/link/strike tokens, stopping
         // after a space that carries justification stretch (it must flush
         // the segment so the next run starts on its own).
@@ -21729,6 +21792,7 @@ fn build_segs_adjusted(
                 && (tok.slot != slot
                     || tok.link != link
                     || tok.strike != strike
+                    || tok.list_label != list_label
                     || is_inline_object(slot))
             {
                 break;
@@ -21760,6 +21824,7 @@ fn build_segs_adjusted(
                 },
                 strike,
                 task: None,
+                list_label,
                 width: width.max(0.0),
                 expansion_permille: 0,
             });
@@ -21828,6 +21893,7 @@ fn build_segs_adjusted(
             },
             strike,
             task: None,
+            list_label,
             width,
             expansion_permille: 0,
         });
@@ -21892,6 +21958,7 @@ fn build_single_adjusted_seg(
         },
         strike,
         task: None,
+        list_label: first.tok.list_label,
         width,
         expansion_permille: 0,
     })
@@ -21914,6 +21981,7 @@ fn single_adjusted_seg_text_len(
             || tok.slot != slot
             || tok.link != link
             || tok.strike != strike
+            || tok.list_label != toks[0].tok.list_label
         {
             return None;
         }
@@ -22445,6 +22513,7 @@ fn code_frags_to_segs(
                 fill: frag.fill,
                 strike: false,
                 task: None,
+                list_label: false,
                 width,
                 expansion_permille: 0,
             });
@@ -22483,6 +22552,7 @@ fn code_line_number_seg(
         fill: Fill::Syntax(HighlightTok::Comment),
         strike: false,
         task: None,
+        list_label: false,
         width,
         expansion_permille: 0,
     }
@@ -22498,6 +22568,7 @@ fn empty_code_seg(x: f32) -> Seg {
         fill: Fill::Black,
         strike: false,
         task: None,
+        list_label: false,
         width: 0.0,
         expansion_permille: 0,
     }
@@ -24257,20 +24328,23 @@ fn generate_page_content(
                 }
             }
         } else {
-            let marker_size = line.image.as_ref().and_then(|image| image.marker_size);
-            let first_visible_seg = if let Some(size) = marker_size {
-                // A leading list figure keeps a real, separately tagged label.
-                // Otherwise /Figure's alt text would replace the bullet or
-                // task state for assistive readers along with the image.
-                let prefix = container_prefix(line);
-                let mut path = SmallPath::from_slice(&prefix[..prefix.len().saturating_sub(1)]);
-                path.push(SElem {
-                    key: SKey::ListLabel(line.flow.group),
-                    tag: "Lbl",
-                });
+            let label_path = list_labels::path(line);
+            let separate_label = label_path.is_some();
+            if let Some(path) = label_path {
+                // A source label is a sibling of /LBody, independent of the
+                // first child's type and of physical line or page breaks.
+                let size = line
+                    .image
+                    .as_ref()
+                    .and_then(|image| image.marker_size)
+                    .unwrap_or(line.size);
                 append_marked_content_begin(&mut body, "Lbl", next_mcid);
-                let (_, marker_y) = line_text_position(line, y);
-                for seg in &line.segs {
+                let marker_y = if line.image.is_some() {
+                    line_text_position(line, y).1
+                } else {
+                    y
+                };
+                for seg in line.segs.iter().filter(|seg| seg.list_label) {
                     draw_seg(
                         &mut body,
                         &mut annots,
@@ -24294,10 +24368,11 @@ fn generate_page_content(
                     bbox: None,
                 });
                 next_mcid += 1;
-                None
-            } else {
-                first_visible_segment_index(line)
-            };
+            }
+            let first_visible_seg = line
+                .segs
+                .iter()
+                .position(|seg| !seg.text.is_empty() && !(separate_label && seg.list_label));
             let marked = line.image.is_some() || first_visible_seg.is_some();
             let mut owner = next_mcid;
             // A text line's own leaf path, which an inline formula splits.
@@ -24395,6 +24470,9 @@ fn generate_page_content(
             let mut open_link: Option<u64> = None;
             if let Some(seg_start) = first_visible_seg {
                 for seg in &line.segs[seg_start..] {
+                    if separate_label && seg.list_label {
+                        continue;
+                    }
                     // Empty marks at line boundaries do not interrupt a
                     // wrapped source link; only actual content advances runs.
                     let link_key = if seg.text.is_empty() {
@@ -24648,7 +24726,7 @@ fn append_table_cell_content_begin(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
     BlockQuote(usize),
-    List(u32),
+    List(u32, ListNumbering),
     ListItem(u32),
     ListLabel(u32),
     ListBody(u32),
@@ -24822,6 +24900,8 @@ struct SNode {
     /// Stable table/column identity, used for a header's `/ID` or a data
     /// cell's `/Headers` association. Page fragments share the same key.
     table_column: Option<(u32, u32)>,
+    /// Source list kind; checkboxes and mixed task lists use custom labels.
+    list_numbering: Option<ListNumbering>,
     /// Page of this element's marked content, emitted as `/Pg` when present.
     page: Option<usize>,
 }
@@ -24859,6 +24939,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         bbox: None,
         scope_column: false,
         table_column: None,
+        list_numbering: None,
         page: None,
     }];
     let mut parent_tree: Vec<Vec<usize>> = Vec::with_capacity(pages.len());
@@ -24914,6 +24995,10 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                     scope_column: elem.tag == "TH",
                     table_column: match elem.key {
                         SKey::TableCell(table, _, column) => Some((table, column)),
+                        _ => None,
+                    },
+                    list_numbering: match elem.key {
+                        SKey::List(_, numbering) => Some(numbering),
                         _ => None,
                     },
                     page: None,
@@ -24987,6 +25072,7 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
         parent_tree.push(leaf_for_mcid);
     }
 
+    list_labels::complete_empty_bodies(&mut nodes);
     StructTree {
         nodes,
         parent_tree,
@@ -25098,8 +25184,9 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
         if let Some(image) = &line.image {
             images += 1;
             link_annotations += usize::from(image.link.is_some());
-            marks += usize::from(image.marker_size.is_some());
         }
+        let separate_label = list_labels::has_label(line);
+        marks += usize::from(separate_label);
         let mut visible = line.image.is_some();
         for seg in &line.segs {
             if line.bg == 0 && !line.rule && seg.slot == F_MONO && !seg.text.trim().is_empty() {
@@ -25111,7 +25198,7 @@ fn estimate_page_content_capacity(placed: &[Placed<'_>]) -> PageContentCapacityE
             if seg.text.is_empty() {
                 continue;
             }
-            visible = true;
+            visible |= !separate_label || !seg.list_label;
             segments += 1;
             text_bytes = text_bytes.saturating_add(seg.text.len());
             if seg.strike {
@@ -25439,6 +25526,7 @@ mod font_slot_text_refs_tests {
             fill: Fill::Black,
             strike: false,
             task: None,
+            list_label: false,
             width: 0.0,
             expansion_permille: 0,
         }
@@ -30585,7 +30673,11 @@ fn container_prefix(line: &Line) -> SmallPath {
     #[derive(Clone, Copy)]
     enum Container {
         Quote(usize),
-        List { list: u32, item: u32 },
+        List {
+            list: u32,
+            item: u32,
+            numbering: ListNumbering,
+        },
     }
     /// Enclosing blockquote/list levels per line are few (one entry per
     /// container level); deeper chains than this spill to a `Vec` and take the
@@ -30609,6 +30701,7 @@ fn container_prefix(line: &Line) -> SmallPath {
                 Container::List {
                     list: lm.list,
                     item: lm.item,
+                    numbering: lm.numbering,
                 },
             );
             n += 1;
@@ -30625,6 +30718,7 @@ fn container_prefix(line: &Line) -> SmallPath {
                 Container::List {
                     list: lm.list,
                     item: lm.item,
+                    numbering: lm.numbering,
                 },
             ));
         }
@@ -30639,9 +30733,13 @@ fn container_prefix(line: &Line) -> SmallPath {
                 key: SKey::BlockQuote(qid),
                 tag: "BlockQuote",
             }),
-            Container::List { list, item } => {
+            Container::List {
+                list,
+                item,
+                numbering,
+            } => {
                 path.push(SElem {
-                    key: SKey::List(list),
+                    key: SKey::List(list, numbering),
                     tag: "L",
                 });
                 path.push(SElem {
@@ -31645,7 +31743,11 @@ mod keep_with_next_tests {
 
     fn list_line(list: u32, item: u32) -> Line {
         let mut line = line(FlowKind::Paragraph, item, 0, 1);
-        line.list_path.push(ListMark { list, item });
+        line.list_path.push(ListMark {
+            list,
+            item,
+            numbering: ListNumbering::Disc,
+        });
         line.segs.push(Seg {
             x: 0.0,
             slot: F_BODY,
@@ -31655,6 +31757,7 @@ mod keep_with_next_tests {
             fill: Fill::Black,
             strike: false,
             task: None,
+            list_label: false,
             width: 1.0,
             expansion_permille: 0,
         });
@@ -33184,7 +33287,11 @@ fn append_pdf_struct_element_object(
         out.extend_from_slice(b" /Alt ");
         append_pdf_text_string_bytes(out, alt);
     }
-    if parts.node.scope_column {
+    if let Some(numbering) = parts.node.list_numbering {
+        out.extend_from_slice(b" /A << /O /List /ListNumbering /");
+        out.extend_from_slice(numbering.as_str().as_bytes());
+        out.extend_from_slice(b" >>");
+    } else if parts.node.scope_column {
         if let Some((table, column)) = parts.node.table_column {
             out.extend_from_slice(b" /ID ");
             append_pdf_text_string_bytes(out, &table_header_id(table, column));
@@ -35295,8 +35402,8 @@ mod pdf_writer_tests {
         EMERGENCY_BREAK_PENALTY, F_BODY, F_BOLD, F_MATH, F_MONO, FNV_OFFSET, FORCED_BREAK_CHUNK,
         FORCED_BREAK_PENALTY, FaceMetrics, Faces, Fill, FlowKind, FlowMark, FlowSpec, Font,
         HeadingIdState, INLINE_PATH_CAP, ImageLine, LayoutCx, Ligatures, Line, LineTok, LinkIntern,
-        LinkTarget, ListMark, PageContentCapacityEstimate, PageGeom, Palette, ParagraphItem,
-        ParagraphLayoutScratch, ParagraphPolicy, PdfCidFontObjectParts,
+        LinkTarget, ListMark, ListNumbering, PageContentCapacityEstimate, PageGeom, Palette,
+        ParagraphItem, ParagraphLayoutScratch, ParagraphPolicy, PdfCidFontObjectParts,
         PdfFontDescriptorObjectParts, PdfImageColor, PdfImageData, PdfImageStreamFilter,
         PdfOutlineItemObjectParts, PdfPageObjectParts, PdfParentTreeObjectParts, PdfShading,
         PdfShadingKind, PdfStream, PdfStructElementObjectParts, PdfType0FontObjectParts, Placed,
@@ -35475,6 +35582,7 @@ mod pdf_writer_tests {
                     fill: Fill::Black,
                     strike: false,
                     task: None,
+                    list_label: false,
                     width: 0.0,
                     expansion_permille: 0,
                 })
@@ -35656,6 +35764,7 @@ mod pdf_writer_tests {
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link,
             strike,
         })
@@ -35790,6 +35899,7 @@ mod pdf_writer_tests {
             space,
             hard_break: false,
             literal: false,
+            list_label: false,
             link: None,
             strike: false,
         })
@@ -36269,6 +36379,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -36278,6 +36389,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: true,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -36287,6 +36399,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -36296,6 +36409,7 @@ mod pdf_writer_tests {
                     space: true,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -36305,6 +36419,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -36756,6 +36871,7 @@ mod pdf_writer_tests {
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link: None,
             strike: false,
         };
@@ -36812,6 +36928,7 @@ mod pdf_writer_tests {
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link: None,
             strike: false,
         };
@@ -36999,6 +37116,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -37008,6 +37126,7 @@ mod pdf_writer_tests {
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -37017,6 +37136,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -37067,6 +37187,7 @@ mod pdf_writer_tests {
                     space: true,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 }],
@@ -37079,6 +37200,7 @@ mod pdf_writer_tests {
                     space: true,
                     hard_break: true,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 }],
@@ -37182,6 +37304,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -37191,6 +37314,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -37323,6 +37447,7 @@ mod pdf_writer_tests {
                 fill: Fill::Black,
                 strike,
                 task: None,
+                list_label: false,
                 width,
                 expansion_permille: 0,
             }
@@ -37538,7 +37663,11 @@ mod pdf_writer_tests {
 
         let mixed = line_with_containers(
             vec![(9, 90.0), (1, 70.0)],
-            vec![ListMark { list: 3, item: 4 }],
+            vec![ListMark {
+                list: 3,
+                item: 4,
+                numbering: ListNumbering::Disc,
+            }],
         );
         let prefix = container_prefix(&mixed);
         let tags = prefix
@@ -37551,7 +37680,7 @@ mod pdf_writer_tests {
             "non-empty prefixes still sort quote/list containers by source start"
         );
         assert!(matches!(prefix[0].key, SKey::BlockQuote(1)));
-        assert!(matches!(prefix[1].key, SKey::List(3)));
+        assert!(matches!(prefix[1].key, SKey::List(3, ListNumbering::Disc)));
         assert!(matches!(prefix[2].key, SKey::ListItem(4)));
         assert!(matches!(prefix[3].key, SKey::ListBody(4)));
         assert!(matches!(prefix[4].key, SKey::BlockQuote(9)));
@@ -37597,7 +37726,13 @@ mod pdf_writer_tests {
                 }),
                 Container::List { list, item } => {
                     path.push(SElem {
-                        key: SKey::List(list),
+                        key: SKey::List(
+                            list,
+                            line.list_path
+                                .iter()
+                                .find(|mark| mark.list == list)
+                                .map_or(ListNumbering::Disc, |mark| mark.numbering),
+                        ),
                         tag: "L",
                     });
                     path.push(SElem {
@@ -37658,7 +37793,11 @@ mod pdf_writer_tests {
                 flow: FlowMark::default(),
                 list_path: lists
                     .iter()
-                    .map(|&(list, item)| ListMark { list, item })
+                    .map(|&(list, item)| ListMark {
+                        list,
+                        item,
+                        numbering: ListNumbering::Disc,
+                    })
                     .collect(),
                 table_cols: Vec::new(),
                 table_source_row: None,
@@ -37782,7 +37921,11 @@ mod pdf_writer_tests {
                 },
                 list_path: lists
                     .iter()
-                    .map(|&(list, item)| ListMark { list, item })
+                    .map(|&(list, item)| ListMark {
+                        list,
+                        item,
+                        numbering: ListNumbering::Disc,
+                    })
                     .collect(),
                 table_cols: vec![0, 1, 2],
                 table_source_row: None,
@@ -37802,6 +37945,7 @@ mod pdf_writer_tests {
                         fill: Fill::Black,
                         strike: false,
                         task: None,
+                        list_label: false,
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -37814,6 +37958,7 @@ mod pdf_writer_tests {
                         fill: Fill::Black,
                         strike: false,
                         task: None,
+                        list_label: false,
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -37826,6 +37971,7 @@ mod pdf_writer_tests {
                         fill: Fill::Black,
                         strike: false,
                         task: None,
+                        list_label: false,
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -37887,7 +38033,11 @@ mod pdf_writer_tests {
                 flow: FlowMark::default(),
                 list_path: lists
                     .iter()
-                    .map(|&(list, item)| ListMark { list, item })
+                    .map(|&(list, item)| ListMark {
+                        list,
+                        item,
+                        numbering: ListNumbering::Disc,
+                    })
                     .collect(),
                 table_cols: Vec::new(),
                 table_source_row: None,
@@ -38134,6 +38284,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38143,6 +38294,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38152,6 +38304,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38192,6 +38345,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -38204,6 +38358,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -38237,6 +38392,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -38249,6 +38405,7 @@ mod pdf_writer_tests {
                     space: true,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -38261,6 +38418,7 @@ mod pdf_writer_tests {
                     space: false,
                     hard_break: false,
                     literal: false,
+                    list_label: false,
                     link: None,
                     strike: false,
                 },
@@ -38706,7 +38864,12 @@ mod pdf_writer_tests {
             let tok_link = resolve_seg_link(links, tok.link);
             let advance;
             match &mut cur {
-                Some(s) if s.slot == tok.slot && s.link == tok_link && s.strike == tok.strike => {
+                Some(s)
+                    if s.slot == tok.slot
+                        && s.link == tok_link
+                        && s.strike == tok.strike
+                        && s.list_label == tok.list_label =>
+                {
                     let old_width = s.width;
                     s.text.push_str(text);
                     let natural =
@@ -38761,6 +38924,7 @@ mod pdf_writer_tests {
                         },
                         strike: tok.strike,
                         task: None,
+                        list_label: tok.list_label,
                         width: advance,
                         expansion_permille: 0,
                     });
@@ -38817,6 +38981,10 @@ mod pdf_writer_tests {
             assert_eq!(n.strike, r.strike, "strike differs at {label}[{idx}]");
             assert_eq!(n.task, r.task, "task differs at {label}[{idx}]");
             assert_eq!(
+                n.list_label, r.list_label,
+                "list label differs at {label}[{idx}]"
+            );
+            assert_eq!(
                 n.expansion_permille, r.expansion_permille,
                 "expansion differs at {label}[{idx}]"
             );
@@ -38850,6 +39018,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38862,6 +39031,7 @@ mod pdf_writer_tests {
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38874,6 +39044,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: true,
             },
@@ -38886,6 +39057,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: Some(0),
                 strike: false,
             },
@@ -38895,12 +39067,20 @@ mod pdf_writer_tests {
             lt.extra_advance = extra;
             lt
         };
+        let label = |text: &str| {
+            let mut token = word(text, F_BODY);
+            token.tok.list_label = true;
+            token
+        };
         vec![
             // Ligature across token boundaries.
             vec![word("f", F_BODY), word("i", F_BODY)],
             vec![word("of", F_BODY), word("fi", F_BODY), word("ce", F_BODY)],
             vec![word("f", F_BODY), word("f", F_BODY), word("i", F_BODY)],
             vec![word("af", F_BODY), word("fine", F_BODY), space(0.0)],
+            // Source labels may merge with each other, never with equal-style
+            // body text that happens to look like another list marker.
+            vec![label("12"), label("."), word("12.", F_BODY)],
             // Justified spaces flush runs with the extra folded into width.
             vec![
                 word("alpha", F_BODY),
@@ -38961,6 +39141,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -38973,6 +39154,7 @@ mod pdf_writer_tests {
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -39155,6 +39337,7 @@ mod pdf_writer_tests {
                 space: false,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -39167,6 +39350,7 @@ mod pdf_writer_tests {
                 space: true,
                 hard_break: false,
                 literal: false,
+                list_label: false,
                 link: None,
                 strike: false,
             },
@@ -39702,6 +39886,7 @@ mod pdf_writer_tests {
             bbox: Some([1.0, -0.0, 3.5, 4.25]),
             scope_column: false,
             table_column: None,
+            list_numbering: None,
             page: Some(4),
         };
         let page_obj = |page: usize| 20 + page;
@@ -39770,6 +39955,7 @@ mod pdf_writer_tests {
             bbox: Some([1.0, 2.0, 3.0, 4.0]),
             scope_column: true,
             table_column: None,
+            list_numbering: None,
             page: None,
         };
         let page_obj = |page: usize| 20 + page;
@@ -40355,6 +40541,7 @@ mod pdf_writer_tests {
             fill: Fill::Black,
             strike: false,
             task: Some(true),
+            list_label: false,
             width: 15.0,
             expansion_permille: 0,
         };

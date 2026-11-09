@@ -358,6 +358,7 @@ fn text_minimum(text: &str, size: f32, slot: u8, cx: &LayoutCx<'_>) -> f32 {
         space: false,
         hard_break: false,
         literal: false,
+        list_label: false,
         link: None,
         strike: false,
     }];

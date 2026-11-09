@@ -58,6 +58,7 @@ fn hard_break() -> Tok {
         space: true,
         hard_break: true,
         literal: false,
+        list_label: false,
         link: None,
         strike: false,
     }
@@ -123,6 +124,7 @@ pub(super) fn stacked_item(
                 space: false,
                 hard_break: false,
                 literal: true,
+                list_label: true,
                 link: None,
                 strike: false,
             },

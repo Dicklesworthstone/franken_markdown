@@ -381,6 +381,7 @@ mod tests {
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link: None,
             strike: false,
         }];

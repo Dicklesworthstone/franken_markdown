@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tagged PDF lists expose each source item's marker as a separate label before
+  its body, with explicit bullet/decimal/custom numbering metadata. Labels stay
+  attached to nested, empty and page-spanning items, including wrapped ordinals;
+  body headings, tables, code and figures retain their own semantic roles.
 - Portable native workspaces can select TTC/OTC faces from their Document fonts
   dialog. Collection parsing stays in disposable workers; cancellation, stale
   selections and rejected faces preserve the prior document. Save HTML embeds

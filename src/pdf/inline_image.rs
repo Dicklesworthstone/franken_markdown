@@ -75,6 +75,7 @@ pub(super) fn push_token(
         space: false,
         hard_break: false,
         literal: false,
+        list_label: false,
         link,
         strike,
     });
@@ -333,6 +334,7 @@ mod tests {
             space: false,
             hard_break: false,
             literal: false,
+            list_label: false,
             link: Some(7),
             strike: true,
         }

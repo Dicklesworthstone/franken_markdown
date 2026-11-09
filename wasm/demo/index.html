@@ -421,6 +421,16 @@
               </div>
             </div>
             <details class="image-controls">
+              <summary>Editable workspace to keep offline</summary>
+              <p>Prepare one HTML file containing this Markdown, the rendering engine, current font and document settings, and the local images you authorized below. Open the downloaded file to continue editing and export HTML or PDF without this demo. Custom CSS and raw HTML must be turned off. Preparing does not download automatically.</p>
+              <div class="actions">
+                <button id="prepare-workspace" class="button secondary" type="button" aria-describedby="workspace-status">Prepare editable workspace</button>
+                <button id="cancel-workspace" class="button secondary" type="button" disabled>Cancel preparation</button>
+                <a id="download-workspace" class="button secondary" aria-describedby="workspace-status" hidden>Download editable workspace</a>
+              </div>
+              <p id="workspace-status" class="status" role="status">The workspace includes its engine and resources, so it is larger than a regular HTML download.</p>
+            </details>
+            <details class="image-controls">
               <summary>Local images for preview and exports</summary>
               <p>Choose PNG, JPEG, GIF or SVG images for this document. Nothing is uploaded. Each selection replaces the previous image access after loading succeeds; Markdown is unchanged. Up to 128 images, 8 MiB each and 32 MiB combined. The complete image request, including path aliases, is also capped at 48 MiB.</p>
               <label class="field">Select individual images

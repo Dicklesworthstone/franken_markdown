@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The browser demo prepares a complete editable offline workspace containing
+  the exact Markdown, matching native WASM engine, supported document settings
+  and explicitly selected images. A cancellable worker bounds runtime reads and
+  retires stale downloads when the draft changes. Unsupported custom CSS and raw
+  HTML choices produce explicit guidance. See
+  [Offline workspace downloads](wasm/README.md#download-an-editable-offline-workspace).
 - The language server repairs link and image destinations in opened Markdown
   documents before client-owned file and folder renames. Versioned edits retain
   original source coordinates while rebasing moved documents and preserving

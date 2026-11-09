@@ -3,6 +3,7 @@ import { markdownDownload, readMarkdownFile } from "./flow_document.mjs";
 import { captureDocumentImageFiles } from "./local_image_sources.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
+import { createDemoWorkspaceWorker } from "./demo_workspace_worker.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -32,6 +33,7 @@ fn main() {
 export function createDemoController(doc, win, factory = createWorkerRenderer, {
   openStore = () => openDraftStore({ indexedDB: win.indexedDB, name: "franken-markdown-demo-source-draft-v1" }),
   draftDelayMs = 400,
+  workspaceFactory = createDemoWorkspaceWorker,
 } = {}) {
   const els = {};
   for (const [key, selector] of Object.entries({
@@ -46,6 +48,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     imageStatus: "#image-status", imageReferences: "#image-references", imageFolderHelp: "#image-folder-help",
     rememberDraft: "#remember-draft", refreshDraft: "#refresh-draft", restoreDraft: "#restore-draft",
     forgetDraft: "#forget-draft", saveDraft: "#save-draft", draftStatus: "#draft-status",
+    prepareWorkspace: "#prepare-workspace", cancelWorkspace: "#cancel-workspace",
+    downloadWorkspace: "#download-workspace", workspaceStatus: "#workspace-status",
   })) {
     els[key] = doc.querySelector(selector);
     if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
@@ -55,6 +59,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
   let sourceDownload = null, sourceDownloadId = 0;
   let imageAssets = [], imageJob = null;
+  let workspaceJob = null, workspaceOutput = null, workspaceSequence = 0;
   let drafts = null;
   // Source intent has a separate channel: starting a file read or composition
   // fences recovery without pretending that the textarea has already changed.
@@ -82,6 +87,98 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
     refreshImageControls();
+    refreshWorkspaceControls();
+  }
+  function refreshWorkspaceControls() {
+    const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null;
+    els.prepareWorkspace.disabled = blocked || workspaceJob !== null;
+    els.cancelWorkspace.disabled = blocked || workspaceJob === null;
+  }
+  function workspaceFresh(captured) {
+    return alive && !suspended && !composing && !imageJob && !fileJob
+      && captured.sequence === workspaceSequence && captured.generation === generation
+      && captured.images === imageAssets && unchanged(captured.raw);
+  }
+  function releaseWorkspaceOutput(output) {
+    if (workspaceOutput === output) {
+      workspaceOutput = null;
+      els.downloadWorkspace.hidden = true;
+      els.downloadWorkspace.removeAttribute("href");
+      els.downloadWorkspace.removeAttribute("download");
+    }
+    if (output && !output.revoked) { output.revoked = true; win.URL.revokeObjectURL(output.url); }
+  }
+  function retireWorkspace(message = "The source, settings or image access changed. Prepare the editable workspace again.") {
+    const sequence = ++workspaceSequence, previous = workspaceJob, output = workspaceOutput;
+    workspaceJob = null; // Retire authority before abort/disposal callbacks run.
+    releaseWorkspaceOutput(output);
+    previous?.abort.abort();
+    previous?.client?.dispose();
+    if (sequence === workspaceSequence) {
+      if ((previous || output) && message) els.workspaceStatus.textContent = message;
+      refreshWorkspaceControls();
+    }
+    return sequence;
+  }
+  function cancelWorkspace() {
+    if (!workspaceJob) return false;
+    retireWorkspace("Workspace preparation cancelled. Prepare again when you are ready.");
+    return true;
+  }
+  async function prepareWorkspace() {
+    if (!alive || suspended || composing || imageJob || fileJob) return false;
+    const sequence = retireWorkspace();
+    if (sequence !== workspaceSequence || !alive || suspended || composing || imageJob || fileJob) return false;
+    const captured = { sequence, raw: raw(), generation, images: imageAssets, source: sourceDocument().source };
+    const job = { ...captured, abort: new AbortController(), client: null };
+    workspaceJob = job;
+    const fresh = () => workspaceJob === job && workspaceFresh(job);
+    let published = null, candidate = null;
+    els.workspaceStatus.textContent = "Preparing an editable workspace in a worker: loading the packaged engine, then bundling this source, settings and authorized images…";
+    refreshWorkspaceControls();
+    try {
+      const client = workspaceFactory();
+      if (!fresh()) { client.dispose(); return false; }
+      job.client = client;
+      const output = await client.prepare(captured.source,
+        { ...options("pdf", captured.raw, captured.images), customCss: captured.raw.customCss },
+        { signal: job.abort.signal });
+      if (!fresh()) return false;
+      const blob = output.blob();
+      if (!fresh()) return false;
+      candidate = { captured, url: win.URL.createObjectURL(blob), revoked: false };
+      if (!fresh()) { releaseWorkspaceOutput(candidate); return false; }
+      const base = captured.raw.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "franken-markdown";
+      workspaceOutput = candidate;
+      els.downloadWorkspace.href = candidate.url;
+      els.downloadWorkspace.download = `${base.slice(0, 80)}.workspace.html`;
+      els.downloadWorkspace.hidden = false;
+      if (!fresh() || workspaceOutput !== candidate) { releaseWorkspaceOutput(candidate); return false; }
+      const findings = output.diagnostics.slice(0, 8).map(item => `${item.severity} ${item.start}-${item.end}: ${item.message}`);
+      els.workspaceStatus.textContent = `Editable workspace ready (${output.bytes.byteLength.toLocaleString()} bytes). Download it, then open the HTML file to keep editing and export PDF offline.`
+        + (findings.length ? ` Native render findings: ${findings.join("; ")}${output.diagnostics.length > findings.length ? `; ${output.diagnostics.length - findings.length} more.` : ""}` : "");
+      published = candidate;
+    } catch (error) {
+      if (candidate) releaseWorkspaceOutput(candidate);
+      if (fresh()) els.workspaceStatus.textContent = `${error?.code ?? "WORKSPACE_PREPARATION_FAILED"}: ${error instanceof Error ? error.message : "The workspace could not be prepared."}`;
+    } finally {
+      if (workspaceJob === job) {
+        workspaceJob = null;
+        if (!workspaceFresh(job)) {
+          releaseWorkspaceOutput(workspaceOutput?.captured === captured ? workspaceOutput : null);
+          els.workspaceStatus.textContent = "The source, settings or image access changed during preparation. Prepare the editable workspace again.";
+        }
+        refreshWorkspaceControls();
+      }
+      job.client?.dispose(); // Do not keep a second WASM heap after publication.
+    }
+    if (published && workspaceOutput === published && workspaceFresh(captured)) return true;
+    if (published) {
+      releaseWorkspaceOutput(published);
+      if (captured.sequence === workspaceSequence && alive)
+        els.workspaceStatus.textContent = "The source, settings or image access changed during preparation. Prepare the editable workspace again.";
+    }
+    return false;
   }
   function refreshImageControls() {
     const blocked = !alive || suspended || composing;
@@ -224,6 +321,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     clearTimer();
     cancel("html");
     cancel("pdf");
+    retireWorkspace();
     revokeHtml();
     revokePdf();
     revokeMarkdown();
@@ -416,8 +514,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     // The later source selection owns replacement. Retire an earlier image
     // read before capturing fileJob, so its cleanup cannot cancel this open.
     cancelImages();
+    retireWorkspace("File opening started. Prepare the editable workspace again after the source is ready.");
     const job = { raw: raw(), generation };
     fileJob = job; // A newer selection owns publication, even if an old read settles last.
+    refreshWorkspaceControls();
     const owns = () => alive && !suspended && fileJob === job;
     const fresh = () => owns() && !composing && generation === job.generation && unchanged(job.raw);
     els.fileStatus.textContent = "Reading local Markdown…";
@@ -440,6 +540,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       if (fileJob === job) {
         if (owns() && !fresh()) els.fileStatus.textContent = "The draft changed during file loading; choose the file again.";
         fileJob = null;
+        refreshWorkspaceControls();
       }
     }
   }
@@ -499,6 +600,14 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       revokeHtml();
     }
   });
+  listen(els.prepareWorkspace, "click", () => { void prepareWorkspace(); });
+  listen(els.cancelWorkspace, "click", cancelWorkspace);
+  listen(els.downloadWorkspace, "click", event => {
+    if (!workspaceOutput || !workspaceFresh(workspaceOutput.captured)) {
+      event.preventDefault();
+      retireWorkspace();
+    }
+  });
   listen(win, "pagehide", () => {
     suspended = true;
     composing = false;
@@ -521,6 +630,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   return Object.freeze({
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
     importImages, clearImages, cancelImages,
+    prepareWorkspace, cancelWorkspace,
     dispose() {
       if (!alive) return;
       alive = false;

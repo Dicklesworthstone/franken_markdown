@@ -40,6 +40,42 @@ until a fresh preview completes; page suspension and disposal release its Blob
 URL. The preview stays sandboxed; source HTML uses the safe-markup sanitizer
 unless raw HTML is explicitly enabled for trusted input.
 
+### Download an editable offline workspace
+
+Expand **Editable workspace to keep offline**, then choose **Prepare editable
+workspace**. Once preparation completes, **Download editable workspace** saves
+one `.workspace.html` file with the exact source, the native rendering engine,
+font choice, document color mode, title, author, PDF code line numbers and all
+currently authorized local images. Untouched imported Markdown keeps its UTF-8
+BOM and original line endings. Open the downloaded file to continue editing,
+change document settings, save source/projects and export HTML or PDF offline.
+Preparing the file does not automatically download it or replace the normal
+HTML/PDF preview and downloads.
+
+Custom CSS and **Allow raw HTML** are not supported by the native workspace.
+Preparation reports how to change these settings instead of silently dropping
+them. The controls retain those choices until you change them. Image access
+comes only from the explicit selection below the editor; preparing a workspace
+does not look for other files or fetch image URLs from Markdown. Supplied unused
+image bindings remain available for later edits. There is no custom font picker
+in this demo; the workspace starts with its selected bundled sans/serif fonts.
+
+A separate disposable worker loads the fixed matching JS/WASM pair from the
+package's `pkg/` directory and calls the existing [native workspace exporter](./NATIVE_WORKSPACE.md).
+Runtime redirects are refused. Response bodies are streamed and admitted before
+copying, with limits of 64 MiB for WASM and 4 MiB for bindings. This demo retains
+its 4 MiB source limit; workspace image destination text has a combined 64 KiB
+limit and generated workspace HTML is capped at 256 MiB. The whole request has
+a 30-second deadline. **Cancel preparation**, source/settings/image changes,
+file opening, composition and page suspension retire pending work and any old
+workspace link. A late result cannot publish over newer edits. Workers are
+released after preparation, and download links are revoked when invalidated.
+
+The demo must be served with the complete generated package. Missing or older
+bindings report a runtime/capability error; there is no reduced-parser fallback.
+The lightweight `renderInteractiveHtml` API and document-worker
+`interactive-html` format keep their existing behavior.
+
 To check real downloads using an existing generated package and installed
 Playwright/Chromium, run:
 

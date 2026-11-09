@@ -39,6 +39,15 @@ documents: separate factories deliberately own independent module instances,
 even when identical glue is paired with different WASM bytes. Node retains ESM
 module records for the process lifetime.
 
+The packaged browser demo provides this workflow without application code.
+Open `demo/index.html`, expand **Editable workspace to keep offline**, then use
+**Prepare editable workspace** and **Download editable workspace**. Preparation
+uses a separate cancellable worker and only the fixed `pkg/franken_markdown.js`
+and `pkg/franken_markdown_bg.wasm` shipped with that demo. It includes current
+source, supported demo settings and already authorized local image bindings;
+it does not grant ambient file access or fetch Markdown image URLs. Custom CSS
+and raw HTML are explicitly refused. See the [demo workflow and limits](./README.md#download-an-editable-offline-workspace).
+
 The result has the standard render helpers (`bytes`, `text()`, `blob()`,
 `filename()`), diagnostics, UTF-8 source length, HTML extension and
 `interactive-html` format. Export is synchronous after initialization. Runtime

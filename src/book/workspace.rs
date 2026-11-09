@@ -339,25 +339,34 @@ impl BookWorkspace {
         let previous = self.expanded.as_deref().unwrap_or(&self.chapters);
         let mut replacements = Vec::with_capacity(chapters.len());
         let mut diagnostics = Vec::with_capacity(chapters.len());
+        let mut link_sources = Vec::with_capacity(chapters.len());
         let mut reparsed = Vec::new();
         for (index, (new, old)) in next.iter().zip(previous).enumerate() {
             if new.source == old.source {
                 replacements.push(None);
                 diagnostics.push(self.renderer.source_diagnostics().chapters()[index].clone());
+                link_sources.push(
+                    self.renderer
+                        .source_diagnostics()
+                        .link_sources()
+                        .chapter(index)
+                        .clone(),
+                );
             } else {
-                let (chapter, report) = parse_chapter(
+                let (chapter, report, sources) = parse_chapter(
                     new,
                     &self.renderer.book().chapters[index],
                     self.parse_profile,
                 );
                 replacements.push(Some(chapter));
                 diagnostics.push(report);
+                link_sources.push(sources);
                 reparsed.push(index);
             }
         }
         // Admit the complete report before publishing either AST or source.
         // Refused diagnostics must leave the previous usable revision intact.
-        let diagnostics = BookSourceDiagnostics::new(diagnostics)?;
+        let diagnostics = BookSourceDiagnostics::new_with_link_sources(diagnostics, link_sources)?;
         let diagnostics = match maps {
             Some(maps) => diagnostics.with_source_maps(&maps)?,
             None => diagnostics,
@@ -423,9 +432,14 @@ fn parse_chapter(
     input: &BookInput,
     previous: &BookChapter,
     profile: Option<crate::Profile>,
-) -> (BookChapter, BookChapterDiagnostics) {
+) -> (
+    BookChapter,
+    BookChapterDiagnostics,
+    super::validation::link_sources::ChapterLinkSources,
+) {
     let (frontmatter, _) = parse::split_frontmatter(&input.source);
-    let (doc, diagnostics) = super::diagnostics::parse_chapter(input, &previous.path, profile);
+    let (doc, diagnostics, sources) =
+        super::diagnostics::parse_chapter(input, &previous.path, profile);
     let title = frontmatter
         .as_ref()
         .and_then(|value| value.title.clone())
@@ -440,6 +454,7 @@ fn parse_chapter(
             doc,
         },
         diagnostics,
+        sources,
     )
 }
 

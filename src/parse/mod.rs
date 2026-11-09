@@ -28,12 +28,14 @@ pub use frontmatter::{Frontmatter, split_frontmatter};
 pub(crate) use page_breaks::{PAGE_BREAK_MARKER, is_page_break_marker};
 
 mod destinations;
+mod navigation_sources;
 mod reference_labels;
 pub use destinations::DestinationSpan;
 pub(crate) use destinations::{
     DestinationSyntax, resource_destination_spans, resource_destination_spans_with_profile,
 };
 pub(crate) use destinations::{transclusion_code_ranges, transclusion_code_ranges_with_profile};
+pub(crate) use navigation_sources::NavigationCapture;
 pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
 
 /// Exact source tokens for parsed inline link/image destinations and accepted
@@ -94,6 +96,7 @@ type ParseStageStart = ();
 struct LinkReference {
     dest: String,
     title: Option<String>,
+    source: Option<Range<usize>>,
 }
 
 type ReferenceMap = HashMap<String, LinkReference>;
@@ -692,6 +695,23 @@ pub fn parse_document_spanned_with_profile(
     ))
 }
 
+/// Book construction captures destination ownership during the SAME parse as
+/// its AST and diagnostics. The transient allocation keys are consumed before
+/// canonicalization, cloning, or any other AST mutation.
+pub(crate) fn parse_book_document(
+    src: &str,
+    profile: Option<crate::Profile>,
+) -> (SpannedDocument, NavigationCapture) {
+    let source = normalized::NormalizedSource::new(src);
+    let (document, mut navigation) = parse_document_spanned_inner_with_navigation(
+        source.as_str(),
+        &mut ParseProfiler::disabled().with_profile(profile),
+        true,
+    );
+    navigation.restore(|range| source.original_range(range));
+    (source.restore_spanned(document), navigation)
+}
+
 /// Parse a spanned document and collect parser stage attribution.
 #[must_use]
 pub fn parse_document_spanned_profiled(src: &str) -> SpannedParseProfile {
@@ -715,8 +735,19 @@ pub fn parse_document_spanned_profiled_with_profile(
 }
 
 fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> SpannedDocument {
+    parse_document_spanned_inner_with_navigation(src, profiler, false).0
+}
+
+fn parse_document_spanned_inner_with_navigation(
+    src: &str,
+    profiler: &mut ParseProfiler,
+    capture_navigation: bool,
+) -> (SpannedDocument, NavigationCapture) {
     let source_lines = source_lines(src);
     profiler.destinations = Some(destinations::DestinationTracker::for_diagnostics(src));
+    if capture_navigation && let Some(tracker) = &mut profiler.destinations {
+        tracker.enable_navigation();
+    }
     profiler.block_spans = Some(BlockSpanTracker {
         lines: source_lines
             .iter()
@@ -746,17 +777,24 @@ fn parse_document_spanned_inner(src: &str, profiler: &mut ParseProfiler) -> Span
         .map(|(idx, block)| Spanned::new(block, spans.get(idx).copied().unwrap_or(fallback)))
         .collect();
 
-    let diagnostics = profiler.destinations.take();
-    SpannedDocument {
-        blocks,
-        diagnostics: profiler.measure(
-            "diagnostics_collection",
-            "collect parser diagnostics from source-tracked metadata and bounded parsing",
-            || diagnostics.map_or_else(Vec::new, |tracker| tracker.finish_diagnostics()),
-            |diagnostics| (diagnostics.len(), src.len(), diagnostics.len()),
-        ),
-        source_len: src.len(),
-    }
+    let mut diagnostics = profiler.destinations.take();
+    let navigation = diagnostics
+        .as_mut()
+        .map(destinations::DestinationTracker::take_navigation)
+        .unwrap_or_default();
+    (
+        SpannedDocument {
+            blocks,
+            diagnostics: profiler.measure(
+                "diagnostics_collection",
+                "collect parser diagnostics from source-tracked metadata and bounded parsing",
+                || diagnostics.map_or_else(Vec::new, |tracker| tracker.finish_diagnostics()),
+                |diagnostics| (diagnostics.len(), src.len(), diagnostics.len()),
+            ),
+            source_len: src.len(),
+        },
+        navigation,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1258,11 +1296,12 @@ fn collect_link_reference_metadata_at_depth(
         // paragraph continuation.
         if scan.maybe_reference {
             if !in_paragraph
-                && let Some((label, reference, used)) =
+                && let Some((label, mut reference, used)) =
                     parse_multiline_reference_definition(&lines[i..])
             {
                 if let Some(tracker) = &mut tracker {
-                    tracker.reference(&lines[i..i + used], &label, &reference.dest);
+                    reference.source =
+                        tracker.reference(&lines[i..i + used], &label, &reference.dest);
                 }
                 refs.entry(label).or_insert(reference);
                 if let Some(consumed) = consumed.as_mut() {
@@ -2545,6 +2584,7 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
                 LinkReference {
                     dest: reference.dest,
                     title: Some(title),
+                    source: None,
                 },
                 2,
             ));
@@ -2615,7 +2655,14 @@ fn parse_reference_definition(line: &str) -> Option<(String, LinkReference)> {
         Some(title)
     };
 
-    Some((label, LinkReference { dest, title }))
+    Some((
+        label,
+        LinkReference {
+            dest,
+            title,
+            source: None,
+        },
+    ))
 }
 
 fn parse_reference_title_line(line: &str) -> Option<String> {
@@ -2721,7 +2768,14 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
         Some(title)
     };
 
-    Some((label, LinkReference { dest, title }))
+    Some((
+        label,
+        LinkReference {
+            dest,
+            title,
+            source: None,
+        },
+    ))
 }
 
 fn parse_simple_ascii_reference_title_line(line: &str) -> Option<String> {
@@ -5007,7 +5061,8 @@ fn parse_inlines_chars_with_refs_profiled(
                     parse_link_like(bytes, i, close, refs, profiler, false)
                 {
                     if let Some(tracker) = &mut profiler.destinations {
-                        tracker.record(bytes, token, &dest);
+                        tracker.record(bytes, token.clone(), &dest);
+                        tracker.navigation_link(bytes, token, &dest);
                     }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -5044,6 +5099,9 @@ fn parse_inlines_chars_with_refs_profiled(
                 if let Some((label, dest, next)) =
                     parse_autolink(bytes, i, &mut profiler.inline_work)
                 {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.navigation_reference(&dest, None);
+                    }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -5154,6 +5212,9 @@ fn parse_inlines_chars_with_refs_profiled(
                     bare_autolink = parse_bare_email_autolink(bytes, i, &mut profiler.inline_work);
                 }
                 if let Some((label, dest, next)) = bare_autolink {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.navigation_reference(&dest, None);
+                    }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
                         dest,
@@ -6187,12 +6248,11 @@ fn parse_reference_link_like(
     if let Some(tracker) = &mut profiler.destinations {
         tracker.reference_use(chars, i, close, next);
     }
-    Some((
-        content,
-        reference.dest.clone(),
-        reference.title.clone(),
-        next,
-    ))
+    let destination = reference.dest.clone();
+    if !image && let Some(tracker) = &mut profiler.destinations {
+        tracker.navigation_reference(&destination, reference.source.clone());
+    }
+    Some((content, destination, reference.title.clone(), next))
 }
 
 fn parse_autolink(

@@ -408,3 +408,106 @@ test("report decoding respects view offsets and preserves inert hostile-looking 
     value.chapters[0].findings[0].destination,
   );
 });
+
+const originalRange = () => ({ path: "part.md", start: 7, end: 19, kind: "rewritten" });
+function locatedReport(precision = "destination") {
+  const value = report();
+  value.chapters[0].findings[0].source = {
+    status: "mapped", precision, ranges: [originalRange()],
+  };
+  return value;
+}
+
+test("link source locations retain explicit precision and freeze only admitted metadata", () => {
+  for (const precision of ["destination", "block"]) {
+    const value = locatedReport(precision), source = value.chapters[0].findings[0].source;
+    source.authority = "not a file grant";
+    source.ranges[0].replacement = "not an edit";
+    const admitted = parseBookLinkReport(encoded(value), ["a.md", "b.md"]).chapters[0].findings[0].source;
+    assert.deepEqual(admitted, { status: "mapped", precision, ranges: [originalRange()] });
+    for (const item of [admitted, admitted.ranges, admitted.ranges[0]]) assert(Object.isFrozen(item));
+  }
+  assert.equal(parseBookLinkReport(encoded(report()), ["a.md", "b.md"]).chapters[0].findings[0].source, undefined);
+  const unavailable = report();
+  unavailable.chapters[0].findings[0].source = { status: "unavailable", reason: "provenance_limit" };
+  assert.equal(parseBookLinkReport(encoded(unavailable), ["a.md", "b.md"]).chapters[0].findings[0].source.reason, "provenance_limit");
+});
+
+test("source metadata refuses ambiguous precision, forged paths and partial mappings", () => {
+  for (const mutate of [
+    s => { delete s.precision; },
+    s => { s.precision = "exact"; },
+    s => { s.ranges = []; },
+    s => { s.ranges[0].path = "../part.md"; },
+    s => { s.ranges[0].path = "https://example.test/part.md"; },
+    s => { s.ranges[0].path = "folder\\part.md"; },
+    s => { s.ranges[0].path = "bad\ud800.md"; },
+    s => { s.ranges[0].start = 20; },
+    s => { s.ranges[0].end = 64 * 1024 * 1024 + 1; },
+    s => { s.ranges[0].kind = "generated"; },
+    s => { s.ranges[0].kind = "guessed"; },
+    s => { s.ranges = Array.from({ length: 65 }, originalRange); },
+    s => { s.status = "unavailable"; s.reason = "source_unavailable"; },
+  ]) {
+    const value = locatedReport();
+    mutate(value.chapters[0].findings[0].source);
+    assert.throws(() => parseBookLinkReport(encoded(value), ["a.md", "b.md"]), { code: "INVALID_LINK_REPORT" });
+  }
+});
+
+test("a provenance allowance preserves the existing base-report ceiling", () => {
+  const value = report();
+  value.padding = "x".repeat(4 * 1024 * 1024 - encoded(value).byteLength - 14);
+  assert(encoded(value).byteLength <= 4 * 1024 * 1024);
+  value.chapters[0].findings[0].source = locatedReport().chapters[0].findings[0].source;
+  const bytes = encoded(value);
+  assert(bytes.byteLength > 4 * 1024 * 1024);
+  assert.equal(parseBookLinkReport(bytes, ["a.md", "b.md"]).summary.findings, 1);
+  value.padding += "x".repeat(32);
+  assert.throws(() => parseBookLinkReport(encoded(value), ["a.md", "b.md"]), { code: "INVALID_LINK_REPORT" });
+});
+
+test("unknown metadata cannot buy an enlarged base-report allowance", () => {
+  const value = locatedReport();
+  value.chapters[0].findings[0].source.hiddenBody = "x".repeat(4 * 1024 * 1024);
+  assert(encoded(value).byteLength < 6 * 1024 * 1024);
+  assert.throws(() => parseBookLinkReport(encoded(value), ["a.md", "b.md"]), { code: "INVALID_LINK_REPORT" });
+});
+
+test("provenance fragment and repeated path budgets apply across the whole report", () => {
+  for (const [findings, ranges, path] of [
+    [257, 64, "p"],
+    [65, 1, "p".repeat(4096)],
+  ]) {
+    const value = report();
+    value.chapters[0].checked = findings;
+    value.chapters[0].findings = Array.from({ length: findings }, () => ({ ...finding, source: {
+      status: "mapped", precision: "block",
+      ranges: Array.from({ length: ranges }, () => ({ path, start: 0, end: 1, kind: "exact" })),
+    } }));
+    assert.throws(() => parseBookLinkReport(encoded(value), ["a.md", "b.md"]), { code: "INVALID_LINK_REPORT" });
+  }
+});
+
+test("native facade and both worker directions admit separately bounded original-source metadata", async () => {
+  const value = report();
+  value.padding = "x".repeat(4 * 1024 * 1024 - encoded(value).byteLength - 14);
+  value.chapters[0].findings[0].source = locatedReport().chapters[0].findings[0].source;
+  const bytes = encoded(value), h = harness({ check: () => JSON.stringify(value) }), c = client(h.api);
+  try {
+    const output = await c.api.render(files, "links", { includeSources: sources });
+    assert.equal(output.bytes.byteLength, bytes.byteLength);
+    assert.equal(parseBookLinkReport(output.bytes, ["a.md", "b.md"]).chapters[0].findings[0].source.precision, "destination");
+    assert.equal(h.state.freed, 1);
+  } finally { c.api.dispose(); }
+});
+
+test("worker-side admission keeps oversized legacy reports rejected independently of the facade", async () => {
+  const value = report();
+  value.padding = "x".repeat(4 * 1024 * 1024);
+  const c = client({ checkBookLinks: async () => ({ bytes: encoded(value), sourceLength: 0 }) });
+  try {
+    await assert.rejects(c.api.render(files, "links"), { code: "OUTPUT_LIMIT" });
+    assert.equal(c.state.terminated, 1);
+  } finally { c.api.dispose(); }
+});

@@ -1,4 +1,4 @@
-import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
+import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, createBookSourceLocationReader, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 import { consumeBookPdfResult } from "./book_render_diagnostics.mjs";
 export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
@@ -7,6 +7,7 @@ import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, normalizePdfTypographyToken, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
+export const BOOK_LINK_REPORT_MAX_BYTES = 6 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
@@ -854,10 +855,12 @@ export function createBookBindings(loadBookClass) {
         if (typeof error === "string") throw new Error(error.slice(0, 2048));
         throw error;
       }
-      bookTextBytes(json, 4 * 1024 * 1024);
+      bookTextBytes(json, BOOK_LINK_REPORT_MAX_BYTES);
       if (!json) throw new Error("book link checker returned an empty report");
       const bytes = new TextEncoder().encode(json),
         sourceLength = raw.sourceLength;
+      const report = validateBookLinkReportBytes(bytes);
+      if (report.chapters.length !== raw.chapterCount) throw invalidLinkReport();
       return Object.freeze({
         format: "book-links",
         mimeType: "application/json",
@@ -993,19 +996,28 @@ export function createBookBindings(loadBookClass) {
  * collection. This validates the wire contract, not Markdown. Summary totals
  * are recomputed; no engine-supplied optimistic verdict reaches the reader. */
 export function parseBookLinkReport(bytes, expectedPaths) {
-  const invalid = () =>
-    Object.assign(new Error("The book link checker returned an invalid or mismatched report."), {
-      code: "INVALID_LINK_REPORT",
-    });
-  const maximum = 4 * 1024 * 1024;
+  if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > MAX_CHAPTERS)
+    throw invalidLinkReport();
+  return validateBookLinkReportBytes(bytes, expectedPaths);
+}
+
+function invalidLinkReport() {
+  return Object.assign(new Error("The book link checker returned an invalid or mismatched report."), {
+    code: "INVALID_LINK_REPORT",
+  });
+}
+
+/** Internal native/worker wire admission. The public report reader additionally
+ * requires the host's chapter identities. Separate provenance cannot enlarge
+ * the existing 4 MiB base-report budget, on either worker endpoint. */
+export function validateBookLinkReportBytes(bytes, expectedPaths) {
+  const invalid = invalidLinkReport;
+  const maximum = BOOK_LINK_REPORT_MAX_BYTES;
   if (
     !(bytes instanceof Uint8Array) ||
     Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]" ||
     bytes.byteLength === 0 ||
-    bytes.byteLength > maximum ||
-    !Array.isArray(expectedPaths) ||
-    !expectedPaths.length ||
-    expectedPaths.length > MAX_CHAPTERS
+    bytes.byteLength > maximum
   )
     throw invalid();
   const integer = (value) => {
@@ -1038,22 +1050,23 @@ export function parseBookLinkReport(bytes, expectedPaths) {
     !value ||
     value.schema !== "fmd-book-link-report-v1" ||
     value.scope !== "expanded-html-navigation" ||
-    !Array.isArray(value.chapters) ||
-    value.chapters.length !== expectedPaths.length
+    !Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > MAX_CHAPTERS ||
+    (expectedPaths !== undefined && value.chapters.length !== expectedPaths.length)
   )
     throw invalid();
   const seen = new Set(),
     summary = {
-      chapters: expectedPaths.length,
+      chapters: value.chapters.length,
       checked: 0,
       external: 0,
       unchecked: 0,
       findings: 0,
     };
+  const sourceReader = createBookSourceLocationReader(invalid, { link: true });
   const chapters = Array.from(value.chapters, (chapter, index) => {
     if (!chapter || typeof chapter !== "object") throw invalid();
     const path = text(chapter.path, 4096);
-    if (!path || path !== expectedPaths[index] || seen.has(path)) throw invalid();
+    if (!path || (expectedPaths !== undefined && path !== expectedPaths[index]) || seen.has(path)) throw invalid();
     seen.add(path);
     const checked = integer(chapter.checked),
       external = integer(chapter.external),
@@ -1069,7 +1082,9 @@ export function parseBookLinkReport(bytes, expectedPaths) {
       const destination = text(finding.destination, 8192),
         message = text(finding.message, 1024);
       if (!message) throw invalid();
-      return Object.freeze({ code: finding.code, destination, message });
+      const source = sourceReader.read(finding.source);
+      return Object.freeze({ code: finding.code, destination, message,
+        ...(source === undefined ? {} : { source }) });
     });
     for (const [key, count] of Object.entries({
       checked,
@@ -1083,6 +1098,7 @@ export function parseBookLinkReport(bytes, expectedPaths) {
       throw invalid();
     return Object.freeze({ path, checked, external, unchecked, findings: Object.freeze(findings) });
   });
+  if (bytes.byteLength - sourceReader.bytes > 4 * 1024 * 1024) throw invalid();
   return Object.freeze({
     schema: value.schema,
     scope: value.scope,

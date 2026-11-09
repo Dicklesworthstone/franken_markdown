@@ -15,15 +15,20 @@ undefined footnote references that exist as such in a supplied AST. Missing
 include files, cycles, or resource-limit failures stop the check with an error;
 a partial set of results is not presented as clean.
 
-The panel displays 50 findings at a time. **Open publishing chapter** opens the
-chapter containing the reference in its expanded document. An included snippet
-may have supplied the actual text: the checker does not invent an original-file
-line number or highlight by searching for matching destination text. Destinations
-are displayed as inert text, never turned into arbitrary clickable URLs.
+The panel displays 50 findings at a time. **Select destination source** opens
+the original chapter or include-only file and selects the parser-proven URL
+token. Reference-style links can select their shared definition in another file.
+When only the containing syntax block is proven, **Select enclosing block
+source** labels that broader range explicitly. Findings spanning disjoint
+source fragments have separate controls. **Open publishing chapter** remains
+available, including for older packages or unavailable source metadata.
+Destinations are displayed as inert text, never turned into arbitrary clickable
+URLs, and the checker never searches for equal-looking text to invent a range.
 
 **Prepare link report** creates a separate `book-links.json` download. Only click
-Download to save it. The report includes chapter paths and destination strings;
-these may contain sensitive information and should be reviewed before sharing.
+Download to save it. The report includes chapter paths, destination strings and
+available original-source locations; these may contain sensitive information
+and should be reviewed before sharing.
 Source bodies, images, fonts, and unknown worker-response fields are not retained
 in the report. Summary totals are recomputed from the admitted chapter results.
 
@@ -33,6 +38,10 @@ changes, imports, recovery, composition and page suspension retire stale checks
 and report downloads. Programmatic editor changes are checked again before
 accepting a response, navigating source, or activating a download. Checks are
 manual and do not rewrite source, auto-repair links, or gate publication.
+Original UTF-8 byte offsets are checked against the captured source set and
+converted to UTF-16 in one scan per used file. The editor applies its existing
+CRLF normalization. Focus or selection callbacks that change the source cannot
+attach an old report to a new editor checkpoint.
 
 ## Browser API
 
@@ -52,7 +61,9 @@ const files = [
 const includeSources = [
   { path: "parts/shared.md", source: "[Next](/end.md#missing)\n" }
 ];
-const checker = createBookWorker({ maxOutputBytes: 4 * 1024 * 1024 });
+// The base report remains capped at 4 MiB; source metadata has a separate
+// 2 MiB allowance, validated independently at the worker and report boundaries.
+const checker = createBookWorker({ maxOutputBytes: 6 * 1024 * 1024 });
 try {
   const output = await checker.render(files, "links", { includeSources });
   const report = parseBookLinkReport(output.bytes, files.map(file => file.path));
@@ -84,14 +95,71 @@ let chapters = vec![BookInput {
     source: "# Start\n\n[Broken](#missing)\n".into(),
 }];
 let renderer = BookRenderer::from_sources(&chapters, &[])?;
-let report = renderer.validate_links()?;
-let json = report.to_json()?;
+let located = renderer.validate_links_with_sources()?;
+let report = located.report();
+let first_original_location = located.source_location(0, 0);
+let json = located.to_json();
 ```
 
 Existing parsed `Book` values can call
 `franken_markdown::book::validation::check_book_links(&book)`. The checker is
 pure, synchronous and dependency-free. It does not mutate the AST. Expand the
 source first when using a parse-only constructor.
+
+`BookRenderer::validate_links()` still returns the original `LinkReport` and
+its original JSON. `LinkFinding`, `ChapterLinks`, and `LinkReport` keep their
+public fields and support the same Rust struct literals. The additive
+`LocatedLinkReport` wrapper supplies `report()`, `source_location(chapter,
+finding)`, and cached `to_json()`. The existing browser `FmdBook.validateLinks`,
+native `fmd book --check-links --json`, and MCP `fmd.verify_book` return the
+enriched report. An AST-only `Book` has no invented source attribution.
+
+### Original-source precision
+
+Each enriched finding adds `source`, while retaining its original code,
+destination, message, ordering, counters, schema, and scope:
+
+```json
+{
+  "status": "mapped",
+  "precision": "destination",
+  "ranges": [
+    {"path": "parts/shared.md", "start": 12, "end": 29, "kind": "rewritten"}
+  ]
+}
+```
+
+`precision: "destination"` identifies the URL token that the parser bound to
+that specific emitted link. Inline links select their own destination. Full,
+collapsed, and shortcut reference links select the winning definition's URL,
+which may be in a different included file from the citation. Supported HTML
+anchors select their actual attribute value. Equal URL spellings, images,
+code examples, abandoned speculative links, shadowed definitions, and unused
+footnotes do not supply ownership for another reference.
+
+`precision: "block"` identifies only the enclosing top-level syntax block when
+exact token ownership is unavailable. A block may contain several links or
+cross multiple included files. Consumers must label it as an enclosing block,
+not a precise link selection. `kind` retains the original-source mapper's
+`exact`, `rewritten`, and `generated` meanings: a rewritten URL selects its
+complete original token, and a generated separator selects a zero-width source
+boundary. Disjoint source ranges remain separate.
+
+Missing or exhausted provenance is explicit:
+`{"status":"unavailable","reason":"provenance_limit"}`. Older generated
+packages can omit `source` entirely. Neither case invalidates the base link
+findings. These ranges authorize navigation only; they are not a replacement
+token, a repair suggestion, or permission to edit every reference sharing a
+definition.
+
+Token ownership is captured in the same parse that produces the book AST and
+parser diagnostics. Transient parser allocation identities are converted into
+deterministic structural ordinals before chapter URL canonicalization. Retained
+books keep bounded source metadata without retaining source bodies, reparsing
+on checks, or searching for matching text. Workspace updates refresh maps even
+when moving a selected snippet leaves expanded text unchanged and reparses zero
+chapters. Source and attribution commit together, and a refused update preserves
+the previous revision and locations.
 
 All chapters' anchors are collected before checking references. Known Markdown
 paths use the existing chapter-relative/root-relative URL resolver, queries are
@@ -120,10 +188,21 @@ footnote-reference check.
 Validation rejects invalid books and output names, more than 4096 chapters,
 250000 AST nodes, depth above 128, or 64 MiB of AST text. Reports are bounded to
 4096 findings, 8192 bytes per destination, 256 KiB of retained destination text,
-and 4 MiB of JSON. Include expansion has its existing separate whole-book work
+and 4 MiB of base JSON. Optional source metadata has its own 2 MiB allowance,
+so enriched reports can reach 6 MiB. Exhausting the optional allowance emits an
+explicit unavailable location and cannot reject a previously admitted base
+report. Include expansion has its existing separate whole-book work
 and byte limits. These are logical admission budgets, not a bound on every
 transient allocation. Exceeding any enforced check budget is an error, never
 silent truncation.
+
+The source sidecar admits at most 65,536 block/reference entries across the
+whole retained book, in addition to the shared origin map's 65,536 fragments
+and 256 KiB of logical paths. The transient parser capture is independently
+bounded to 65,536 allocation keys per chapter. One finding maps at most 64
+original ranges; one report admits at most 16,384 ranges and 256 KiB of repeated
+source-path text. Optional limits degrade attribution explicitly, preserving
+every finding and the original validator's admission rules.
 
 ## Verification
 

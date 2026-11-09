@@ -274,7 +274,7 @@ fn deep_or_oversized_reports_fail_without_partial_success() {
     assert!(check_book_links(&one(vec![block])).is_err());
     let references = (0..MAX_FINDINGS + 1).map(|_| link("missing.md")).collect();
     assert!(check_book_links(&one(vec![Block::Paragraph(references)])).is_err());
-    let mut out = Json(String::new());
+    let mut out = Json::new();
     assert!(out.raw(&"x".repeat(MAX_REPORT_BYTES + 1)).is_err());
     assert!(out.0.is_empty());
 }

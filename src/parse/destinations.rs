@@ -409,6 +409,7 @@ pub(super) struct DestinationTracker {
     inline_code: Option<Vec<Range<usize>>>,
     directive_lines: Vec<Range<usize>>,
     diagnostics: Option<DiagnosticState>,
+    navigation: Option<NavigationCapture>,
 }
 
 impl DestinationTracker {
@@ -426,6 +427,7 @@ impl DestinationTracker {
             inline_code: None,
             directive_lines: Vec::new(),
             diagnostics: None,
+            navigation: None,
         }
     }
 
@@ -458,7 +460,29 @@ impl DestinationTracker {
     }
 
     pub(super) fn diagnostics_only(&self) -> bool {
-        self.diagnostics.is_some()
+        self.diagnostics.is_some() && self.navigation.is_none()
+    }
+
+    pub(super) fn enable_navigation(&mut self) {
+        self.navigation = Some(NavigationCapture::default());
+    }
+
+    pub(super) fn take_navigation(&mut self) -> NavigationCapture {
+        self.navigation.take().unwrap_or_default()
+    }
+
+    pub(super) fn navigation_link(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
+        if self.navigation.is_none() {
+            return;
+        }
+        let range = self.char_range(chars, token);
+        self.navigation_reference(dest, range);
+    }
+
+    pub(super) fn navigation_reference(&mut self, dest: &str, range: Option<Range<usize>>) {
+        if let Some(navigation) = &mut self.navigation {
+            navigation.link(dest, range);
+        }
     }
 
     /// This is an enclosing source span, not a claim that copied container
@@ -805,7 +829,7 @@ impl DestinationTracker {
     }
 
     pub(super) fn record(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
-        if self.container_fences.is_some() || self.diagnostics_only() {
+        if self.container_fences.is_some() || self.diagnostics.is_some() {
             return;
         }
         self.record_token(chars, token, dest, DestinationSyntax::Markdown);
@@ -889,18 +913,32 @@ impl DestinationTracker {
     /// Invoked only after the Markdown parser accepts a real HTML node. Code,
     /// escaped tags, titles and failed speculative parses cannot supply URLs.
     pub(super) fn inline_html(&mut self, chars: &[char], start: usize, html: &str) {
-        if !self.html {
+        if !self.html && self.navigation.is_none() {
             return;
         }
+        let mut link_index = 0;
         for span in crate::safe_html::url_spans(html) {
             let begin = start + html[..span.range.start].chars().count();
             let end = begin + html[span.range.clone()].chars().count();
-            if !self.record_token(
-                chars,
-                begin..end,
-                &span.destination,
-                DestinationSyntax::HtmlAttribute,
-            ) && let Some(content) = span.quoted_content_range(html)
+            if self.navigation.is_some() && span.kind == crate::safe_html::UrlKind::Link {
+                let range = self.char_range(chars, begin..end).or_else(|| {
+                    let content = span.quoted_content_range(html)?;
+                    let begin = start + html[..content.start].chars().count();
+                    self.char_range(chars, begin..begin + html[content].chars().count())
+                });
+                if let Some(navigation) = &mut self.navigation {
+                    navigation.html(html, link_index, range);
+                }
+                link_index += 1;
+            }
+            if self.html
+                && !self.record_token(
+                    chars,
+                    begin..end,
+                    &span.destination,
+                    DestinationSyntax::HtmlAttribute,
+                )
+                && let Some(content) = span.quoted_content_range(html)
             {
                 let begin = start + html[..content.start].chars().count();
                 let end = begin + html[content].chars().count();
@@ -915,7 +953,7 @@ impl DestinationTracker {
     }
 
     pub(super) fn block_html(&mut self, html: &str, lines: &[&str]) {
-        if !self.html {
+        if !self.html && self.navigation.is_none() {
             return;
         }
         let mut offset = 0;
@@ -929,6 +967,7 @@ impl DestinationTracker {
             .collect();
         let checkpoint = self.checkpoint();
         self.map_parts(html, &parts);
+        let mut link_index = 0;
         for span in crate::safe_html::url_spans(html) {
             let mapped = self
                 .text_range(&html[span.range.clone()])
@@ -940,7 +979,19 @@ impl DestinationTracker {
                         DestinationSyntax::HtmlAttributeContent,
                     ))
                 });
-            if let Some((range, syntax)) = mapped {
+            if self.navigation.is_some() && span.kind == crate::safe_html::UrlKind::Link {
+                if let Some(navigation) = &mut self.navigation {
+                    navigation.html(
+                        html,
+                        link_index,
+                        mapped.as_ref().map(|(range, _)| range.clone()),
+                    );
+                }
+                link_index += 1;
+            }
+            if self.html
+                && let Some((range, syntax)) = mapped
+            {
                 self.spans.push(SourceDestination {
                     token: DestinationSpan {
                         range,
@@ -954,9 +1005,14 @@ impl DestinationTracker {
     }
 
     /// Invoked only after the real paragraph-aware collector accepts a def.
-    pub(super) fn reference(&mut self, lines: &[&str], key: &str, dest: &str) {
-        if self.container_fences.is_some() || self.diagnostics.is_some() {
-            return;
+    pub(super) fn reference(
+        &mut self,
+        lines: &[&str],
+        key: &str,
+        dest: &str,
+    ) -> Option<Range<usize>> {
+        if self.container_fences.is_some() || self.diagnostics_only() {
+            return None;
         }
         let joined = lines.join("\n");
         let mut offset = 0;
@@ -1027,11 +1083,15 @@ impl DestinationTracker {
             }
             Some(start..index)
         })();
+        let range = token
+            .as_ref()
+            .and_then(|token| self.char_range(&chars, token.clone()));
         if let Some(token) = token {
             self.record(&chars, token, dest);
         }
         self.pop_chars();
         self.restore(checkpoint);
+        range
     }
 }
 
@@ -1039,7 +1099,7 @@ impl ParseProfiler {
     pub(super) fn diagnostics_enabled(&self) -> bool {
         self.destinations
             .as_ref()
-            .is_some_and(DestinationTracker::diagnostics_only)
+            .is_some_and(|tracker| tracker.diagnostics.is_some())
     }
 
     pub(super) fn inline_limit_diagnostic(&mut self, lines: &[&str], limit: Option<InlineLimit>) {

@@ -513,8 +513,8 @@ impl FmdBook {
     #[wasm_bindgen(js_name = validateLinks)]
     pub fn validate_links(&self) -> Result<String, JsValue> {
         self.renderer
-            .validate_links()
-            .and_then(|report| report.to_json())
+            .validate_links_with_sources()
+            .map(|report| report.to_json())
             .map_err(to_js)
     }
 }

@@ -17,6 +17,9 @@ pub use document_links::{
     AnchorKind, DocumentAnchor, DocumentLinkAnalysis, DocumentReference, ReferenceKind,
     analyze_document_links,
 };
+#[path = "link_sources.rs"]
+pub(crate) mod link_sources;
+pub use link_sources::{LinkSourceLocation, LinkSourcePrecision, LocatedLinkReport};
 
 const MAX_NODES: usize = 250_000;
 const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
@@ -66,7 +69,11 @@ impl LinkReport {
     /// # Errors
     /// Rejects JSON output above 4 MiB. This also bounds manually built reports.
     pub fn to_json(&self) -> Result<String> {
-        let mut out = Json(String::new());
+        self.to_json_with_sources(None)
+    }
+
+    fn to_json_with_sources(&self, sources: Option<&[Vec<String>]>) -> Result<String> {
+        let mut out = Json::new();
         out.raw("{\"schema\":\"fmd-book-link-report-v1\",\"scope\":\"expanded-html-navigation\",\"chapters\":[")?;
         let mut totals = [0usize; 4];
         for (index, chapter) in self.chapters.iter().enumerate() {
@@ -91,8 +98,8 @@ impl LinkReport {
                 .checked_add(chapter.findings.len())
                 .ok_or_else(|| invalid("count overflow"))?;
             out.raw(",\"findings\":[")?;
-            for (index, finding) in chapter.findings.iter().enumerate() {
-                if index > 0 {
+            for (finding_index, finding) in chapter.findings.iter().enumerate() {
+                if finding_index > 0 {
                     out.raw(",")?;
                 }
                 out.raw("{\"code\":")?;
@@ -101,6 +108,14 @@ impl LinkReport {
                 out.string(&finding.destination)?;
                 out.raw(",\"message\":")?;
                 out.string(finding.message)?;
+                if let Some(sources) = sources {
+                    let source = sources
+                        .get(index)
+                        .and_then(|chapter| chapter.get(finding_index))
+                        .ok_or_else(|| invalid("source locations do not match findings"))?;
+                    out.provenance(",\"source\":")?;
+                    out.provenance(source)?;
+                }
                 out.raw("}")?;
             }
             out.raw("]}")?;
@@ -145,6 +160,15 @@ impl BookRenderer {
 /// nesting over 128, over 64 MiB of AST text, over 4096 findings, or excessive
 /// report text. No partial report is returned on an admission failure.
 pub fn check_book_links(book: &Book) -> Result<LinkReport> {
+    check_book_links_inner(book, None).map(|(report, _)| report)
+}
+
+type ReferenceOrigin = (usize, Option<usize>);
+
+fn check_book_links_inner(
+    book: &Book,
+    sources: Option<&link_sources::BookLinkSources>,
+) -> Result<(LinkReport, Vec<Vec<ReferenceOrigin>>)> {
     if book.chapters.is_empty() || book.chapters.len() > 4096 {
         return Err(invalid("expected 1 through 4096 chapters"));
     }
@@ -179,9 +203,13 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
     let navigation: Vec<_> = book
         .chapters
         .iter()
-        .map(|chapter| navigation(&chapter.doc))
+        .enumerate()
+        .map(|(index, chapter)| {
+            navigation_with_sources(&chapter.doc, sources.map(|sources| sources.chapter(index)))
+        })
         .collect();
     let mut chapters = Vec::with_capacity(book.chapters.len());
+    let mut origins = Vec::with_capacity(book.chapters.len());
     let mut finding_count = 0usize;
     let mut finding_bytes = 0usize;
     for (index, chapter) in book.chapters.iter().enumerate() {
@@ -195,9 +223,15 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
             unchecked: 0,
             findings: Vec::new(),
         };
+        let mut chapter_origins = Vec::new();
         for reference in &nav.references {
+            let origin = match reference {
+                Reference::Note(_, owner, source) | Reference::Link(_, owner, source) => {
+                    (*owner, *source)
+                }
+            };
             let (destination, problem) = match reference {
-                Reference::Note(id, _) => {
+                Reference::Note(id, _, _) => {
                     result.checked += 1;
                     (
                         *id,
@@ -207,7 +241,7 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                         )),
                     )
                 }
-                Reference::Link(destination, _) => {
+                Reference::Link(destination, _, _) => {
                     let dest = destination
                         .trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
                     if dest.starts_with("//") || scheme(dest) {
@@ -239,6 +273,9 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                                     &mut finding_count,
                                     &mut finding_bytes,
                                 )?;
+                                if sources.is_some() {
+                                    chapter_origins.push(origin);
+                                }
                                 continue;
                             } else {
                                 result.unchecked += 1;
@@ -255,6 +292,9 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                             &mut finding_count,
                             &mut finding_bytes,
                         )?;
+                        if sources.is_some() {
+                            chapter_origins.push(origin);
+                        }
                         continue;
                     };
                     let Some((target, suffix)) = local else {
@@ -274,11 +314,15 @@ pub fn check_book_links(book: &Book) -> Result<LinkReport> {
                     &mut finding_count,
                     &mut finding_bytes,
                 )?;
+                if sources.is_some() {
+                    chapter_origins.push(origin);
+                }
             }
         }
         chapters.push(result);
+        origins.push(chapter_origins);
     }
-    Ok(LinkReport { chapters })
+    Ok((LinkReport { chapters }, origins))
 }
 
 fn invalid(message: &str) -> RenderError {
@@ -449,8 +493,8 @@ fn admit_html(html: &str, depth: usize, budget: &mut Budget) -> Result<()> {
 // Keep source ownership at top-level AST-block granularity. Nested and note
 // visitors retain the owning index; no substring search invents an inline span.
 enum Reference<'a> {
-    Link(Cow<'a, str>, usize),
-    Note(&'a str, usize),
+    Link(Cow<'a, str>, usize, Option<usize>),
+    Note(&'a str, usize, Option<usize>),
 }
 struct Navigation<'a> {
     anchors: BTreeMap<String, DocumentAnchor>,
@@ -461,6 +505,7 @@ struct Navigation<'a> {
     seen: BTreeSet<&'a str>,
     headings: Vec<Block>,
     heading_blocks: Vec<usize>,
+    source_indices: Option<BTreeMap<link_sources::NodeKey, usize>>,
 }
 impl Navigation<'_> {
     fn anchor(&mut self, id: String, block_index: usize, title: String, kind: AnchorKind) {
@@ -477,6 +522,12 @@ impl Navigation<'_> {
     }
 }
 fn navigation(doc: &Document) -> Navigation<'_> {
+    navigation_with_sources(doc, None)
+}
+fn navigation_with_sources<'a>(
+    doc: &'a Document,
+    sources: Option<&link_sources::ChapterLinkSources>,
+) -> Navigation<'a> {
     let mut nav = Navigation {
         anchors: BTreeMap::new(),
         definitions: BTreeMap::new(),
@@ -486,6 +537,7 @@ fn navigation(doc: &Document) -> Navigation<'_> {
         seen: BTreeSet::new(),
         headings: Vec::new(),
         heading_blocks: Vec::new(),
+        source_indices: sources.and_then(|sources| sources.indices(doc)),
     };
     for (index, block) in doc.blocks.iter().enumerate() {
         definitions(std::slice::from_ref(block), index, &mut nav.definitions);
@@ -604,13 +656,23 @@ fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'
     for inline in inlines {
         match inline {
             Inline::Link { dest, content, .. } => {
+                let source = nav
+                    .source_indices
+                    .as_ref()
+                    .and_then(|indices| indices.get(&link_sources::inline_key(inline)))
+                    .copied();
                 nav.references
-                    .push(Reference::Link(Cow::Borrowed(dest), owner));
+                    .push(Reference::Link(Cow::Borrowed(dest), owner, source));
                 visit_inlines(content, owner, nav);
             }
             Inline::Html(html) => visit_html(html, owner, nav),
             Inline::FootnoteRef { id } => {
-                nav.references.push(Reference::Note(id, owner));
+                let source = nav
+                    .source_indices
+                    .as_ref()
+                    .and_then(|indices| indices.get(&link_sources::inline_key(inline)))
+                    .copied();
+                nav.references.push(Reference::Note(id, owner, source));
                 if let Some((&id, _)) = nav.definitions.get_key_value(id.as_str())
                     && nav.seen.insert(id)
                 {
@@ -627,10 +689,17 @@ fn visit_inlines<'a>(inlines: &'a [Inline], owner: usize, nav: &mut Navigation<'
 }
 
 fn visit_html(html: &str, owner: usize, nav: &mut Navigation<'_>) {
+    let mut index = 0;
     for span in crate::safe_html::url_spans(html) {
         if span.kind == crate::safe_html::UrlKind::Link {
+            let source = nav
+                .source_indices
+                .as_ref()
+                .and_then(|indices| indices.get(&link_sources::html_key(html, index)))
+                .copied();
+            index += 1;
             nav.references
-                .push(Reference::Link(Cow::Owned(span.destination), owner));
+                .push(Reference::Link(Cow::Owned(span.destination), owner, source));
         }
     }
 }
@@ -664,13 +733,27 @@ fn resolve_fragment<'a>(
     }
 }
 
-struct Json(String);
+struct Json(String, usize, usize);
 impl Json {
+    fn new() -> Self {
+        Self(String::new(), 0, 0)
+    }
     fn raw(&mut self, text: &str) -> Result<()> {
-        if text.len() > MAX_REPORT_BYTES.saturating_sub(self.0.len()) {
+        if text.len() > MAX_REPORT_BYTES.saturating_sub(self.1) {
             return Err(invalid("report exceeds 4 MiB"));
         }
         self.0.push_str(text);
+        self.1 += text.len();
+        Ok(())
+    }
+    fn provenance(&mut self, text: &str) -> Result<()> {
+        if text.len() > link_sources::MAX_PROVENANCE_BYTES.saturating_sub(self.2) {
+            return Err(invalid(
+                "source attribution exceeds its separate 2 MiB allowance",
+            ));
+        }
+        self.0.push_str(text);
+        self.2 += text.len();
         Ok(())
     }
     fn number(&mut self, key: &str, value: usize) -> Result<()> {

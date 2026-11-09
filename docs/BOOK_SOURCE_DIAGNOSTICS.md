@@ -114,9 +114,10 @@ The **Open publishing chapter** action remains available separately.
 
 Older generated packages omit `source`. Their diagnostics remain readable, and
 the workbench explains that matching WASM is required for original-source jumps.
-Expanded offsets are never substituted for unavailable original offsets. This
-source navigation applies to parser findings; the separate link report continues
-to identify publishing chapters.
+Expanded offsets are never substituted for unavailable original offsets. The
+separate link report also carries original-source locations when available. Its
+additional precision label distinguishes parser-proven destination tokens from
+enclosing source blocks; see [book link validation](BOOK_LINK_VALIDATION.md).
 
 The parser's stable classifications currently include `inline_work_limit`,
 `inline_depth_limit`, `emphasis_work_limit`, `emphasis_depth_limit`,
@@ -168,8 +169,9 @@ The complete book's temporary provenance map admits at most 65,536 fragments and
 diagnostic can expose at most 64 source ranges; the whole report admits 16,384
 ranges and 256 KiB of repeated path text. Metadata exhaustion produces explicit
 unavailability and leaves the warning and publication intact. Native and browser
-workers use the separate diagnostics wire allowance; link reports retain their
-existing 4 MiB limit.
+workers use the separate diagnostics wire allowance. Link reports independently
+retain their existing 4 MiB base limit with a separate 2 MiB source-location
+allowance.
 
 `tests/book_parser_diagnostics.rs` covers work/depth fallback codes, Unicode and
 CRLF ranges, include/rebasing coordinates, unchanged export bytes, repaired and

@@ -210,7 +210,9 @@ try {
     root: document,
     controls,
     collection,
-    worker: createBookWorker({ maxOutputBytes: 4 * 1024 * 1024 }),
+    // The original 4 MiB report and optional 2 MiB source maps are admitted
+    // independently by the decoder and by both worker endpoints.
+    worker: createBookWorker({ maxOutputBytes: 6 * 1024 * 1024 }),
   });
 } catch {
   const status = document.querySelector("#links-status");
@@ -222,7 +224,7 @@ try {
 let parserDiagnosticsWorker = null;
 try {
   createBookSourceDiagnosticsPanel(document);
-  parserDiagnosticsWorker = createBookWorker({ maxOutputBytes: 4 * 1024 * 1024 });
+  parserDiagnosticsWorker = createBookWorker({ maxOutputBytes: 6 * 1024 * 1024 });
   parserDiagnostics = createBookSourceDiagnosticsControls({
     root: document, controls, collection, worker: parserDiagnosticsWorker,
   });

@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use super::source_locations::{BookSourceLocation, SourceMap};
+use super::validation::link_sources::{BookLinkSources, ChapterLinkSources};
 use super::{BookInput, paths};
 use crate::{DiagnosticSeverity, Document, ParseDiagnostic, RenderError, Result};
 
@@ -39,22 +40,40 @@ pub struct BookChapterDiagnostics {
 pub struct BookSourceDiagnostics {
     chapters: Vec<BookChapterDiagnostics>,
     source_locations: Vec<Vec<BookSourceLocation>>,
+    link_sources: BookLinkSources,
     diagnostic_count: usize,
     json: String,
 }
 
 impl BookSourceDiagnostics {
+    #[cfg(test)]
     pub(super) fn new(chapters: Vec<BookChapterDiagnostics>) -> Result<Self> {
-        Self::build(chapters, None)
+        Self::build(chapters, None, None)
+    }
+
+    pub(super) fn new_with_link_sources(
+        chapters: Vec<BookChapterDiagnostics>,
+        sources: Vec<ChapterLinkSources>,
+    ) -> Result<Self> {
+        Self::build(chapters, None, Some(BookLinkSources::new(sources)))
+    }
+
+    pub(crate) fn link_sources(&self) -> &BookLinkSources {
+        &self.link_sources
     }
 
     /// Recompose attribution without parsing. Used even when an include edit
     /// moves source ranges but leaves the expanded chapter bytes unchanged.
     pub(crate) fn with_source_maps(self, maps: &[SourceMap]) -> Result<Self> {
-        Self::build(self.chapters, Some(maps))
+        let link_sources = self.link_sources.with_maps(maps)?;
+        Self::build(self.chapters, Some(maps), Some(link_sources))
     }
 
-    fn build(chapters: Vec<BookChapterDiagnostics>, maps: Option<&[SourceMap]>) -> Result<Self> {
+    fn build(
+        chapters: Vec<BookChapterDiagnostics>,
+        maps: Option<&[SourceMap]>,
+        link_sources: Option<BookLinkSources>,
+    ) -> Result<Self> {
         if chapters.is_empty() || chapters.len() > MAX_CHAPTERS {
             return Err(invalid("expected 1..4096 chapter reports"));
         }
@@ -176,9 +195,13 @@ impl BookSourceDiagnostics {
         json.raw(",\"diagnostics\":")?;
         json.raw(&diagnostic_count.to_string())?;
         json.raw("}}")?;
+        let link_sources = link_sources.unwrap_or_else(|| {
+            BookLinkSources::unavailable(chapters.iter().map(|chapter| chapter.source_bytes))
+        });
         Ok(Self {
             chapters,
             source_locations,
+            link_sources,
             diagnostic_count,
             json: json.0,
         })
@@ -257,14 +280,15 @@ pub(super) fn parse_chapter(
     input: &BookInput,
     path: &str,
     profile: Option<crate::Profile>,
-) -> (Document, BookChapterDiagnostics) {
-    let mut parsed = crate::parse_markdown_spanned_with_profile(&input.source, profile);
+) -> (Document, BookChapterDiagnostics, ChapterLinkSources) {
+    let (mut parsed, capture) = crate::parse::parse_book_document(&input.source, profile);
+    let sources = ChapterLinkSources::capture(&parsed, &capture, path);
     let report = BookChapterDiagnostics {
         path: path.to_string(),
         source_bytes: parsed.source_len,
         diagnostics: std::mem::take(&mut parsed.diagnostics),
     };
-    (parsed.into_document(), report)
+    (parsed.into_document(), report, sources)
 }
 
 /// Shared bounded admission for the diagnosed builder, before parser work.

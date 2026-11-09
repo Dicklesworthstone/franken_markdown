@@ -32,6 +32,7 @@ pub use workspace::{BookSourceSetUpdate, BookSourceUpdate, BookWorkspace};
 
 #[path = "book/validation.rs"]
 pub mod validation;
+pub use validation::{LinkSourceLocation, LinkSourcePrecision, LocatedLinkReport};
 
 pub use render::{
     BookPdfRenderReport, BookRenderer, book_pdf_document_with_assets, render_book_pdf,
@@ -152,13 +153,19 @@ pub fn build_book_with_diagnostics_and_profile(
     diagnostics::admit_inputs(inputs)?;
     let mut reports = Vec::with_capacity(inputs.len());
     let book = build_book_inner(inputs, Some(&mut reports), profile)?;
-    let report = BookSourceDiagnostics::new(reports)?;
+    let (reports, sources) = reports.into_iter().unzip();
+    let report = BookSourceDiagnostics::new_with_link_sources(reports, sources)?;
     Ok((book, report))
 }
 
 fn build_book_inner(
     inputs: &[BookInput],
-    mut diagnostics: Option<&mut Vec<BookChapterDiagnostics>>,
+    mut diagnostics: Option<
+        &mut Vec<(
+            BookChapterDiagnostics,
+            validation::link_sources::ChapterLinkSources,
+        )>,
+    >,
     profile: Option<crate::Profile>,
 ) -> Result<Book> {
     if inputs.is_empty() {
@@ -171,8 +178,8 @@ fn build_book_inner(
     for (input, path) in inputs.iter().zip(paths) {
         let (frontmatter, _) = parse::split_frontmatter(&input.source);
         let doc = if let Some(reports) = diagnostics.as_deref_mut() {
-            let (doc, report) = self::diagnostics::parse_chapter(input, &path, profile);
-            reports.push(report);
+            let (doc, report, sources) = self::diagnostics::parse_chapter(input, &path, profile);
+            reports.push((report, sources));
             doc
         } else {
             crate::parse_markdown_with_profile(&input.source, profile)

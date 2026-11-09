@@ -329,8 +329,10 @@ fn link_report(renderer: &BookRenderer) -> Result<LinkReport, ToolError> {
 /// an admission/analysis failure is an error, never an empty clean report.
 pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
     let renderer = renderer(args, limit)?;
-    let report = link_report(&renderer)?;
-    let json = report.to_json().map_err(link_analysis_error)?;
+    let report = renderer
+        .validate_links_with_sources()
+        .map_err(link_analysis_error)?;
+    let json = report.to_json();
     if renderer.source_diagnostics().is_empty() {
         return Ok(wrap_text_content(&json));
     }

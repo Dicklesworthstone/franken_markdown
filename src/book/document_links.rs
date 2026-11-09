@@ -171,7 +171,7 @@ fn analyze(doc: &Document, include_files: bool) -> Result<DocumentLinkAnalysis> 
     let mut reference_bytes = 0;
     for reference in &nav.references {
         let (destination, block_index, kind, resolved) = match reference {
-            Reference::Note(id, owner) => {
+            Reference::Note(id, owner, _) => {
                 let resolved = nav
                     .definitions
                     .get(id)
@@ -182,7 +182,7 @@ fn analyze(doc: &Document, include_files: bool) -> Result<DocumentLinkAnalysis> 
                     ));
                 (*id, *owner, ReferenceKind::Footnote, resolved)
             }
-            Reference::Link(destination, owner) => {
+            Reference::Link(destination, owner, _) => {
                 let dest =
                     destination.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
                 let resolved = if dest.starts_with("//") || scheme(dest) {

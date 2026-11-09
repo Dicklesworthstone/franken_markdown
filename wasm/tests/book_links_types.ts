@@ -7,6 +7,22 @@ async function exercise(format: BookWorkerFormat) {
   const output = await checkBookLinks(files, options);
   const name: string = output.filename();
   const report: BookLinkReport = parseBookLinkReport(output.bytes, ["a.md"]);
+  const source = report.chapters[0].findings[0]?.source;
+  if (source?.status === "mapped") {
+    const precision: "destination" | "block" = source.precision;
+    const path: string = source.ranges[0].path;
+    const start: number = source.ranges[0].start;
+    // @ts-expect-error native provenance is immutable
+    source.ranges[0].start = 0;
+    // @ts-expect-error an enclosing-block location is not edit authority
+    source.replacement;
+    void [precision, path, start];
+  } else if (source) {
+    const reason: string = source.reason;
+    // @ts-expect-error unavailable provenance cannot expose partial ranges
+    source.ranges;
+    void reason;
+  }
   const book = await createBook(files, options);
   try {
     const retained = book.validateLinks();

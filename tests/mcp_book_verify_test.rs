@@ -98,7 +98,7 @@ fn verification_returns_the_exact_shared_report_after_include_expansion() {
         source: "[forward](next.md#next) [bad](next.md#absent)".into(),
     }];
     let renderer = BookRenderer::from_sources(&inputs, &includes).unwrap();
-    let expected = renderer.validate_links().unwrap().to_json().unwrap();
+    let expected = renderer.validate_links_with_sources().unwrap().to_json();
     let request = object([
         (
             "chapters",
@@ -120,6 +120,27 @@ fn verification_returns_the_exact_shared_report_after_include_expansion() {
     assert_eq!(count(&report, "chapters"), 2);
     assert_eq!(count(&report, "findings"), 1);
     assert_eq!(codes(&report), ["missing_anchor"]);
+    let finding = &array(
+        array(report.get("chapters").unwrap())[0]
+            .get("findings")
+            .unwrap(),
+    )[0];
+    let location = finding.get("source").unwrap();
+    assert_eq!(
+        location.get("precision").and_then(Json::as_str),
+        Some("destination")
+    );
+    let range = &array(location.get("ranges").unwrap())[0];
+    assert_eq!(range.get("path").and_then(Json::as_str), Some("part.md"));
+    let start = includes[0].source.find("next.md#absent").unwrap();
+    assert_eq!(
+        range.get("start").and_then(Json::as_u64),
+        Some(start as u64)
+    );
+    assert_eq!(
+        range.get("end").and_then(Json::as_u64),
+        Some((start + "next.md#absent".len()) as u64)
+    );
     assert_eq!(
         report.get("scope").and_then(Json::as_str),
         Some("expanded-html-navigation")

@@ -338,7 +338,13 @@ export interface BookLinkFinding {
     | "missing_footnote";
   readonly destination: string;
   readonly message: string;
+  /** Native-proven original chapter/include attribution. Older packages omit
+   * this field. A containing block does not identify an editable URL token. */
+  readonly source?: BookLinkSourceLocation;
 }
+export type BookLinkSourceLocation =
+  | Readonly<{ status: "mapped"; precision: "destination" | "block"; ranges: readonly BookSourceRange[] }>
+  | Readonly<{ status: "unavailable"; reason: string }>;
 export interface ChapterLinkReport {
   readonly path: string;
   readonly checked: number;
@@ -363,7 +369,8 @@ export interface BookLinksOutput {
   readonly mimeType: "application/json";
   readonly extension: "json";
   readonly sourceLength: number;
-  /** UTF-8 fmd-book-link-report-v1 JSON. Not PDF/EPUB conformance or a network check. */
+  /** UTF-8 fmd-book-link-report-v1 JSON. The base report is bounded to 4 MiB;
+   * optional original-source metadata has its own 2 MiB allowance. */
   readonly bytes: Uint8Array;
   blob(): Blob;
   filename(baseName?: string): string;

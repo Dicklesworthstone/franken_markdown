@@ -1,6 +1,6 @@
 import { inspectionDownload, readBookInspection } from "../book_inspection.mjs";
 import { parseBookLinkReport, parseBookSourceDiagnosticsReport } from "../book_session.mjs";
-import { bookDiagnosticSelections } from "../book_source_diagnostics.mjs";
+import { bookSourceSelections } from "../book_source_diagnostics.mjs";
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const PAGE_SIZE = 50;
@@ -602,7 +602,9 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     navigate(index, 0, 0);
     el["links-status"].textContent = parser
       ? `Opened ${path}. Diagnostic byte ranges describe the expanded chapter and can include transcluded text. No original include range is selected.`
-      : `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
+      : report.chapters.find(chapter => chapter.path === path).findings.some(finding => finding.source?.status === "mapped")
+        ? `Opened ${path}. Use a finding's source controls to select its original destination or enclosing block, including shared include files.`
+        : `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
   }
   function navigate(index, start, end) {
     const snapshot = report, ticket = generation;
@@ -615,19 +617,22 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
   }
   function openSource(finding, rangeIndex = 0) {
     current();
-    if (!parser || !rows.some(row => row.finding === finding)
+    if (!rows.some(row => row.finding === finding)
         || finding.source?.status !== "mapped" || !Number.isInteger(rangeIndex))
       throw fail("INVALID_SELECTION", "Choose a reported original-source range.");
     const range = finding.source.ranges[rangeIndex], selection = sourceSelections.get(range);
     const index = selection ? collection.files.findIndex(file => file.path === selection.path) : -1;
     if (index < 0 || collection.files[index].source !== selection.source)
-      throw fail("STALE_SOURCE_DIAGNOSTICS", "The original source changed. Check the current book again.");
+      throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "The original source changed. Check the current book again.");
     navigate(index, selection.start, selection.end);
     el["links-status"].textContent = range.kind === "generated"
       ? `Opened the source boundary in ${range.path} where include expansion inserted a separator.`
+      : !parser && finding.source.precision === "block"
+        ? `Selected an original source fragment of the enclosing syntax block in ${range.path}. Review this block to locate the reported destination; no exact destination token was proven.`
       : range.kind === "rewritten"
         ? `Selected the original URL token in ${range.path}. Its published spelling was rewritten during include expansion.`
-        : `Selected original source in ${range.path}. The expanded diagnostic range remains in the report.`;
+        : parser ? `Selected original source in ${range.path}. The expanded diagnostic range remains in the report.`
+          : `Selected the original destination source in ${range.path}. Reference-style links may select the shared reference definition.`;
   }
   function invoke(fn) {
     try {
@@ -661,25 +666,25 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
         }),
       );
       row.append(label, destination, button);
-      if (parser) {
-        if (finding.source?.status === "mapped") {
-          finding.source.ranges.forEach((range, index) => {
-            const sourceButton = root.createElement("button");
-            sourceButton.type = "button";
-            sourceButton.textContent = `${range.kind === "generated" ? "Open boundary" : "Select source"}: ${range.path} (${range.start}–${range.end} UTF-8 bytes${range.kind === "rewritten" ? "; original URL token" : ""})`;
-            sourceButton.addEventListener("click", () => invoke(() => {
-              if (report !== snapshot) throw fail("STALE_SOURCE_DIAGNOSTICS", "This result belongs to an older check.");
-              openSource(finding, index);
-            }));
-            row.append(sourceButton);
-          });
-        } else {
-          const unavailable = root.createElement("p");
-          unavailable.textContent = finding.source
-            ? `Original-source navigation is unavailable (${finding.source.reason}). The expanded range is still valid.`
-            : "This WASM package does not provide original-source locations. Rebuild the matching package to select chapter and include-file ranges.";
-          row.append(unavailable);
-        }
+      if (finding.source?.status === "mapped") {
+        finding.source.ranges.forEach((range, index) => {
+          const sourceButton = root.createElement("button");
+          sourceButton.type = "button";
+          const action = range.kind === "generated" ? "Open boundary" : parser ? "Select source"
+            : finding.source.precision === "destination" ? "Select destination source" : "Select enclosing block source";
+          sourceButton.textContent = `${action}: ${range.path} (${range.start}–${range.end} UTF-8 bytes${range.kind === "rewritten" ? "; original URL token" : ""})`;
+          sourceButton.addEventListener("click", () => invoke(() => {
+            if (report !== snapshot) throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "This result belongs to an older check.");
+            openSource(finding, index);
+          }));
+          row.append(sourceButton);
+        });
+      } else {
+        const unavailable = root.createElement("p");
+        unavailable.textContent = finding.source
+          ? `Original-source navigation is unavailable (${finding.source.reason}). ${parser ? "The expanded range is still valid." : "Open the publishing chapter to review the finding."}`
+          : "This WASM package does not provide original-source locations. Rebuild the matching package to select chapter and include-file ranges.";
+        row.append(unavailable);
       }
       el["links-findings"].append(row);
     }
@@ -728,7 +733,9 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
         result.bytes,
         files.map((file) => file.path),
       );
-      if (parser) sourceSelections = bookDiagnosticSelections(report, project.files);
+      sourceSelections = bookSourceSelections(report, project.files, parser ? "diagnostics" : "findings",
+        () => fail(parser ? "INVALID_BOOK_SOURCE_DIAGNOSTICS" : "INVALID_LINK_REPORT",
+          "The report's original-source ranges do not match the captured book."));
       stamp = captured;
       busy = false;
       rows = report.chapters.flatMap((chapter) =>
@@ -772,7 +779,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     el["links-download"].hidden = false;
     el["links-status"].textContent = parser
       ? "Report prepared. Click Download parser report to save the diagnostics, expanded byte ranges and available original-source locations."
-      : "Report prepared. Click Download link report to save it. It contains chapter names and destinations, which may be sensitive; review it before sharing.";
+      : "Report prepared. Click Download link report to save it. It contains chapter names, destinations and available original-source locations, which may be sensitive; review it before sharing.";
   }
   function on(element, type, handler) {
     element.addEventListener(type, handler);
@@ -927,7 +934,7 @@ function createBookCheckPanel(root, parser) {
       {},
       parser
         ? "Expanded ranges are UTF-8 bytes in the published chapter. Separate source ranges identify original selected chapters and include files; rewritten URL tokens and generated boundaries are labeled. Unavailable mappings never become guessed editor offsets. These checks do not validate links, images or final PDF/EPUB conformance."
-        : "Scope: safe HTML navigation from the expanded AST. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Findings identify publishing chapters, not exact original-source locations. Report destinations may contain sensitive information.",
+        : "Scope: safe HTML navigation from the expanded AST. Original-source controls select parser-proven destination tokens or explicitly labeled enclosing blocks, including shared include files. Unavailable mappings never become guessed editor offsets. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Report destinations may contain sensitive information.",
     ),
   );
   const publish = root.querySelector('[aria-labelledby="publish-title"]');

@@ -50,14 +50,14 @@ pub enum BookSourceLocation {
     Unavailable(&'static str),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Fragment {
     source: usize,
     original: Range<usize>,
     kind: BookSourceRangeKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Segment {
     expanded: Range<usize>,
     fragments: Vec<Fragment>,
@@ -65,7 +65,7 @@ struct Segment {
 
 /// A map has nonoverlapping, ordered output segments. Rewritten segments may
 /// name several original fragments, but never interpolate between their bytes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceMap {
     length: usize,
     paths: Vec<String>,

@@ -128,7 +128,8 @@ fn expanded_resource_findings_belong_to_the_publishing_chapter() {
     assert!(json.contains("\"schema\":\"fmd-book-link-report-v1\""));
     assert!(json.contains("\"scope\":\"expanded-html-navigation\""));
     assert!(json.contains("\"path\":\"start.md\""));
-    assert!(!json.contains("\"path\":\"parts/shared.md\""));
+    assert!(!json.contains("\"path\":\"parts/shared.md\",\"checked\":"));
+    assert!(json.contains("\"source\":{\"status\":\"mapped\",\"precision\":\"destination\",\"ranges\":[{\"path\":\"parts/shared.md\",\"start\":6,\"end\":13,\"kind\":\"exact\"}]"));
     assert!(json.contains("\"code\":\"missing_anchor\""));
     assert!(json.contains("\"code\":\"missing_chapter\""));
     assert!(

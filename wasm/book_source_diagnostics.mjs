@@ -54,6 +54,32 @@ function location(value, budget) {
   return Object.freeze({ status: "mapped", ranges: Object.freeze(ranges) });
 }
 
+/** Shared admission for native-owned original-source locations. Link checks
+ * additionally declare whether a destination token or its enclosing syntax
+ * block was proven. Only admitted metadata earns the separate wire allowance;
+ * unknown fields and extra whitespace remain charged to the base report. */
+export function createBookSourceLocationReader(failure = invalid, { link = false } = {}) {
+  const budget = { ranges: 0, paths: 0 };
+  let bytes = 0;
+  return Object.freeze({
+    read(value) {
+      try {
+        let source = location(value, budget);
+        if (link && source !== undefined) {
+          if (source.status === "mapped") {
+            if (!["destination", "block"].includes(value.precision)) throw invalid();
+            source = Object.freeze({ status: "mapped", precision: value.precision, ranges: source.ranges });
+          } else if (value.precision !== undefined) throw invalid();
+        }
+        if (source !== undefined) bytes = integer(bytes + 10
+          + new TextEncoder().encode(JSON.stringify(source)).length, MAX_PROVENANCE_BYTES);
+        return source;
+      } catch { throw failure(); }
+    },
+    get bytes() { return bytes; },
+  });
+}
+
 /** Validate a complete report and optionally bind it to canonical chapter paths
  * in reading order. Bounds are UTF-8 offsets in the expanded/rebased chapter,
  * not editor offsets in an original include file. Additive source metadata
@@ -78,8 +104,7 @@ export function parseBookSourceDiagnosticsReport(bytes, expectedPaths) {
       || (expectedPaths !== undefined && value.chapters.length !== expectedPaths.length))
     throw invalid();
   const seen = new Set();
-  const locationBudget = { ranges: 0, paths: 0 };
-  let provenanceBytes = 0;
+  const sourceReader = createBookSourceLocationReader();
   let count = 0, sourceBytesTotal = 0;
   const chapters = value.chapters.map((chapter, index) => {
     if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) throw invalid();
@@ -98,14 +123,7 @@ export function parseBookSourceDiagnosticsReport(bytes, expectedPaths) {
       const start = integer(item.start, sourceBytes), end = integer(item.end, sourceBytes);
       const message = text(item.message, 2048);
       if (start > end || !message) throw invalid();
-      const source = location(item.source, locationBudget);
-      if (source !== undefined) {
-        // Subtract only the canonical minimum encoding of the actual source
-        // property. Extra whitespace/escaping stays charged to the base wire
-        // allowance; provenance never grants extra space for base diagnostics.
-        provenanceBytes = integer(provenanceBytes + 10
-          + new TextEncoder().encode(JSON.stringify(item.source)).length, MAX_PROVENANCE_BYTES);
-      }
+      const source = sourceReader.read(item.source);
       return Object.freeze({ code: item.code, severity: item.severity, start, end, message,
         ...(source === undefined ? {} : { source }) });
     });
@@ -113,7 +131,7 @@ export function parseBookSourceDiagnosticsReport(bytes, expectedPaths) {
   });
   if (!value.summary || value.summary.chapters !== chapters.length
       || value.summary.diagnostics !== count
-      || bytes.byteLength - provenanceBytes > MAX_BASE_REPORT_BYTES) throw invalid();
+      || bytes.byteLength - sourceReader.bytes > MAX_BASE_REPORT_BYTES) throw invalid();
   return Object.freeze({ schema: value.schema, coordinateSpace: value.coordinateSpace,
     chapters: Object.freeze(chapters),
     summary: Object.freeze({ chapters: chapters.length, diagnostics: count }) });
@@ -124,15 +142,22 @@ export function parseBookSourceDiagnosticsReport(bytes, expectedPaths) {
  * is performed. Returned offsets are UTF-16 in the original source. The editor
  * remains responsible for its ordinary CRLF-to-textarea normalization. */
 export function bookDiagnosticSelections(report, files) {
+  return bookSourceSelections(report, files);
+}
+
+/** Shared original-source binding for parser diagnostics and link findings.
+ * Precision remains report metadata: even an exact byte map of an enclosing
+ * block never grants authority to replace a guessed destination inside it. */
+export function bookSourceSelections(report, files, field = "diagnostics", failure = invalid) {
   const known = new Map(files.map(file => [file.path, file]));
-  if (known.size !== files.length) throw invalid();
+  if (known.size !== files.length) throw failure();
   const groups = new Map(), selections = new Map();
   for (const chapter of report.chapters) {
-    for (const finding of chapter.diagnostics) {
+    for (const finding of chapter[field]) {
       if (finding.source?.status !== "mapped") continue;
       for (const range of finding.source.ranges) {
         const file = known.get(range.path);
-        if (!file || typeof file.source !== "string") throw invalid();
+        if (!file || typeof file.source !== "string") throw failure();
         let group = groups.get(range.path);
         if (!group) groups.set(range.path, group = { file, ranges: [], points: new Set() });
         group.ranges.push(range);
@@ -145,19 +170,19 @@ export function bookDiagnosticSelections(report, files) {
     const wanted = [...points].sort((a, b) => a - b), offsets = new Map();
     let bytes = 0, units = 0, next = 0;
     function boundary() {
-      if (wanted[next] < bytes) throw invalid();
+      if (wanted[next] < bytes) throw failure();
       if (wanted[next] === bytes) offsets.set(wanted[next++], units);
     }
     for (const scalar of file.source) {
       boundary();
       if (next === wanted.length) break;
       const code = scalar.codePointAt(0);
-      if (code >= 0xd800 && code <= 0xdfff) throw invalid();
+      if (code >= 0xd800 && code <= 0xdfff) throw failure();
       bytes += code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4;
       units += scalar.length;
     }
     boundary();
-    if (next !== wanted.length) throw invalid();
+    if (next !== wanted.length) throw failure();
     for (const range of ranges) selections.set(range, Object.freeze({
       path: file.path, source: file.source, start: offsets.get(range.start), end: offsets.get(range.end),
     }));

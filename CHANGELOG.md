@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Book link findings retain original chapter/include locations, including exact
+  inline destinations and winning reference-definition URLs. Native checks,
+  MCP and browser reports share bounded source provenance while existing Rust
+  report structs remain compatible. The workbench selects verified source
+  ranges, labels conservative block fallbacks and rejects stale navigation;
+  mapping-only edits refresh locations without reparsing chapters. See
+  [Book link validation](docs/BOOK_LINK_VALIDATION.md).
 - The ordinary browser demo opens and saves explicitly selected Markdown files
   through the shared bounded file transaction engine. Verified writes preserve
   exact untouched source bytes, rendering settings and authorized images;

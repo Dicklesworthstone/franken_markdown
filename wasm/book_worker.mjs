@@ -1,5 +1,5 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
-import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
+import { BOOK_LINK_REPORT_MAX_BYTES, bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview, validateBookLinkReportBytes } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
 import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "./book_source_diagnostics.mjs";
@@ -59,6 +59,14 @@ function checkedOutput(bytes, sourceLength, maximum) {
   }
   if (bytes.byteLength === 0 || bytes.byteLength > maximum)
     throw bookError("OUTPUT_LIMIT", "Book output is empty or exceeds the output byte limit.");
+}
+
+function checkedLinkAllowance(bytes, format) {
+  if (format !== "links" || bytes.byteLength <= 4 * 1024 * 1024) return;
+  try { validateBookLinkReportBytes(bytes); }
+  catch {
+    throw bookError("OUTPUT_LIMIT", "Book link output exceeds the base report limit without valid, separately bounded source metadata.");
+  }
 }
 
 // Collection extraction is a separate, data-only worker operation. It never
@@ -476,7 +484,8 @@ export function createBookWorkerClient({
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength,
             sourceFormats.has(format) ? Math.min(maxOutputBytes,
-              format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : 4 * 1024 * 1024) : maxOutputBytes);
+              format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES) : maxOutputBytes);
+          checkedLinkAllowance(data.bytes, format);
           const renderReceipt = bookRenderDiagnosticsReceipt(data, format);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
@@ -759,7 +768,8 @@ export function installBookWorker(scope, engine) {
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength,
         sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes,
-          data.format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : 4 * 1024 * 1024) : data.maxOutputBytes);
+          data.format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES) : data.maxOutputBytes);
+      checkedLinkAllowance(result.bytes, data.format);
       const renderReceipt = bookRenderDiagnosticsReceipt(result, data.format);
       if (data.format === "pdf") {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))

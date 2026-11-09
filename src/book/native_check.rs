@@ -19,6 +19,16 @@ fn inspect(book: &Book) -> Result<(LinkReport, String), Failure> {
     Ok((report, json))
 }
 
+fn inspect_sources(
+    book: &Book,
+    sources: &BookSourceDiagnostics,
+) -> Result<(LinkReport, String), Failure> {
+    let located =
+        crate::book::validation::link_sources::check_with_sources(book, sources.link_sources())
+            .map_err(|error_value| error(70, "book_check_error", error_value))?;
+    Ok((located.report().clone(), located.to_json()))
+}
+
 pub(super) fn require_clean(
     book: &Book,
     profile: Option<crate::Profile>,
@@ -45,7 +55,7 @@ pub(super) fn run(args: &BookArgs, json_requested: bool) -> ExitCode {
         Ok(loaded) => loaded,
         Err(message) => return failure(66, "book_error", &message, json_requested),
     };
-    let (report, json) = match inspect(&loaded.book) {
+    let (report, json) = match inspect_sources(&loaded.book, &loaded.source_diagnostics) {
         Ok(checked) => checked,
         Err(e) => return failure(e.code, e.tag, &e.message, json_requested),
     };

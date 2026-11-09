@@ -411,6 +411,15 @@ test("provenance has its own wire allowance without expanding the base diagnosti
   assert.throws(() => parseBookSourceDiagnosticsReport(encoded(value)), code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
 });
 
+test("unrecognized source metadata never expands the parser base-report allowance", () => {
+  const value = report();
+  value.chapters[0].diagnostics[0].source = {
+    status: "unavailable", reason: "source_unavailable", hiddenBody: "x".repeat(4 * 1024 * 1024),
+  };
+  assert(encoded(value).byteLength < BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES);
+  assert.throws(() => parseBookSourceDiagnosticsReport(encoded(value)), code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
+});
+
 test("both worker directions admit the separate provenance allowance above four MiB", async () => {
   const value = report();
   value.padding = "x".repeat(4 * 1024 * 1024 - encoded(value).byteLength - 14);

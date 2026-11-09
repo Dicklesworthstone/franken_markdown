@@ -459,7 +459,127 @@ test("production entry installs a dedicated bounded link worker and its lifecycl
   // Static wiring proof, not a browser/WASM execution claim.
   const entry = readFileSync(new URL("../demo/book.js", import.meta.url), "utf8");
   assert.match(entry, /createBookLinkPanel\(document\)/);
-  assert.match(entry, /createBookLinkControls\([\s\S]*?maxOutputBytes: 4 \* 1024 \* 1024/);
+  assert.match(entry, /createBookLinkControls\([\s\S]*?maxOutputBytes: 6 \* 1024 \* 1024/);
+  assert.match(entry, /parserDiagnosticsWorker = createBookWorker\(\{ maxOutputBytes: 6 \* 1024 \* 1024/);
   for (const method of ["suspend", "resume", "dispose"])
     assert(entry.includes(`links?.${method}()`));
+});
+
+function locatedResponse(location) {
+  const output = response(), value = JSON.parse(new TextDecoder().decode(output.bytes));
+  const finding = value.chapters[1].findings.pop();
+  finding.source = location;
+  value.chapters[0].findings.push(finding);
+  value.chapters[0].checked = 1;
+  value.chapters[1].checked = 0;
+  return { ...output, bytes: encode(value) };
+}
+const mappedSource = (ranges, precision = "destination") => ({ status: "mapped", precision, ranges });
+
+test("link findings select the proven include token among repeated destinations with Unicode and CRLF", async t => {
+  const original = "\ufeff🌍\r\n[First](end.md#missing)\r\n[Second](end.md#missing)\r\n";
+  const initial = source();
+  initial[1].source = original;
+  const f = setup(t, initial), start = original.lastIndexOf("end.md#missing"), end = start + "end.md#missing".length;
+  const range = { path: "parts.md", start: new TextEncoder().encode(original.slice(0, start)).length,
+    end: new TextEncoder().encode(original.slice(0, end)).length, kind: "rewritten" };
+  const checked = await complete(f, locatedResponse(mappedSource([range]))), finding = checked.chapters[0].findings[0];
+  const row = f.el("links-findings").children[0];
+  assert.match(row.children[3].textContent, /Select destination source: parts.md/);
+  f.api.openSource(finding);
+  assert.deepEqual(f.selections, [{ index: 1, start, end }]);
+  assert.match(f.el("links-status").textContent, /original URL token/);
+  assert.deepEqual(f.collection.files, initial);
+  // A view-only selection obtains a verified new checkpoint, so another
+  // source selection and report download remain usable without rechecking.
+  f.api.open("start.md");
+  f.api.openSource(finding);
+  f.api.save();
+  const saved = await (await fetch(f.el("links-download").href)).json();
+  assert.equal(saved.chapters[0].findings[0].source.precision, "destination");
+});
+
+test("enclosing-block locations and split origins never masquerade as destination tokens", async t => {
+  const f = setup(t), ranges = [
+    { path: "start.md", start: 0, end: 7, kind: "exact" },
+    { path: "parts.md", start: 0, end: 8, kind: "exact" },
+  ];
+  const checked = await complete(f, locatedResponse(mappedSource(ranges, "block"))), finding = checked.chapters[0].findings[0];
+  const row = f.el("links-findings").children[0];
+  assert.equal(row.children.length, 5);
+  assert.match(row.children[3].textContent, /Select enclosing block source: start.md/);
+  assert.match(row.children[4].textContent, /Select enclosing block source: parts.md/);
+  f.api.openSource(finding, 0);
+  f.api.openSource(finding, 1);
+  assert.deepEqual(f.selections, [{ index: 0, start: 0, end: 7 }, { index: 1, start: 0, end: 8 }]);
+  assert.match(f.el("links-status").textContent, /no exact destination token was proven/);
+  assert.deepEqual(f.collection.files, source());
+});
+
+test("generated boundaries select zero-width original positions without inventing editable text", async t => {
+  const initial = source(), end = initial[1].source.length, f = setup(t, initial);
+  const checked = await complete(f, locatedResponse(mappedSource([
+    { path: "parts.md", start: end, end, kind: "generated" },
+  ], "block")));
+  assert.match(f.el("links-findings").children[0].children[3].textContent, /Open boundary/);
+  f.api.openSource(checked.chapters[0].findings[0]);
+  assert.deepEqual(f.selections, [{ index: 1, start: end, end }]);
+});
+
+test("unknown sources and offsets inside Unicode scalars refuse the entire link result", async t => {
+  const initial = source(); initial[1].source = "🌍 shared source";
+  for (const range of [
+    { path: "missing.md", start: 0, end: 1, kind: "exact" },
+    { path: "parts.md", start: 1, end: 4, kind: "exact" },
+    { path: "parts.md", start: 0, end: 1000, kind: "exact" },
+  ]) {
+    const f = setup(t, initial);
+    await assert.rejects(complete(f, locatedResponse(mappedSource([range]))), { code: "INVALID_LINK_REPORT" });
+    assert.equal(f.el("links-findings").children.length, 0);
+    assert.equal(f.el("links-save").disabled, true);
+    assert.deepEqual(f.selections, []);
+  }
+});
+
+test("old packages and explicitly unavailable provenance keep findings without guessed jumps", async t => {
+  for (const location of [undefined, { status: "unavailable", reason: "range_limit" }]) {
+    const f = setup(t), checked = await complete(f, locatedResponse(location));
+    const row = f.el("links-findings").children[0];
+    assert.equal(checked.summary.findings, 1);
+    assert.match(row.children[3].textContent, location ? /unavailable \(range_limit\)/ : /does not provide original-source locations/);
+    assert.throws(() => f.api.openSource(checked.chapters[0].findings[0]), { code: "INVALID_SELECTION" });
+    f.api.open("start.md");
+    assert.deepEqual(f.selections, [{ index: 0, start: 0, end: 0 }]);
+  }
+});
+
+test("link source navigation refuses reentrant edits and never rebinds a stale report", async t => {
+  for (const notified of [false, true]) {
+    const f = setup(t), checked = await complete(f, locatedResponse(mappedSource([
+      { path: "parts.md", start: 0, end: 8, kind: "exact" },
+    ])));
+    const select = f.controls.selectSourceRange;
+    f.controls.selectSourceRange = (...args) => {
+      const receipt = select.apply(f.controls, args);
+      if (notified) f.edit(1, "newer include source");
+      else f.programmatic();
+      return notified ? f.controls.checkpoint() : receipt;
+    };
+    assert.throws(() => f.api.openSource(checked.chapters[0].findings[0]), { code: "STALE_LINK_CHECK" });
+    assert.throws(() => f.api.save(), { code: "STALE_LINK_CHECK" });
+    if (notified) assert.equal(f.collection.files[1].source, "newer include source");
+  }
+});
+
+test("detached source controls cannot select a newer report or edited include", async t => {
+  const f = setup(t), result = locatedResponse(mappedSource([
+    { path: "parts.md", start: 0, end: 8, kind: "exact" },
+  ]));
+  const checked = await complete(f, result), button = f.el("links-findings").children[0].children[3];
+  await complete(f, result);
+  button.click();
+  assert.equal(f.selections.length, 0);
+  assert.match(f.el("links-status").textContent, /older check/);
+  f.edit();
+  assert.throws(() => f.api.openSource(checked.chapters[0].findings[0]), { code: "STALE_LINK_CHECK" });
 });

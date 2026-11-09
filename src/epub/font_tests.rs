@@ -71,7 +71,7 @@ fn no_explicit_fonts_keeps_the_archive_font_free_with_themed_css() {
     );
     old.add_deflated(
         "OEBPS/chapter-1.xhtml",
-        epub::chapter_xhtml("Legacy", "en", &prepared.body).as_bytes(),
+        epub::chapter_xhtml("Legacy", "en", &prepared.body, false).as_bytes(),
     );
     old.add_deflated("OEBPS/style.css", css.as_bytes());
     assert_eq!(epub::render_epub(&doc, &opts).unwrap(), old.finish());
@@ -701,7 +701,7 @@ fn malformed_directly_assigned_faces_and_invalid_weights_cannot_be_ignored() {
 fn stylesheet_order_respects_custom_replacement_in_both_document_shells() {
     let result = package(&options(), "Style");
     for custom in [false, true] {
-        let mut chapter = epub::chapter_xhtml("Style", "en", "<p>Text</p>");
+        let mut chapter = epub::chapter_xhtml("Style", "en", "<p>Text</p>", false);
         result.link(&mut chapter, custom).unwrap();
         let mut nav = epub::nav_xhtml("Style", "en", &parse_markdown("# Heading"));
         result.link(&mut nav, custom).unwrap();
@@ -836,7 +836,7 @@ fn single_document_writes_actual_subsets_css_and_manifest_into_the_archive() {
     let mut opf = epub::content_opf("Résumé", "en", None, &id, &prepared);
     package.manifest(&mut opf).unwrap();
     assert_payload(&entries, "OEBPS/content.opf", opf.as_bytes());
-    let mut chapter = epub::chapter_xhtml("Résumé", "en", &prepared.body);
+    let mut chapter = epub::chapter_xhtml("Résumé", "en", &prepared.body, false);
     package.link(&mut chapter, false).unwrap();
     assert_payload(&entries, "OEBPS/chapter-1.xhtml", chapter.as_bytes());
     let mut nav = epub::nav_xhtml("Résumé", "en", &doc);
@@ -963,7 +963,7 @@ fn default_epub_cjk_entities_are_collected_and_custom_css_keeps_precedence() {
     let font = Font::parse(result.resources[0].bytes.clone()).unwrap();
     assert_ne!(font.glyph_index('中'), 0);
     assert_ne!(font.glyph_index('文'), 0);
-    let mut xhtml = epub::chapter_xhtml("Chinese", "zh", "<p>中文</p>");
+    let mut xhtml = epub::chapter_xhtml("Chinese", "zh", "<p>中文</p>", false);
     result.link(&mut xhtml, true).unwrap();
     assert!(xhtml.find(FONT_LINK).unwrap() < xhtml.find(STYLE_LINK).unwrap());
 }

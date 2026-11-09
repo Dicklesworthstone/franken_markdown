@@ -9,6 +9,8 @@ mod epub_data_images;
 mod epub_gif;
 #[path = "epub/metadata.rs"]
 mod epub_metadata;
+#[path = "epub/notes.rs"]
+mod epub_notes;
 #[path = "epub/theme.rs"]
 mod epub_theme;
 #[path = "../src/zip.rs"]
@@ -1153,7 +1155,7 @@ Term
         ] {
             assert!(
                 chapter.contains(&format!(
-                    "<li id=\"fn-{note}\"><h2 id=\"{heading}\">Repeat</h2>"
+                    "<li id=\"fn-{note}\" epub:type=\"endnote\"><h2 id=\"{heading}\">Repeat</h2>"
                 )),
                 "note provenance drifted: {chapter}"
             );

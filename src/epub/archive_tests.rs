@@ -143,7 +143,7 @@ fn financial_table_alignment_and_total_rules_reach_archived_xhtml() {
     assert_entry(
         &entries(&archive),
         "OEBPS/chapter-1.xhtml",
-        chapter_xhtml("Accounts", "en", &body).as_bytes(),
+        chapter_xhtml("Accounts", "en", &body, false).as_bytes(),
     );
 }
 
@@ -163,7 +163,7 @@ fn single_document_packages_host_png_once_with_matching_manifest() {
     assert_entry(
         &records,
         "OEBPS/chapter-1.xhtml",
-        chapter_xhtml("Pictures", "en", &prepared.body).as_bytes(),
+        chapter_xhtml("Pictures", "en", &prepared.body, false).as_bytes(),
     );
     let id = content_identifier("Pictures", "en", &body);
     let id = content_identifier(&id, "epub-stylesheet-v1", &theme::stylesheet(&opts));
@@ -223,7 +223,7 @@ fn custom_styles_are_packaged_scoped_and_affect_identity() {
     assert_entry(
         &records,
         "OEBPS/chapter-1.xhtml",
-        chapter_xhtml("Title", "en", &body).as_bytes(),
+        chapter_xhtml("Title", "en", &body, false).as_bytes(),
     );
     let plain_opts = HtmlOptions {
         custom_css: None,
@@ -279,7 +279,7 @@ fn book_archive_contains_every_chapter_and_isolated_image_payload() {
         assert_entry(
             &records,
             &format!("OEBPS/chapter-{}.xhtml", index + 1),
-            chapter_xhtml(&chapter.title, "en", &wrapped).as_bytes(),
+            chapter_xhtml(&chapter.title, "en", &wrapped, false).as_bytes(),
         );
         assert_entry(
             &records,

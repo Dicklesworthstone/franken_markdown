@@ -16,12 +16,25 @@ use crate::toc::marker_depth as toc_marker_depth;
 use crate::{FontAssetSlot, FontAssets, FontEmbedding, HtmlOptions, instance_host_font};
 
 mod data_images;
+mod epub_notes;
 mod financial_tables;
 mod stream;
 
 /// Render a document to a complete HTML5 document string.
 #[must_use]
 pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
+    render_document(doc, opts, false).0
+}
+
+/// EPUB keeps the shared renderer's source-owned note identities and adds
+/// publication semantics while those identities are still known. The flag
+/// tells the XHTML shell whether it needs the EPUB namespace; ordinary HTML
+/// and note-free EPUB bodies retain their existing bytes.
+pub(crate) fn render_for_epub(doc: &Document, opts: &HtmlOptions) -> (String, bool) {
+    render_document(doc, opts, true)
+}
+
+fn render_document(doc: &Document, opts: &HtmlOptions, epub_notes: bool) -> (String, bool) {
     let profiled = crate::apply_profile(doc, opts.profile);
     let doc = &*profiled;
     let mut html = String::new();
@@ -31,10 +44,11 @@ pub fn render(doc: &Document, opts: &HtmlOptions) -> String {
         &mut html,
         initial_body_capacity(doc.blocks.len()),
     );
+    state.epub_notes = epub_notes;
     render_blocks(&doc.blocks, &mut html, opts, &mut state);
     push_footnotes_section(&mut state, &mut html, opts);
     html.push_str("</main>\n</body>\n</html>\n");
-    html
+    (html, !state.footnote_order.is_empty())
 }
 
 /// Render HTML to a caller-owned byte sink with bounded output buffering.
@@ -421,6 +435,12 @@ struct RenderState<'a> {
     footnote_numbers: BTreeMap<String, usize>,
     /// Footnote ids in number order (insertion order of first reference).
     footnote_order: Vec<String>,
+    /// EPUB semantics are opt-in at the publication boundary, never inferred
+    /// from authored classes, hrefs, or footnote-looking body text.
+    epub_notes: bool,
+    /// Lazy source-owned anchor allocation reserves every emitted heading
+    /// and legacy note target before choosing a collision-free alternative.
+    epub_note_anchors: Option<epub_notes::Anchors>,
     /// Pre-computed heading inventory (level, plain text, anchor id) in
     /// document order — used by the TOC marker. Ids are produced by the same
     /// fresh-state walk the heading renderer performs, so they match exactly.
@@ -514,6 +534,11 @@ impl<'a> RenderState<'a> {
         if !self.footnote_defs.contains_key(id) {
             return None;
         }
+        if self.epub_notes && self.epub_note_anchors.is_none() {
+            self.epub_note_anchors = Some(epub_notes::Anchors::new(
+                heading_identifiers_for_blocks(self.root_blocks),
+            ));
+        }
         let next_number = self.footnote_numbers.len() + 1;
         let number = *self
             .footnote_numbers
@@ -523,6 +548,9 @@ impl<'a> RenderState<'a> {
         if first {
             // Number-order record drives both trailing notes and their anchors.
             self.footnote_order.push(id.to_string());
+            if let Some(anchors) = &mut self.epub_note_anchors {
+                anchors.push(id, number);
+            }
         }
         Some((number, first))
     }
@@ -1726,8 +1754,12 @@ pub(crate) struct HeadingIdentifiers {
 }
 
 pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
+    heading_identifiers_for_blocks(&doc.blocks)
+}
+
+fn heading_identifiers_for_blocks(blocks: &[Block]) -> HeadingIdentifiers {
     let mut ordinals = HashMap::new();
-    walk_anchor_blocks(&doc.blocks, true, &mut |block| {
+    walk_anchor_blocks(blocks, true, &mut |block| {
         if matches!(block, Block::Heading { .. }) {
             let ordinal = ordinals.len();
             // Pointers identify nodes in this immutable tree only. They never
@@ -1737,10 +1769,10 @@ pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
     });
     let mut headings = vec![None; ordinals.len()];
     let mut state = RenderState {
-        root_blocks: &doc.blocks,
+        root_blocks: blocks,
         ..RenderState::default()
     };
-    collect_emitted_heading_ids(&doc.blocks, &ordinals, &mut headings, &mut state);
+    collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state);
     let mut cursor = 0;
     while let Some(id) = state.footnote_order.get(cursor) {
         let blocks = state.footnote_defs.get(id.as_str()).copied();
@@ -1926,7 +1958,11 @@ fn push_footnotes_section<'a>(state: &mut RenderState<'a>, out: &mut String, opt
     // Definitions are outside the document body outline. A note heading must
     // not consume an automatic TOC when the body has no heading of its own.
     state.automatic_toc = false;
-    out.push_str("<section class=\"footnotes\">\n<ol>\n");
+    out.push_str("<section class=\"footnotes\"");
+    if state.epub_notes {
+        out.push_str(" epub:type=\"endnotes\" role=\"doc-endnotes\" aria-label=\"Notes\"");
+    }
+    out.push_str(">\n<ol>\n");
     // Walk by index so a reference discovered while rendering a note body
     // (GFM: notes can cite other notes) is appended and emitted too. Cloning
     // `footnote_order` first dropped those nested ids: `href="#fn-2"` with
@@ -1948,15 +1984,45 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
     };
     out.push_str("<li id=\"");
     push_escaped_attr(state.id_prefix, out);
-    out.push_str("fn-");
-    push_escaped_attr(&id, out);
-    out.push_str("\">");
+    if let Some(anchor) = state
+        .epub_note_anchors
+        .as_ref()
+        .and_then(|a| a.body(number))
+    {
+        push_escaped_attr(anchor, out);
+    } else {
+        out.push_str("fn-");
+        push_escaped_attr(&id, out);
+    }
+    out.push('"');
+    if state.epub_notes {
+        // Native li semantics are retained: doc-endnote is deprecated and
+        // doc-footnote would be redundant inside a doc-endnotes section.
+        out.push_str(" epub:type=\"endnote\"");
+    }
+    out.push('>');
     render_blocks(blocks, out, opts, state);
     out.push_str(" <a class=\"footnote-backref\" href=\"#");
     push_fragment_identifier(state.id_prefix, out);
-    out.push_str("fnref-");
-    push_u64(out, number as u64);
-    out.push_str("\">\u{21a9}</a>\n</li>\n");
+    if let Some(anchor) = state
+        .epub_note_anchors
+        .as_ref()
+        .and_then(|a| a.reference(number))
+    {
+        push_fragment_identifier(anchor, out);
+    } else {
+        out.push_str("fnref-");
+        push_u64(out, number as u64);
+    }
+    out.push('"');
+    if state.epub_notes {
+        out.push_str(
+            " epub:type=\"backlink\" role=\"doc-backlink\" aria-label=\"Back to reference ",
+        );
+        push_u64(out, number as u64);
+        out.push('"');
+    }
+    out.push_str(">\u{21a9}</a>\n</li>\n");
 }
 
 /// Render one footnote reference. Outside links, its superscript number links
@@ -1974,8 +2040,16 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
     if first {
         out.push_str(" id=\"");
         push_escaped_attr(state.id_prefix, out);
-        out.push_str("fnref-");
-        push_u64(out, number as u64);
+        if let Some(anchor) = state
+            .epub_note_anchors
+            .as_ref()
+            .and_then(|a| a.reference(number))
+        {
+            push_escaped_attr(anchor, out);
+        } else {
+            out.push_str("fnref-");
+            push_u64(out, number as u64);
+        }
         out.push('"');
     }
     out.push('>');
@@ -1983,9 +2057,21 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
     if linked {
         out.push_str("<a href=\"#");
         push_fragment_identifier(state.id_prefix, out);
-        out.push_str("fn-");
-        push_fragment_identifier(id, out);
-        out.push_str("\">");
+        if let Some(anchor) = state
+            .epub_note_anchors
+            .as_ref()
+            .and_then(|a| a.body(number))
+        {
+            push_fragment_identifier(anchor, out);
+        } else {
+            out.push_str("fn-");
+            push_fragment_identifier(id, out);
+        }
+        out.push('"');
+        if state.epub_notes {
+            out.push_str(" epub:type=\"noteref\" role=\"doc-noteref\"");
+        }
+        out.push('>');
     }
     push_u64(out, number as u64);
     if linked {

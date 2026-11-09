@@ -35,6 +35,9 @@
 //! without leaving external image requests in the publication. XML-forbidden
 //! Unicode scalars fail before archive emission instead of producing an EPUB
 //! that reading systems cannot parse.
+//! Markdown notes carry EPUB reference/endnote/backlink semantics and matching
+//! DPUB-ARIA roles. Their generated links use source-owned, collision-free
+//! targets, including when headings resemble note or return identifiers.
 //!
 //! Determinism: no clocks, no environment reads, no hash-iteration leaks. The
 //! one timestamp-shaped field the EPUB 3 schema mandates
@@ -147,7 +150,7 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
             }
         });
     }
-    let page = franken_markdown::html::render(&lowered, &html_opts);
+    let (page, has_notes) = franken_markdown::html::render_for_epub(&lowered, &html_opts);
     let mut nav = nav_xhtml(&title, &lang, &lowered);
     drop(lowered);
     let body = extract_main_body(&page).ok_or_else(|| {
@@ -178,9 +181,9 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
 
     let mut chapter = if opts.custom_css.is_some() {
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", prepared.body);
-        chapter_xhtml(&title, &lang, &wrapped)
+        chapter_xhtml(&title, &lang, &wrapped, has_notes)
     } else {
-        chapter_xhtml(&title, &lang, &prepared.body)
+        chapter_xhtml(&title, &lang, &prepared.body, has_notes)
     };
     let mut opf = content_opf(
         &title,
@@ -416,9 +419,13 @@ fn escape_xml_attr(s: &str, out: &mut String) {
 // ---------------------------------------------------------------------------
 // Document shells.
 
-fn chapter_xhtml(title: &str, lang: &str, body: &str) -> String {
+fn chapter_xhtml(title: &str, lang: &str, body: &str, has_notes: bool) -> String {
     let mut s = String::with_capacity(body.len() + 320);
-    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"");
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\"");
+    if has_notes {
+        s.push_str(" xmlns:epub=\"http://www.idpf.org/2007/ops\"");
+    }
+    s.push_str(" lang=\"");
     escape_xml_attr(lang, &mut s);
     s.push_str("\" xml:lang=\"");
     escape_xml_attr(lang, &mut s);

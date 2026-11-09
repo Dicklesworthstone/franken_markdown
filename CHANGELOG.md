@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- EPUB citations, trailing notes and return links carry source-owned EPUB and
+  accessibility semantics. Deterministic note targets avoid collisions with
+  body and note headings while preserving authored link destinations, chapter
+  isolation and ordinary HTML markup. See [EPUB notes](docs/EPUB_NOTES.md).
 - Tagged PDF lists expose each source item's marker as a separate label before
   its body, with explicit bullet/decimal/custom numbering metadata. Labels stay
   attached to nested, empty and page-spanning items, including wrapped ordinals;

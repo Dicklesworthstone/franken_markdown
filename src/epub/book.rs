@@ -58,6 +58,8 @@ struct PreparedBook {
 /// EPUB stylesheet; otherwise chapters and navigation share `opts.theme`'s
 /// typography, spacing and appearance. Raw HTML is escaped regardless of the
 /// pass-through option.
+/// Each chapter owns its note references and endnotes, including their EPUB
+/// semantics, DPUB-ARIA roles, and collision-free citation/return identifiers.
 ///
 /// # Errors
 /// Rejects empty books, duplicate or invalid source paths, more than 4096
@@ -186,7 +188,7 @@ fn prepare_book_with_budget(
         let profiled = franken_markdown::apply_profile(&doc, opts.profile);
         let lowered = franken_markdown::safe_html::lower(&profiled);
         let headings = collect_headings(&lowered.blocks);
-        let page = franken_markdown::html::render(&lowered, &html_opts);
+        let (page, has_notes) = franken_markdown::html::render_for_epub(&lowered, &html_opts);
         drop(lowered);
         // Bound one transient render as before, but do not charge its base64
         // image copies to the publication. Only the externalized XHTML and
@@ -213,7 +215,7 @@ fn prepare_book_with_budget(
         repertoire.add(&content.body)?;
         images.prepare(index, &mut content)?;
         let wrapped = format!("<main class=\"fmd\">\n{}</main>\n", content.body);
-        let xhtml = chapter_xhtml(&source.title, chapter_lang, &wrapped);
+        let xhtml = chapter_xhtml(&source.title, chapter_lang, &wrapped, has_notes);
         add_bytes(&mut byte_count, xhtml.len(), byte_limit)?;
         let mut retained = byte_count;
         add_bytes(&mut retained, images.byte_len(), byte_limit)?;

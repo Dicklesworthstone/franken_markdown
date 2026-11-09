@@ -2,6 +2,9 @@
 //! text inside the physical page, including repeated headers and exact layout.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::{
     BaselineGrid, PageMargins, PageSize, PdfEmitOptions, PdfOptions, PdfPageEmission,
     RenderWarning, parse_markdown, render_pdf, render_pdf_emitted, render_warnings,
@@ -270,6 +273,76 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
     map
 }
 
+fn visible_page_prose(
+    content: &str,
+    fonts: &BTreeMap<&str, BTreeMap<u16, String>>,
+    frame: Rect,
+) -> String {
+    let mut prose = String::new();
+    let mut font = None;
+    let mut mode = 0;
+    let mut baseline = None;
+    let mut in_text = false;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+                baseline = None;
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+            }
+            "Tf" => font = Some(&fonts[operation.operands[0]]),
+            "Tr" => mode = operation.operands[0].parse::<u8>().unwrap(),
+            "Tm" => {
+                baseline = Some([
+                    operation.operands[4].parse::<f64>().unwrap(),
+                    operation.operands[5].parse::<f64>().unwrap(),
+                ])
+            }
+            "Tj" | "TJ" => {
+                assert!(in_text);
+                let glyphs = pdf_content::glyph_ids(&operation);
+                if mode != 3 && !glyphs.is_empty() {
+                    let [x, y] = baseline.expect("painted text needs its physical baseline");
+                    assert_inside([x, y, x, y], frame);
+                    let font = font.expect("painted text needs a font");
+                    for id in glyphs {
+                        prose.push_str(font.get(&id).expect("every painted glyph needs Unicode"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_text);
+    prose
+}
+
+#[test]
+fn prose_decoder_retains_baseline_across_semantic_boundaries() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([
+            (1, "A".to_owned()),
+            (2, "B".to_owned()),
+            (3, "hidden".to_owned()),
+        ]),
+    )]);
+    let content = "BT /F1 11 Tf 1 0 0 1 24 80 Tm
+        /Lbl << /MCID 0 >> BDC <0001> Tj EMC
+        /P << /MCID 1 >> BDC /Span << /ActualText <FEFF0058> >> BDC
+        [<0002>] TJ EMC EMC
+ET
+        BT /F1 11 Tf 3 Tr 1 0 0 1 -100 -100 Tm <0003> Tj 0 Tr ET";
+    assert_eq!(
+        visible_page_prose(content, &fonts, [0.0, 0.0, 100.0, 100.0]),
+        "AB"
+    );
+}
+
 fn visible_prose(objects: &Objects<'_>, frame: Rect) -> String {
     let mut prose = String::new();
     for page in objects.pages() {
@@ -291,52 +364,7 @@ fn visible_prose(objects: &Objects<'_>, frame: Rect) -> String {
             .map(|entry| (entry[0], unicode_map(objects, entry[1].parse().unwrap())))
             .collect();
         let content = objects.stream(number(page, "/Contents "));
-        for line in content.lines().filter(|line| line.contains("BT /F")) {
-            let separated = line
-                .replace('[', " [ ")
-                .replace(']', " ] ")
-                .replace('<', " <")
-                .replace('>', "> ");
-            let words: Vec<_> = separated.split_whitespace().collect();
-            let mut font = None;
-            let mut mode = 0;
-            let mut baseline = None;
-            let mut text = String::new();
-            for (index, word) in words.iter().enumerate() {
-                match *word {
-                    "Tf" => font = Some(&fonts[words[index - 2]]),
-                    "Tr" => mode = words[index - 1].parse::<u8>().unwrap(),
-                    "Tm" => {
-                        baseline = Some([
-                            words[index - 2].parse::<f64>().unwrap(),
-                            words[index - 1].parse::<f64>().unwrap(),
-                        ])
-                    }
-                    "Tj" | "TJ" => {
-                        if mode != 3 && !text.is_empty() {
-                            let [x, y] =
-                                baseline.expect("painted text needs its physical baseline");
-                            assert_inside([x, y, x, y], frame);
-                            prose.push_str(&text);
-                        }
-                        text.clear();
-                    }
-                    hex if mode != 3 && hex.starts_with('<') && hex.ends_with('>') => {
-                        let font = font.expect("painted text needs a font");
-                        let hex = hex.trim_matches(['<', '>']);
-                        assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
-                            let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
-                                .unwrap();
-                            text.push_str(
-                                font.get(&id).expect("every painted glyph needs Unicode"),
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        prose.push_str(&visible_page_prose(&content, &fonts, frame));
     }
     prose.chars().filter(|ch| !ch.is_whitespace()).collect()
 }

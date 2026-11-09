@@ -1197,7 +1197,7 @@ pub fn render_pdf_document_emitted(
         return Ok(rendered.bytes);
     }
     let doc = transform_footnotes_for_pdf(doc, opts);
-    pdf::render_with_emit(&doc, opts, PdfASettings::OFF, emit)
+    pdf::render_prepared_with_emit(&doc, opts, PdfASettings::OFF, emit)
 }
 
 /// Render PDF bytes together with the actual pagination strategy and any
@@ -1225,7 +1225,7 @@ pub fn render_pdf_document_reported(
         });
     }
     let doc = transform_footnotes_for_pdf(doc, opts);
-    pdf::render_reported(&doc, opts, PdfASettings::OFF, emit)
+    pdf::render_prepared_reported(&doc, opts, PdfASettings::OFF, emit)
 }
 
 /// Convenience wrapper over [`parse_markdown_with_profile`] +
@@ -1272,7 +1272,7 @@ pub fn render_pdf_document_pdfa(
         return Ok(rendered.bytes);
     }
     let doc = transform_footnotes_for_pdf(doc, opts);
-    pdf::render(&doc, opts, pdf_a)
+    pdf::render_prepared_with_emit(&doc, opts, pdf_a, PdfEmitOptions::default())
 }
 
 fn validate_doc_pdfa_strict(doc: &Document) -> Result<()> {
@@ -1395,7 +1395,7 @@ pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result
         });
     }
     let doc = transform_footnotes_for_pdf(doc, opts);
-    pdf::render_profiled(&doc, opts)
+    pdf::render_prepared_profiled(&doc, opts)
 }
 
 /// Render Markdown source to a complete, self-contained HTML document string.

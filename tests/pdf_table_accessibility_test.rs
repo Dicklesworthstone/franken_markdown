@@ -195,13 +195,16 @@ fn assert_lookup_and_content_ownership(pdf: &[u8], elements: &[Node]) {
     );
     let expected: BTreeMap<_, _> = elements
         .iter()
-        .filter(|node| node.tag == "TH")
+        .filter(|node| matches!(node.tag.as_str(), "TH" | "Note"))
         .map(|node| (header_id(node).to_owned(), node.id))
         .collect();
     assert_eq!(names, expected.into_iter().collect::<Vec<_>>());
     assert_eq!(
         names.len(),
-        elements.iter().filter(|node| node.tag == "TH").count()
+        elements
+            .iter()
+            .filter(|node| matches!(node.tag.as_str(), "TH" | "Note"))
+            .count()
     );
 
     let mut owners = BTreeMap::new();
@@ -565,6 +568,14 @@ fn blank_tables_keep_list_and_footnote_container_ownership() {
     assert_eq!(tables.len(), 2);
     assert_eq!(node_by_id(&elements, tables[0].parent).tag, "LBody");
     assert_eq!(node_by_id(&elements, tables[1].parent).tag, "BlockQuote");
+    let notes: Vec<_> = elements.iter().filter(|node| node.tag == "Note").collect();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(header_id(notes[0]), "fmd-note-1");
+    assert_eq!(
+        node_by_id(&elements, tables[1].parent).parent,
+        notes[0].id,
+        "the note's blockquote and table must remain inside its Note structure"
+    );
     for table in tables {
         assert_grid(&elements, table, 2, 1);
     }

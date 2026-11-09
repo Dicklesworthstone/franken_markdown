@@ -59,6 +59,7 @@ fn hard_break() -> Tok {
         hard_break: true,
         literal: false,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         link: None,
         strike: false,
     }
@@ -125,6 +126,7 @@ pub(super) fn stacked_item(
                 hard_break: false,
                 literal: true,
                 list_label: true,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },

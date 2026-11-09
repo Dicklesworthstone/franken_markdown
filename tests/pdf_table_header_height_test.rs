@@ -3,6 +3,9 @@
 //! pagination or verification helper supplies the content/placement oracle.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use std::collections::BTreeMap;
 
 use franken_markdown::{
@@ -150,37 +153,7 @@ impl<'a> Objects<'a> {
             .map(|page| {
                 let fonts = self.fonts(page);
                 let stream = self.stream(number(self.dictionary(page), "/Contents "));
-                let mut artifact = false;
-                let mut runs = Vec::new();
-                for line in stream.lines() {
-                    if line.starts_with("/Artifact ") {
-                        artifact = true;
-                    }
-                    if line == "EMC" {
-                        artifact = false;
-                    }
-                    let Some((_, body)) = line.split_once("BT ") else {
-                        continue;
-                    };
-                    let body = body.split_once(" ET").unwrap().0;
-                    let fields: Vec<_> = body.split_whitespace().collect();
-                    let tf = fields.iter().position(|&field| field == "Tf").unwrap();
-                    let tm = fields.iter().position(|&field| field == "Tm").unwrap();
-                    let cmap = &fonts[fields[tf - 2]];
-                    let mut text = String::new();
-                    for encoded in body.split_once(" Tm ").unwrap().1.split('<').skip(1) {
-                        let encoded = encoded.split_once('>').unwrap().0;
-                        for cid in hex_units(encoded) {
-                            text.push_str(&cmap[&cid]);
-                        }
-                    }
-                    runs.push(TextRun {
-                        text,
-                        y: fields[tm - 1].parse().unwrap(),
-                        artifact,
-                    });
-                }
-                runs
+                decode_text(&stream, &fonts)
             })
             .collect()
     }
@@ -198,6 +171,101 @@ struct TextRun {
     text: String,
     y: f32,
     artifact: bool,
+}
+
+fn decode_text(content: &str, fonts: &BTreeMap<String, BTreeMap<u16, String>>) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    let mut marks = Vec::new();
+    let mut font = None;
+    let mut y = None;
+    let mut text = String::new();
+    let mut run_y = None;
+    let mut run_artifact = None;
+    let mut in_text = false;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BDC" | "BMC" => marks.push(operation.operands[0] == "/Artifact"),
+            "EMC" => {
+                marks.pop().expect("balanced marked-content stack");
+            }
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+                y = None;
+                assert!(text.is_empty());
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+                if !text.is_empty() {
+                    runs.push(TextRun {
+                        text: std::mem::take(&mut text),
+                        y: run_y.unwrap(),
+                        artifact: run_artifact.unwrap(),
+                    });
+                }
+            }
+            "Tf" => font = Some(&fonts[operation.operands[0]]),
+            "Tm" => y = Some(operation.operands[5].parse::<f32>().unwrap()),
+            "Tj" | "TJ" => {
+                assert!(in_text);
+                let ids = pdf_content::glyph_ids(&operation);
+                if ids.is_empty() {
+                    continue;
+                }
+                let y = y.expect("painted text has a baseline");
+                let artifact = marks.iter().any(|&artifact| artifact);
+                if !text.is_empty() && (run_y != Some(y) || run_artifact != Some(artifact)) {
+                    runs.push(TextRun {
+                        text: std::mem::take(&mut text),
+                        y: run_y.unwrap(),
+                        artifact: run_artifact.unwrap(),
+                    });
+                }
+                run_y = Some(y);
+                run_artifact = Some(artifact);
+                let font = font.expect("painted text has a font");
+                for id in ids {
+                    text.push_str(font.get(&id).expect("painted glyph has Unicode"));
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(marks.is_empty());
+    assert!(!in_text);
+    runs
+}
+
+#[test]
+fn row_decoder_preserves_nested_artifacts_and_continuing_note_text() {
+    let fonts = BTreeMap::from([(
+        "/F1".to_owned(),
+        BTreeMap::from([
+            (1, "Header".to_owned()),
+            (2, " row".to_owned()),
+            (3, "¹ ".to_owned()),
+            (4, "Body".to_owned()),
+        ]),
+    )]);
+    let content = "/Artifact BMC
+        BT /F1 11 Tf 1 0 0 1 24 80 Tm
+        /Span << /ActualText <FEFF0058> >> BDC [<0001>] TJ EMC
+        <0002> Tj ET
+        EMC
+        BT /F1 11 Tf 1 0 0 1 24 60 Tm
+        /Lbl << /MCID 0 >> BDC <0003> Tj EMC
+        /P << /MCID 1 >> BDC /Span << /ActualText (BT ET Tj) >> BDC
+        <0004> Tj EMC EMC
+        ET";
+    let runs = decode_text(content, &fonts);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "Header row");
+    assert_eq!(runs[0].y, 80.0);
+    assert!(runs[0].artifact);
+    assert_eq!(runs[1].text, "¹ Body");
+    assert_eq!(runs[1].y, 60.0);
+    assert!(!runs[1].artifact);
 }
 
 fn hex_units(hex: &str) -> Vec<u16> {

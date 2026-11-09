@@ -96,7 +96,7 @@ pub(crate) fn audit(
     let source = crate::apply_profile(source, options.profile);
     let aliases = note_aliases(&source);
     let note_ids = crate::footnotes::page_note_ids(source.as_ref());
-    let references = crate::footnotes::page_note_references(&prepared.blocks);
+    let references = crate::footnotes::page_note_references_for_input(prepared);
     crate::pdf::audit_anchors_with_resolver(prepared, &|destination, ids| {
         let fragment = note_fragment(destination)?;
         let resolved = match aliases.get(&fragment) {

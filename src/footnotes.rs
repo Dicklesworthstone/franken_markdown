@@ -16,6 +16,8 @@ pub use endnote_navigation::{EndnoteTarget, PreparedEndnotes};
 #[path = "footnotes/root_origins.rs"]
 mod root_origins;
 pub(crate) use root_origins::paged_root_origins;
+#[path = "footnotes/paged_semantics.rs"]
+pub(crate) mod paged_semantics;
 
 /// Internal provenance for a document whose page notes have been prepared.
 ///
@@ -24,11 +26,14 @@ pub(crate) use root_origins::paged_root_origins;
 /// that its notes have already been numbered. Only this wrapper carries that
 /// fact; borrowing it for another internal pass never applies the transform
 /// again. The source AST remains unchanged and no marker enters output.
-pub(crate) struct PreparedPdfDocument<'a>(Cow<'a, Document>);
+pub(crate) struct PreparedPdfDocument<'a>(
+    Cow<'a, Document>,
+    Option<std::sync::Arc<paged_semantics::Semantics>>,
+);
 
 impl PreparedPdfDocument<'_> {
     pub(crate) fn into_owned(self) -> PreparedPdfDocument<'static> {
-        PreparedPdfDocument(Cow::Owned(self.0.into_owned()))
+        PreparedPdfDocument(Cow::Owned(self.0.into_owned()), self.1)
     }
 }
 
@@ -52,6 +57,10 @@ impl AsRef<Document> for PreparedPdfDocument<'_> {
 pub(crate) trait PdfDocumentInput {
     fn document(&self) -> &Document;
 
+    fn pdf_note_semantics(&self) -> Option<&std::sync::Arc<paged_semantics::Semantics>> {
+        None
+    }
+
     fn is_pdf_prepared(&self) -> bool {
         false
     }
@@ -70,6 +79,10 @@ impl PdfDocumentInput for PreparedPdfDocument<'_> {
 
     fn is_pdf_prepared(&self) -> bool {
         true
+    }
+
+    fn pdf_note_semantics(&self) -> Option<&std::sync::Arc<paged_semantics::Semantics>> {
+        self.1.as_ref()
     }
 }
 
@@ -119,11 +132,30 @@ pub(crate) fn for_pdf_paged_with_backlinks(
 }
 
 fn prepare_paged(doc: &impl PdfDocumentInput, backlinks: bool) -> PreparedPdfDocument<'_> {
-    PreparedPdfDocument(if doc.is_pdf_prepared() {
-        Cow::Borrowed(doc.document())
-    } else {
-        prepare(doc.document(), true, backlinks)
-    })
+    if doc.is_pdf_prepared() {
+        return PreparedPdfDocument(
+            Cow::Borrowed(doc.document()),
+            doc.pdf_note_semantics().cloned(),
+        );
+    }
+    match crate::safe_html::lower(doc.document()) {
+        Cow::Borrowed(source) => prepare_paged_source(source, backlinks),
+        Cow::Owned(source) => prepare_paged_source(&source, backlinks).into_owned(),
+    }
+}
+
+fn prepare_paged_source(doc: &Document, backlinks: bool) -> PreparedPdfDocument<'_> {
+    let mut notes = Notes::default();
+    notes.collect(&doc.blocks);
+    if notes.definitions.is_empty() && !notes.has_reference {
+        return PreparedPdfDocument(Cow::Borrowed(doc), None);
+    }
+    let mut numbering = number_notes(doc, &notes);
+    numbering.paged = true;
+    let prepared = assemble_notes(doc, &notes, &numbering, backlinks);
+    let semantics =
+        paged_semantics::Semantics::collect(doc, &prepared, &notes, &numbering, backlinks);
+    PreparedPdfDocument(Cow::Owned(prepared), Some(std::sync::Arc::new(semantics)))
 }
 
 /// Original definition ID to the ID carried by its prepared page note. Book
@@ -222,9 +254,21 @@ fn assemble_notes(
             .collect();
         let mut references = BTreeSet::new();
         if backlinks {
-            references.extend(page_note_references(&blocks));
-            for (_, body) in &prepared_notes {
-                references.extend(page_note_references(body));
+            let mut reference = |id: &str| {
+                if let Some(&index) = notes.indices.get(id)
+                    && let Ok(number) = u32::try_from(numbering.numbers[index])
+                    && number != 0
+                    && number != u32::MAX
+                {
+                    references.insert(number);
+                }
+            };
+            // Only actual source citations outside existing links receive a
+            // generated return target. Authored destination lookalikes and
+            // duplicate definitions cannot manufacture one.
+            references_in_blocks_with_links(&doc.blocks, false, &mut reference);
+            for &body in &notes.definitions {
+                references_in_blocks_with_links(body, false, &mut reference);
             }
         }
         for (number, mut body) in prepared_notes {
@@ -293,9 +337,8 @@ fn page_note_backlink(number: usize, label: String) -> Inline {
     }
 }
 
-/// Prepared note links that can supply return destinations. Nested note marks
-/// are already plain text, so an enclosing ordinary link cannot manufacture a
-/// return target. The anchor audit uses the same inventory as label preparation.
+/// Compatibility inventory for caller-prepared documents without source
+/// provenance. Internal prepared inputs use their actual source roles below.
 pub(crate) fn page_note_references(blocks: &[Block]) -> BTreeSet<u32> {
     fn inlines(items: &[Inline], references: &mut BTreeSet<u32>) {
         for inline in items {
@@ -350,6 +393,13 @@ pub(crate) fn page_note_references(blocks: &[Block]) -> BTreeSet<u32> {
     let mut references = BTreeSet::new();
     walk(blocks, &mut references);
     references
+}
+
+pub(crate) fn page_note_references_for_input(input: &impl PdfDocumentInput) -> BTreeSet<u32> {
+    input.pdf_note_semantics().map_or_else(
+        || page_note_references(&input.document().blocks),
+        |semantics| semantics.linked_references(),
+    )
 }
 
 fn number_notes(doc: &Document, notes: &Notes<'_>) -> Numbering {
@@ -499,36 +549,52 @@ impl Numbering {
 /// Definitions do not appear in normal flow. Their references are traversed
 /// separately when their turn arrives in the note queue.
 fn references_in_blocks(blocks: &[Block], visit: &mut impl FnMut(&str)) {
+    references_in_blocks_with_links(blocks, true, visit);
+}
+
+fn references_in_blocks_with_links(
+    blocks: &[Block],
+    enclosing_links: bool,
+    visit: &mut impl FnMut(&str),
+) {
     for block in blocks {
-        references_in_block(block, visit);
+        references_in_block_with_links(block, enclosing_links, visit);
     }
 }
 
 fn references_in_block(block: &Block, visit: &mut impl FnMut(&str)) {
+    references_in_block_with_links(block, true, visit);
+}
+
+fn references_in_block_with_links(
+    block: &Block,
+    enclosing_links: bool,
+    visit: &mut impl FnMut(&str),
+) {
     match block {
         Block::Paragraph(inlines) | Block::Heading { inlines, .. } => {
-            references_in_inlines(inlines, visit);
+            references_in_inlines(inlines, enclosing_links, visit);
         }
-        Block::BlockQuote(inner) => references_in_blocks(inner, visit),
+        Block::BlockQuote(inner) => references_in_blocks_with_links(inner, enclosing_links, visit),
         Block::List(list) => {
             for item in &list.items {
-                references_in_blocks(&item.blocks, visit);
+                references_in_blocks_with_links(&item.blocks, enclosing_links, visit);
             }
         }
         Block::Table(table) => {
             for cell in &table.head {
-                references_in_inlines(cell, visit);
+                references_in_inlines(cell, enclosing_links, visit);
             }
             for row in &table.rows {
                 for cell in row {
-                    references_in_inlines(cell, visit);
+                    references_in_inlines(cell, enclosing_links, visit);
                 }
             }
         }
         Block::DefinitionList(items) => {
             for item in items {
                 for inlines in item.terms.iter().chain(&item.definitions) {
-                    references_in_inlines(inlines, visit);
+                    references_in_inlines(inlines, enclosing_links, visit);
                 }
             }
         }
@@ -541,14 +607,18 @@ fn references_in_block(block: &Block, visit: &mut impl FnMut(&str)) {
     }
 }
 
-fn references_in_inlines(inlines: &[Inline], visit: &mut impl FnMut(&str)) {
+fn references_in_inlines(inlines: &[Inline], enclosing_links: bool, visit: &mut impl FnMut(&str)) {
     for inline in inlines {
         match inline {
             Inline::FootnoteRef { id } => visit(id),
             Inline::Emphasis(content)
             | Inline::Strong(content)
-            | Inline::Strikethrough(content)
-            | Inline::Link { content, .. } => references_in_inlines(content, visit),
+            | Inline::Strikethrough(content) => {
+                references_in_inlines(content, enclosing_links, visit)
+            }
+            Inline::Link { content, .. } if enclosing_links => {
+                references_in_inlines(content, enclosing_links, visit);
+            }
             _ => {}
         }
     }

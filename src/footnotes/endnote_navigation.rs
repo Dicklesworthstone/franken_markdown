@@ -342,7 +342,7 @@ impl Metadata {
     }
 }
 
-fn visit_inlines(blocks: &[Block], visit: &mut impl FnMut(&Inline)) {
+pub(super) fn visit_inlines(blocks: &[Block], visit: &mut impl FnMut(&Inline)) {
     fn inlines(items: &[Inline], visit: &mut impl FnMut(&Inline)) {
         for inline in items {
             visit(inline);

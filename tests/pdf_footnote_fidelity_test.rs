@@ -3,6 +3,9 @@
 //! transformer under test, so discarded blocks cannot make both sides pass.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::verify::{self, VerifyReport};
 use franken_markdown::{
     Align, Block, DefinitionItem, Document, FontAssets, Inline, List, ListItem, PageMargins,
@@ -110,14 +113,27 @@ fn normal_profiled_and_explicit_emission_preserve_every_rich_note_block() {
     // that API; ordinary Document entrypoints must treat every ID as source.
     let expected_bytes =
         pdf::render(&expected, &options, PdfASettings::OFF).expect("independent expected PDF");
-    assert_eq!(render_pdf_document(&doc, &options).unwrap(), expected_bytes);
+    let actual = render_pdf_document(&doc, &options).unwrap();
+    pdf_content::assert_same_paint(&actual, &expected_bytes);
+    assert_eq!(
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Note ")
+            .count(),
+        1
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Reference ")
+            .count(),
+        1
+    );
     assert_eq!(
         render_pdf_document_profiled(&doc, &options).unwrap().bytes,
-        expected_bytes
+        actual
     );
     assert_eq!(
         render_pdf_document_emitted(&doc, &options, PdfEmitOptions::default()).unwrap(),
-        expected_bytes
+        actual
     );
     assert_eq!(doc, original, "all entrypoints borrow the input document");
 }
@@ -132,7 +148,20 @@ fn pdfa_renders_the_same_complete_notes_with_archival_identification() {
     let settings = PdfASettings::a2b();
     let actual = render_pdf_document_pdfa(&doc, &options, settings).unwrap();
     let expected = pdf::render(&expected, &options, PdfASettings::a2b()).unwrap();
-    assert_eq!(actual, expected);
+    pdf_content::assert_same_paint(&actual, &expected);
+    pdf_content::assert_same_archival_metadata(&actual, &expected, 2, "B");
+    assert_eq!(
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Note ")
+            .count(),
+        1
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Reference ")
+            .count(),
+        1
+    );
     assert!(actual.starts_with(b"%PDF-"));
 }
 
@@ -208,9 +237,20 @@ fn first_reference_order_matches_numbered_bodies_even_when_definitions_are_rever
             ),
         ],
     };
+    let actual = render_pdf_document(&doc, &PdfOptions::default()).unwrap();
+    let expected = pdf::render(&expected, &PdfOptions::default(), PdfASettings::OFF).unwrap();
+    pdf_content::assert_same_paint(&actual, &expected);
     assert_eq!(
-        render_pdf_document(&doc, &PdfOptions::default()).unwrap(),
-        pdf::render(&expected, &PdfOptions::default(), PdfASettings::OFF).unwrap()
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Note ")
+            .count(),
+        2
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&actual)
+            .matches("/S /Reference ")
+            .count(),
+        2
     );
 }
 

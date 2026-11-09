@@ -2,6 +2,9 @@
 //! preserving painted text, hanging indents, labels and tagged ancestry.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::{
     BaselineGrid, Block, Document, Inline, List, ListItem, PdfEmitOptions, PdfOptions,
     PdfParagraphVariantStatus, parse_markdown, render_pdf, render_pdf_document_reported,
@@ -192,6 +195,88 @@ fn prose_pages(pdf: &[u8]) -> Vec<String> {
     decode_pages(pdf, true)
 }
 
+fn page_prose(
+    content: &str,
+    fonts: &BTreeMap<&str, BTreeMap<u16, String>>,
+    dehyphenate_fixture: bool,
+) -> String {
+    let mut painted = String::new();
+    let mut last_y: Option<f32> = None;
+    let mut font = None;
+    let mut mode = 0;
+    let mut y: Option<f32> = None;
+    let mut in_text = false;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+                y = None;
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+            }
+            "Tf" => font = Some(&fonts[operation.operands[0]]),
+            "Tr" => mode = operation.operands[0].parse::<u8>().unwrap(),
+            "Tm" => y = Some(operation.operands[5].parse().unwrap()),
+            "Tj" | "TJ" => {
+                assert!(in_text);
+                let glyphs = pdf_content::glyph_ids(&operation);
+                if mode != 3 && !glyphs.is_empty() {
+                    let font = font.expect("painted glyph needs an active font");
+                    let text = glyphs
+                        .into_iter()
+                        .map(|id| {
+                            font.get(&id)
+                                .expect("painted glyph must have a Unicode mapping")
+                                .as_str()
+                        })
+                        .collect::<String>();
+                    if dehyphenate_fixture
+                        && painted.ends_with('-')
+                        && text.chars().next().is_some_and(char::is_alphabetic)
+                        && last_y
+                            .zip(y)
+                            .is_some_and(|(before, after)| after < before - 0.01)
+                    {
+                        painted.pop();
+                    }
+                    painted.push_str(&text);
+                    last_y = y;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_text);
+    painted.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+#[test]
+fn prose_decoder_preserves_shows_and_line_positions_inside_marked_text() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([
+            (1, "A".to_owned()),
+            (2, "-".to_owned()),
+            (3, "B".to_owned()),
+            (4, "hidden".to_owned()),
+        ]),
+    )]);
+    let content = "BT /F1 11 Tf 1 0 0 1 24 80 Tm
+        /Lbl << /MCID 0 >> BDC <0001> Tj EMC
+        /P << /MCID 1 >> BDC /Span << /ActualText <FEFF0058> >> BDC
+        [<0002>] TJ EMC EMC
+        ET
+        BT /F1 11 Tf 3 Tr 1 0 0 1 24 70 Tm <0004> Tj 0 Tr ET
+        BT /F1 11 Tf 1 0 0 1 24 60 Tm
+        /P << /MCID 2 >> BDC <0003> Tj EMC
+        ET";
+    assert_eq!(page_prose(content, &fonts, false), "A-B");
+    assert_eq!(page_prose(content, &fonts, true), "AB");
+}
+
 fn decode_pages(pdf: &[u8], dehyphenate_fixture: bool) -> Vec<String> {
     let objects = Objects::new(pdf);
     let page_tree = (1..objects.offsets.len())
@@ -229,58 +314,7 @@ fn decode_pages(pdf: &[u8], dehyphenate_fixture: bool) -> Vec<String> {
             .map(|entry| (entry[0], unicode_map(&objects, entry[1].parse().unwrap())))
             .collect::<BTreeMap<_, _>>();
         let content = objects.stream(integer_after(page, "/Contents "));
-        let mut painted = String::new();
-        let mut last_y: Option<f32> = None;
-        for line in content.lines().filter(|line| line.contains("BT /F")) {
-            let separated = line
-                .replace('[', " [ ")
-                .replace(']', " ] ")
-                .replace('<', " <")
-                .replace('>', "> ");
-            let words: Vec<_> = separated.split_whitespace().collect();
-            let mut font = None;
-            let mut mode = 0;
-            let mut y: Option<f32> = None;
-            let mut text = String::new();
-            for (index, word) in words.iter().enumerate() {
-                match *word {
-                    "Tf" => font = Some(&fonts[words[index - 2]]),
-                    "Tr" => mode = words[index - 1].parse::<u8>().unwrap(),
-                    "Tm" => y = Some(words[index - 1].parse().unwrap()),
-                    "Tj" | "TJ" => {
-                        if mode != 3 && !text.is_empty() {
-                            if dehyphenate_fixture
-                                && painted.ends_with('-')
-                                && text.chars().next().is_some_and(char::is_alphabetic)
-                                && last_y
-                                    .zip(y)
-                                    .is_some_and(|(before, after)| after < before - 0.01)
-                            {
-                                painted.pop();
-                            }
-                            painted.push_str(&text);
-                            last_y = y;
-                        }
-                        text.clear();
-                    }
-                    hex if hex.starts_with('<') && hex.ends_with('>') => {
-                        let font = font.expect("painted glyph needs an active font");
-                        let hex = hex.trim_matches(['<', '>']);
-                        assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
-                            let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
-                                .unwrap();
-                            text.push_str(
-                                font.get(&id)
-                                    .expect("painted glyph must have a Unicode mapping"),
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        page_text.push(painted.chars().filter(|c| !c.is_whitespace()).collect());
+        page_text.push(page_prose(&content, &fonts, dehyphenate_fixture));
     }
     page_text
 }

@@ -1,6 +1,6 @@
 # PDF Accessibility Ledger
 
-Date: 2026-11-07
+Date: 2026-11-09
 Scope: tagged-PDF structure semantics emitted by the clean-room PDF writer
 (`src/pdf.rs`). Beads: `qw1.9`, `6lcj`, `j36e`.
 
@@ -12,7 +12,8 @@ are produced, the known limitations of the line-based writer, and the explicit
 non-goals. It depends on **no third-party PDF parser** in production; the
 guarantees below are pinned by byte-level structural tests in
 `tests/pdf_test.rs`, `tests/pdf_accessibility_pages_test.rs`,
-`tests/pdf_table_accessibility_test.rs`, and `tests/pdf_language_test.rs`.
+`tests/pdf_table_accessibility_test.rs`, `tests/pdf_language_test.rs`, and
+`tests/pdf_note_accessibility_test.rs`.
 
 The catalog language follows `PdfOptions.lang`, including regional tags such
 as `fr-CA`. An absent or blank language retains the default `en-US`; supplied
@@ -38,6 +39,9 @@ The structure tree is a real hierarchy rooted at a single `/Document` element:
 | Image | `/Figure` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Alt text from the Markdown `![alt]`; bbox locates the image; linked images retain their `/Figure` inside a `/Link`, including inline and table images |
 | Inline math | `/Formula` with `/Alt` and `/A << /O /Layout /BBox [...] >>` | Source math and bounds stay on the formula; linked formulas are children of their `/Link` |
 | Inline / autolink link | `/Link` nested in its `/P`, heading, `/TH`, or `/TD`, with `/OBJR` to its annotations and each annotation's reverse `/StructParent` | Styled text, inline images, and formulas share the enclosing link across wrapping and page boundaries; links in separate cells retain distinct owners |
+| Footnote or endnote body | `/Note` with a unique `/ID` registered in `/IDTree` | One complete logical note across page-foot placement, oversized/unreferenced endnote fallback, page breaks and rich child blocks |
+| Footnote citation | `/Reference`, with its generated `/Link` child | Each actual source citation keeps its own occurrence; repeated citation text or an authored destination that resembles a note ID cannot manufacture a citation role |
+| Footnote number | `/Lbl` directly inside `/Note` | Existing superscript paint is retained; optional return links remain `/Link` children with annotation ownership |
 | Backgrounds, panels, zebra stripes, inline-code chips, rules, thematic breaks, blockquote gutter bars | `/Artifact` (BMC…EMC) | Decoration is kept out of the reading order |
 | Running header/footer and page numbers (`PdfOptions.running`, `page_numbers`) | `/Artifact <</Type /Pagination /Subtype /Header\|/Footer>> BDC … EMC` | One pagination artifact per band, text and rule together; never in the reading order and never given an `/MCID` |
 
@@ -71,7 +75,7 @@ Cross-cutting guarantees, all asserted by tests:
 - **Selectable text preserved.** `/ToUnicode` maps (including ligature glyphs)
   are unchanged, so copy/search still work over the tagged content.
 - **Logical elements span pages.** A source paragraph, link, code block, quote, list,
-  list item, table, row or cell retains one structure element as it continues
+  list item, note, table, row or cell retains one structure element as it continues
   onto later pages. Repeated header paint does not repeat its text, image alt,
   or formula source in the logical reading order. Independently laid-out footnote containers and
   page-local inline formulas/images keep distinct identities.
@@ -111,6 +115,57 @@ This follows the identifier and table-attribute requirements in
 The renderer's existing normalized grid width also supplies missing cells in
 ragged host-created tables. Financial footing strokes remain artifacts rather
 than invented data rows.
+
+## Footnotes, citations and return links
+
+Source-facing PDF rendering prepares an immutable sidecar together with the
+ordinary document AST. The sidecar records actual `FootnoteRef` occurrences,
+generated note labels and complete note bodies. It stores structural ordinals,
+so an owned copy or repeated preparation cannot retain addresses into a
+different document. Rendering binds those ordinals to its immutable input;
+text, identifier spelling and link destinations never establish a citation role.
+
+Each rendered note has one `/Note` and an ID such as `fmd-note-1`. The existing
+byte-sorted `/IDTree` contains both note and table-header IDs. Paragraphs,
+headings, quotes, lists, tables, figures and code remain children with their own
+roles. A note moved to the trailing Notes section retains the same identity
+on every line, including baseline-grid migration and multipage continuations.
+Chapter language sections continue to own their defining notes, independently
+of which chapter cites or links to them.
+
+Each linked source citation has `/Reference` → `/Link`; the `/Link` owns the
+actual annotation and its reverse parent-tree entry. Adjacent or repeated
+citations are distinct occurrences even when the writer shapes their text as
+one run. A citation inside an existing author link receives `/Reference`
+inside that link and preserves the author's enclosing action. Undefined notes
+remain literal text. Duplicate definitions retain the first definition, and
+cyclic note references do not duplicate bodies.
+
+The existing `footnote_backlinks` option makes a note's `/Lbl` contain its
+return `/Link`. Navigation continues to use actual emitted destinations after
+pagination. These are PDF 1.7 roles and link annotations, following
+[ISO 32000-1, section 14.8.4.4 and Tables 322–323](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf).
+The writer does not insert the PDF 2.0 `/Ref` association key into a PDF 1.7
+structure dictionary.
+
+Semantic byte ranges survive token fallback, wrapping, table layouts and
+paragraph alternatives without changing shaping boundaries. Where a shaped
+run contains several roles, its already selected glyphs, pair adjustments and
+positioned offsets are emitted with separate marked-content spans. The
+integration tests compare normalized paint operators against the same prepared
+layout without the semantic sidecar, and check chunked/monolithic parity,
+fitting probes, equal-looking cached content, PDF/A and book language sections.
+
+Use `render_pdf`, `render_pdf_document`, their reported/profiled/PDF/A variants,
+or the book APIs to retain this source provenance. The explicitly low-level
+`pdf::render` family accepts an already prepared document representation and
+does not prepare or reconstruct source notes; a plain caller-prepared AST
+cannot prove which ordinary text or links originally came from footnote syntax.
+That compatibility path retains its existing destination-name convention for
+page-note placement. Source-facing rendering, fitting, verification and anchor
+audits instead use the typed citation inventory: an authored `#fmd-fn-N` link
+cannot steal a note's first-citation page or manufacture a return destination.
+Leading alert paragraphs retain these roles across their temporary layout clone.
 
 ## List labels and numbering
 

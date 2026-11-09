@@ -55,6 +55,7 @@ pub(super) fn complete_empty_bodies(nodes: &mut Vec<SNode>) {
             bbox: None,
             scope_column: false,
             table_column: None,
+            note: None,
             list_numbering: None,
             page: None,
         });

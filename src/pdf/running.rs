@@ -947,6 +947,7 @@ pub(super) fn draw_page(
                     strike: false,
                     task: None,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     width: *width,
                     expansion_permille: 0,
                 };

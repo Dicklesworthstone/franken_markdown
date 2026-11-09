@@ -2,6 +2,9 @@
 //! No layout, pagination or verification-text-layer helper supplies the oracle.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::{
@@ -191,6 +194,100 @@ struct PaintedPage {
     content: String,
 }
 
+fn decode_painted_runs(content: &str, fonts: &BTreeMap<&str, FontMap>) -> Vec<PaintedRun> {
+    let mut runs = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut font = None;
+    let mut size = 0.0;
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut render_mode = 0;
+    let mut in_text = false;
+    let mut pending: Option<PaintedRun> = None;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BDC" | "BMC" => artifacts.push(
+                operation.operands[0] == "/Artifact" || artifacts.last().copied().unwrap_or(false),
+            ),
+            "EMC" => {
+                artifacts.pop().expect("balanced marked content");
+            }
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+            }
+            "ET" | "Tf" | "Tm" | "Tr" => {
+                if let Some(run) = pending.take() {
+                    runs.push(run);
+                }
+                match operation.operator {
+                    "ET" => {
+                        assert!(in_text);
+                        in_text = false;
+                    }
+                    "Tf" => {
+                        font = Some(&fonts[operation.operands[0]]);
+                        size = operation.operands[1].parse().unwrap();
+                    }
+                    "Tr" => render_mode = operation.operands[0].parse::<u8>().unwrap(),
+                    "Tm" => {
+                        let matrix = operation
+                            .operands
+                            .iter()
+                            .map(|value| value.parse::<f64>().unwrap())
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            &matrix[..4],
+                            &[1.0, 0.0, 0.0, 1.0],
+                            "fixture text is untransformed"
+                        );
+                        x = matrix[4];
+                        y = matrix[5];
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            "Td" | "TD" | "T*" => {
+                panic!("extend the decoder before accepting relative text motion")
+            }
+            "TJ" | "Tj" => {
+                assert!(in_text);
+                let ids = pdf_content::glyph_ids(&operation);
+                if render_mode == 3 || ids.is_empty() {
+                    continue;
+                }
+                let face = font.expect("glyph painting needs an active font");
+                let artifact = artifacts.last().copied().unwrap_or(false);
+                if pending.as_ref().is_some_and(|run| run.artifact != artifact)
+                    && let Some(run) = pending.take()
+                {
+                    runs.push(run);
+                }
+                let run = pending.get_or_insert_with(|| PaintedRun {
+                    x,
+                    y,
+                    size,
+                    cap_height: face.cap_height,
+                    descent: face.descent,
+                    text: String::new(),
+                    artifact,
+                });
+                for id in ids {
+                    run.text.push_str(
+                        face.unicode
+                            .get(&id)
+                            .expect("painted glyph must have a ToUnicode mapping"),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(artifacts.is_empty(), "balanced marked-content stack");
+    assert!(!in_text && pending.is_none(), "balanced text objects");
+    runs
+}
+
 fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
     let objects = Objects::new(pdf);
     let pages = (1..objects.offsets.len())
@@ -239,96 +336,7 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
                 .map(|entry| (entry[0], font_map(&objects, entry[1].parse().unwrap())))
                 .collect();
             let content = objects.stream(reference_after(dictionary, "/Contents "));
-            let mut runs = Vec::new();
-            let mut artifacts = Vec::new();
-            for line in content.lines() {
-                if line.ends_with(" BDC") || line.ends_with(" BMC") {
-                    artifacts.push(
-                        line.starts_with("/Artifact") || artifacts.last().copied().unwrap_or(false),
-                    );
-                    continue;
-                }
-                if line == "EMC" {
-                    artifacts.pop().expect("balanced marked content");
-                    continue;
-                }
-                if !line.contains("BT /F") {
-                    continue;
-                }
-                assert!(
-                    !line.contains(" Td"),
-                    "extend the decoder before accepting relative text motion"
-                );
-                // PDF permits adjacent hex strings and kerning numbers, e.g.
-                // [<0001>42<0002>]. Separate lexical boundaries, not just spaces.
-                let spaced = line
-                    .replace('[', " [ ")
-                    .replace(']', " ] ")
-                    .replace('<', " <")
-                    .replace('>', "> ");
-                let words: Vec<_> = spaced.split_whitespace().collect();
-                let mut font = None;
-                let mut size = 0.0;
-                let mut x = 0.0;
-                let mut y = 0.0;
-                let mut render_mode = 0;
-                let mut text = String::new();
-                for (index, word) in words.iter().enumerate() {
-                    match *word {
-                        "Tf" => {
-                            font = Some(&fonts[words[index - 2]]);
-                            size = words[index - 1].parse().unwrap();
-                        }
-                        "Tr" => render_mode = words[index - 1].parse::<u8>().unwrap(),
-                        "Tm" => {
-                            let matrix: Vec<f64> = words[index - 6..index]
-                                .iter()
-                                .map(|x| x.parse().unwrap())
-                                .collect();
-                            assert_eq!(
-                                &matrix[..4],
-                                &[1.0, 0.0, 0.0, 1.0],
-                                "fixture text is untransformed"
-                            );
-                            x = matrix[4];
-                            y = matrix[5];
-                        }
-                        "Tj" | "TJ" => {
-                            if render_mode != 3 && !text.is_empty() {
-                                let face = font.unwrap();
-                                runs.push(PaintedRun {
-                                    x,
-                                    y,
-                                    size,
-                                    cap_height: face.cap_height,
-                                    descent: face.descent,
-                                    text: std::mem::take(&mut text),
-                                    artifact: artifacts.last().copied().unwrap_or(false),
-                                });
-                            } else {
-                                text.clear();
-                            }
-                        }
-                        hex if hex.starts_with('<') && hex.ends_with('>') => {
-                            let face = font.expect("glyph painting needs an active font");
-                            let hex = hex.trim_matches(['<', '>']);
-                            assert_eq!(hex.len() % 4, 0);
-                            for glyph in hex.as_bytes().as_chunks::<4>().0 {
-                                let id =
-                                    u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
-                                        .unwrap();
-                                text.push_str(
-                                    face.unicode
-                                        .get(&id)
-                                        .expect("painted glyph must have a ToUnicode mapping"),
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            assert!(artifacts.is_empty(), "balanced marked-content stack");
+            let runs = decode_painted_runs(&content, &fonts);
             PaintedPage {
                 width: media[2],
                 height: media[3],
@@ -729,7 +737,47 @@ fn crowded_notes_without_a_grid_keep_their_pre_fix_pdf_bytes() {
         metadata_epoch_seconds: Some(1_700_000_000),
         ..PdfOptions::default()
     };
-    let bytes = render_pdf(&crowded_grid_notes(4, 6), &opts).unwrap();
+    let source = crowded_grid_notes(4, 6);
+    let mut prepared = parse_markdown(&source);
+    // Independently prepare this fixed four-note fixture. The compatibility
+    // API still pins the original bytes; source publication adds typed roles.
+    let numerals = ["¹", "²", "³", "⁴"];
+    for block in &mut prepared.blocks {
+        match block {
+            franken_markdown::Block::Paragraph(inlines) => {
+                for inline in inlines {
+                    if let franken_markdown::Inline::FootnoteRef { id } = inline {
+                        let number = id.strip_prefix('n').unwrap().parse::<usize>().unwrap();
+                        *inline = franken_markdown::Inline::Link {
+                            dest: format!("#fmd-fn-{}", number + 1),
+                            title: None,
+                            content: vec![franken_markdown::Inline::Text(numerals[number].into())],
+                        };
+                    }
+                }
+            }
+            franken_markdown::Block::FootnoteDefinition { id, blocks } => {
+                let number = id.strip_prefix('n').unwrap().parse::<usize>().unwrap();
+                *id = format!("fmd-fn-{}", number + 1);
+                let franken_markdown::Block::Paragraph(inlines) = &mut blocks[0] else {
+                    panic!("fixture starts with prose");
+                };
+                inlines.insert(
+                    0,
+                    franken_markdown::Inline::Text(format!("{} ", numerals[number])),
+                );
+            }
+            _ => {}
+        }
+    }
+    let bytes =
+        franken_markdown::pdf::render(&prepared, &opts, franken_markdown::PdfASettings::OFF)
+            .unwrap();
+    let actual = render_pdf(&source, &opts).unwrap();
+    pdf_content::assert_same_paint(&actual, &bytes);
+    let structure = String::from_utf8_lossy(&actual);
+    assert_eq!(structure.matches("/S /Note ").count(), 4);
+    assert_eq!(structure.matches("/S /Reference ").count(), 4);
     let fingerprint = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
     });

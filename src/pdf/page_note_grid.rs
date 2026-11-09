@@ -6,7 +6,8 @@
 
 use super::{
     Block, ENDNOTES_GAP_BEFORE, Inline, LayoutCx, Line, PAGE_NOTE_MAX_SHARE, PageNoteLayout,
-    admit_page_notes, baseline_grid, heading_gap_before, layout_block, layout_blocks, line_leading,
+    admit_page_notes, baseline_grid, heading_gap_before, layout_block, layout_pdf_note_body,
+    line_leading,
 };
 
 /// Each pass is linear in the retained lines. Migration only goes from the
@@ -57,7 +58,7 @@ pub(super) fn finish(
                 // Its full body, containers and source links stay intact.
                 note.lines.clear();
                 let mut lines = Vec::new();
-                layout_blocks(note.body, 0.0, &mut lines, cx);
+                layout_pdf_note_body(note.body, &mut lines, cx);
                 if let Some(first) = lines.first_mut() {
                     first.flow.note_destination = note.number;
                 }

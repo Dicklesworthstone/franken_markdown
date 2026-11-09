@@ -69,6 +69,7 @@ pub use pagination_report::{
 };
 mod math;
 mod navigation;
+mod note_tags;
 mod quote_geometry;
 mod running;
 pub(crate) mod source_navigation;
@@ -286,6 +287,7 @@ struct Seg {
     /// Source list-label provenance, preserved independently of painted text.
     /// Markers are not inferred from bullets, ordinals or checkbox strings.
     list_label: bool,
+    note_spans: crate::pdf::note_tags::Spans,
     /// Shaped layout advance, used to size decorations and subsequent segments.
     width: f32,
     /// Microtype expansion (Hàn Thế Thành / pdfTeX): per-glyph horizontal
@@ -324,9 +326,18 @@ enum LinkTarget {
 struct LinkIntern {
     targets: Vec<LinkTarget>,
     ids: HashMap<LinkTarget, u32>,
+    note_sources: std::sync::Arc<BTreeMap<usize, note_tags::Mark>>,
+    note_bodies: BTreeMap<usize, u32>,
+    note_overrides: BTreeMap<usize, note_tags::Mark>,
+    note_sources_known: bool,
 }
 
 impl LinkIntern {
+    fn note_mark(&self, inline: &Inline) -> Option<note_tags::Mark> {
+        note_tags::inline_mark(&self.note_overrides, inline)
+            .or_else(|| note_tags::inline_mark(&self.note_sources, inline))
+    }
+
     /// Intern `target`, returning its stable index. Content-equal targets
     /// share one index — required because run merging previously compared
     /// target contents, so two adjacent spans with the same URI must still
@@ -1635,6 +1646,8 @@ struct FlowMark {
     /// This is an anchor only: unlike `note`, it never creates a page-foot
     /// region or removes the line from ordinary pagination.
     note_destination: u32,
+    /// Complete logical note body, independent of page-foot/endnote placement.
+    note_owner: u32,
     /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
     /// its source block. Language strings are shared once per render.
     language_scope: u32,
@@ -1654,6 +1667,7 @@ impl Default for FlowMark {
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            note_owner: 0,
             language_scope: language::UNASSIGNED,
             document_language: false,
         }
@@ -2316,6 +2330,7 @@ struct Tok {
     /// Only layout-created list labels carry this semantic role. Keeping it
     /// through token splitting prevents a wrapped ordinal becoming body text.
     list_label: bool,
+    note_spans: crate::pdf::note_tags::Spans,
     /// Interned index (per-render [`LinkIntern`]) of the active link target
     /// when this token came from safe inline link content; `None` = no link.
     /// Index equality is exactly link-target equality (content-keyed intern),
@@ -2565,6 +2580,49 @@ pub fn render_reported(
     })
 }
 
+/// Source-facing entry points retain the immutable preparation sidecar. The
+/// public low-level Document APIs deliberately do not infer note roles from
+/// author-controlled text or destination names.
+pub(crate) fn render_prepared_with_emit(
+    doc: &crate::footnotes::PreparedPdfDocument<'_>,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<Vec<u8>> {
+    render_inner(doc, opts, pdf_a, false, emit, false, false).map(|rendered| rendered.bytes)
+}
+
+pub(crate) fn render_prepared_reported(
+    doc: &crate::footnotes::PreparedPdfDocument<'_>,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<PdfRenderReport> {
+    render_inner(doc, opts, pdf_a, false, emit, false, false).map(|rendered| PdfRenderReport {
+        bytes: rendered.bytes,
+        pagination: rendered.pagination,
+    })
+}
+
+pub(crate) fn render_prepared_profiled(
+    doc: &crate::footnotes::PreparedPdfDocument<'_>,
+    opts: &PdfOptions,
+) -> Result<PdfProfile> {
+    render_inner(
+        doc,
+        opts,
+        crate::PdfASettings::OFF,
+        true,
+        PdfEmitOptions::default(),
+        false,
+        false,
+    )
+    .map(|rendered| PdfProfile {
+        bytes: rendered.bytes,
+        stages: rendered.stages,
+    })
+}
+
 /// A non-fatal diagnostic about a PDF render: content that was *degraded* rather
 /// than embedded, which the renderer would otherwise drop silently. Pure and
 /// WASM-safe — the caller (e.g. the `fmd` CLI) decides how to surface it.
@@ -2726,10 +2784,17 @@ fn render_warnings_for_input(
         // reports instead collect these findings in render_inner from the
         // actual final lines and writer result, without a second layout pass.
         let prepared = crate::transform_footnotes_for_pdf(input, opts);
-        let (effective, page) = effective_pdf_options(&prepared, opts, &faces);
-        if let Ok((lines, paragraph_variants)) =
-            layout_with_pagination_report(&prepared.blocks, &effective, &faces, page)
-        {
+        let notes = note_tags::Context::bind(&prepared);
+        let (effective, page) =
+            effective_pdf_options_with_languages(&prepared, opts, &faces, &language::EMPTY, &notes);
+        if let Ok((lines, paragraph_variants)) = layout_with_languages(
+            &prepared.blocks,
+            &effective,
+            &faces,
+            page,
+            &language::EMPTY,
+            &notes,
+        ) {
             inline_math_fit::append_warnings(&lines, &mut warnings);
             if opts.requests_optimal_pagination() {
                 let (_, page_breaks) = page_break_plan_and_report(&lines, page, &effective);
@@ -3036,11 +3101,13 @@ fn fit_to_target_pages(
     faces: &Faces,
     target_pages: usize,
     languages: &language::Context,
+    notes: &note_tags::Context,
 ) -> (PdfOptions, PageGeom) {
     let base_page = PageGeom::from_theme(&opts.theme);
-    let initial_pages = layout_with_languages(&doc.blocks, opts, faces, base_page, languages)
-        .ok()
-        .and_then(|(lines, _)| page_count_for_fit(&lines, base_page, opts));
+    let initial_pages =
+        layout_with_languages(&doc.blocks, opts, faces, base_page, languages, notes)
+            .ok()
+            .and_then(|(lines, _)| page_count_for_fit(&lines, base_page, opts));
 
     if initial_pages.is_some_and(|pages| pages <= target_pages) {
         return (opts.clone(), base_page);
@@ -3080,6 +3147,7 @@ fn fit_to_target_pages(
             faces,
             candidate_page,
             languages,
+            notes,
         )
         .ok()
         .and_then(|(lines, _)| page_count_for_fit(&lines, candidate_page, &candidate_opts));
@@ -3104,12 +3172,19 @@ fn fit_to_target_pages(
 
 /// Resolve page fitting once with the same policy used by the PDF writer and
 /// every inspection surface. A zero target retains the ordinary layout.
+#[cfg(test)]
 fn effective_pdf_options(
     doc: &Document,
     opts: &PdfOptions,
     faces: &Faces,
 ) -> (PdfOptions, PageGeom) {
-    effective_pdf_options_with_languages(doc, opts, faces, &language::EMPTY)
+    effective_pdf_options_with_languages(
+        doc,
+        opts,
+        faces,
+        &language::EMPTY,
+        &note_tags::Context::default(),
+    )
 }
 
 fn effective_pdf_options_with_languages(
@@ -3117,18 +3192,19 @@ fn effective_pdf_options_with_languages(
     opts: &PdfOptions,
     faces: &Faces,
     languages: &language::Context,
+    notes: &note_tags::Context,
 ) -> (PdfOptions, PageGeom) {
     if let Some(target_pages) = opts.fit_to_pages.filter(|&target| target > 0)
         && opts.theme.page.baseline_grid.is_none()
     {
-        fit_to_target_pages(doc, opts, faces, target_pages, languages)
+        fit_to_target_pages(doc, opts, faces, target_pages, languages, notes)
     } else {
         (opts.clone(), PageGeom::from_theme(&opts.theme))
     }
 }
 
 fn render_inner(
-    doc: &Document,
+    doc: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
     pdf_a: crate::PdfASettings,
     profiled: bool,
@@ -3150,7 +3226,7 @@ fn render_inner(
 
 #[allow(clippy::too_many_arguments)]
 fn render_inner_with_languages(
-    doc: &Document,
+    input: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
     pdf_a: crate::PdfASettings,
     profiled: bool,
@@ -3159,6 +3235,8 @@ fn render_inner_with_languages(
     collect_warnings: bool,
     languages: &language::Context,
 ) -> Result<RenderedPdf> {
+    let doc = input.document();
+    let notes = note_tags::Context::bind(input);
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
     spacing::validate_options(opts)?;
@@ -3174,7 +3252,8 @@ fn render_inner_with_languages(
         || Faces::load(opts),
         |result| usize::from(result.is_ok()),
     )?;
-    let (effective_opts, page) = effective_pdf_options_with_languages(doc, opts, &faces, languages);
+    let (effective_opts, page) =
+        effective_pdf_options_with_languages(doc, opts, &faces, languages, &notes);
     // Running chrome is validated against the final page geometry before
     // layout, so a band that cannot fit its margin fails fast.
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
@@ -3182,7 +3261,16 @@ fn render_inner_with_languages(
         "layout",
         doc.blocks.len(),
         "block layout, text measuring, and paragraph line breaking",
-        || layout_with_languages(&doc.blocks, &effective_opts, &faces, page, languages),
+        || {
+            layout_with_languages(
+                &doc.blocks,
+                &effective_opts,
+                &faces,
+                page,
+                languages,
+                &notes,
+            )
+        },
         |_| 0,
     )?;
     let line_count = lines.len();
@@ -3612,6 +3700,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     strike: false,
                     task: None,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     width: run.width,
                     expansion_permille: 0,
                 });
@@ -3639,6 +3728,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     heading_level: 0,
                     note: 0,
                     note_destination: 0,
+                    note_owner: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -3701,6 +3791,7 @@ fn append_pdf_toc_page(
             strike: false,
             task: None,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             width: dots_w,
             expansion_permille: 0,
         };
@@ -3717,6 +3808,7 @@ fn append_pdf_toc_page(
         strike: false,
         task: None,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         width: page_w,
         expansion_permille: 0,
     };
@@ -3733,13 +3825,21 @@ fn layout(blocks: &[Block], opts: &PdfOptions, faces: &Faces, page: PageGeom) ->
         .0
 }
 
+#[cfg(test)]
 fn layout_with_pagination_report(
     blocks: &[Block],
     opts: &PdfOptions,
     faces: &Faces,
     page: PageGeom,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
-    layout_with_languages(blocks, opts, faces, page, &language::EMPTY)
+    layout_with_languages(
+        blocks,
+        opts,
+        faces,
+        page,
+        &language::EMPTY,
+        &note_tags::Context::default(),
+    )
 }
 
 fn layout_with_languages(
@@ -3748,6 +3848,7 @@ fn layout_with_languages(
     faces: &Faces,
     page: PageGeom,
     languages: &language::Context,
+    notes: &note_tags::Context,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
     spacing::validate_options(opts)?;
     spacing::validate_tables(blocks, opts, page)?;
@@ -3779,7 +3880,12 @@ fn layout_with_languages(
             line_toks: Vec::new(),
             glue_adjustments: Vec::new(),
             code_highlight_spans: Vec::new(),
-            links: LinkIntern::default(),
+            links: LinkIntern {
+                note_sources: notes.inlines.clone(),
+                note_bodies: notes.bodies.clone(),
+                note_sources_known: notes.source_owned,
+                ..LinkIntern::default()
+            },
             toc_entries: Vec::new(),
             automatic_toc: false,
             toc_page_map: BTreeMap::new(),
@@ -3849,7 +3955,12 @@ fn layout_with_languages(
         line_toks: Vec::new(),
         glue_adjustments: Vec::new(),
         code_highlight_spans: Vec::new(),
-        links: LinkIntern::default(),
+        links: LinkIntern {
+            note_sources: notes.inlines.clone(),
+            note_bodies: notes.bodies.clone(),
+            note_sources_known: notes.source_owned,
+            ..LinkIntern::default()
+        },
         toc_entries,
         automatic_toc: false,
         toc_page_map: page_map.clone(),
@@ -3941,6 +4052,12 @@ fn page_note_number(id: &str) -> Option<u32> {
 }
 
 fn seg_page_note(seg: &Seg) -> Option<u32> {
+    if seg.note_spans.is_known() {
+        return seg
+            .link
+            .as_ref()
+            .and_then(|_| seg.note_spans.linked_reference());
+    }
     match &seg.link {
         Some(LinkTarget::Fragment(id)) => page_note_number(id),
         _ => None,
@@ -3949,6 +4066,9 @@ fn seg_page_note(seg: &Seg) -> Option<u32> {
 
 /// Both directions of note navigation keep the original superscript paint.
 fn seg_is_note_navigation(seg: &Seg) -> bool {
+    if seg.note_spans.is_known() {
+        return seg.link.is_some() && seg.note_spans.is_navigation();
+    }
     seg_page_note(seg).is_some()
         || matches!(
             &seg.link,
@@ -4007,7 +4127,7 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
             at_foot: false,
         };
         if first_reference.is_some() {
-            layout_blocks(body, 0.0, &mut note.lines, cx);
+            layout_pdf_note_body(body, &mut note.lines, cx);
             if let Some(last) = note.lines.last_mut() {
                 last.gap_after = PAGE_NOTE_GAP;
             }
@@ -4065,7 +4185,7 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         );
         for note in notes.iter().filter(|note| !note.at_foot) {
             let start = out.len();
-            layout_blocks(note.body, 0.0, out, cx);
+            layout_pdf_note_body(note.body, out, cx);
             if let Some(first) = out.get_mut(start) {
                 first.flow.note_destination = note.number;
             }
@@ -4078,6 +4198,32 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         }
     }
     finish_page_note_marks(out);
+}
+
+/// Note ownership outlives a page-foot reservation. Stamp the complete body
+/// after block/cache layout so oversized, unreferenced and grid-migrated notes
+/// keep one logical identity, including rich children and alternative shapes.
+fn layout_pdf_note_body(body: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let start = out.len();
+    layout_blocks(body, 0.0, out, cx);
+    let number = cx
+        .links
+        .note_bodies
+        .get(&(body.as_ptr() as usize))
+        .copied()
+        .unwrap_or(0);
+    let source_scope = body
+        .iter()
+        .find_map(|block| cx.languages.scope(block))
+        .unwrap_or(cx.language_scope);
+    for line in &mut out[start..] {
+        line.flow.note_owner = number;
+        if number != 0 && line.flow.document_language && line.flow.language_scope == 0 {
+            // A generated TOC speaks the document language while its Note
+            // container still belongs to the defining chapter.
+            line.flow.language_scope = source_scope;
+        }
+    }
 }
 
 /// A note mark reads as part of the text, not as a blue link.
@@ -4530,6 +4676,7 @@ impl SimpleParagraphLayoutCache {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct TableLayoutKey {
+    note_source: usize,
     indent_bits: u32,
     page_width_bits: u32,
     page_height_bits: u32,
@@ -4583,6 +4730,7 @@ impl TableLayoutKey {
         }
 
         Some(Self {
+            note_source: 0,
             indent_bits: indent.to_bits(),
             page_width_bits: page.width.to_bits(),
             page_height_bits: page.height.to_bits(),
@@ -4940,6 +5088,11 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
     apply_incoming_page_break(incoming, start, out, &mut cx.pending_page_break);
     spacing::apply(&mut out[start..], cx.opts);
     for line in &mut out[start..] {
+        if cx.links.note_sources_known {
+            for seg in &mut line.segs {
+                seg.note_spans.make_known();
+            }
+        }
         if line.flow.language_scope == language::UNASSIGNED
             || (line.flow.document_language
                 && line.flow.language_scope == 0
@@ -5026,7 +5179,9 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 }
                 return;
             }
-            if let [Inline::Text(text)] = inlines.as_slice() {
+            if let [Inline::Text(text)] = inlines.as_slice()
+                && cx.links.note_mark(&inlines[0]).is_none()
+            {
                 let group = cx.alloc_flow();
                 layout_simple_text_paragraph(text, indent, out, cx, group);
                 return;
@@ -5165,6 +5320,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     strike: false,
                     task: None,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     width: 0.0,
                     expansion_permille: 0,
                 });
@@ -5223,6 +5379,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     heading_level: 0,
                     note: 0,
                     note_destination: 0,
+                    note_owner: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -5427,6 +5584,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            note_owner: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -5525,6 +5683,7 @@ fn push_figure_line(
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            note_owner: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -17405,6 +17564,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            note_owner: 0,
         };
     }
 }
@@ -17417,6 +17577,7 @@ struct CellRun {
     link: Option<u32>,
     strike: bool,
     list_label: bool,
+    note_spans: crate::pdf::note_tags::Spans,
     width: f32,
 }
 
@@ -17476,6 +17637,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     hard_break: false,
                     literal: tok.literal,
                     list_label: tok.list_label,
+                    note_spans: tok.note_spans.slice(start, end_idx),
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17493,6 +17655,7 @@ fn split_cell_separator_tokens(toks: Vec<Tok>, faces: &Faces) -> Vec<Tok> {
                     hard_break: false,
                     literal: tok.literal,
                     list_label: tok.list_label,
+                    note_spans: tok.note_spans.slice(start, tok.text.len()),
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -17665,6 +17828,7 @@ fn build_cell_line_owned(
         });
         if merge {
             if let Some(last) = runs.last_mut() {
+                last.note_spans.append(&t.note_spans, last.text.len());
                 last.text.push_str(text);
             }
         } else {
@@ -17675,6 +17839,7 @@ fn build_cell_line_owned(
                 link: t.link,
                 strike: t.strike,
                 list_label: t.list_label,
+                note_spans: t.note_spans,
                 width: 0.0,
             });
         }
@@ -17747,6 +17912,7 @@ fn wrap_cell_styled(
                 // run so host-font ligatures, composition and kerning agree
                 // with the emitted glyphs.
                 let mut chunk = String::new();
+                let mut chunk_start = 0;
                 let mut chunk_w = 0.0;
                 for cluster in text_composition::source_clusters(&t.text) {
                     let old_len = chunk.len();
@@ -17756,6 +17922,8 @@ fn wrap_cell_styled(
                     if old_len > 0 && candidate_width > max_width {
                         let tail = chunk.split_off(old_len);
                         let mut tok = t.clone();
+                        tok.note_spans = t.note_spans.slice(chunk_start, chunk_start + chunk.len());
+                        chunk_start += chunk.len();
                         tok.text = std::mem::take(&mut chunk);
                         lines.push(build_cell_line_owned(
                             std::iter::once(tok),
@@ -17771,6 +17939,7 @@ fn wrap_cell_styled(
                 }
                 if !chunk.is_empty() {
                     let mut tail = t.clone();
+                    tail.note_spans = t.note_spans.slice(chunk_start, t.text.len());
                     tail.text = chunk;
                     cur.push(tail);
                     cur_w = chunk_w;
@@ -17779,6 +17948,7 @@ fn wrap_cell_styled(
             }
             let mut buf = [0u8; 4];
             let mut chunk = String::new();
+            let mut chunk_start = 0;
             let mut chunk_w = 0.0;
             let mut carry = String::new();
             for ch in t.text.chars() {
@@ -17809,6 +17979,8 @@ fn wrap_cell_styled(
                         chunk.extend(carry.chars().rev());
                         carry.clear();
                     }
+                    let spans = t.note_spans.slice(chunk_start, chunk_start + chunk.len());
+                    chunk_start += chunk.len();
                     let tok = Tok {
                         text: std::mem::take(&mut chunk),
                         slot: t.slot,
@@ -17816,6 +17988,7 @@ fn wrap_cell_styled(
                         hard_break: false,
                         literal: t.literal,
                         list_label: t.list_label,
+                        note_spans: spans,
                         link: t.link,
                         strike: t.strike,
                     };
@@ -17848,6 +18021,7 @@ fn wrap_cell_styled(
                     hard_break: false,
                     literal: t.literal,
                     list_label: t.list_label,
+                    note_spans: t.note_spans.slice(chunk_start, t.text.len()),
                     link: t.link,
                     strike: t.strike,
                 });
@@ -18400,11 +18574,14 @@ fn layout_table(
         width_cache: &cx.width_cache,
         links: &mut cx.links,
     };
-    let Some(key) = TableLayoutKey::new(table, indent, page, nominal_size, spacing) else {
+    let Some(mut key) = TableLayoutKey::new(table, indent, page, nominal_size, spacing) else {
         layout_table_uncached(table, spec, out);
         return;
     };
 
+    if note_tags::table_has_marks(table, &spec.links.note_sources) {
+        key.note_source = std::ptr::from_ref(table) as usize;
+    }
     if let Some(template) = cx.table_layout_cache.get(&key) {
         let start = out.len();
         out.extend(template.iter().cloned());
@@ -18882,6 +19059,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                         strike: run.strike,
                         task: None,
                         list_label: false,
+                        note_spans: run.note_spans.clone(),
                         width: run.width,
                         expansion_permille: 0,
                     });
@@ -18910,6 +19088,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     heading_level: 0,
                     note: 0,
                     note_destination: 0,
+                    note_owner: 0,
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
@@ -18959,6 +19138,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            note_owner: 0,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -19094,6 +19274,7 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
             strike: false,
             task: item.task,
             list_label: true,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             width: marker.width,
             expansion_permille: 0,
         };
@@ -19246,6 +19427,7 @@ fn tokenize(
     out: &mut Vec<Tok>,
 ) {
     for inl in inlines {
+        let start = out.len();
         match inl {
             Inline::FootnoteRef { id } => {
                 // Until PDF has HTML-style numbered superscripts, keep the GFM
@@ -19284,6 +19466,7 @@ fn tokenize(
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link,
                 strike,
             }),
@@ -19294,12 +19477,22 @@ fn tokenize(
                 hard_break: true,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link,
                 strike,
             }),
             Inline::Html(h) => push_text_tokens(h, slot_of(bold, italic, false), strike, link, out),
             Inline::Math(t) => push_math_token(t, false, strike, link, out),
             Inline::DisplayMath(t) => push_math_token(t, true, strike, link, out),
+        }
+        if let Some(mark) = intern.note_mark(inl) {
+            for token in &mut out[start..] {
+                token.note_spans = note_tags::Spans::whole(token_visible_text(token), mark);
+            }
+        } else if intern.note_sources_known {
+            for token in &mut out[start..] {
+                token.note_spans.make_known();
+            }
         }
     }
 }
@@ -19322,6 +19515,7 @@ fn push_math_token(
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link,
             strike,
         });
@@ -19402,6 +19596,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link,
                     strike,
                 });
@@ -19413,6 +19608,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link,
                 strike,
             });
@@ -19427,6 +19623,7 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link,
             strike,
         });
@@ -19530,6 +19727,7 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && tok.literal == last.literal
                 && tok.list_label == last.list_label
             {
+                last.note_spans.append(&tok.note_spans, last.text.len());
                 last.text.push_str(&tok.text);
             } else {
                 merged.push(tok);
@@ -19562,18 +19760,22 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         let literal = tok.literal;
         let list_label = tok.list_label;
         let replaced = runs.len();
+        let note_spans = tok.note_spans.fallback_runs(&tok.text, &runs);
         toks.splice(
             i..=i,
-            runs.into_iter().map(|(run_slot, text)| Tok {
-                text,
-                slot: run_slot,
-                space: false,
-                hard_break: false,
-                literal,
-                list_label,
-                link,
-                strike,
-            }),
+            runs.into_iter()
+                .zip(note_spans)
+                .map(|((run_slot, text), note_spans)| Tok {
+                    text,
+                    slot: run_slot,
+                    space: false,
+                    hard_break: false,
+                    literal,
+                    list_label,
+                    note_spans,
+                    link,
+                    strike,
+                }),
         );
         i += replaced;
     }
@@ -20255,6 +20457,7 @@ fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordCo
                     hard_break: false,
                     literal: tok.literal,
                     list_label: tok.list_label,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -20601,6 +20804,7 @@ impl<'a> PdfWordSplitter<'a> {
                     hard_break: tok.hard_break,
                     literal: tok.literal,
                     list_label: tok.list_label,
+                    note_spans: tok.note_spans.slice(self.byte, self.byte + taken_bytes),
                     link: tok.link,
                     strike: tok.strike,
                 });
@@ -21918,6 +22122,7 @@ fn build_segs_adjusted(
                 strike,
                 task: None,
                 list_label,
+                note_spans: note_tags::Spans::tokens(&toks[i..end]),
                 width: width.max(0.0),
                 expansion_permille: 0,
             });
@@ -21987,6 +22192,7 @@ fn build_segs_adjusted(
             strike,
             task: None,
             list_label,
+            note_spans: note_tags::Spans::tokens(&toks[i..end]),
             width,
             expansion_permille: 0,
         });
@@ -22052,6 +22258,7 @@ fn build_single_adjusted_seg(
         strike,
         task: None,
         list_label: first.tok.list_label,
+        note_spans: note_tags::Spans::tokens(toks),
         width,
         expansion_permille: 0,
     })
@@ -22607,6 +22814,7 @@ fn code_frags_to_segs(
                 strike: false,
                 task: None,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 width,
                 expansion_permille: 0,
             });
@@ -22646,6 +22854,7 @@ fn code_line_number_seg(
         strike: false,
         task: None,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         width,
         expansion_permille: 0,
     }
@@ -22662,6 +22871,7 @@ fn empty_code_seg(x: f32) -> Seg {
         strike: false,
         task: None,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         width: 0.0,
         expansion_permille: 0,
     }
@@ -24287,6 +24497,28 @@ fn generate_page_content(
                 } else {
                     cell_tag
                 };
+                if !seg.note_spans.is_empty() {
+                    note_tags::draw(
+                        note_tags::Draw {
+                            body: &mut body,
+                            annots: &mut annots,
+                            current_fill: &mut current_fill,
+                            marks: &mut marks,
+                            next_mcid: &mut next_mcid,
+                            subsets,
+                            subset_lookup,
+                            faces,
+                            shaped_cache,
+                            palette,
+                        },
+                        seg,
+                        line.size,
+                        y,
+                        &path,
+                        repeated_header,
+                    );
+                    continue;
+                }
                 if seg.slot == F_IMAGE {
                     // An image retains its /Figure below the logical cell and
                     // any /Link. Repeated headers reuse the link's owner.
@@ -24469,12 +24701,16 @@ fn generate_page_content(
                 .iter()
                 .position(|seg| !seg.text.is_empty() && !(separate_label && seg.list_label));
             let marked = line.image.is_some() || first_visible_seg.is_some();
+            let initial_note = line.image.is_none()
+                && first_visible_seg.is_some_and(|index| !line.segs[index].note_spans.is_empty());
             let mut owner = next_mcid;
             // A text line's own leaf path, which an inline formula splits.
             let mut text_path: Option<(&'static str, SmallPath)> = None;
             if marked {
                 let leaf = leaf_elem(line);
-                append_marked_content_begin(&mut body, leaf.tag, next_mcid);
+                if !initial_note {
+                    append_marked_content_begin(&mut body, leaf.tag, next_mcid);
+                }
                 let mut path = container_prefix(line);
                 if line
                     .image
@@ -24500,13 +24736,15 @@ fn generate_page_content(
                 } else {
                     (None, None)
                 };
-                marks.push(StructMark {
-                    mcid: next_mcid,
-                    path,
-                    alt,
-                    bbox,
-                });
-                next_mcid += 1;
+                if !initial_note {
+                    marks.push(StructMark {
+                        mcid: next_mcid,
+                        path,
+                        alt,
+                        bbox,
+                    });
+                    next_mcid += 1;
+                }
             }
             if let Some(image) = &line.image {
                 if let Some(target) = &image.link {
@@ -24560,7 +24798,7 @@ fn generate_page_content(
             }
             // Whether the line's own marked content is open (an inline formula
             // closes it and takes its own /Formula element; text reopens it).
-            let mut text_open = marked;
+            let mut text_open = marked && !initial_note;
             // The link whose /Link run is open (None: the leaf's own text).
             let mut open_link: Option<u64> = None;
             if let Some(seg_start) = first_visible_seg {
@@ -24579,6 +24817,42 @@ fn generate_page_content(
                             seg.link.as_ref(),
                         )
                     };
+                    if !seg.note_spans.is_empty()
+                        && let Some((_, path)) = text_path.as_ref()
+                    {
+                        if text_open {
+                            body.push_str("EMC\n");
+                            text_open = false;
+                        }
+                        let mut note_path = SmallPath::from_slice(path.as_slice());
+                        if let Some(key) = link_key {
+                            note_path.push(SElem {
+                                key: SKey::InlineLink(line.flow.group, key),
+                                tag: "Link",
+                            });
+                        }
+                        note_tags::draw(
+                            note_tags::Draw {
+                                body: &mut body,
+                                annots: &mut annots,
+                                current_fill: &mut current_fill,
+                                marks: &mut marks,
+                                next_mcid: &mut next_mcid,
+                                subsets,
+                                subset_lookup,
+                                faces,
+                                shaped_cache,
+                                palette,
+                            },
+                            seg,
+                            line.size,
+                            y,
+                            &note_path,
+                            false,
+                        );
+                        open_link = None;
+                        continue;
+                    }
                     if let (F_IMAGE, Some((_, path))) = (seg.slot, text_path.as_ref()) {
                         if text_open {
                             body.push_str("EMC\n");
@@ -24821,6 +25095,9 @@ fn append_table_cell_content_begin(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
     LanguageSection(u32),
+    Note(u32),
+    NoteLabel(u32),
+    NoteReference(u32),
     BlockQuote(usize),
     List(u32, ListNumbering),
     ListItem(u32),
@@ -24999,6 +25276,8 @@ struct SNode {
     /// Stable table/column identity, used for a header's `/ID` or a data
     /// cell's `/Headers` association. Page fragments share the same key.
     table_column: Option<(u32, u32)>,
+    /// Stable prepared note identifier, shared by every page fragment.
+    note: Option<u32>,
     /// Source list kind; checkboxes and mixed task lists use custom labels.
     list_numbering: Option<ListNumbering>,
     /// Page of this element's marked content, emitted as `/Pg` when present.
@@ -25048,6 +25327,7 @@ fn build_struct_tree_with_languages(
         bbox: None,
         scope_column: false,
         table_column: None,
+        note: None,
         list_numbering: None,
         page: None,
     }];
@@ -25111,6 +25391,10 @@ fn build_struct_tree_with_languages(
                     scope_column: elem.tag == "TH",
                     table_column: match elem.key {
                         SKey::TableCell(table, _, column) => Some((table, column)),
+                        _ => None,
+                    },
+                    note: match elem.key {
+                        SKey::Note(number) => Some(number),
                         _ => None,
                     },
                     list_numbering: match elem.key {
@@ -25643,6 +25927,7 @@ mod font_slot_text_refs_tests {
             strike: false,
             task: None,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             width: 0.0,
             expansion_permille: 0,
         }
@@ -30794,6 +31079,12 @@ fn container_prefix(line: &Line) -> SmallPath {
             tag: "Sect",
         });
     }
+    if line.flow.note_owner != 0 {
+        path.push(SElem {
+            key: SKey::Note(line.flow.note_owner),
+            tag: "Note",
+        });
+    }
     if line.quote_bars.is_empty() && line.list_path.is_empty() {
         return path;
     }
@@ -31853,6 +32144,7 @@ mod keep_with_next_tests {
                 heading_level: 0,
                 note: 0,
                 note_destination: 0,
+                note_owner: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -31886,6 +32178,7 @@ mod keep_with_next_tests {
             strike: false,
             task: None,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             width: 1.0,
             expansion_permille: 0,
         });
@@ -32123,6 +32416,7 @@ mod void_budget_tests {
                 heading_level: 0,
                 note: 0,
                 note_destination: 0,
+                note_owner: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -33421,6 +33715,10 @@ fn append_pdf_struct_element_object(
         out.extend_from_slice(b" /Alt ");
         append_pdf_text_string_bytes(out, alt);
     }
+    if let Some(number) = parts.node.note {
+        out.extend_from_slice(b" /ID ");
+        append_pdf_text_string_bytes(out, &note_tags::note_id(number));
+    }
     if let Some(numbering) = parts.node.list_numbering {
         out.extend_from_slice(b" /A << /O /List /ListNumbering /");
         out.extend_from_slice(numbering.as_str().as_bytes());
@@ -34433,7 +34731,7 @@ fn build_pdf(
         // ISO 32000-1 requires an IDTree whenever elements have /ID entries.
         // Name-tree keys are byte strings in lexical order, which differs from
         // numeric table/column order once either counter reaches two digits.
-        let header_ids: BTreeMap<String, usize> = stree
+        let mut header_ids: BTreeMap<String, usize> = stree
             .nodes
             .iter()
             .enumerate()
@@ -34443,6 +34741,9 @@ fn build_pdf(
                     .map(|(table, column)| (table_header_id(table, column), index))
             })
             .collect();
+        header_ids.extend(stree.nodes.iter().enumerate().filter_map(|(index, node)| {
+            node.note.map(|number| (note_tags::note_id(number), index))
+        }));
         if !header_ids.is_empty() {
             root.push_str(" /IDTree << /Names [ ");
             for (id, node) in &header_ids {
@@ -35718,6 +36019,7 @@ mod pdf_writer_tests {
                     strike: false,
                     task: None,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     width: 0.0,
                     expansion_permille: 0,
                 })
@@ -35902,6 +36204,7 @@ mod pdf_writer_tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link,
             strike,
         })
@@ -36037,6 +36340,7 @@ mod pdf_writer_tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link: None,
             strike: false,
         })
@@ -36517,6 +36821,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -36527,6 +36832,7 @@ mod pdf_writer_tests {
                     hard_break: true,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -36537,6 +36843,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -36547,6 +36854,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -36557,6 +36865,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -37009,6 +37318,7 @@ mod pdf_writer_tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link: None,
             strike: false,
         };
@@ -37066,6 +37376,7 @@ mod pdf_writer_tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link: None,
             strike: false,
         };
@@ -37254,6 +37565,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -37264,6 +37576,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -37274,6 +37587,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -37325,6 +37639,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 }],
@@ -37338,6 +37653,7 @@ mod pdf_writer_tests {
                     hard_break: true,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 }],
@@ -37442,6 +37758,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -37452,6 +37769,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -37585,6 +37903,7 @@ mod pdf_writer_tests {
                 strike,
                 task: None,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 width,
                 expansion_permille: 0,
             }
@@ -38057,6 +38376,7 @@ mod pdf_writer_tests {
                     heading_level: 0,
                     note: 0,
                     note_destination: 0,
+                    note_owner: 0,
                 },
                 list_path: lists
                     .iter()
@@ -38085,6 +38405,7 @@ mod pdf_writer_tests {
                         strike: false,
                         task: None,
                         list_label: false,
+                        note_spans: crate::pdf::note_tags::Spans::default(),
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -38098,6 +38419,7 @@ mod pdf_writer_tests {
                         strike: false,
                         task: None,
                         list_label: false,
+                        note_spans: crate::pdf::note_tags::Spans::default(),
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -38111,6 +38433,7 @@ mod pdf_writer_tests {
                         strike: false,
                         task: None,
                         list_label: false,
+                        note_spans: crate::pdf::note_tags::Spans::default(),
                         width: 6.0,
                         expansion_permille: 0,
                     },
@@ -38424,6 +38747,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -38434,6 +38758,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -38444,6 +38769,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -38485,6 +38811,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -38498,6 +38825,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -38532,6 +38860,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -38545,6 +38874,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -38558,6 +38888,7 @@ mod pdf_writer_tests {
                     hard_break: false,
                     literal: false,
                     list_label: false,
+                    note_spans: crate::pdf::note_tags::Spans::default(),
                     link: None,
                     strike: false,
                 },
@@ -39064,6 +39395,7 @@ mod pdf_writer_tests {
                         strike: tok.strike,
                         task: None,
                         list_label: tok.list_label,
+                        note_spans: crate::pdf::note_tags::Spans::default(),
                         width: advance,
                         expansion_permille: 0,
                     });
@@ -39158,6 +39490,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -39171,6 +39504,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -39184,6 +39518,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: true,
             },
@@ -39197,6 +39532,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: Some(0),
                 strike: false,
             },
@@ -39281,6 +39617,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -39294,6 +39631,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -39477,6 +39815,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -39490,6 +39829,7 @@ mod pdf_writer_tests {
                 hard_break: false,
                 literal: false,
                 list_label: false,
+                note_spans: crate::pdf::note_tags::Spans::default(),
                 link: None,
                 strike: false,
             },
@@ -40026,6 +40366,7 @@ mod pdf_writer_tests {
             bbox: Some([1.0, -0.0, 3.5, 4.25]),
             scope_column: false,
             table_column: None,
+            note: None,
             list_numbering: None,
             page: Some(4),
         };
@@ -40096,6 +40437,7 @@ mod pdf_writer_tests {
             bbox: Some([1.0, 2.0, 3.0, 4.0]),
             scope_column: true,
             table_column: None,
+            note: None,
             list_numbering: None,
             page: None,
         };
@@ -40683,6 +41025,7 @@ mod pdf_writer_tests {
             strike: false,
             task: Some(true),
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             width: 15.0,
             expansion_permille: 0,
         };
@@ -45072,18 +45415,31 @@ pub fn verification_text_layer_result(
 }
 
 pub(crate) fn verification_text_layer_for_layout(
-    doc: &Document,
+    input: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
 ) -> Result<VerifyTextLayer> {
     opts.font_assets.validate()?;
     baseline_grid::validate_options(opts)?;
     spacing::validate_options(opts)?;
-    let lowered = crate::safe_html::lower(doc);
+    let notes = note_tags::Context::bind(input);
+    let lowered = if input.is_pdf_prepared() {
+        std::borrow::Cow::Borrowed(input.document())
+    } else {
+        crate::safe_html::lower(input.document())
+    };
     let doc = &*lowered;
     let faces = Faces::load(opts)?;
-    let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
+    let (effective_opts, page) =
+        effective_pdf_options_with_languages(doc, opts, &faces, &language::EMPTY, &notes);
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
-    let (lines, _) = layout_with_pagination_report(&doc.blocks, &effective_opts, &faces, page)?;
+    let (lines, _) = layout_with_languages(
+        &doc.blocks,
+        &effective_opts,
+        &faces,
+        page,
+        &language::EMPTY,
+        &notes,
+    )?;
     let (plan, _) = validated_page_break_plan(&lines, page, &effective_opts)?;
     let pages = paginate_lines_with(&lines, page, plan.as_ref());
     if let Some(running) = running {
@@ -45195,9 +45551,10 @@ pub fn audit_anchors(doc: &Document) -> AnchorAudit {
 /// Returning `None` retains the ordinary direct-fragment behavior; overrides
 /// keep the authored fragment spelling in unresolved findings.
 pub(crate) fn audit_anchors_with_resolver(
-    doc: &Document,
+    input: &impl crate::footnotes::PdfDocumentInput,
     resolve: &impl Fn(&str, &BTreeSet<String>) -> Option<bool>,
 ) -> AnchorAudit {
+    let doc = input.document();
     let mut state = HeadingIdState::default();
     let mut ids: BTreeSet<String> = BTreeSet::new();
     let mut notes = BTreeSet::new();
@@ -45233,7 +45590,7 @@ pub(crate) fn audit_anchors_with_resolver(
         }
     }
     collect_ids(&doc.blocks, &mut state, &mut ids, &mut notes);
-    for number in crate::footnotes::page_note_references(&doc.blocks) {
+    for number in crate::footnotes::page_note_references_for_input(input) {
         if notes.contains(&number) {
             ids.insert(format!(
                 "{}{number}",
@@ -45341,6 +45698,7 @@ mod plass_pagination_tests {
                 heading_level: 0,
                 note: 0,
                 note_destination: 0,
+                note_owner: 0,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),

@@ -138,6 +138,179 @@ struct Mark {
     text: String,
 }
 
+/// PDF operators, not newlines, delimit marked content and text objects.
+/// ActualText may be nested inside a continuing BT/ET; Tf stays active across
+/// each intervening BDC/EMC and all subsequent TJ/Tj operators.
+fn content_tokens(content: &str) -> Vec<&str> {
+    let bytes = content.as_bytes();
+    let mut result = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        match bytes[at] {
+            b'(' => {
+                at += 1;
+                let mut depth = 1;
+                while at < bytes.len() && depth != 0 {
+                    match bytes[at] {
+                        b'\\' => {
+                            at += 2;
+                            continue;
+                        }
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    at += 1;
+                }
+            }
+            b'<' if bytes.get(at + 1) != Some(&b'<') => {
+                at += 1;
+                while bytes[at] != b'>' {
+                    at += 1;
+                }
+                at += 1;
+            }
+            b'<' | b'>' => at += 2,
+            b'[' | b']' => at += 1,
+            _ => {
+                at += 1;
+                while at < bytes.len()
+                    && !bytes[at].is_ascii_whitespace()
+                    && !b"()<>[]/".contains(&bytes[at])
+                {
+                    at += 1;
+                }
+            }
+        }
+        result.push(&content[start..at]);
+    }
+    result
+}
+
+fn decode_page_marks(
+    content: &str,
+    fonts: &BTreeMap<&str, BTreeMap<u16, String>>,
+    page: usize,
+    marks: &mut BTreeMap<(usize, usize), Mark>,
+) {
+    let mut owners = Vec::new();
+    let mut operands = Vec::new();
+    let mut font = None;
+    let mut in_text = false;
+    for token in content_tokens(content) {
+        if !token.as_bytes()[0].is_ascii_alphabetic() && !matches!(token, "'" | "\"") {
+            operands.push(token);
+            continue;
+        }
+        match token {
+            "BDC" | "BMC" => {
+                let owner = operands
+                    .iter()
+                    .position(|&value| value == "/MCID")
+                    .map(|index| operands[index + 1].parse::<usize>().unwrap());
+                if let Some(mcid) = owner {
+                    assert!(
+                        marks
+                            .insert(
+                                (page, mcid),
+                                Mark {
+                                    tag: operands[0].trim_start_matches('/').into(),
+                                    text: String::new(),
+                                }
+                            )
+                            .is_none(),
+                        "MCIDs cannot repeat on one page"
+                    );
+                }
+                owners.push(owner);
+            }
+            "EMC" => {
+                owners.pop().expect("marked content must be balanced");
+            }
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+            }
+            "Tf" => {
+                assert!(in_text);
+                assert_eq!(operands.len(), 2);
+                font = Some(&fonts[operands[0]]);
+            }
+            "TJ" | "Tj" => {
+                assert!(in_text);
+                let font = font.expect("painted text must select a font");
+                let values = if token == "TJ" {
+                    assert_eq!(operands.first(), Some(&"["));
+                    assert_eq!(operands.last(), Some(&"]"));
+                    &operands[1..operands.len() - 1]
+                } else {
+                    assert_eq!(operands.len(), 1);
+                    operands.as_slice()
+                };
+                for value in values {
+                    if let Some(hex) = value
+                        .strip_prefix('<')
+                        .and_then(|value| value.strip_suffix('>'))
+                    {
+                        let (cids, remainder) = hex.as_bytes().as_chunks::<4>();
+                        assert!(remainder.is_empty());
+                        for cid in cids {
+                            let cid =
+                                u16::from_str_radix(std::str::from_utf8(cid).unwrap(), 16).unwrap();
+                            if let Some(mcid) = owners.iter().rev().find_map(|&owner| owner) {
+                                marks
+                                    .get_mut(&(page, mcid))
+                                    .unwrap()
+                                    .text
+                                    .push_str(&font[&cid]);
+                            }
+                        }
+                    } else {
+                        assert_eq!(token, "TJ");
+                        value
+                            .parse::<i32>()
+                            .expect("integer writer text adjustment");
+                    }
+                }
+            }
+            _ => {}
+        }
+        operands.clear();
+    }
+    assert!(owners.is_empty(), "page marked content must be balanced");
+    assert!(!in_text, "page text objects must be balanced");
+    assert!(operands.is_empty(), "every operand belongs to an operator");
+}
+
+#[test]
+fn language_oracle_decodes_nested_marks_and_continuing_text_state() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([(1, "A".into()), (2, "B".into()), (3, "C".into())]),
+    )]);
+    // This valid stream deliberately puts BDC after BT and EMC after TJ,
+    // preserves Tf across role changes, and includes operator-like string data.
+    let content = "BT /F1 11 Tf 1 0 0 1 36 90 Tm /Lbl << /MCID 0 >> BDC\n\
+        /Span << /ActualText (EMC BT) >> BDC [<0001>] TJ EMC\nEMC\n\
+        /P << /MCID 1 >> BDC [<0002> 0 <0003>] TJ EMC ET";
+    let mut marks = BTreeMap::new();
+    decode_page_marks(content, &fonts, 7, &mut marks);
+    assert_eq!(marks.len(), 2);
+    assert_eq!(marks[&(7, 0)].tag, "Lbl");
+    assert_eq!(marks[&(7, 0)].text, "A");
+    assert_eq!(marks[&(7, 1)].tag, "P");
+    assert_eq!(marks[&(7, 1)].text, "BC");
+}
+
 struct TaggedPdf {
     nodes: Vec<Node>,
     marks: BTreeMap<(usize, usize), Mark>,
@@ -191,59 +364,7 @@ impl TaggedPdf {
                     .map(|entry| (entry[0], objects.font_map(entry[1].parse().unwrap())))
                     .collect();
                 let content = objects.stream(integer_after(dictionary, "/Contents "));
-                let mut owners = Vec::new();
-                for line in content.lines() {
-                    if line.ends_with(" BDC") || line.ends_with(" BMC") {
-                        let owner = if line.contains("/MCID ") {
-                            let mcid = integer_after(line, "/MCID ");
-                            assert!(
-                                marks
-                                    .insert(
-                                        (id, mcid),
-                                        Mark {
-                                            tag: line
-                                                .split_whitespace()
-                                                .next()
-                                                .unwrap()
-                                                .trim_start_matches('/')
-                                                .into(),
-                                            text: String::new(),
-                                        }
-                                    )
-                                    .is_none(),
-                                "MCIDs cannot repeat on one page"
-                            );
-                            Some(mcid)
-                        } else {
-                            None
-                        };
-                        owners.push(owner);
-                    } else if line == "EMC" {
-                        owners.pop().expect("marked content must be balanced");
-                    } else if let Some(mcid) = owners.iter().rev().find_map(|&owner| owner) {
-                        for run in line.split("BT ").skip(1) {
-                            let (head, array) = run.split_once('[').unwrap();
-                            let head: Vec<_> = head.split_whitespace().collect();
-                            let tf = head.iter().position(|&token| token == "Tf").unwrap();
-                            let font = &fonts[head[tf - 2]];
-                            let array = array.split_once(']').unwrap().0;
-                            for hex in array.split('<').skip(1) {
-                                let hex = hex.split_once('>').unwrap().0;
-                                for cid in hex.as_bytes().as_chunks::<4>().0 {
-                                    let cid =
-                                        u16::from_str_radix(std::str::from_utf8(cid).unwrap(), 16)
-                                            .unwrap();
-                                    marks
-                                        .get_mut(&(id, mcid))
-                                        .unwrap()
-                                        .text
-                                        .push_str(&font[&cid]);
-                                }
-                            }
-                        }
-                    }
-                }
-                assert!(owners.is_empty(), "page marked content must be balanced");
+                decode_page_marks(&content, &fonts, id, &mut marks);
             }
         }
         Self {

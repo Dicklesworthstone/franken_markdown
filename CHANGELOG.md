@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- PDF footnotes and endnotes retain source-owned `/Note`, `/Reference` and
+  `/Lbl` structure with unique IDs and annotation ownership. Complete note
+  bodies keep their identity across page-foot placement, endnote fallback,
+  page breaks, rich blocks and chapter languages. Citation and return targets
+  follow actual source references; authored lookalike links cannot claim them.
+  Semantic boundaries preserve shaping and positioned glyph output, and share
+  the existing fitting, streamed emission and PDF/A paths. See
+  [PDF accessibility](docs/PDF_ACCESSIBILITY.md#footnotes-citations-and-return-links).
 - Book link findings retain original chapter/include locations, including exact
   inline destinations and winning reference-definition URLs. Native checks,
   MCP and browser reports share bounded source provenance while existing Rust

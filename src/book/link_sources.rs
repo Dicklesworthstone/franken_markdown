@@ -240,7 +240,6 @@ pub(super) fn html_key(html: &str, index: usize) -> NodeKey {
 
 fn walk_html<'a>(html: &'a str, visit: &mut impl FnMut(Node<'a>) -> bool) -> bool {
     crate::safe_html::url_spans(html)
-        .into_iter()
         .filter(|span| span.kind == crate::safe_html::UrlKind::Link)
         .enumerate()
         .all(|(index, _)| visit(Node::Html(html, index)))

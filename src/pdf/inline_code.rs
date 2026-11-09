@@ -20,6 +20,7 @@ pub(super) fn push_token(source: &str, strike: bool, link: Option<u32>, out: &mu
             hard_break: false,
             literal: true,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link,
             strike,
         });

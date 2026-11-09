@@ -3,6 +3,9 @@
 //! of layout/planner helpers, so an orphan underline cannot satisfy the check.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::{
     Block, PageMargins, PdfEmitOptions, PdfImageAsset, PdfOptions, parse_markdown, render_pdf,
     render_pdf_document, render_pdf_document_emitted,
@@ -154,6 +157,61 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
     map
 }
 
+fn painted_text(content: &str, fonts: &BTreeMap<&str, BTreeMap<u16, String>>) -> String {
+    let mut painted = String::new();
+    let mut font = None;
+    let mut mode = 0;
+    let mut in_text = false;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+            }
+            "Tf" => font = Some(&fonts[operation.operands[0]]),
+            "Tr" => mode = operation.operands[0].parse::<u8>().unwrap(),
+            "Tj" | "TJ" => {
+                assert!(in_text);
+                let glyphs = pdf_content::glyph_ids(&operation);
+                if mode != 3 {
+                    let font = font.expect("painted glyph needs an active font");
+                    for id in glyphs {
+                        painted.push_str(font.get(&id).expect("painted glyph needs Unicode"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_text);
+    painted
+}
+
+#[test]
+fn text_decoder_keeps_continuing_objects_and_ignores_replacement_metadata() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([
+            (1, "A".to_owned()),
+            (2, "B".to_owned()),
+            (3, "hidden".to_owned()),
+        ]),
+    )]);
+    let content = "BT /F1 11 Tf 1 0 0 1 24 80 Tm
+        /Lbl << /MCID 0 >> BDC /Span << /ActualText <FEFF0058> >> BDC
+        [<0001>] TJ EMC EMC
+        /P << /MCID 1 >> BDC /Span << /ActualText (BT ET Tj) >> BDC
+\
+        <0002> Tj EMC EMC
+ET
+        BT /F1 11 Tf 3 Tr <0003> Tj 0 Tr ET";
+    assert_eq!(painted_text(content, &fonts), "AB");
+}
+
 fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
     let objects = Objects::new(pdf);
     let page_tree = (1..objects.offsets.len())
@@ -191,44 +249,7 @@ fn painted_pages(pdf: &[u8]) -> Vec<PaintedPage> {
             .map(|entry| (entry[0], unicode_map(&objects, entry[1].parse().unwrap())))
             .collect::<BTreeMap<_, _>>();
         let content = objects.stream(integer_after(page, "/Contents "));
-        let mut painted = String::new();
-        for line in content.lines().filter(|line| line.contains("BT /F")) {
-            let separated = line
-                .replace('[', " [ ")
-                .replace(']', " ] ")
-                .replace('<', " <")
-                .replace('>', "> ");
-            let words: Vec<_> = separated.split_whitespace().collect();
-            let mut font = None;
-            let mut mode = 0;
-            let mut text = String::new();
-            for (index, word) in words.iter().enumerate() {
-                match *word {
-                    "Tf" => font = Some(&fonts[words[index - 2]]),
-                    "Tr" => mode = words[index - 1].parse::<u8>().unwrap(),
-                    "Tj" | "TJ" => {
-                        if mode != 3 {
-                            painted.push_str(&text);
-                        }
-                        text.clear();
-                    }
-                    hex if hex.starts_with('<') && hex.ends_with('>') => {
-                        let font = font.expect("painted glyph needs an active font");
-                        let hex = hex.trim_matches(['<', '>']);
-                        assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
-                            let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
-                                .unwrap();
-                            text.push_str(
-                                font.get(&id)
-                                    .expect("painted glyph must have a Unicode mapping"),
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let painted = painted_text(&content, &fonts);
         page_text.push(PaintedPage {
             text: painted.chars().filter(|c| !c.is_whitespace()).collect(),
             rules: content

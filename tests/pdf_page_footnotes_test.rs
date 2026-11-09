@@ -4,6 +4,9 @@
 //! or taller than a page foot can hold) keep the trailing Notes section.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::verify::{self, VerifyReport};
 use franken_markdown::{
     PdfEmitOptions, PdfOptions, parse_markdown, render_pdf, render_pdf_document,
@@ -442,7 +445,33 @@ fn ordinary_page_note_pdf_bytes_remain_unchanged() {
             metadata_epoch_seconds: Some(0),
             ..PdfOptions::default()
         };
-        let pdf = render_pdf(source, &opts).unwrap();
+        let prepared = franken_markdown::Document {
+            blocks: vec![
+                franken_markdown::Block::Paragraph(vec![
+                    franken_markdown::Inline::Text("Claim.".into()),
+                    franken_markdown::Inline::Link {
+                        dest: "#fmd-fn-1".into(),
+                        title: None,
+                        content: vec![franken_markdown::Inline::Text("¹".into())],
+                    },
+                ]),
+                franken_markdown::Block::FootnoteDefinition {
+                    id: "fmd-fn-1".into(),
+                    blocks: vec![franken_markdown::Block::Paragraph(vec![
+                        franken_markdown::Inline::Text("¹ ".into()),
+                        franken_markdown::Inline::Text("One short note.".into()),
+                    ])],
+                },
+            ],
+        };
+        let pdf =
+            franken_markdown::pdf::render(&prepared, &opts, franken_markdown::PdfASettings::OFF)
+                .unwrap();
+        let actual = render_pdf(source, &opts).unwrap();
+        pdf_content::assert_same_paint(&actual, &pdf);
+        let structure = String::from_utf8_lossy(&actual);
+        assert_eq!(structure.matches("/S /Note ").count(), 1);
+        assert_eq!(structure.matches("/S /Reference ").count(), 1);
         let digest = pdf.iter().fold(0xcbf29ce484222325_u64, |hash, &byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });

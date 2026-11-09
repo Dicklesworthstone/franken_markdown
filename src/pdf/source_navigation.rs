@@ -54,7 +54,7 @@ pub(crate) struct NavigationRender {
 }
 
 pub(crate) fn render_complete(
-    doc: &Document,
+    doc: &impl crate::footnotes::PdfDocumentInput,
     options: &PdfOptions,
     settings: PdfASettings,
     emit: PdfEmitOptions,
@@ -67,7 +67,7 @@ pub(crate) fn render_complete(
 /// while avoiding source-destination collection when no links require binding.
 /// Diagnostics reuse loaded faces and measured lines; they never rerender.
 pub(crate) fn render_complete_with_diagnostics(
-    doc: &Document,
+    doc: &impl crate::footnotes::PdfDocumentInput,
     options: &PdfOptions,
     settings: PdfASettings,
     emit: PdfEmitOptions,
@@ -91,7 +91,7 @@ pub(crate) fn render_complete_with_diagnostics(
 /// trials and diagnostics used by the ordinary source-navigation path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_complete_with_languages(
-    doc: &Document,
+    doc: &impl crate::footnotes::PdfDocumentInput,
     options: &PdfOptions,
     settings: PdfASettings,
     emit: PdfEmitOptions,

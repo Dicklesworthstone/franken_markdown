@@ -30,6 +30,9 @@ pub(super) struct Glyph {
     /// base and its zero-advance marks. Ligatures form one retained cluster.
     pub cluster_end: bool,
     pub word_space: bool,
+    /// Byte interval in the same composed source used to prepare this run.
+    pub source_start: usize,
+    pub source_end: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -206,10 +209,19 @@ fn prepare_uncached(face: &Face, source: &str) -> Prepared {
                     // word. A refused giant word needs no second full glyph
                     // array just to discover that the old path will paint it.
                     let first = run.glyphs.len();
-                    append_legacy(face, &source[positioned_end..start], &mut run);
+                    append_legacy(
+                        face,
+                        &source[positioned_end..start],
+                        positioned_end,
+                        &mut run,
+                    );
                     bridge_pair(face, &mut run, first);
                     let first = run.glyphs.len();
-                    run.glyphs.extend(word.glyphs);
+                    run.glyphs.extend(word.glyphs.into_iter().map(|mut glyph| {
+                        glyph.source_start += start;
+                        glyph.source_end += start;
+                        glyph
+                    }));
                     run.unicode.extend(word.unicode);
                     bridge_pair(face, &mut run, first);
                     positioned_end = end;
@@ -235,7 +247,7 @@ fn prepare_uncached(face: &Face, source: &str) -> Prepared {
     }
     if positioned_end > 0 {
         let first = run.glyphs.len();
-        append_legacy(face, &source[positioned_end..], &mut run);
+        append_legacy(face, &source[positioned_end..], positioned_end, &mut run);
         bridge_pair(face, &mut run, first);
         result.run = Some(Arc::new(run));
     }
@@ -328,6 +340,8 @@ fn positioned_word(face: &Face, source: &str, run: &mut Run) -> Result<(), (bool
                 .get(index + 1)
                 .is_none_or(|next| next.cluster != glyph.cluster),
             word_space: cluster.chars().any(|ch| matches!(ch, ' ' | '\u{00a0}')),
+            source_start: glyph.cluster.start,
+            source_end: glyph.cluster.end,
         });
         // Alternate/ligature glyphs absent from the source cmap still need a
         // ToUnicode entry. ActualText on this occurrence retains exact source;
@@ -350,12 +364,13 @@ fn positioned_word(face: &Face, source: &str, run: &mut Run) -> Result<(), (bool
     Ok(())
 }
 
-fn append_legacy(face: &Face, source: &str, run: &mut Run) {
+fn append_legacy(face: &Face, source: &str, offset: usize, run: &mut Run) {
     let chars: Vec<_> = source.chars().collect();
     let raw: Vec<_> = chars.iter().map(|&ch| face.font.glyph_index(ch)).collect();
     let shaped = face.lig.substitute_with_spans(&raw);
     let upm = i64::from(face.font.units_per_em.max(1));
     let mut source_at = 0;
+    let mut source_byte = offset;
     let mut word_space = false;
     for (index, &(id, count)) in shaped.iter().enumerate() {
         let advance = i64::from(super::glyph_advance_1000(&face.font, id)) * upm;
@@ -371,6 +386,11 @@ fn append_legacy(face: &Face, source: &str, run: &mut Run) {
         let cluster_end = chars
             .get(source_at + count)
             .is_none_or(|&ch| !text_composition::is_mark(ch));
+        let source_end = source_byte
+            + chars[source_at..source_at + count]
+                .iter()
+                .map(|ch| ch.len_utf8())
+                .sum::<usize>();
         run.glyphs.push(Glyph {
             id,
             advance: advance + pair,
@@ -380,6 +400,8 @@ fn append_legacy(face: &Face, source: &str, run: &mut Run) {
             below: (-i64::from(bbox[1])).max(0) * 1000,
             cluster_end,
             word_space,
+            source_start: source_byte,
+            source_end,
         });
         if cluster_end {
             word_space = false;
@@ -393,6 +415,7 @@ fn append_legacy(face: &Face, source: &str, run: &mut Run) {
             run.unicode.push((id, text));
         }
         source_at += count;
+        source_byte = source_end;
     }
 }
 
@@ -468,6 +491,7 @@ pub(super) fn append_fitted_line(
             && last.literal == tok.literal
             && last.list_label == tok.list_label
         {
+            last.note_spans.append(&tok.note_spans, last.text.len());
             last.text.push_str(&tok.text);
         } else {
             toks.push(tok.clone());
@@ -507,6 +531,7 @@ pub(super) fn append_fitted_line(
                 strike: run.strike,
                 task: None,
                 list_label: run.list_label,
+                note_spans: run.note_spans,
                 width,
                 expansion_permille: 0,
             });
@@ -527,10 +552,33 @@ pub(super) fn append_glyphs(
     letter_adjust: i32,
     word_adjust: i32,
 ) {
+    append_glyphs_range(
+        out,
+        run,
+        map,
+        matrix,
+        letter_adjust,
+        word_adjust,
+        0..run.glyphs.len(),
+        LayoutUnit::ZERO,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_glyphs_range(
+    out: &mut String,
+    run: &Run,
+    map: &[u16],
+    matrix: super::SvgTextMatrix,
+    letter_adjust: i32,
+    word_adjust: i32,
+    range: std::ops::Range<usize>,
+    mut pen: LayoutUnit,
+) {
     let size = super::font_size_of(matrix.size);
-    let mut pen = LayoutUnit::ZERO;
     let mut spacing = 0.0;
-    for (index, glyph) in run.glyphs.iter().enumerate() {
+    for index in range {
+        let glyph = &run.glyphs[index];
         let x = (pen + run.measure(glyph.offset_x, size)).to_points_f32() + spacing;
         let y = run.measure(glyph.offset_y, size).to_points_f32();
         for component in [matrix.a, matrix.b, matrix.c, matrix.d] {

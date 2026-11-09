@@ -1,6 +1,9 @@
 //! Shared spacing changes measured PDF rows, not just their painted offsets.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 use franken_markdown::{
     BaselineGrid, Block, Inline, PageMargins, PdfEmitOptions, PdfOptions, RenderError,
     parse_markdown, render_pdf, render_pdf_document_emitted, render_pdf_reported,
@@ -140,29 +143,98 @@ impl<'a> Objects<'a> {
                 .map(|entry| (entry[0], self.font(entry[1].parse().unwrap())))
                 .collect();
             let content = self.stream(number(dictionary, "/Contents "));
-            for run in content.split("BT ").skip(1) {
-                let run = run.split_once(" ET").unwrap().0;
-                let words: Vec<_> = run.split_whitespace().collect();
-                let tf = words.iter().position(|&word| word == "Tf").unwrap();
-                let tm = words.iter().position(|&word| word == "Tm").unwrap();
-                let font = &fonts[words[tf - 2]];
-                let mut text = String::new();
-                for hex in run.split_once(" Tm ").unwrap().1.split('<').skip(1) {
-                    for cid in units(hex.split_once('>').unwrap().0) {
-                        text.push_str(&font[&cid]);
-                    }
-                }
-                runs.push(Run {
-                    page: index,
-                    text,
-                    x: words[tm - 2].parse().unwrap(),
-                    y: words[tm - 1].parse().unwrap(),
-                    size: words[tf - 1].parse().unwrap(),
-                });
-            }
+            runs.extend(decode_runs(&content, &fonts, index));
         }
         runs
     }
+}
+
+fn decode_runs(
+    content: &str,
+    fonts: &BTreeMap<&str, BTreeMap<u16, String>>,
+    page: usize,
+) -> Vec<Run> {
+    let mut runs = Vec::new();
+    let mut font = None;
+    let mut size = None;
+    let mut position = None;
+    let mut text = String::new();
+    let mut in_text = false;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BT" => {
+                assert!(!in_text);
+                in_text = true;
+                position = None;
+                assert!(text.is_empty());
+            }
+            "ET" => {
+                assert!(in_text);
+                in_text = false;
+                let [x, y] = position.expect("text object has its physical baseline");
+                runs.push(Run {
+                    page,
+                    text: std::mem::take(&mut text),
+                    x,
+                    y,
+                    size: size.expect("text object has a font size"),
+                });
+            }
+            "Tf" => {
+                font = Some(&fonts[operation.operands[0]]);
+                size = Some(operation.operands[1].parse().unwrap());
+            }
+            "Tm" => {
+                // A complete row may contain several semantic spans. Its
+                // original baseline is the first matrix of this text object.
+                position.get_or_insert([
+                    operation.operands[4].parse().unwrap(),
+                    operation.operands[5].parse().unwrap(),
+                ]);
+            }
+            "Tj" | "TJ" => {
+                assert!(in_text);
+                let font = font.expect("painted glyph needs an active font");
+                for id in pdf_content::glyph_ids(&operation) {
+                    text.push_str(font.get(&id).expect("painted glyph needs Unicode"));
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_text);
+    runs
+}
+
+#[test]
+fn row_decoder_keeps_one_baseline_for_a_multiline_semantic_text_object() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([
+            (1, "¹ ".to_owned()),
+            (2, "Body".to_owned()),
+            (3, "After".to_owned()),
+        ]),
+    )]);
+    let content = "BT /F1 11 Tf 1 0 0 1 24 80 Tm
+        /Lbl << /MCID 0 >> BDC /Span << /ActualText <FEFF0058> >> BDC
+        <0001> Tj EMC EMC
+        /P << /MCID 1 >> BDC /Span << /ActualText (BT ET) >> BDC
+        [<0002>] TJ EMC EMC
+        ET
+        BT /F1 12 Tf 1 0 0 1 30 60 Tm <0003> Tj ET";
+    let runs = decode_runs(content, &fonts, 2);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "¹ Body");
+    assert_eq!(
+        (runs[0].page, runs[0].x, runs[0].y, runs[0].size),
+        (2, 24.0, 80.0, 11.0)
+    );
+    assert_eq!(runs[1].text, "After");
+    assert_eq!(
+        (runs[1].page, runs[1].x, runs[1].y, runs[1].size),
+        (2, 30.0, 60.0, 12.0)
+    );
 }
 
 fn number(text: &str, key: &str) -> usize {

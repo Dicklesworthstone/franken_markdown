@@ -382,6 +382,7 @@ mod tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link: None,
             strike: false,
         }];

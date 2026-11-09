@@ -10,6 +10,9 @@ use franken_markdown::{
     render_pdf_document, render_pdf_document_emitted, render_pdf_emitted,
 };
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 struct Objects<'a> {
     bytes: &'a [u8],
     offsets: Vec<usize>,
@@ -462,6 +465,80 @@ struct PaintedRun {
     text: String,
 }
 
+fn painted_content_runs(
+    content: &str,
+    fonts: &BTreeMap<&str, BTreeMap<u16, String>>,
+    page: usize,
+) -> Vec<PaintedRun> {
+    let mut runs = Vec::new();
+    let mut pending: Option<PaintedRun> = None;
+    let flush = |pending: &mut Option<PaintedRun>, runs: &mut Vec<PaintedRun>| {
+        if let Some(run) = pending.take() {
+            runs.push(run);
+        }
+    };
+    let mut inside_text = false;
+    let mut font = None;
+    let mut size = 0.0;
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut mode = 0;
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "BT" => {
+                assert!(!inside_text);
+                inside_text = true;
+                (x, y) = (0.0, 0.0);
+            }
+            "ET" => {
+                assert!(inside_text);
+                flush(&mut pending, &mut runs);
+                inside_text = false;
+            }
+            "Tf" => {
+                assert_eq!(operation.operands.len(), 2);
+                flush(&mut pending, &mut runs);
+                font = Some(&fonts[operation.operands[0]]);
+                size = operation.operands[1].parse().unwrap();
+            }
+            "Tr" => {
+                assert_eq!(operation.operands.len(), 1);
+                flush(&mut pending, &mut runs);
+                mode = operation.operands[0].parse::<u8>().unwrap();
+            }
+            "Tm" => {
+                assert!(inside_text);
+                assert_eq!(operation.operands.len(), 6);
+                flush(&mut pending, &mut runs);
+                x = operation.operands[4].parse().unwrap();
+                y = operation.operands[5].parse().unwrap();
+            }
+            "Tj" | "TJ" => {
+                assert!(inside_text);
+                // A semantic label/body boundary may split one text show into
+                // several continuing shows without changing its text matrix.
+                // Keep that painted segment together, independent of newlines
+                // and BDC/EMC, and decode only the actual show operands.
+                let glyphs = pdf_content::glyph_ids(&operation);
+                if mode != 3 && !glyphs.is_empty() {
+                    let run = pending.get_or_insert_with(|| PaintedRun {
+                        page,
+                        x,
+                        y,
+                        size,
+                        text: String::new(),
+                    });
+                    for id in glyphs {
+                        run.text.push_str(&font.unwrap()[&id]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!inside_text, "complete PDF text objects");
+    runs
+}
+
 fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
     let mut runs = Vec::new();
     for page in objects.pages() {
@@ -483,57 +560,42 @@ fn painted_runs(objects: &Objects<'_>) -> Vec<PaintedRun> {
             .map(|entry| (entry[0], unicode_map(objects, entry[1].parse().unwrap())))
             .collect();
         let content = objects.stream(integer(dictionary, "/Contents ").unwrap());
-        for line in content.lines().filter(|line| line.contains("BT /F")) {
-            let spaced = line
-                .replace('[', " [ ")
-                .replace(']', " ] ")
-                .replace('<', " <")
-                .replace('>', "> ");
-            let words: Vec<_> = spaced.split_whitespace().collect();
-            let mut font = None;
-            let mut size = 0.0;
-            let (mut x, mut y) = (0.0, 0.0);
-            let mut mode = 0;
-            let mut text = String::new();
-            for (index, word) in words.iter().enumerate() {
-                match *word {
-                    "Tf" => {
-                        font = Some(&fonts[words[index - 2]]);
-                        size = words[index - 1].parse().unwrap();
-                    }
-                    "Tr" => mode = words[index - 1].parse::<u8>().unwrap(),
-                    "Tm" => {
-                        x = words[index - 2].parse().unwrap();
-                        y = words[index - 1].parse().unwrap();
-                    }
-                    "Tj" | "TJ" => {
-                        if mode != 3 && !text.is_empty() {
-                            runs.push(PaintedRun {
-                                page,
-                                x,
-                                y,
-                                size,
-                                text: std::mem::take(&mut text),
-                            });
-                        } else {
-                            text.clear();
-                        }
-                    }
-                    hex if hex.starts_with('<') && hex.ends_with('>') => {
-                        let hex = hex.trim_matches(['<', '>']);
-                        assert_eq!(hex.len() % 4, 0);
-                        for glyph in hex.as_bytes().as_chunks::<4>().0 {
-                            let id = u16::from_str_radix(std::str::from_utf8(glyph).unwrap(), 16)
-                                .unwrap();
-                            text.push_str(&font.unwrap()[&id]);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        runs.extend(painted_content_runs(&content, &fonts, page));
     }
     runs
+}
+
+#[test]
+fn painted_text_reader_keeps_continuing_shows_across_semantic_marks() {
+    let fonts = BTreeMap::from([(
+        "/F1",
+        BTreeMap::from([
+            (1, "¹ ".into()),
+            (2, "FIRSTNOTE.".into()),
+            (3, "Next".into()),
+        ]),
+    )]);
+    let content = concat!(
+        "BT /F1 9 Tf 1 0 0 1 40 80 Tm\n",
+        "/Lbl <</MCID 0>> BDC /Span <</ActualText <FEFF00B9>>> BDC\n",
+        "[<0001>] TJ EMC EMC\n",
+        "/P <</MCID 1>> BDC /Span <</ActualText (not CID text)>> BDC\n",
+        "[<0002> -25] TJ EMC EMC ET\n",
+        "BT 3 Tr 1 0 0 1 50 90 Tm <0003> Tj 0 Tr ET\n",
+        "BT 1 0 0 1 60 100 Tm <0003> Tj\n",
+        "1 0 0 1 70 110 Tm <0002> Tj ET\n",
+    );
+    let runs = painted_content_runs(content, &fonts, 7);
+    assert_eq!(runs.len(), 3);
+    for (run, (x, y, text)) in runs.iter().zip([
+        (40.0, 80.0, "¹ FIRSTNOTE."),
+        (60.0, 100.0, "Next"),
+        (70.0, 110.0, "FIRSTNOTE."),
+    ]) {
+        assert_eq!(run.page, 7);
+        assert_eq!((run.x, run.y, run.size), (x, y, 9.0));
+        assert_eq!(run.text, text);
+    }
 }
 
 /// Match painted titles to actual clickable rectangles, then independently

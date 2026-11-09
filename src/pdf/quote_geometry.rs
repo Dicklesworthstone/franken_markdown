@@ -150,12 +150,11 @@ pub(super) fn layout(
             },
         );
         if !parts.leading.is_empty() {
-            layout_blocks(
-                &[Block::Paragraph(parts.leading.to_vec())],
-                child_indent,
-                out,
-                cx,
-            );
+            let leading = parts.leading.to_vec();
+            let marks = note_tags::cloned_inline_marks(parts.leading, &leading, &cx.links);
+            let previous = std::mem::replace(&mut cx.links.note_overrides, marks);
+            layout_blocks(&[Block::Paragraph(leading)], child_indent, out, cx);
+            cx.links.note_overrides = previous;
         }
         layout_blocks(parts.rest, child_indent, out, cx);
     } else {
@@ -359,6 +358,7 @@ fn text_minimum(text: &str, size: f32, slot: u8, cx: &LayoutCx<'_>) -> f32 {
         hard_break: false,
         literal: false,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         link: None,
         strike: false,
     }];

@@ -76,6 +76,7 @@ pub(super) fn push_token(
         hard_break: false,
         literal: false,
         list_label: false,
+        note_spans: crate::pdf::note_tags::Spans::default(),
         link,
         strike,
     });
@@ -335,6 +336,7 @@ mod tests {
             hard_break: false,
             literal: false,
             list_label: false,
+            note_spans: crate::pdf::note_tags::Spans::default(),
             link: Some(7),
             strike: true,
         }

@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Browser and WASM callers can inspect TTC/OTC collections and extract an
+  explicitly selected standalone font with the same bounded Rust implementation
+  as native commands. The helpers own exact input byte ranges before async
+  initialization, preserve typed error categories, and feed existing font slots
+  across HTML, PDF, SVG, EPUB and books. See [Font collections](docs/FONT_COLLECTIONS.md).
 - Book PDFs expose fidelity diagnostics from the layout that actually produced
   their bytes, including missing figures, font/math fallbacks and final
   pagination limitations. Additive native and WASM reported exports reuse the

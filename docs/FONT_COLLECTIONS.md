@@ -1,4 +1,4 @@
-# Native font collections
+# Font collections
 
 `fmd render`, `watch`, `batch`, and `book` accept TrueType/OpenType collections
 through the existing `--pdf-font SLOT=PATH` mappings. Select the face explicitly
@@ -89,6 +89,45 @@ let assets = FontAssets::default().with_slot(FontAssetSlot::BodyRegular, face)?;
 ```
 
 Both extractor functions return typed `CollectionError` values. Ordinary
-`Font::parse` and existing browser font transports continue to accept
-standalone fonts; a host can extract its selected face before passing those
-bytes to an existing API.
+`Font::parse` and renderer font slots continue to accept standalone fonts;
+collection extraction is an explicit host preparation step.
+
+## Browser and WASM callers
+
+The browser package exposes the same bounded extractor:
+
+```js
+import {
+  fontCollectionFaceCount,
+  extractFontCollectionFace,
+  renderPdf,
+} from '@franken-suite/franken-markdown';
+
+const collection = new Uint8Array(await file.arrayBuffer());
+const count = await fontCollectionFaceCount(collection);
+const selected = await extractFontCollectionFace(collection, 1);
+const pdf = await renderPdf('# Report', {
+  fontAssets: [{slot: 'body-regular', bytes: selected}],
+});
+```
+
+`extractFontCollectionFace` defaults to face zero when its index is omitted.
+Explicit indices must be integers from 0 through 1,023 and identify an existing
+face. The functions accept an `ArrayBuffer` or an exact typed-array/DataView
+range, copy that range before asynchronous initialization, and return owned
+data. Shared and detached buffers, empty inputs and inputs over 32 MiB are
+rejected. Neither function reads files, fetches resources, or discovers system
+fonts. A caller may reuse or change its input after calling the function.
+
+The selected bytes are an ordinary standalone font. Pass them through the
+existing font slots for HTML, PDF, SVG, EPUB, books and worker exports. Font
+validation, embedding permissions, variable-weight instancing, output-format
+support and publication resource budgets still apply. Inspecting a collection
+header alone does not validate every face's glyph programs.
+
+Failures are `FontCollectionError` values with stable `code` fields. Native
+extractor errors keep their `FONT_COLLECTION_` category and selected-face,
+table and offset context. Older generated packages without these exports
+produce `UNSUPPORTED_WASM_PACKAGE`; existing standalone-font rendering remains
+available. These helpers are also available on the object returned by
+`createRenderer`.

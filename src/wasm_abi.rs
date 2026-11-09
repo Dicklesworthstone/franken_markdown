@@ -43,6 +43,9 @@ mod authoring_profile_tests;
 mod svg;
 pub use svg::{render_svg_configured_profiled, render_svg_configured_resources};
 
+mod font_collection;
+pub use font_collection::{extract_font_collection_face, font_collection_face_count};
+
 /// Keep authoring-profile admission separate from the archival PDF profile.
 /// In particular, omission preserves the historical extension-enabled default;
 /// it is not the same as explicitly selecting CommonMark/GFM.

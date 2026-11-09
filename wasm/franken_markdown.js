@@ -57,6 +57,117 @@ export async function capabilities() {
   return parseJson(wasmCapabilities(), "capabilities JSON");
 }
 
+const FONT_COLLECTION_MAX_BYTES = 32 * 1024 * 1024;
+const FONT_COLLECTION_MAX_FACES = 1024;
+const FONT_COLLECTION_CODES = new Set([
+  "FONT_COLLECTION_NOT_COLLECTION", "FONT_COLLECTION_UNSUPPORTED_VERSION",
+  "FONT_COLLECTION_UNSUPPORTED_FACE_FORMAT", "FONT_COLLECTION_FACE_INDEX",
+  "FONT_COLLECTION_MALFORMED", "FONT_COLLECTION_DUPLICATE_TABLE",
+  "FONT_COLLECTION_MISSING_TABLE", "FONT_COLLECTION_LIMIT",
+]);
+
+/** Stable admission/extraction error; collection contents never become code or paths. */
+export class FontCollectionError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "FontCollectionError";
+    this.code = code;
+  }
+}
+
+function fontCollectionBinding(name) {
+  const binding = wasmBindings[name];
+  if (typeof binding !== "function") {
+    throw new FontCollectionError("UNSUPPORTED_WASM_PACKAGE",
+      `${name} requires a WASM package rebuilt from matching source with font collection support`);
+  }
+  return binding;
+}
+
+// Use intrinsic accessors for cross-realm buffers/views, including DataView and
+// multibyte typed arrays. A shadowed byteLength/buffer property cannot widen the
+// selected range or bypass admission. Shared buffers cannot provide a stable
+// snapshot; detached or out-of-bounds views fail before initialization.
+const collectionBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+const collectionTypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+function collectionViewField(view, field) {
+  try {
+    return Object.getOwnPropertyDescriptor(DataView.prototype, field).get.call(view);
+  } catch {
+    return Object.getOwnPropertyDescriptor(collectionTypedArrayPrototype, field).get.call(view);
+  }
+}
+
+function snapshotFontCollectionBytes(value) {
+  let view;
+  try {
+    const isView = ArrayBuffer.isView(value);
+    const buffer = isView ? collectionViewField(value, "buffer") : value;
+    const bufferLength = collectionBufferLength.call(buffer);
+    const offset = isView ? collectionViewField(value, "byteOffset") : 0;
+    const length = isView ? collectionViewField(value, "byteLength") : bufferLength;
+    if (length > FONT_COLLECTION_MAX_BYTES) {
+      throw new FontCollectionError("FONT_COLLECTION_LIMIT", "Font collections must not exceed 32 MiB");
+    }
+    view = new Uint8Array(buffer, offset, length);
+  } catch (error) {
+    if (error instanceof FontCollectionError) throw error;
+    throw new FontCollectionError("INVALID_FONT_BYTES",
+      "Font collection bytes must be an attached ArrayBuffer or ArrayBuffer view without shared memory");
+  }
+  if (view.byteLength === 0) {
+    throw new FontCollectionError("INVALID_FONT_BYTES", "Font collection bytes must not be empty");
+  }
+  return new Uint8Array(view);
+}
+
+function fontCollectionFailure(error) {
+  if (error instanceof FontCollectionError) return error;
+  const detail = typeof error === "string" ? error
+    : typeof error?.message === "string" ? error.message : "Font collection extraction failed";
+  const message = detail.slice(0, 2048);
+  const separator = message.indexOf(":");
+  const code = separator < 0 ? undefined : message.slice(0, separator);
+  return new FontCollectionError(FONT_COLLECTION_CODES.has(code) ? code : "FONT_COLLECTION_FAILED", message);
+}
+
+/** Inspect a TTC/OTC header; face contents are validated on extraction. */
+export async function fontCollectionFaceCount(bytes) {
+  const binding = fontCollectionBinding("fontCollectionFaceCount");
+  const snapshot = snapshotFontCollectionBytes(bytes);
+  await init();
+  try {
+    const count = binding(snapshot);
+    if (!Number.isInteger(count) || count < 1 || count > FONT_COLLECTION_MAX_FACES) {
+      throw new FontCollectionError("FONT_COLLECTION_FAILED", "Invalid face count returned by the WASM package");
+    }
+    return count;
+  } catch (error) {
+    throw fontCollectionFailure(error);
+  }
+}
+
+/** Extract standalone TTF/OTF bytes for any existing render, book or worker API. */
+export async function extractFontCollectionFace(bytes, faceIndex = 0) {
+  if (typeof faceIndex !== "number" || !Number.isInteger(faceIndex)
+      || faceIndex < 0 || faceIndex >= FONT_COLLECTION_MAX_FACES) {
+    throw new FontCollectionError("FONT_COLLECTION_FACE_INDEX",
+      "faceIndex must be an integer from 0 through 1023");
+  }
+  const binding = fontCollectionBinding("extractFontCollectionFace");
+  // Own exactly the requested byte range before even a warm init() yields.
+  const snapshot = snapshotFontCollectionBytes(bytes);
+  await init();
+  try {
+    const extracted = binding(snapshot, faceIndex);
+    // Keep returned bytes independent even if a future generator exposes a view
+    // over reusable WASM memory rather than copying the returned Vec<u8>.
+    return snapshotFontCollectionBytes(extracted);
+  } catch (error) {
+    throw fontCollectionFailure(error);
+  }
+}
+
 export async function renderHtml(markdown, options = {}) {
   const profile = normalizeAuthoringProfile(options.profile);
   const render = profile === undefined ? renderHtmlConfiguredAdvanced
@@ -1156,6 +1267,8 @@ export async function createRenderer(input) {
   await init(input);
   return Object.freeze({
     capabilities,
+    fontCollectionFaceCount,
+    extractFontCollectionFace,
     accessibilityAudit,
     documentStats,
     renderBookPdf,

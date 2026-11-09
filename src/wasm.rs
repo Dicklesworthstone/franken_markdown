@@ -16,6 +16,14 @@ use crate::{
 mod source_metadata;
 pub use source_metadata::{WasmSourceMetadata, source_metadata};
 
+/// Inspect a bounded TTC/OTC header using the same extractor as native hosts.
+/// Standalone fonts are rejected; individual faces are validated on extraction.
+pub use crate::text::collection_face_count as font_collection_face_count;
+/// Extract an owned, standalone SFNT face for any existing browser font slot.
+/// Input bytes remain unchanged; shared tables, offsets and checksums are handled
+/// by the dependency-free font core. Errors retain their typed collection context.
+pub use crate::text::extract_collection_face as extract_font_collection_face;
+
 /// Output kind requested by a browser/WASM caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmOutputFormat {
@@ -793,6 +801,7 @@ pub fn capabilities_json() -> String {
     "{\"schema\":\"fmd-wasm-capabilities-v1\",\
      \"outputs\":[\"html\",\"pdf\",\"svg\",\"epub\",\"interactive-html\",\"diff-html\",\"book-site\",\"book-pdf\"],\
      \"input\":\"markdown_utf8\",\
+     \"font_collections\":{\"formats\":[\"ttc\",\"otc\"],\"versions\":[1,2],\"max_bytes\":33554432,\"max_faces\":1024,\"output\":\"standalone_sfnt\"},\
      \"html\":{\"mime_type\":\"text/html; charset=utf-8\",\"self_contained\":true,\"custom_css_utf8\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_outline_formats\":[\"truetype_glyf\",\"opentype_cff1\"],\"font_slot_weight\":\"css_1_to_1000_variable_wght\"},\
      \"pdf\":{\"mime_type\":\"application/pdf\",\"deterministic_metadata_epoch\":true,\"image_assets\":\"png_svg_v0_host_supplied_bytes\",\"font_assets\":\"ttf_v0_host_supplied_bytes\",\"font_outline_formats\":[\"truetype_glyf\",\"opentype_cff1\"],\"font_slot_weight\":\"css_1_to_1000_variable_wght\",\"running_content\":{\"binding\":\"renderPdfConfiguredRunning\",\"slots\":[\"header.left\",\"header.center\",\"header.right\",\"footer.left\",\"footer.center\",\"footer.right\"],\"tokens\":[\"page\",\"pages\",\"title\",\"author\",\"date\"],\"rules\":true,\"skip_first_page\":true,\"images\":true,\"image_binding\":\"renderPdfConfiguredRunningImages\",\"image_positions\":[\"left\",\"right\"],\"image_height\":\"optional_positive_integer_points\"}},\
      \"diagnostics\":{\"source_spans\":\"byte_offsets\",\"json\":true},\

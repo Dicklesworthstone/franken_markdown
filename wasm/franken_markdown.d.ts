@@ -10,6 +10,26 @@ export type FmdOutputFormat =
 export type FmdFont = "sans" | "serif";
 export type FmdDarkMode = "auto" | "disabled";
 
+export type FmdFontCollectionBytes = ArrayBuffer | ArrayBufferView;
+export type FmdFontCollectionErrorCode =
+  | "INVALID_FONT_BYTES"
+  | "FONT_COLLECTION_NOT_COLLECTION"
+  | "FONT_COLLECTION_UNSUPPORTED_VERSION"
+  | "FONT_COLLECTION_UNSUPPORTED_FACE_FORMAT"
+  | "FONT_COLLECTION_FACE_INDEX"
+  | "FONT_COLLECTION_MALFORMED"
+  | "FONT_COLLECTION_DUPLICATE_TABLE"
+  | "FONT_COLLECTION_MISSING_TABLE"
+  | "FONT_COLLECTION_LIMIT"
+  | "FONT_COLLECTION_FAILED"
+  | "UNSUPPORTED_WASM_PACKAGE";
+
+/** Bounded input/extractor errors. Initialization failures retain their original errors. */
+export class FontCollectionError extends Error {
+  readonly code: FmdFontCollectionErrorCode;
+  constructor(code: FmdFontCollectionErrorCode, message: string);
+}
+
 export interface FmdDiagnostic {
   severity: "warning" | "error";
   start: number;
@@ -38,7 +58,7 @@ export type FmdFontAssetSlot =
 export interface FmdFontAsset {
   /** Renderer font slot to replace. Missing slots use bundled deterministic fallback fonts. */
   slot: FmdFontAssetSlot;
-  /** Browser-supplied TrueType font bytes. */
+  /** Standalone TrueType/OpenType bytes. Use extractFontCollectionFace for TTC/OTC inputs. */
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView;
   /**
    * Optional CSS `font-weight` pin (integer 1..=1000) for variable `wght` faces.
@@ -265,6 +285,14 @@ export interface FmdCapabilities {
   schema: "fmd-wasm-capabilities-v1";
   outputs: FmdOutputFormat[];
   input: "markdown_utf8";
+  /** Present in packages that expose the bounded TTC/OTC extractor. */
+  font_collections?: {
+    formats: ["ttc", "otc"];
+    versions: [1, 2];
+    max_bytes: 33554432;
+    max_faces: 1024;
+    output: "standalone_sfnt";
+  };
   html: {
     mime_type: "text/html; charset=utf-8";
     self_contained: boolean;
@@ -295,6 +323,8 @@ export interface FmdCapabilities {
 
 export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
+  fontCollectionFaceCount(bytes: FmdFontCollectionBytes): Promise<number>;
+  extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
   accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string): Promise<FmdDocumentStats>;
   renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdBookPdfOutput>;
@@ -378,6 +408,24 @@ export function init(
   input?: RequestInfo | URL | Response | BufferSource | WebAssembly.Module,
 ): Promise<void>;
 export function capabilities(): Promise<FmdCapabilities>;
+/**
+ * Inspect a TTC/OTC v1/v2 header and return 1..1024 faces. Individual face
+ * contents are validated by extraction. Standalone TTF/OTF inputs are refused.
+ * Snapshots exactly the supplied buffer/view before asynchronous initialization.
+ * Input must be nonempty, attached, nonshared, and at most 32 MiB.
+ * Requires matching generated WASM; stale packages fail with UNSUPPORTED_WASM_PACKAGE.
+ */
+export function fontCollectionFaceCount(bytes: FmdFontCollectionBytes): Promise<number>;
+/**
+ * Extract a zero-based face (default 0) as independent standalone TTF/OTF bytes
+ * usable in every existing fontAssets slot. faceIndex must be an integer 0..1023;
+ * the selected collection must contain it. The input is snapshotted before await
+ * and is never modified or detached. Input and extracted face are bounded at
+ * 32 MiB; malformed or unsupported fonts yield FontCollectionError.
+ * Extraction rebuilds offsets/checksums and removes invalidated signatures.
+ * Rendering performs its existing outline/metric and publication-budget checks.
+ */
+export function extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
 export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
 export function documentStats(markdown: string): Promise<FmdDocumentStats>;
 /** Publish ordered chapters with the same PDF typography, running bands and

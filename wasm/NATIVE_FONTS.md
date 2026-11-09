@@ -12,19 +12,34 @@ Newly generated workspace shells include **Document fonts** next to Save HTML
 when the embedded runtime supports background font updates. The dialog lists
 body regular, bold, italic, bold italic, and code/monospace slots with their
 current byte counts and optional weight pins. Each slot can keep its font,
-replace it from an explicitly selected local `.ttf` or `.otf` file, change an embedded
+replace it from an explicitly selected local `.ttf`, `.otf`, `.ttc` or `.otc` file, change an embedded
 font's weight pin, or return to the native default. Select the actions and choose
 **Apply fonts**: all changes are one transaction, never a partially applied batch.
 
-Local selection allows 32 MiB per file and 64 MiB across a batch; the runtime's
+For a TTC/OTC collection, enter the zero-based face index next to the file: zero
+selects its first face, one its second. Indices must be integers from zero
+through 1,023 and name an existing face. Leave the field blank for standalone
+fonts. Each slot may select a different face from the same collection. A
+collection hidden under a `.ttf`/`.otf` filename still requires an explicit
+index; filenames do not select a face implicitly.
+
+Local selection allows 32 MiB per file or selected face and 64 MiB across a batch
+of files or prepared faces; the runtime's
 128 MiB resulting image+font budget still applies. All selected metadata and
 weights are checked before the first read. Reads are abortable and have a
 10-second deadline. The native worker, not the filename or a JavaScript parser,
 decides whether the supplied font is actually supported. Supported programs
-include TrueType outlines and static, name-keyed CFF1 OpenType outlines; CFF2,
-CID-keyed CFF and unsupported used Type2 glyph programs are refused by the
-renderer. A file extension alone never establishes font validity. Collections,
-WOFF, font discovery, and remote-font fetching are not offered by this dialog.
+include TrueType outlines and supported CFF1 OpenType outlines, including
+bounded CID-keyed faces; CFF2 and unsupported used Type2 glyph programs are
+refused. A file extension alone never establishes font validity. WOFF, font
+discovery, and remote-font fetching are not offered by this dialog.
+
+Collection extraction runs in a disposable worker using the same Rust
+implementation as the native CLI. Only the selected standalone font reaches the
+existing whole-batch rendering preflight and saved resources. The original
+collection and its selector are not needed to reopen the saved HTML. Matching
+WASM bindings and worker code are required; an older workspace refuses
+collection selection explicitly while preserving ordinary standalone imports.
 
 **Cancel operation** aborts file reading or worker validation without altering
 committed fonts. Source edits, font-draft edits, text composition, view changes,
@@ -46,6 +61,15 @@ The dialog is excluded from browser printing.
 `window.__fmdNativeRuntime` provides `fontSlots` (immutable slot/byte-count/optional
 weight descriptions), `fontMode`, `fontsPending`, `cancelFonts()` and
 `applyFontsAsync(patches, markdown, preview, display, isCurrent)`.
+
+It also provides
+`extractFontCollectionFaceAsync(bytes, faceIndex, isCurrent)`. This method
+captures the exact input range before worker initialization and returns owned
+standalone bytes without changing any live or saved font. It shares the
+settings/font operation slot, supports `cancelFonts()`, and verifies the captured
+settings, images, fonts and caller revision before returning. Native
+`FONT_COLLECTION_*` errors retain their specific codes. Pass the resulting bytes
+to `applyFontsAsync` to validate and commit the complete proposed font batch.
 
 A batch contains one through five distinct slot patches:
 
@@ -100,7 +124,8 @@ Portable workspaces should use the background `applyFontsAsync` path.
 ## Verification
 
 ```sh
-node --test wasm/native_workspace_fonts.test.mjs wasm/native_workspace_font_files.test.mjs
+node --test wasm/native_workspace_fonts.test.mjs wasm/native_workspace_font_files.test.mjs \
+  wasm/native_workspace_font_collection.test.mjs
 CHROMIUM=/usr/bin/chromium python wasm/native_workspace_fonts_browser.py
 CHROMIUM=/usr/bin/chromium python wasm/native_workspace_font_controls_browser.py
 ```

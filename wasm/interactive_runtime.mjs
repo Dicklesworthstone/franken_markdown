@@ -889,6 +889,36 @@ export function bootNativeWorkspace(factory, createPreview) {
     get fontSlots() { return renderer?.fontSlots ?? null; },
     get fontsPending() { return Boolean(pendingSettings?.fonts); },
     cancelFonts() { if (pendingSettings?.fonts) cancelSettings(); },
+    extractFontCollectionFaceAsync(bytes, faceIndex, isCurrent = () => true) {
+      if (!renderer) throw failure ?? exportError('FONTS_NOT_READY', 'Native renderer is loading');
+      if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Font collections require the matching worker runtime');
+      if (suspended) throw exportError('FONTS_SUSPENDED', 'Font changes are suspended');
+      if (typeof isCurrent !== 'function') throw exportError('FONTS_OPTIONS', 'Invalid font selection ownership check');
+      if (pendingSettings || pendingExport) throw exportError('FONTS_BUSY', 'Finish or cancel the current document operation before selecting a font face');
+      const options = renderer.settings, images = payload.images, fonts = payload.fonts;
+      const operation = {fonts: true, worker: null, cancelled: false};
+      const check = () => {
+        if (operation.cancelled || suspended || pendingSettings !== operation
+            || options !== renderer.settings || images !== payload.images || fonts !== payload.fonts || !isCurrent()) {
+          throw exportError('FONTS_CANCELLED', 'Document or font selection changed; apply the current revision again');
+        }
+      };
+      pendingSettings = operation;
+      let extraction;
+      try {
+        check();
+        operation.worker = createPreview(factory, {...payload, options, images, fonts});
+        if (typeof operation.worker.extractFontCollectionFace !== 'function') throw exportError(
+          'UNSUPPORTED_WASM_PACKAGE', 'Font collections require the matching background worker runtime');
+        // Capture the exact byte view synchronously, before any initialization
+        // await. Extraction changes no live resource or saved document state.
+        extraction = operation.worker.extractFontCollectionFace(bytes, faceIndex);
+      } catch (error) { extraction = Promise.reject(error); }
+      return extraction.then(result => { check(); return result; }, error => { check(); throw error; }).finally(() => {
+        operation.worker?.dispose();
+        if (pendingSettings === operation) pendingSettings = null;
+      });
+    },
     applyFontsAsync(patches, markdown, preview, display = {scale: 1}, isCurrent = () => true) {
       if (!renderer) throw failure ?? exportError('FONTS_NOT_READY', 'Native renderer is loading');
       if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Font changes require the matching worker runtime');

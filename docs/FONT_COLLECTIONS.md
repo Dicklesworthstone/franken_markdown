@@ -131,3 +131,17 @@ table and offset context. Older generated packages without these exports
 produce `UNSUPPORTED_WASM_PACKAGE`; existing standalone-font rendering remains
 available. These helpers are also available on the object returned by
 `createRenderer`.
+
+## Browser font pickers
+
+The [book publisher](../wasm/BOOK_FONTS.md) and
+[portable native workspaces](../wasm/NATIVE_FONTS.md) provide a face-index field
+beside each local font selection. Both require an explicit index for collections,
+extract in background workers, and validate the complete proposed font batch
+before replacing live resources. Cancelling or changing the document/selection
+discards obsolete results. Their existing per-face and publication budgets
+remain in effect; the guides describe the different retention limits.
+
+Portable book backups and saved workspace HTML retain only selected standalone
+faces. They do not need the original collection to reopen, and source-only
+Markdown/project files do not acquire font access.

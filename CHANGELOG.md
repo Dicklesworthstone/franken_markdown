@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Portable native workspaces can select TTC/OTC faces from their Document fonts
+  dialog. Collection parsing stays in disposable workers; cancellation, stale
+  selections and rejected faces preserve the prior document. Save HTML embeds
+  only the selected standalone faces for subsequent HTML/PDF/SVG/EPUB exports.
 - The browser book font picker imports explicit TTC/OTC faces in background
   workers, then validates the whole proposed batch before replacing any role.
   Selected standalone faces survive previews, PDF/EPUB/site publication and

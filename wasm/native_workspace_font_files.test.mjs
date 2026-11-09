@@ -21,8 +21,8 @@ function host() {
     clearTimeout(id) { timers.delete(id); }};
 }
 
-test('local TTF and OTF metadata is captured with exact case-insensitive extension and bounded length', () => {
-  for (const name of ['字體.TTF', '字體.OTF', 'source-sans.otf']) {
+test('local standalone and collection metadata is captured with exact case-insensitive extension and bounded length', () => {
+  for (const name of ['字體.TTF', '字體.OTF', 'source-sans.otf', 'family.TTC', 'family.OTC']) {
     const selected = file(name), item = api.capture(selected);
     assert.equal(item.file, selected); assert.equal(item.size, 3); assert.ok(Object.isFrozen(item));
     assert.equal(api.capture(file(name, api.limits.fileBytes)).size, api.limits.fileBytes);
@@ -30,7 +30,7 @@ test('local TTF and OTF metadata is captured with exact case-insensitive extensi
 });
 
 test('unsupported names, controls, sizes and empty fonts reject before reading', () => {
-  for (const name of ['face.woff', 'face.woff2', 'face.ttc', 'face.otc', 'face.ttf.exe', 'face.otf.exe', '', 'a\0.ttf', 'a\n.otf', 'x'.repeat(1024)+'.ttf', 1, null]) {
+  for (const name of ['face.woff', 'face.woff2', 'face.ttf.exe', 'face.otf.exe', 'face.ttc.exe', 'face.otc.exe', '', 'a\0.ttf', 'a\n.otf', 'x'.repeat(1024)+'.ttf', 1, null]) {
     assert.throws(() => api.capture(file(name)), /local .ttf/);
   }
   for (const name of ['f.ttf', 'f.otf']) for (const size of [0, -1, 1.2, Infinity, NaN, '3', api.limits.fileBytes + 1]) assert.throws(() => api.capture(file(name, size)), /32 MiB/);

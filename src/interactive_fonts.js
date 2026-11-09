@@ -5,8 +5,8 @@ const FmdFontFiles = (() => {
   const limits = Object.freeze({fileBytes: 32 * 1024 * 1024, batchBytes: 64 * 1024 * 1024});
   function capture(file) {
     if (!file || typeof file.name !== 'string' || file.name.length > 1024
-        || /[\u0000-\u001f\u007f]/u.test(file.name) || !/\.(?:ttf|otf)$/i.test(file.name)) {
-      throw Error('Choose a local .ttf or .otf file; collections, WOFF and remote URLs are not supported');
+        || /[\u0000-\u001f\u007f]/u.test(file.name) || !/\.(?:ttf|otf|ttc|otc)$/i.test(file.name)) {
+      throw Error('Choose a local .ttf, .otf, .ttc or .otc file; WOFF and remote URLs are not supported');
     }
     if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > limits.fileBytes) {
       throw Error('Each font file must contain 1 byte through 32 MiB');
@@ -75,8 +75,8 @@ function fmdInstallDocumentFonts(doc = document) {
   dialog.style.cssText = 'width:min(92vw,48rem);max-height:85vh;overflow:auto;box-sizing:border-box;margin:auto;padding:24px;border:1px solid var(--border-color,#aaa);border-radius:8px;background:var(--bg-primary,#fff);color:var(--fg-primary,#222)';
   const form = make('form', undefined, dialog); form.noValidate = true;
   make('h2', 'Document fonts', form).id = 'fmd-fonts-title';
-  make('p', 'Choose local TrueType (.ttf) or OpenType (.otf) files for the five native font slots. Apply validates the entire batch in a background worker before changing the preview or saved fonts. Source and document settings stay unchanged.', form).id = 'fmd-fonts-help';
-  make('p', '32 MiB per file; 64 MiB per selected batch. Save HTML retains embedded fonts; Save Markdown does not. Use only fonts you have permission to embed. Blank weight uses the native default; pins are integers from 1 to 1000.', form);
+  make('p', 'Choose local TrueType (.ttf), OpenType (.otf), or font collection (.ttc/.otc) files for the five native font slots. Collections need an explicit face index, starting at zero. Apply selects and validates the fonts in background workers before changing the preview or saved fonts. Source and document settings stay unchanged.', form).id = 'fmd-fonts-help';
+  make('p', '32 MiB per file; 64 MiB per selected batch. Save HTML retains the selected font faces; Save Markdown does not. Use only fonts you have permission to embed. Blank weight uses the native default; pins are integers from 1 to 1000.', form);
   const slots = [['body-regular', 'Body regular'], ['body-bold', 'Body bold'], ['body-italic', 'Body italic'],
     ['body-bold-italic', 'Body bold italic'], ['mono-regular', 'Code / monospace']];
   const rows = slots.map(([slot, title]) => {
@@ -95,10 +95,12 @@ function fmdInstallDocumentFonts(doc = document) {
       ['weight', 'Change embedded font weight pin'], ['clear', 'Use native default']]) {
       const option = make('option', text, action); option.value = value;
     }
-    const file = label('Local font file', 'input', 'file'); file.type = 'file'; file.accept = '.ttf,.otf,font/ttf,font/otf';
+    const file = label('Local font file', 'input', 'file'); file.type = 'file'; file.accept = '.ttf,.otf,.ttc,.otc,font/ttf,font/otf,application/font-sfnt';
+    const face = label('Collection face index (0–1023; blank for standalone fonts)', 'input', 'face');
+    face.type = 'number'; face.min = '0'; face.max = '1023'; face.step = '1'; face.autocomplete = 'off';
     const weight = label('Weight pin (blank = native default)', 'input', 'weight');
     weight.type = 'number'; weight.min = '1'; weight.max = '1000'; weight.step = '1'; weight.autocomplete = 'off';
-    return {slot, action, file, weight, info};
+    return {slot, action, file, face, weight, info};
   });
   const status = make('p', 'Native renderer is initializing…', form);
   status.id = 'fmd-fonts-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
@@ -115,7 +117,7 @@ function fmdInstallDocumentFonts(doc = document) {
       theme: doc.body.classList.contains('theme-dark') ? 'dark'
         : doc.body.classList.contains('theme-light') ? 'light' : undefined};
   };
-  const entries = () => rows.map(row => ({slot: row.slot, action: row.action.value, weight: row.weight.value,
+  const entries = () => rows.map(row => ({slot: row.slot, action: row.action.value, weight: row.weight.value, face: row.face.value,
     file: row.file.files?.[0], count: row.file.files?.length ?? 0}));
   function refresh() {
     toggle.disabled = suspended || !native.fontSlots;
@@ -127,12 +129,13 @@ function fmdInstallDocumentFonts(doc = document) {
       row.info.textContent = !font ? 'Initializing…' : font.bytes
         ? `Embedded: ${font.bytes.toLocaleString()} bytes; ${font.weight === undefined ? 'native weight' : 'weight ' + font.weight}` : 'Native default';
       row.file.disabled = row.action.value !== 'file';
+      row.face.disabled = row.action.value !== 'file';
       row.weight.disabled = !['file', 'weight'].includes(row.action.value);
     }
   }
   function reset() {
     for (const row of rows) {
-      row.action.value = 'keep'; row.file.value = '';
+      row.action.value = 'keep'; row.file.value = ''; row.face.value = '';
       row.weight.value = native.fontSlots?.find(font => font.slot === row.slot)?.weight ?? '';
     }
     refresh();
@@ -172,7 +175,15 @@ function fmdInstallDocumentFonts(doc = document) {
       if (value && (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 1000)) throw Error('Weight pins must be integers from 1 through 1000, or blank');
       const patch = {slot: entry.slot, weight: value ? Number(value) : undefined};
       if (entry.action === 'file') {
-        if (entry.count !== 1) throw Error('Choose exactly one local .ttf or .otf file for each replacement slot');
+        if (entry.count !== 1) throw Error('Choose exactly one local .ttf, .otf, .ttc or .otc file for each replacement slot');
+        const face = entry.face.trim();
+        if (face && (!/^\d+$/.test(face) || !Number.isSafeInteger(Number(face)) || Number(face) > 1023)) {
+          throw Error('Collection face indices must be integers from 0 through 1023, or blank for standalone fonts');
+        }
+        if (face) patch.faceIndex = Number(face);
+        if (/\.(?:ttc|otc)$/i.test(entry.file?.name ?? '') && !face) {
+          throw Error('Choose a collection face index, starting at zero');
+        }
         patch.input = FmdFontFiles.capture(entry.file); total += patch.input.size;
         if (total > FmdFontFiles.limits.batchBytes) throw Error('Selected font files exceed the 64 MiB batch limit');
       } else if (!operation.fonts.find(font => font.slot === entry.slot)?.bytes) {
@@ -184,11 +195,28 @@ function fmdInstallDocumentFonts(doc = document) {
     pending = operation; refresh();
     try {
       check(operation);
+      let preparedBytes = 0;
       for (const patch of patches) {
         if (!patch.input) continue;
         status.textContent = `Reading local font for ${patch.slot}…`;
         patch.bytes = await FmdFontFiles.read(patch.input, win, operation, () => check(operation));
         delete patch.input;
+        const collection = patch.bytes.length >= 4 && patch.bytes[0] === 0x74 && patch.bytes[1] === 0x74
+          && patch.bytes[2] === 0x63 && patch.bytes[3] === 0x66;
+        if (collection && patch.faceIndex === undefined) throw Error('Choose a collection face index, starting at zero');
+        if (patch.faceIndex !== undefined) {
+          if (!collection) throw Error('A collection face index requires a TrueType/OpenType collection; leave it blank for a standalone font');
+          if (typeof native.extractFontCollectionFaceAsync !== 'function') throw Error('Font collections require a workspace exported with matching WASM bindings');
+          operation.preflight = true;
+          status.textContent = `Selecting collection face ${patch.faceIndex} for ${patch.slot} in background…`;
+          patch.bytes = await native.extractFontCollectionFaceAsync(patch.bytes, patch.faceIndex, () => {
+            try { check(operation); return true; } catch { return false; }
+          });
+          check(operation);
+          delete patch.faceIndex;
+        }
+        preparedBytes += patch.bytes.length;
+        if (preparedBytes > FmdFontFiles.limits.batchBytes) throw Error('Selected font faces exceed the 64 MiB batch limit');
       }
       check(operation);
       operation.preflight = true; status.textContent = 'Validating and rendering fonts in background…';

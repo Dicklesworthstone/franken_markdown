@@ -4,11 +4,15 @@ Uses the shared recording ABI adapter and explicit source/save host adapters,
 not compiled WASM, actual font shaping, or the full workspace controller.
 No installed fonts are read. Run with Python Playwright and CHROMIUM.
 """
+import base64
 import json
 import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
-from native_workspace_fonts_browser import RUNTIME, WORKER, INITIAL, INSTRUMENT
+from native_workspace_fonts_browser import (
+    RUNTIME, WORKER, INITIAL, INSTRUMENT, COLLECTION, SLOW_COLLECTION,
+    COLLECTION_FACES, LEGACY_BINDINGS,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROLS = (ROOT / 'src/interactive_fonts.js').read_text()
@@ -74,6 +78,9 @@ def main():
 
         def weight(slot, value):
             page.locator('#fmd-font-weight-' + slot).fill(value)
+
+        def face(slot, value):
+            page.locator('#fmd-font-face-' + slot).fill(value)
 
         def apply():
             page.locator('#btn-apply-fonts').click()
@@ -301,6 +308,132 @@ def main():
         page.emulate_media(media='screen')
         assert page.locator('#fmd-document-fonts').is_visible()
         check('Escape releases the file draft and production print CSS excludes the modal without changing screen state')
+
+        boot()
+        assert page.locator('#fmd-font-file-body-regular').get_attribute('accept').split(',')[:4] == ['.ttf', '.otf', '.ttc', '.otc']
+        assert page.locator('#fmd-font-face-body-regular').is_disabled()
+        select(data=COLLECTION, name='Family.ttc'); face('body-regular', '1'); weight('body-regular', '625')
+        select('body-bold', COLLECTION, 'Family.OTC'); face('body-bold', '0'); weight('body-bold', '750')
+        action('mono-regular', 'clear')
+        apply(); wait('Fonts applied')
+        expected_fonts = [list(COLLECTION_FACES[1]), list(COLLECTION_FACES[0]), [], [], []]
+        assert receipt()['fonts'] == expected_fonts
+        assert receipt()['weights'] == [625, 750, 0, 0, 0]
+        assert page.evaluate('collectionRequests') == [
+            {'faceIndex': 1, 'bytes': list(COLLECTION)}, {'faceIndex': 0, 'bytes': list(COLLECTION)}]
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0 && workersActive===0')
+        assert page.evaluate('workersMaximum') <= 2
+        assert page.evaluate('currentSource()') == ORIGINAL
+        assert page.evaluate('fontEvents') == 1 and page.evaluate('edits') == 0
+        saved = page.evaluate('JSON.parse(data.textContent)')
+        assert saved['fonts'] == [
+            {'slot': 'body-regular', 'bytes': base64.b64encode(COLLECTION_FACES[1]).decode(), 'weight': 625},
+            {'slot': 'body-bold', 'bytes': base64.b64encode(COLLECTION_FACES[0]).decode(), 'weight': 750}]
+        assert saved['options'] == INITIAL['options'] and saved['images'] == INITIAL['images']
+        assert page.locator('#fmd-font-face-body-regular').input_value() == ''
+        assert page.locator('#fmd-font-face-body-bold').input_value() == ''
+        assert page.evaluate('unloadBlocked()')
+        check('explicit TTC/OTC face selections and weights commit as one batch of standalone bytes, with all extraction and validation in real workers')
+
+        for kind in ['html', 'pdf', 'epub', 'svg']:
+            result = page.evaluate('''async kind=>{
+              const result=await native.exportDocument(kind,currentSource());
+              const text=new TextDecoder().decode(result.bytes);
+              if(kind==='html') return JSON.parse(new DOMParser().parseFromString(text,'text/html').querySelector('#receipt').textContent);
+              if(kind==='svg') return JSON.parse(new DOMParser().parseFromString(text,'image/svg+xml').querySelector('desc').textContent);
+              return JSON.parse(text.slice(text.indexOf('\\n')+1));
+            }''', kind)
+            assert result['fonts'] == expected_fonts and result['weights'] == [625, 750, 0, 0, 0], kind
+            assert result['source'] == ORIGINAL, kind
+        assert page.evaluate('collectionRequests.length') == 2
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0 && workersActive===0')
+        shell = page.evaluate('savedShell()')
+        page.goto('about:blank'); page.set_content(shell)
+        assert page.evaluate('native.ready')
+        page.locator('#btn-document-fonts').click()
+        assert page.evaluate('JSON.parse(data.textContent).fonts') == saved['fonts']
+        assert page.evaluate('currentSource()') == ORIGINAL
+        assert page.locator('#fmd-font-face-body-regular').input_value() == ''
+        assert page.locator('#fmd-font-face-body-bold').input_value() == ''
+        assert page.locator('#fmd-font-file-body-regular').evaluate('(e)=>e.files.length') == 0
+        assert page.evaluate('!unloadBlocked()')
+        page.evaluate('native.render(currentSource(),preview,{scale:1})')
+        assert receipt()['fonts'] == expected_fonts
+        assert page.evaluate('collectionRequests.length') == 0
+        check('the selected standalone faces reach all four publication formats and reopen from saved HTML without retaining collection files or selector drafts')
+
+        boot(); before = state(); select(); select('body-bold', COLLECTION, 'Family.ttc')
+        page.evaluate('''()=>{window.readCount=0;const Original=FileReader;
+          window.FileReader=class extends Original {constructor(){super();readCount++}};}''')
+        apply(); wait('Choose a collection face index')
+        assert state() == before and page.evaluate('readCount===0 && workersCreated===0 && !unloadBlocked()')
+        check('a missing face index on a later collection rejects the whole batch before any file is read')
+
+        for index in ['-1', '1.5', '1024']:
+            face('body-bold', index); apply(); wait('Collection face indices must be integers')
+            assert state() == before and page.evaluate('readCount===0 && workersCreated===0')
+        check('negative, fractional and excessive collection indices reject the entire draft before file reads or workers')
+
+        face('body-bold', '2'); apply(); wait('Fonts not applied')
+        assert 'FONT_COLLECTION_FACE_INDEX' in status() and 'two faces' in status()
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending && !unloadBlocked()')
+        face('body-bold', '1'); apply(); wait('Fonts applied')
+        assert receipt()['fonts'] == [[11, 12], list(COLLECTION_FACES[1]), [], [], [7, 8, 9]]
+        assert page.evaluate('fontEvents') == 1
+        check('a face outside the actual collection fails with the typed extraction error and preserves every slot; correcting the index allows one atomic retry')
+
+        boot(); before = state(); select(); select('body-bold', COLLECTION, 'Renamed.ttf')
+        apply(); wait('Choose a collection face index')
+        assert state() == before and page.evaluate('workersCreated===0 && !unloadBlocked()')
+        face('body-bold', '0'); apply(); wait('Fonts applied')
+        assert receipt()['fonts'][1] == list(COLLECTION_FACES[0])
+        check('collection magic requires explicit face selection even under a standalone filename, and explicitly selecting zero succeeds')
+
+        boot(); before = state(); select(); face('body-regular', '0')
+        apply(); wait('leave it blank for a standalone font')
+        assert state() == before and page.evaluate('workersCreated===0 && collectionRequests.length===0')
+        check('a stale collection index on a standalone file rejects without invoking extraction or changing committed resources')
+
+        boot(); before = state(); select(data=SLOW_COLLECTION, name='Slow.ttc'); face('body-regular', '1')
+        select('body-bold', b'\x22', 'Bold.ttf'); apply()
+        page.wait_for_function('()=>collectionRequests.length===1 && native.fontsPending')
+        assert 'Selecting collection face 1' in status()
+        page.locator('#btn-cancel-fonts').click()
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        assert page.locator('#btn-apply-fonts').is_enabled()
+        face('body-regular', '0'); apply(); wait('Fonts applied')
+        assert receipt()['fonts'] == [list(COLLECTION_FACES[0]), [34], [], [], [7, 8, 9]]
+        assert page.evaluate('fontEvents') == 1 and page.evaluate('mainCollectionCalls') == 0
+        check('cancelling extraction retires its worker and whole pending batch; a later selection commits without stale face bytes overwriting it')
+
+        boot(); before = state(); select(data=SLOW_COLLECTION, name='Slow.otc'); face('body-regular', '1'); apply()
+        page.wait_for_function('()=>collectionRequests.length===1 && native.fontsPending')
+        face('body-regular', '0')
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        assert page.locator('#fmd-font-face-body-regular').input_value() == '0'
+        apply(); wait('Fonts applied')
+        assert receipt()['fonts'][0] == list(COLLECTION_FACES[0]) and page.evaluate('fontEvents') == 1
+        check('editing the selected face while extraction runs cancels the captured draft and preserves the newer selector value for retry')
+
+        boot(); before = state(); select(data=SLOW_COLLECTION, name='Slow.ttc'); face('body-regular', '1'); apply()
+        page.wait_for_function('()=>collectionRequests.length===1 && native.fontsPending')
+        source_change('source changed during extraction', event=False)
+        wait('Fonts not applied')
+        now = state()
+        assert now['data'] == before['data'] and now['html'] == before['html'] and now['events'] == 0
+        assert now['source'] == 'source changed during extraction'
+        assert page.evaluate('workersActive===0 && !native.fontsPending && mainCollectionCalls===0')
+        check('the extraction revision guard catches silent source changes before any selected face can enter saved fonts or preview')
+
+        boot({**INITIAL, 'bindings': LEGACY_BINDINGS}); before = state()
+        select(data=COLLECTION, name='Family.ttc'); face('body-regular', '1'); apply()
+        wait('Fonts not applied')
+        assert 'matching WASM bindings with extractFontCollectionFace' in status()
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending && !unloadBlocked()')
+        select(); face('body-regular', ''); apply(); wait('Fonts applied')
+        assert receipt()['fonts'][0] == [11, 12]
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0')
+        check('an older embedded package gives a clear collection capability error and still imports standalone fonts through the same controls')
 
         page.goto('about:blank'); page.set_content(fixture(native=False))
         assert page.locator('#btn-document-fonts').count() == 0

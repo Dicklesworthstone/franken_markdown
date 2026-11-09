@@ -15,6 +15,13 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     return value && Object.hasOwn(reasons, value.code) && value.reason === reasons[value.code]
       ? value.reason : undefined;
   }
+  function collectionCode(value) {
+    const codes = ['FONT_COLLECTION_NOT_COLLECTION', 'FONT_COLLECTION_UNSUPPORTED_VERSION',
+      'FONT_COLLECTION_UNSUPPORTED_FACE_FORMAT', 'FONT_COLLECTION_FACE_INDEX', 'FONT_COLLECTION_MALFORMED',
+      'FONT_COLLECTION_DUPLICATE_TABLE', 'FONT_COLLECTION_MISSING_TABLE', 'FONT_COLLECTION_LIMIT'];
+    const code = value?.code ?? String(value?.message ?? value).split(':', 1)[0];
+    return codes.includes(code) ? code : undefined;
+  }
   function text(value, limit, name) {
     if (typeof value !== 'string' || value.length > limit) throw error('PREVIEW_LIMIT', name + ' exceeds its byte limit');
     let length = 0;
@@ -40,6 +47,37 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       // SVG parser. The core remains responsible for safe SVG serialization.
       const header = new TextDecoder().decode(bytes.subarray(0, 1024));
       if (!/^\s*(?:<\?xml\s[^?]*\?>\s*)?<svg(?:\s|>)/u.test(header)) throw new Error('Invalid SVG signature');
+    }
+  }
+  // Font tables are interpreted only by the Rust binding in the worker. The
+  // host admits and owns the exact selected range before initialization yields.
+  function collectionBytes(value, faceIndex) {
+    if (!Number.isSafeInteger(faceIndex) || faceIndex < 0 || faceIndex >= 1024) {
+      throw new RangeError('Collection face index must be an integer from 0 through 1023');
+    }
+    let buffer = value, offset = 0, length;
+    if (ArrayBuffer.isView(value)) {
+      const typed = Object.getPrototypeOf(Uint8Array.prototype);
+      let getters = typed;
+      try { Object.getOwnPropertyDescriptor(typed, 'buffer').get.call(value); }
+      catch { getters = DataView.prototype; }
+      const read = name => Object.getOwnPropertyDescriptor(getters, name).get.call(value);
+      buffer = read('buffer'); offset = read('byteOffset'); length = read('byteLength');
+    }
+    const size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(buffer);
+    const view = new Uint8Array(buffer, offset, length ?? size);
+    if (!view.length || view.length > 32 * 1024 * 1024) {
+      throw new RangeError('Each font collection must contain 1 byte through 32 MiB');
+    }
+    return new Uint8Array(view);
+  }
+  function validateCollectionFace(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 12 || bytes.length > 32 * 1024 * 1024
+        || !(bytes.buffer instanceof ArrayBuffer) || bytes.byteOffset !== 0
+        || bytes.byteLength !== bytes.buffer.byteLength) throw new Error('Invalid extracted font face');
+    const tag = String.fromCharCode(...bytes.subarray(0, 4));
+    if (tag !== '\x00\x01\x00\x00' && tag !== 'OTTO' && tag !== 'true') {
+      throw new Error('Extracted font must be a standalone TrueType or OpenType face');
     }
   }
   // Serialized into the worker too. Bound bytes before decoding/JSON parsing;
@@ -78,10 +116,10 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
   }
   // Worker-owned WASM and resource cache. No URLs or functions arrive in render
   // requests. A state revision replaces the renderer only after validation.
-  async function serve(makeRenderer, validatePublication, exportTypes, validateReport, paginationReason) {
+  async function serve(makeRenderer, validatePublication, exportTypes, validateReport, paginationReason, collectionBytes, validateCollectionFace, collectionCode) {
     let bindings = null, data = null, renderer = null, initialized = false;
     const report = (id, err) => self.postMessage({type: 'error', id,
-      code: err?.code === 'UNSUPPORTED_WASM_PACKAGE' || paginationReason(err) ? err.code : undefined,
+      code: err?.code === 'UNSUPPORTED_WASM_PACKAGE' || paginationReason(err) ? err.code : collectionCode(err),
       reason: paginationReason(err),
       message: String(err?.message ?? err).slice(0, 2048)});
     self.onmessage = async ({data: request}) => {
@@ -100,6 +138,15 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
             renderer = makeRenderer(bindings, data);
           } finally { URL.revokeObjectURL(url); }
           self.postMessage({type: 'ready'});
+        } else if (request?.type === 'font-collection' && renderer && Number.isSafeInteger(id) && id > 0) {
+          if (typeof bindings.extractFontCollectionFace !== 'function') throw Object.assign(
+            new Error('Font collections require matching WASM bindings with extractFontCollectionFace'),
+            {code: 'UNSUPPORTED_WASM_PACKAGE'});
+          const input = collectionBytes(request.bytes, request.faceIndex);
+          const bytes = bindings.extractFontCollectionFace(input, request.faceIndex);
+          validateCollectionFace(bytes);
+          self.postMessage({type: 'result', id, operation: 'font-collection', faceIndex: request.faceIndex,
+            bytes}, [bytes.buffer]);
         } else if (['render', 'export', 'analyze'].includes(request?.type) && renderer && Number.isSafeInteger(id) && id > 0) {
           if (request.state) {
             const next = {...data, options: request.state.options, images: request.state.images};
@@ -166,7 +213,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       } catch (err) { report(id, err); }
     };
   }
-  const source = `(${serve.toString()})(${factory.toString()}, ${validatePublication.toString()}, ${JSON.stringify(exportTypes)}, ${validateReport.toString()}, ${paginationReason.toString()});`;
+  const source = `(${serve.toString()})(${factory.toString()}, ${validatePublication.toString()}, ${JSON.stringify(exportTypes)}, ${validateReport.toString()}, ${paginationReason.toString()}, ${collectionBytes.toString()}, ${validateCollectionFace.toString()}, ${collectionCode.toString()});`;
   let worker = null, moduleUrl = null, timer = null, started = false, closed = false;
   let active = null, queued = null, sequence = 0;
   let lastOptions = null, lastImages = null;
@@ -219,6 +266,11 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       ? null : {options: active.options, images: active.images};
     deadline();
     try {
+      if (active.collection) {
+        worker.postMessage({type: 'font-collection', id: active.id, bytes: active.bytes,
+          faceIndex: active.faceIndex}, [active.bytes.buffer]);
+        return;
+      }
       worker.postMessage({type: active.kind ? 'analyze' : active.format ? 'export' : 'render',
         kind: active.kind, format: active.format,
         id: active.id, markdown: active.markdown, display: active.display, state});
@@ -243,12 +295,22 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       // Do not reuse a resource cache whose attempted revision was rejected.
       lastOptions = null; lastImages = null;
       const reason = job.format === 'pdf' ? paginationReason(result) : undefined;
-      const failure = error(result.code === 'UNSUPPORTED_WASM_PACKAGE' || reason ? result.code : 'PREVIEW_RENDER_FAILED',
+      const fontCode = job.collection ? collectionCode(result) : undefined;
+      const failure = error(result.code === 'UNSUPPORTED_WASM_PACKAGE' || reason ? result.code : fontCode ?? 'PREVIEW_RENDER_FAILED',
         String(result.message).slice(0, 2048));
       if (reason) failure.reason = reason;
       settle(job, null, failure);
     } else if (!job.settled) {
       try {
+        if (job.collection) {
+          if (result.operation !== 'font-collection' || result.faceIndex !== job.faceIndex) {
+            throw error('FONT_COLLECTION_PROTOCOL', 'Unexpected font collection selection');
+          }
+          try { validateCollectionFace(result.bytes); }
+          catch (failure) { throw error('FONT_COLLECTION_PROTOCOL', failure.message); }
+          settle(job, result.bytes);
+          dispatch(); return;
+        }
         if (job.kind) {
           if (result.kind !== job.kind || result.mimeType !== 'application/json'
               || !(result.bytes instanceof Uint8Array) || !(result.bytes.buffer instanceof ArrayBuffer)
@@ -313,6 +375,17 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
   return Object.freeze({
     get closed() { return closed; },
     get pendingOperations() { return Number(Boolean(active)) + Number(Boolean(queued)); },
+    extractFontCollectionFace(bytes, faceIndex) {
+      return new Promise((resolve, reject) => {
+        try {
+          if (closed) throw error('FONT_COLLECTION_CLOSED', 'Font collection worker is closed');
+          if (active || queued) throw error('FONT_COLLECTION_BUSY', 'A document operation is already running');
+          const owned = collectionBytes(bytes, faceIndex);
+          queued = {id: ++sequence, collection: true, bytes: owned, faceIndex, resolve, reject, settled: false};
+          start(); dispatch();
+        } catch (failure) { reject(failure); }
+      });
+    },
     render(markdown, display, state) {
       return new Promise((resolve, reject) => {
         if (closed) { reject(error('PREVIEW_CLOSED', 'Background preview is closed')); return; }
@@ -324,6 +397,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
           }
           if (active?.kind || queued?.kind) throw error('ANALYSIS_BUSY', 'A document analysis is already running');
           if (active?.format || queued?.format) throw error('EXPORT_BUSY', 'A document export is already running');
+          if (active?.collection || queued?.collection) throw error('FONT_COLLECTION_BUSY', 'A font collection selection is already running');
           // Admit before superseding a valid request. Resource records are private
           // committed immutable snapshots supplied by the owning workspace.
           const view = {scale: display.scale, theme: display.theme};
@@ -368,6 +442,9 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       });
     },
     invalidate() {
+      if (active?.collection || queued?.collection) {
+        stop(error('FONT_COLLECTION_CANCELLED', 'Font collection selection was cancelled')); return;
+      }
       if (active?.kind || queued?.kind) {
         stop(error('ANALYSIS_CANCELLED', 'Document analysis was cancelled')); return;
       }

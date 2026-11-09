@@ -4,6 +4,7 @@ The embedded ABI adapter records arguments and injects errors/delays; it does no
 compile WASM or validate/shape real fonts. No installed font file is used.
 Run: CHROMIUM=/usr/bin/chromium python wasm/native_workspace_fonts_browser.py
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,37 @@ export function renderSvgConfiguredResources(...args) {
 }
 export function accessibilityAudit() {return JSON.stringify({schema_version:'1',target:'pdf',findings:[]});}
 '''
+# These deliberately small envelopes model two distinguishable selected faces.
+# The recording adapter is not an SFNT/TTC parser; real extraction is exercised
+# separately by the native fixture tests and generated-WASM collection smoke.
+COLLECTION = b'ttcf\x00\x01\x00\x00\x00\x00\x00\x02\x00'
+SLOW_COLLECTION = COLLECTION[:-1] + b'\xfe'
+COLLECTION_FACES = (
+    b'\x00\x01\x00\x00\x00\x01\x00\x10\x00\x00\x00\x00\x0b\x0c',
+    b'OTTO\x00\x01\x00\x10\x00\x00\x00\x00\x15\x16',
+)
+LEGACY_BINDINGS = BINDINGS
+BINDINGS += r'''
+export function extractFontCollectionFace(bytes, faceIndex) {
+  if (typeof window !== 'undefined') {
+    window.mainCollectionCalls = (window.mainCollectionCalls || 0) + 1;
+    throw Error('Collection extraction ran on the UI thread');
+  }
+  if (bytes[0] !== 0x74 || bytes[1] !== 0x74 || bytes[2] !== 0x63 || bytes[3] !== 0x66) {
+    throw 'FONT_COLLECTION_NOT_COLLECTION: Expected the recording TTC fixture';
+  }
+  if (!Number.isSafeInteger(faceIndex) || faceIndex < 0 || faceIndex >= 2) {
+    throw 'FONT_COLLECTION_FACE_INDEX: The recording collection has two faces, indexed 0 and 1';
+  }
+  if (bytes[bytes.length - 1] === 254) {
+    const until = performance.now() + 500;
+    while (performance.now() < until) {}
+  }
+  return new Uint8Array(faceIndex === 0
+    ? [0,1,0,0,0,1,0,16,0,0,0,0,11,12]
+    : [79,84,84,79,0,1,0,16,0,0,0,0,21,22]);
+}
+'''
 INITIAL = {'version': 1, 'wasm': 'AA==', 'bindings': BINDINGS,
            'options': {'font': 'serif', 'darkMode': 'auto', 'fontScale': 1.25,
                        'title': 'Font document', 'pageNumbers': True, 'codeLineNumbers': False, 'toc': False},
@@ -55,6 +87,7 @@ INITIAL = {'version': 1, 'wasm': 'AA==', 'bindings': BINDINGS,
 INSTRUMENT = '''
 window.mainRenderCalls = 0; window.fontEvents = 0; window.workersCreated = 0;
 window.workersActive = 0; window.workersMaximum = 0;
+window.mainCollectionCalls = 0; window.collectionRequests = [];
 window.addEventListener('fmd-native-fonts-changed',()=>window.fontEvents++);
 const OriginalWorker = window.Worker;
 window.Worker = class extends OriginalWorker {
@@ -65,6 +98,12 @@ window.Worker = class extends OriginalWorker {
   terminate() {
     if (!this.stopped) {this.stopped=true;window.workersActive--;}
     return super.terminate();
+  }
+  postMessage(message, transfer) {
+    if (message?.type === 'font-collection') {
+      window.collectionRequests.push({faceIndex:message.faceIndex, bytes:Array.from(message.bytes)});
+    }
+    return super.postMessage(message, transfer);
   }
 };
 '''
@@ -113,6 +152,14 @@ def main():
               window.settled=null;
               window.job=apply(bytes||[11,12],source).then(value=>{settled={ok:true,value}},error=>{settled={ok:false,code:error.code,message:error.message}});
             }''', {'source': source, 'bytes': bytes})
+
+        def start_collection(data=COLLECTION, index=1):
+            page.evaluate('''({bytes,index})=>{
+              window.settled=null;
+              window.job=native.extractFontCollectionFaceAsync(new Uint8Array(bytes),index)
+                .then(value=>{settled={ok:true,bytes:Array.from(value)}},
+                      error=>{settled={ok:false,code:error.code,message:error.message}});
+            }''', {'bytes': list(data), 'index': index})
 
         def finish():
             page.wait_for_function('() => settled !== null'); return page.evaluate('settled')
@@ -283,6 +330,112 @@ def main():
             assert result is False
         assert state() == before and page.evaluate('workersCreated') == 0
         check('invalid patch admission happens before worker allocation or mutation')
+
+        boot(); before = state()
+        selected = page.evaluate('''async bytes=>{
+          const backing=new Uint8Array(bytes.length+2);backing.set(bytes,1);
+          const view=new DataView(backing.buffer,1,bytes.length);
+          const pending=native.extractFontCollectionFaceAsync(view,1);
+          backing.fill(255);
+          window.selectedFace=await pending;
+          return {bytes:Array.from(selectedFace),offset:selectedFace.byteOffset,
+            length:selectedFace.byteLength,bufferLength:selectedFace.buffer.byteLength};
+        }''', list(COLLECTION))
+        assert selected == {'bytes': list(COLLECTION_FACES[1]), 'offset': 0,
+                            'length': len(COLLECTION_FACES[1]), 'bufferLength': len(COLLECTION_FACES[1])}
+        assert state() == before
+        assert page.evaluate('collectionRequests') == [{'faceIndex': 1, 'bytes': list(COLLECTION)}]
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0 && workersActive===0 && !native.fontsPending')
+        check('collection selection snapshots only the supplied view before await, returns owned standalone bytes, and changes no live or saved font state')
+
+        page.evaluate('native.applyFontsAsync([{slot:"body-regular",bytes:selectedFace,weight:650}],"collection preview",preview,{scale:1})')
+        expected_fonts = [list(COLLECTION_FACES[1]), [], [], [], [7, 8, 9]]
+        assert receipt()['fonts'] == expected_fonts
+        saved = page.evaluate('JSON.parse(data.textContent)')
+        assert saved['fonts'][0] == {'slot': 'body-regular',
+                                    'bytes': base64.b64encode(COLLECTION_FACES[1]).decode(), 'weight': 650}
+        assert saved['images'] == INITIAL['images'] and saved['options'] == INITIAL['options']
+        for kind in ['html', 'pdf', 'epub', 'svg']:
+            published = page.evaluate('''async kind=>{
+              const result=await native.exportDocument(kind,'selected face publication');
+              const text=new TextDecoder().decode(result.bytes);
+              if(kind==='html') return JSON.parse(new DOMParser().parseFromString(text,'text/html').querySelector('#receipt').textContent);
+              if(kind==='svg') return JSON.parse(new DOMParser().parseFromString(text,'image/svg+xml').querySelector('desc').textContent);
+              return JSON.parse(text.slice(text.indexOf('\\n')+1));
+            }''', kind)
+            assert published['fonts'] == expected_fonts, kind
+            assert published['weights'] == [650, 0, 0, 0, 0], kind
+            assert published['source'] == 'selected face publication', kind
+        assert page.evaluate('collectionRequests.length') == 1
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0 && workersActive===0')
+        boot(saved)
+        page.evaluate('native.render("reopened collection face",preview,{scale:1})')
+        assert receipt()['fonts'] == expected_fonts and receipt()['weights'][0] == 650
+        assert page.evaluate('collectionRequests.length') == 0
+        check('selected standalone bytes and weight persist and reopen unchanged; HTML/PDF/EPUB/SVG workers receive the same selected face without re-extracting the collection')
+
+        boot(); before = state(); start_collection(index=2)
+        result = finish()
+        assert result['ok'] is False and result['code'] == 'FONT_COLLECTION_FACE_INDEX'
+        assert 'two faces' in result['message']
+        assert state() == before and page.evaluate('!native.fontsPending && workersActive===0')
+        start_collection(index=0)
+        assert finish()['bytes'] == list(COLLECTION_FACES[0])
+        assert state() == before and page.evaluate('mainCollectionCalls') == 0
+        check('an unavailable collection face retains its typed native error and all old state; explicit face zero remains independently selectable')
+
+        boot(); before = state()
+        for index in [-1, 0.5, 1024, '1', None]:
+            result = page.evaluate('''async ({bytes,index})=>{
+              try {await native.extractFontCollectionFaceAsync(new Uint8Array(bytes),index);return {accepted:true};}
+              catch(error){return {accepted:false,message:error.message};}
+            }''', {'bytes': list(COLLECTION), 'index': index})
+            assert result['accepted'] is False and 'integer from 0 through 1023' in result['message']
+        assert state() == before and page.evaluate('workersCreated===0 && !native.fontsPending')
+        check('collection face admission rejects missing, fractional, coerced and out-of-bound indices before starting a worker')
+
+        boot(); before = state(); start_collection(SLOW_COLLECTION)
+        page.wait_for_function('()=>collectionRequests.length===1')
+        assert page.evaluate('native.fontsPending && native.settingsPending')
+        page.evaluate('native.cancelFonts()')
+        assert finish()['code'] == 'FONTS_CANCELLED'
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        check('cancelling a dispatched collection selection terminates its real worker and leaves preview, saved bytes and events intact')
+
+        boot(); before = state()
+        page.evaluate('''bytes=>{
+          window.current=true;window.settled=null;
+          window.job=native.extractFontCollectionFaceAsync(new Uint8Array(bytes),1,()=>current)
+            .then(value=>{settled={ok:true}},error=>{settled={code:error.code}});
+        }''', list(SLOW_COLLECTION))
+        page.wait_for_function('()=>collectionRequests.length===1')
+        page.evaluate('current=false')
+        assert finish()['code'] == 'FONTS_CANCELLED'
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        check('a selection whose revision changes while its worker is running cannot publish or return stale face bytes')
+
+        boot(); before = state(); start_collection(SLOW_COLLECTION)
+        page.wait_for_function('()=>collectionRequests.length===1')
+        page.evaluate('''bytes=>{
+          native.cancelFonts();window.newResult=null;
+          window.newJob=native.extractFontCollectionFaceAsync(new Uint8Array(bytes),0)
+            .then(value=>{newResult={ok:true,bytes:Array.from(value)}},error=>{newResult={code:error.code}});
+        }''', list(SLOW_COLLECTION))
+        assert finish()['code'] == 'FONTS_CANCELLED'
+        page.wait_for_function('()=>newResult!==null')
+        assert page.evaluate('newResult') == {'ok': True, 'bytes': list(COLLECTION_FACES[0])}
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        check('completion of a cancelled collection job cannot cancel or overwrite a later explicit face selection')
+
+        boot({**INITIAL, 'bindings': LEGACY_BINDINGS}); before = state()
+        start_collection(); result = finish()
+        assert result['ok'] is False and result['code'] == 'UNSUPPORTED_WASM_PACKAGE'
+        assert 'matching WASM bindings with extractFontCollectionFace' in result['message']
+        assert state() == before and page.evaluate('workersActive===0 && !native.fontsPending')
+        page.evaluate('apply()')
+        assert receipt()['fonts'][0] == [11, 12]
+        assert page.evaluate('mainCollectionCalls===0 && mainRenderCalls===0')
+        check('older generated bindings clearly refuse collection selection while existing standalone font preflight remains available')
 
         assert requests == [], requests
         assert errors == [], errors

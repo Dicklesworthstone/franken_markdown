@@ -345,6 +345,7 @@ impl Json {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod source_location_budget_tests {
     use super::*;
 

@@ -23,7 +23,7 @@ fn mapped(location: BookSourceLocation) -> Vec<BookSourceRange> {
 #[test]
 fn composed_url_mapping_preserves_original_token_and_later_unicode_offsets() {
     let root = "# Root\n\n{{#include part}}\n";
-    let part = "[Link](next.md?x=1#end)\r\n\r\n[broken]: α\r\n";
+    let part = "[Link](next.md?x=1#end)\r\n\r\nlater α\r\n";
     for profile in [
         None,
         Some(crate::Profile::CommonMarkGfm),

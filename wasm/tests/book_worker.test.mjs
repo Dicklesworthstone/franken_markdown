@@ -312,3 +312,124 @@ test("UTF-8 counting preserves BOM and combining characters and refuses malforme
   const prepared = prepareBookInput(files);
   assert.deepEqual(prepared.files, files);
 });
+
+// These are transport/ownership probes; Rust's collection tests supply the
+// independent table/outline oracle. The face bytes below are envelope fixtures.
+const fontFace = index => new Uint8Array([0,1,0,0,0,0,0,0,0,0,0,index]);
+const collectionBytes = new Uint8Array([116,116,99,102,0,1,0,0,8,7,6,5]);
+
+test("font extraction sends only the selected exact collection view and returns independently owned SFNT", async () => {
+  const calls = [], original = new Uint8Array(collectionBytes.length + 4);
+  original.set(collectionBytes, 2);
+  const nativeFace = fontFace(1);
+  const t = transport({
+    async fontCollectionFaceCount(bytes) { calls.push(["count", [...bytes]]); return 2; },
+    async extractFontCollectionFace(bytes, index) { calls.push(["extract", [...bytes], index]); return nativeFace; },
+  });
+  const api = createBookWorkerClient({ workerFactory: t.factory });
+  const view = new DataView(original.buffer, 2, collectionBytes.length);
+  const pending = api.extractFontCollectionFace(view, 1);
+  original.fill(9); structuredClone(original.buffer, { transfer: [original.buffer] });
+  const result = await pending;
+  assert.deepEqual(calls, [["count", [...collectionBytes]], ["extract", [...collectionBytes], 1]]);
+  assert.deepEqual(Object.keys(t.received[0]).sort(), ["schemaVersion", "id", "format", "fontBytes", "faceIndex", "maxOutputBytes"].sort());
+  assert.equal(result.faceIndex, 1); assert.equal(result.faceCount, 2); assert.deepEqual(result.bytes, fontFace(1));
+  result.bytes.fill(99); assert.deepEqual(nativeFace, fontFace(1));
+  assert(t.workers[0].terminated); assert.equal(api.busy, false); assert.equal(api.hasRetainedBook, false);
+  api.dispose();
+});
+
+test("font extraction intrinsic byte ranges ignore shadowed host view fields", async () => {
+  const source = new Uint8Array([99,...collectionBytes,88]);
+  const selected = source.subarray(1, -1);
+  for (const field of ["buffer", "byteOffset", "byteLength"])
+    Object.defineProperty(selected, field, { get() { assert.fail(`must not access overridden ${field}`); } });
+  let captured;
+  const t = transport({ fontCollectionFaceCount: bytes => { captured = bytes; return 1; },
+    extractFontCollectionFace: () => fontFace(0) });
+  const api = createBookWorkerClient({ workerFactory: t.factory });
+  await api.extractFontCollectionFace(selected);
+  assert.deepEqual(captured, collectionBytes); api.dispose();
+});
+
+test("collection byte/index limits and pre-abort fail before allocating a worker", async () => {
+  const t = transport(), api = createBookWorkerClient({ workerFactory: t.factory });
+  for (const index of [-1, 0.5, 1024, Infinity, NaN, null, "0"])
+    await assert.rejects(api.extractFontCollectionFace(collectionBytes, index), code("FONT_COLLECTION_FACE_INDEX"));
+  for (const bytes of [null, "ttcf", new SharedArrayBuffer(12), new Uint8Array(new SharedArrayBuffer(12)),
+    new ArrayBuffer(0), new Uint8Array(32 * 1024 * 1024 + 1)])
+    await assert.rejects(api.extractFontCollectionFace(bytes));
+  const detached = collectionBytes.slice(); structuredClone(detached, { transfer: [detached.buffer] });
+  await assert.rejects(api.extractFontCollectionFace(detached));
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(api.extractFontCollectionFace(collectionBytes, 0, { signal: controller.signal }), code("EXPORT_CANCELLED"));
+  assert.equal(t.workers.length, 0); assert.equal(api.busy, false); api.dispose();
+});
+
+test("collection native capability gaps, face counts and size limits fail clearly without falling back", async () => {
+  for (const native of [{}, { fontCollectionFaceCount: () => 1 },
+    { extractFontCollectionFace: () => fontFace(0) }]) {
+    const t = transport(native), api = createBookWorkerClient({ workerFactory: t.factory });
+    await assert.rejects(api.extractFontCollectionFace(collectionBytes, 0), code("UNSUPPORTED_WASM_PACKAGE"));
+    assert(t.workers[0].terminated); api.dispose();
+  }
+  let extracts = 0;
+  const t = transport({ fontCollectionFaceCount: () => 2,
+    extractFontCollectionFace: () => { extracts++; return fontFace(0); } });
+  const api = createBookWorkerClient({ workerFactory: t.factory, maxOutputBytes: 11 });
+  await assert.rejects(api.extractFontCollectionFace(collectionBytes, 2), error =>
+    error.code === "FONT_COLLECTION_FACE_INDEX" && /2 faces.*0 through 1/.test(error.message));
+  assert.equal(extracts, 0);
+  await assert.rejects(api.extractFontCollectionFace(collectionBytes, 0), code("OUTPUT_LIMIT"));
+  assert.equal(extracts, 1); api.dispose();
+});
+
+test("collection response identity and standalone format are checked before publishing", async () => {
+  for (const patch of [{ faceIndex: 1 }, { faceCount: 0 }, { faceCount: 1025 }, { faceCount: undefined },
+    { sourceLength: 0 }, { bytes: collectionBytes }, { bytes: new Uint8Array(4) }]) {
+    const t = transport(), api = createBookWorkerClient({ workerFactory: t.factory });
+    const pending = api.extractFontCollectionFace(collectionBytes, 0);
+    t.workers[0].reply({ schemaVersion: 1, id: 1, format: "font-collection", sourceLength: collectionBytes.length,
+      bytes: fontFace(0), faceIndex: 0, faceCount: 1, ...patch });
+    await assert.rejects(pending, code("WORKER_PROTOCOL_ERROR"));
+    assert(t.workers[0].terminated); api.dispose();
+  }
+  const t = transport(), api = createBookWorkerClient({ workerFactory: t.factory });
+  const pending = api.extractFontCollectionFace(collectionBytes, 0);
+  t.workers[0].reply({ schemaVersion: 1, id: 1, format: "font-collection",
+    error: { code: "INVALID_FORMAT", message: "Choose pdf, epub or site" } });
+  await assert.rejects(pending, code("UNSUPPORTED_WASM_PACKAGE")); api.dispose();
+});
+
+test("cancelled collection extraction terminates synchronous native work and allows fresh publication", async () => {
+  const delayed = gate(), native = engine();
+  let extracting = false;
+  Object.assign(native, { fontCollectionFaceCount: () => 1,
+    extractFontCollectionFace: async () => { extracting = true; await delayed.promise; return fontFace(0); } });
+  const t = transport(native), api = createBookWorkerClient({ workerFactory: t.factory });
+  const controller = new AbortController();
+  const pending = api.extractFontCollectionFace(collectionBytes, 0, { signal: controller.signal });
+  while (!extracting) await tick();
+  await assert.rejects(api.render(files, "pdf"), code("BOOK_BUSY"));
+  controller.abort(); await assert.rejects(pending, code("EXPORT_CANCELLED"));
+  assert(t.workers[0].terminated);
+  assert.equal((await api.render(files, "pdf")).format, "book-pdf");
+  delayed.resolve(); await tick(); assert.equal(api.busy, false); api.dispose();
+});
+
+test("collection worker rejects book/source authority and malformed extraction results", async () => {
+  let calls = 0;
+  for (const extra of [{ files }, { options: {} }, { sourceUpdate: {} }, { sourceSet: {} }]) {
+    const scope = new EventTarget(), replies = [];
+    scope.postMessage = data => replies.push(data);
+    installBookWorker(scope, { fontCollectionFaceCount: () => { calls++; return 1; }, extractFontCollectionFace: () => fontFace(0) });
+    scope.dispatchEvent(new MessageEvent("message", { data: { schemaVersion: 1, id: 1, format: "font-collection",
+      fontBytes: collectionBytes, faceIndex: 0, maxOutputBytes: 1024, ...extra } }));
+    await tick(); assert.equal(replies[0].error.code, "WORKER_PROTOCOL_ERROR");
+  }
+  assert.equal(calls, 0);
+  const t = transport({ fontCollectionFaceCount: () => 1, extractFontCollectionFace: () => collectionBytes });
+  const api = createBookWorkerClient({ workerFactory: t.factory });
+  await assert.rejects(api.extractFontCollectionFace(collectionBytes, 0), code("WORKER_PROTOCOL_ERROR"));
+  api.dispose();
+});

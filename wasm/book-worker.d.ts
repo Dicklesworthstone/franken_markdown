@@ -45,6 +45,18 @@ export interface BookInspectionOutput {
 }
 export interface BookWorker {
   readonly busy: boolean;
+  /** Extract an explicitly selected TTC/OTC face in an isolated worker.
+   * Owns the exact input view before yielding; never transfers caller buffers.
+   * Collection and selected-face payloads are capped at 32 MiB, further bounded
+   * by this client's maxOutputBytes. The face is standalone SFNT and can be
+   * supplied to any existing font slot. No book/source/asset authority is read.
+   * Cancellation/timeout physically terminates extraction; an older package
+   * rejects with UNSUPPORTED_WASM_PACKAGE. This operation releases idle books. */
+  extractFontCollectionFace(
+    bytes: ArrayBuffer | ArrayBufferView,
+    faceIndex?: number,
+    request?: { signal?: AbortSignal },
+  ): Promise<{ readonly bytes: Uint8Array; readonly faceIndex: number; readonly faceCount: number }>;
   /** True for the selected-chapter worker protocol. Not a native ABI claim;
    * older custom worker adapters may omit this capability marker. */
   readonly supportsChapterPreview?: boolean;

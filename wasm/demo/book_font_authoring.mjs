@@ -1,4 +1,4 @@
-import { BOOK_FONT_LIMITS, BOOK_FONT_SLOTS, readBookFont } from "./book_font_assets.mjs";
+import { BOOK_FONT_LIMITS, BOOK_FONT_SLOTS, captureBookFont, readCapturedBookFont } from "./book_font_assets.mjs";
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 // A small native render validates the proposed faces even before a book has a
@@ -20,25 +20,44 @@ function selections(values, inventory) {
   if (!Array.isArray(values) || values.length < 1 || values.length > BOOK_FONT_SLOTS.length)
     throw failure("FONT_LIMIT", "Choose one through five font assignments.");
   const next = new Map(inventory.map(font => [font.slot, font.size])), seen = new Set(), selected = [];
+  const files = new Map();
   // Capture by index, not a caller-controlled iterator. Admit the FINAL store
   // before any file reads so replacing at capacity does not require headroom.
   for (let i = 0; i < values.length; i++) {
-    const { slot, file, weight } = values[i] ?? {};
+    const { slot, file, weight, faceIndex } = values[i] ?? {};
     if (!BOOK_FONT_SLOTS.includes(slot) || seen.has(slot))
       throw failure("INVALID_FONT_SLOT", "Choose each supported font role at most once.");
-    if (weight !== undefined && (!Number.isInteger(weight) || weight < 1 || weight > 1000))
-      throw failure("INVALID_FONT_WEIGHT", "Font weight must be blank or an integer from 1 through 1000.");
-    if (Object.prototype.toString.call(file) !== "[object File]" || typeof file.arrayBuffer !== "function"
-        || typeof file.name !== "string" || !/\.(?:ttf|otf)$/i.test(file.name))
-      throw failure("INVALID_FONT", "Choose a local TrueType (.ttf) or OpenType (.otf) file for each selected role.");
-    const size = file.size;
-    if (!Number.isSafeInteger(size) || size < 1 || size > BOOK_FONT_LIMITS.faceBytes)
-      throw failure("FONT_LIMIT", "Each font must contain 1 byte through 8 MiB.");
-    seen.add(slot); next.set(slot, size); selected.push({ slot, file, weight, size });
+    const selection = captureBookFont(file, slot, weight, faceIndex);
+    // Collection size does not predict its selected standalone face size. Admit
+    // the known minimum now and check the exact final store before PDF preflight.
+    seen.add(slot); next.set(slot, faceIndex === undefined ? selection.size : 1);
+    selected.push(selection); files.set(file, Math.max(files.get(file) ?? 0, selection.size));
   }
   if ([...next.values()].reduce((total, size) => total + size, 0) > BOOK_FONT_LIMITS.totalBytes)
     throw failure("FONT_LIMIT", "The resulting supplied font roles exceed 32 MiB.");
+  if ([...files.values()].reduce((total, size) => total + size, 0) > BOOK_FONT_LIMITS.selectedFileBytes)
+    throw failure("FONT_LIMIT", "Distinct selected font files exceed the 64 MiB read budget.");
   return selected;
+}
+
+function extractedFace(result, selection) {
+  const { bytes, faceIndex, faceCount } = result ?? {};
+  if (faceIndex !== selection.faceIndex || !Number.isInteger(faceCount) || faceCount < 1
+      || faceCount > 1024 || faceIndex >= faceCount || !(bytes instanceof Uint8Array)
+      || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
+      || bytes.length < 12)
+    throw failure("FONT_VALIDATION_FAILED", "The font worker did not return the selected collection face.");
+  if (bytes.length > BOOK_FONT_LIMITS.faceBytes)
+    throw failure("FONT_LIMIT", "The selected standalone face exceeds the 8 MiB per-role limit.");
+  const signature = String.fromCharCode(...bytes.subarray(0, 4));
+  if (!(bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0)
+      && signature !== "OTTO" && signature !== "true")
+    throw failure("FONT_VALIDATION_FAILED", "The font worker returned a collection instead of a standalone font face.");
+  const suffix = ` [face ${faceIndex}]`;
+  const name = selection.name.slice(0, BOOK_FONT_LIMITS.nameUnits - suffix.length).replace(/[\uD800-\uDBFF]$/u, "") + suffix;
+  // A custom worker adapter cannot mutate the bytes we will install after its
+  // Promise settles, or detach them while the PDF validation request runs.
+  return { name, bytes: new Uint8Array(bytes) };
 }
 
 function checkProbe(result) {
@@ -155,21 +174,47 @@ export function createBookFontAuthoring({ collection, controls, worker, timeoutM
       // Copy roles/File references before asynchronous admission so callers
       // cannot retarget a batch by modifying its array while files are read.
       let selected;
-      try { ready(); selected = selections(values, collection.fonts); }
+      try {
+        ready(); selected = selections(values, collection.fonts);
+        if (selected.some(selection => selection.faceIndex !== undefined)
+            && typeof worker.extractFontCollectionFace !== "function")
+          throw failure("UNSUPPORTED_WASM_PACKAGE", "Font collections require the matching renderer and book worker package.");
+      }
       catch (error) { return Promise.reject(error); }
       return begin(async job => {
         phase(job, "reading");
-        const reads = new Map(), assets = [];
+        const reads = new Map(), extracted = new Map(), assets = [];
         for (const selection of selected) {
+          phase(job, "reading");
           let asset = reads.get(selection.file);
           if (!asset) {
-            asset = await readBookFont(selection.file, selection.slot, selection.weight);
+            asset = await readCapturedBookFont(selection);
             current(job); reads.set(selection.file, asset);
           }
           if (asset.bytes.length !== selection.size)
             throw failure("FONT_READ_FAILED", "A selected font changed size; no fonts were assigned.");
-          assets.push({ ...asset, slot: selection.slot, weight: selection.weight });
+          if (selection.faceIndex !== undefined) {
+            let faces = extracted.get(selection.file);
+            if (!faces) { faces = new Map(); extracted.set(selection.file, faces); }
+            let face = faces.get(selection.faceIndex);
+            if (!face) {
+              phase(job, "extracting");
+              const result = await worker.extractFontCollectionFace(new Uint8Array(asset.bytes), selection.faceIndex,
+                { signal: job.abort.signal });
+              current(job); face = extractedFace(result, selection); faces.set(selection.faceIndex, face);
+            }
+            assets.push({ ...face, slot: selection.slot, weight: selection.weight });
+          } else {
+            if (asset.bytes[0] === 0x74 && asset.bytes[1] === 0x74 && asset.bytes[2] === 0x63 && asset.bytes[3] === 0x66)
+              throw failure("FONT_COLLECTION_FACE_INDEX", "This file contains a font collection; choose a zero-based face index for every assigned role.");
+            assets.push({ slot: selection.slot, name: asset.name, bytes: asset.bytes, weight: selection.weight });
+          }
         }
+        reads.clear(); extracted.clear();
+        const sizes = new Map(collection.fonts.map(font => [font.slot, font.size]));
+        for (const asset of assets) sizes.set(asset.slot, asset.bytes.length);
+        if ([...sizes.values()].reduce((total, size) => total + size, 0) > BOOK_FONT_LIMITS.totalBytes)
+          throw failure("FONT_LIMIT", "The resulting supplied font roles exceed 32 MiB.");
         phase(job, "validating");
         // Never transfer the private bytes that will be installed. The worker
         // also performs its normal input admission and private transport copies.

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The browser book font picker imports explicit TTC/OTC faces in background
+  workers, then validates the whole proposed batch before replacing any role.
+  Selected standalone faces survive previews, PDF/EPUB/site publication and
+  portable backups; source-only projects still grant no font access.
 - Browser and WASM callers can inspect TTC/OTC collections and extract an
   explicitly selected standalone font with the same bounded Rust implementation
   as native commands. The helpers own exact input byte ranges before async

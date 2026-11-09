@@ -252,3 +252,122 @@ test("abort from the commit notification cannot report rollback of already insta
   assert.equal(controller.signal.aborted, true); assert.equal(result.revision, 1);
   assert.equal(f.collection.fonts.length, 1); f.author.dispose();
 });
+
+const standaloneFace = (index = 0, length = 12) => {
+  const bytes = new Uint8Array(length); bytes.set([0,1,0,0]); bytes[11] = index; return bytes;
+};
+const collectionFile = (name = "Family.ttc") => file(name, [116,116,99,102,0,1,0,0,1,2,3,4]);
+const selectedFace = (slot, chosen, faceIndex, weight) => ({ slot, file: chosen, faceIndex, weight });
+
+test("one collection read serves distinct faces and repeated face roles while retaining only owned SFNT bytes", async () => {
+  const f = fixture({ delay: true }), chosen = collectionFile(), originalRead = chosen.arrayBuffer.bind(chosen);
+  let reads = 0; chosen.arrayBuffer = () => { reads++; return originalRead(); };
+  const extractions = [], replies = [];
+  f.engine.extractFontCollectionFace = async (bytes, faceIndex, { signal }) => {
+    extractions.push({ bytes: [...bytes], faceIndex, signal });
+    bytes.fill(19); // A host worker adapter cannot corrupt the next extraction's source.
+    const output = { bytes: standaloneFace(faceIndex), faceIndex, faceCount: 2 };
+    replies.push(output); return output;
+  };
+  const source = f.collection.files[0].source, images = f.collection.images;
+  const selections = [selectedFace("body-regular", chosen, 0, 400),
+    selectedFace("body-bold", chosen, 1, 700), selectedFace("body-italic", chosen, 0, 450)];
+  const pending = f.author.assign(selections);
+  selections[0].faceIndex = 1; selections[1].file = collectionFile("changed.otc");
+  chosen.arrayBuffer = () => { throw Error("captured reader must be used"); };
+  await waiting(f.engine);
+  assert.equal(reads, 1); assert.deepEqual(extractions.map(x => x.faceIndex), [0,1]);
+  assert.deepEqual(extractions[0].bytes, extractions[1].bytes);
+  assert.equal(f.collection.fonts.length, 0);
+  assert.deepEqual(f.engine.jobs[0].options.fontAssets.map(x => x.bytes[11]), [0,1,0]);
+  replies.forEach(reply => reply.bytes.fill(99));
+  f.engine.jobs[0].resolve(result()); await pending;
+  assert.equal(f.collection.revision, 1);
+  assert.deepEqual(f.collection.fonts.map(x => x.name), ["Family.ttc [face 0]", "Family.ttc [face 1]", "Family.ttc [face 0]"]);
+  assert.deepEqual(f.collection.fonts.map(x => x.weight), [400,700,450]);
+  assert.deepEqual(f.store.snapshot().map(x => [...x.bytes]), [standaloneFace(0), standaloneFace(1), standaloneFace(0)].map(x => [...x]));
+  assert.equal(f.collection.files[0].source, source); assert.equal(f.collection.images, images);
+  f.author.dispose();
+});
+
+test("missing collection-worker capability fails before reading and malformed face receipts never reach PDF preflight", async () => {
+  const f = fixture(), chosen = collectionFile(); let reads = 0;
+  const read = chosen.arrayBuffer.bind(chosen); chosen.arrayBuffer = () => { reads++; return read(); };
+  await assert.rejects(f.author.assign([selectedFace("body-regular", chosen, 0)]), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(reads, 0);
+  const valid = { bytes: standaloneFace(), faceIndex: 0, faceCount: 2 };
+  for (const value of [null, { ...valid, faceIndex: 1 }, { ...valid, faceCount: 0 },
+    { ...valid, faceCount: 1025 }, { ...valid, bytes: new Uint8Array([116,116,99,102,0,0,0,0,0,0,0,0]) },
+    { ...valid, bytes: new Uint8Array(new SharedArrayBuffer(12)) }]) {
+    f.engine.extractFontCollectionFace = async () => value;
+    await assert.rejects(f.author.assign([selectedFace("body-regular", chosen, 0)]), { code: "FONT_VALIDATION_FAILED" });
+    assert.equal(f.collection.fonts.length, 0); assert.equal(f.engine.jobs.length, 0);
+  }
+  f.author.dispose();
+});
+
+test("collection cancellation and stale source retire extraction without changing fonts or delaying retry", async () => {
+  for (const change of [f => f.author.cancel(), f => f.edit("new source"), f => f.author.suspend()]) {
+    const f = fixture(), gate = deferred(); let signal;
+    f.collection.setFonts([{ slot: "body-regular", name: "keep.ttf", bytes: new Uint8Array([9]) }], 0);
+    f.engine.extractFontCollectionFace = (_, __, request) => { signal = request.signal; return gate.promise; };
+    const pending = f.author.assign([selectedFace("body-regular", collectionFile(), 0)]);
+    for (let i = 0; i < 50 && !signal; i++) await tick(); assert(signal);
+    change(f); await assert.rejects(pending, { code: "FONT_CANCELLED" }); assert(signal.aborted);
+    assert.equal(f.collection.fonts[0].name, "keep.ttf"); assert.equal(f.engine.jobs.length, 0);
+    f.author.resume(); await f.author.assign([selected()]);
+    gate.resolve({ bytes: standaloneFace(), faceIndex: 0, faceCount: 1 }); await tick();
+    assert.equal(f.collection.fonts[0].name, "chosen.ttf"); f.author.dispose();
+  }
+});
+
+test("collection inputs and extracted output respect separate batch, face and final-store limits", async () => {
+  const f = fixture(); let reads = 0, extracts = 0;
+  class Huge extends File {
+    get size() { return 32 * 1024 * 1024; }
+    async arrayBuffer() { reads++; throw Error("must reject before reads"); }
+  }
+  f.engine.extractFontCollectionFace = async (_, faceIndex) => {
+    extracts++; return { bytes: standaloneFace(faceIndex, 8 * 1024 * 1024 + 1), faceIndex, faceCount: 1 };
+  };
+  await assert.rejects(f.author.assign(BOOK_FONT_SLOTS.slice(0, 3).map(slot =>
+    selectedFace(slot, new Huge(["x"], `${slot}.ttc`), 0))), { code: "FONT_LIMIT" });
+  assert.equal(reads, 0); assert.equal(extracts, 0);
+  await assert.rejects(f.author.assign([selectedFace("body-regular", collectionFile(), 0)]), { code: "FONT_LIMIT" });
+  assert.equal(f.engine.jobs.length, 0);
+  for (const slot of BOOK_FONT_SLOTS.slice(0, 4))
+    f.collection.setFonts([{ slot, name: `${slot}.ttf`, bytes: new Uint8Array(8 * 1024 * 1024) }], f.collection.revision);
+  f.engine.extractFontCollectionFace = async (_, faceIndex) => ({ bytes: standaloneFace(faceIndex), faceIndex, faceCount: 1 });
+  await f.author.assign([selectedFace("body-regular", collectionFile(), 0)]);
+  assert.equal(f.collection.fonts[0].size, 12); assert.equal(f.collection.fonts.length, 4);
+  f.engine.extractFontCollectionFace = async (_, faceIndex) => ({ bytes: standaloneFace(faceIndex, 8 * 1024 * 1024), faceIndex, faceCount: 1 });
+  const before = f.collection.revision;
+  await assert.rejects(f.author.assign([selectedFace("mono-regular", collectionFile(), 0)]), { code: "FONT_LIMIT" });
+  assert.equal(f.collection.revision, before); assert.equal(f.engine.jobs.length, 1); f.author.dispose();
+});
+
+test("a cached collection under a standalone extension still needs an explicit face for every role", async () => {
+  const f = fixture(), chosen = collectionFile("renamed.ttf");
+  f.engine.extractFontCollectionFace = async (_, faceIndex) => ({ bytes: standaloneFace(faceIndex), faceIndex, faceCount: 1 });
+  await assert.rejects(f.author.assign([selectedFace("body-regular", chosen, 0), selected("body-bold", chosen)]),
+    { code: "FONT_COLLECTION_FACE_INDEX" });
+  assert.equal(f.collection.fonts.length, 0); assert.equal(f.engine.jobs.length, 0); f.author.dispose();
+});
+
+test("repeated File metadata cannot undercharge the collection read budget", async () => {
+  const f = fixture(); let reads = 0;
+  const chosen = () => {
+    const value = collectionFile(); let observations = 0;
+    Object.defineProperty(value, "size", { get() { return observations++ ? 1 : 32 * 1024 * 1024; } });
+    value.arrayBuffer = async () => { reads++; throw Error("must reject before reading"); };
+    return value;
+  };
+  const a = chosen(), b = chosen(), c = chosen();
+  f.engine.extractFontCollectionFace = async () => { throw Error("must reject before extraction"); };
+  await assert.rejects(f.author.assign([
+    selectedFace(BOOK_FONT_SLOTS[0], a, 0), selectedFace(BOOK_FONT_SLOTS[1], b, 0),
+    selectedFace(BOOK_FONT_SLOTS[2], c, 0), selectedFace(BOOK_FONT_SLOTS[3], a, 1),
+    selectedFace(BOOK_FONT_SLOTS[4], b, 1),
+  ]), { code: "FONT_LIMIT" });
+  assert.equal(reads, 0); assert.equal(f.engine.jobs.length, 0); f.author.dispose();
+});

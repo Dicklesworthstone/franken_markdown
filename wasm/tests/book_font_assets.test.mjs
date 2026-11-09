@@ -131,3 +131,29 @@ test("failed or size-changing reads reject without exposing partial assignments"
     await assert.rejects(readBookFont(new Kind(["x"], "x.ttf"), S[0]), { code: "FONT_READ_FAILED" });
   }
 });
+
+test("TTC and OTC reading owns selected collection bytes without parsing or choosing an implicit face", async () => {
+  const bytes = new Uint8Array([116, 116, 99, 102, 0, 1, 0, 0]);
+  for (const name of ["Local.ttc", "Local.OTC", "CollectionWithLegacyName.ttf"]) {
+    const selected = new File([bytes], name);
+    const font = await readBookFont(selected, S[0], 550, 1);
+    assert.deepEqual(font, { slot: S[0], name, weight: 550, faceIndex: 1, bytes });
+    await assert.rejects(readBookFont(selected, S[0]), { code: "FONT_COLLECTION_FACE_INDEX" });
+  }
+});
+
+test("collection face indices and the independent input budget are admitted before reading", async () => {
+  let reads = 0;
+  class Counted extends File { async arrayBuffer() { reads++; return super.arrayBuffer(); } }
+  const file = new Counted(["collection"], "local.ttc");
+  for (const faceIndex of [undefined, null, -1, 0.5, 1024, NaN, Infinity, "0"]) {
+    await assert.rejects(readBookFont(file, S[0], undefined, faceIndex), { code: "FONT_COLLECTION_FACE_INDEX" });
+  }
+  class Huge extends Counted { get size() { return L.collectionBytes + 1; } }
+  await assert.rejects(readBookFont(new Huge(["x"], "huge.otc"), S[0], undefined, 0), { code: "FONT_LIMIT" });
+  assert.equal(reads, 0);
+  const font = await readBookFont(file, S[0], undefined, 0);
+  assert.equal(font.faceIndex, 0); assert.equal(reads, 1);
+  const larger = new File([new Uint8Array(L.faceBytes + 1)], "multiple.ttc");
+  assert.equal((await readBookFont(larger, S[0], undefined, 0)).bytes.length, L.faceBytes + 1);
+});

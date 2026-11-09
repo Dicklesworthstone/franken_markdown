@@ -10,6 +10,8 @@ const retained = createCachedBookRenderer(
 );
 installBookWorker(self, {
   ...book,
+  fontCollectionFaceCount: documents.fontCollectionFaceCount,
+  extractFontCollectionFace: documents.extractFontCollectionFace,
   renderBookPreview: (files, options) => renderBookPreview(book, files, options),
   renderBookSelectedPreview: (files, options, selected) => renderBookSelectedPreview(book, files, options, selected),
   renderRetainedBook: retained.render,

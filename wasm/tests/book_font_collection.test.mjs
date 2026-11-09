@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBookCollection } from "../demo/book_collection.mjs";
+import { File } from "node:buffer";
+import { readFileSync } from "node:fs";
+import { createBookCollection, readPortableBookProject } from "../demo/book_collection.mjs";
+import { createBookFontAuthoring } from "../demo/book_font_authoring.mjs";
 import { BOOK_FONT_SLOTS as S } from "../demo/book_font_assets.mjs";
 import { createBookBindings } from "../book_session.mjs";
 import { createBookWorkerClient, installBookWorker } from "../book_worker.mjs";
@@ -152,4 +155,51 @@ for (const format of ["links", "inspection"]) test(`${format} worker never reads
   } });
   try { await worker.render(input.files, format, options); }
   finally { worker.dispose(); }
+});
+
+test("selected collection SFNT survives portable recovery and reaches every publishing format without collection authority", async () => {
+  const b = book(), source = b.project();
+  // Real standalone CFF bytes exercise transport/storage fidelity. Only the
+  // collection extraction and PDF admission engines are explicit doubles here.
+  const standalone = new Uint8Array(readFileSync(new URL("../../tests/fixtures/fonts/source-sans-3/SourceSans3-Regular.otf", import.meta.url)));
+  const raw = new Uint8Array([116,116,99,102,0,1,0,0,1,2,3,4]);
+  let extracted = 0, admitted = 0;
+  const worker = transport({
+    fontCollectionFaceCount: bytes => { assert.deepEqual(bytes, raw); return 2; },
+    extractFontCollectionFace: (bytes, index) => { assert.deepEqual(bytes, raw); assert.equal(index, 1); extracted++; return standalone; },
+    renderBookPdf: (_, options) => {
+      admitted++; assert.deepEqual(options.fontAssets[0].bytes, standalone);
+      return { bytes: new TextEncoder().encode("%PDF-explicit-adapter"), sourceLength: 1 };
+    },
+  });
+  const controls = { sourceBusy: false, captureProject: () => b.project(),
+    checkpoint: () => String(b.revision), subscribeSourceState: () => () => {} };
+  const author = createBookFontAuthoring({ collection: b, controls, worker });
+  await author.assign([{ slot: S[0], file: new File([raw], "Family.otc"), faceIndex: 1, weight: 625 }]);
+  assert.equal(extracted, 1); assert.equal(admitted, 1);
+  assert.deepEqual(b.project(), source);
+  assert.equal(b.fonts[0].name, "Family.otc [face 1]");
+  assert.equal(b.fonts[0].size, standalone.length);
+  const saved = await b.portableDownload();
+  const review = await readPortableBookProject(new File([saved.blob], "book.fmdbook.bundle.json"));
+  assert.equal(review.fontBytes, standalone.length);
+  const restored = createBookCollection();
+  restored.replacePortableProject(review, restored.revision, { authorizeResources: true });
+  assert.deepEqual(restored.project(), source);
+  assert.equal(restored.fonts[0].name, "Family.otc [face 1]");
+  assert.deepEqual(restored.snapshot().options.fontAssets[0].bytes, standalone);
+  for (const format of ["pdf", "epub", "site", "preview"]) {
+    const method = { pdf: "renderBookPdf", epub: "renderBookEpub", site: "renderBookSite", preview: "renderBookPreview" }[format];
+    let received = false;
+    const exporter = transport({ [method]: async (_, options) => {
+      const font = options.fontAssets[0]; received = true;
+      assert.deepEqual(font.bytes, standalone); assert.equal(font.weight, 625);
+      assert.equal(Object.hasOwn(font, "faceIndex"), false);
+      return { bytes: new Uint8Array([1]), sourceLength: 13 };
+    } });
+    const input = restored.snapshot();
+    await exporter.render(input.files, format, input.options);
+    assert(received); exporter.dispose();
+  }
+  author.dispose(); b.dispose(); restored.dispose();
 });

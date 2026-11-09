@@ -1,7 +1,8 @@
 // Explicit, in-memory font authorization for the book workbench. Font parsing,
 // instancing and subsetting belong to Rust; no browser FontFace/network loads.
 const MIB = 1024 * 1024;
-export const BOOK_FONT_LIMITS = Object.freeze({ faceBytes: 8 * MIB, totalBytes: 32 * MIB, nameUnits: 512 });
+export const BOOK_FONT_LIMITS = Object.freeze({ faceBytes: 8 * MIB, totalBytes: 32 * MIB,
+  collectionBytes: 32 * MIB, selectedFileBytes: 64 * MIB, nameUnits: 512 });
 export const BOOK_FONT_SLOTS = Object.freeze([
   "body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular",
 ]);
@@ -91,25 +92,50 @@ export function createBookFontStore() {
   });
 }
 
-/** Read only a user-selected .ttf or .otf file. This admits bytes, not font validity or
- * embedding rights. The publishing engine remains responsible for parsing. */
-export async function readBookFont(file, slot, weight) {
+/** Capture local file authority and primitive settings before asynchronous work.
+ * A collection needs an explicit zero-based face; its tables are interpreted
+ * only by Rust in the publishing worker, never by this file-reader module. */
+export function captureBookFont(file, slot, weight, faceIndex) {
   slotName(slot); weightValue(weight);
+  if (faceIndex !== undefined && (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= 1024))
+    throw error("FONT_COLLECTION_FACE_INDEX", "Collection face must be an integer from 0 through 1023, or blank for a standalone font.");
   if (!file || Object.prototype.toString.call(file) !== "[object File]") {
-    throw error("INVALID_FONT", "Choose a local TrueType (.ttf) or OpenType (.otf) font file.");
+    throw error("INVALID_FONT", "Choose a local .ttf, .otf, .ttc or .otc font file.");
   }
   const name = fontName(file.name), size = file.size, read = file.arrayBuffer;
-  if (!/\.(?:ttf|otf)$/i.test(name) || typeof read !== "function") {
-    throw error("INVALID_FONT", "Choose a local .ttf or .otf file; WOFF and font collections are not supported here.");
+  if (!/\.(?:ttf|otf|ttc|otc)$/i.test(name) || typeof read !== "function") {
+    throw error("INVALID_FONT", "Choose a local .ttf, .otf, .ttc or .otc file; WOFF and remote fonts are not supported here.");
   }
-  if (!Number.isSafeInteger(size) || size < 1 || size > BOOK_FONT_LIMITS.faceBytes) {
-    throw error("FONT_LIMIT", "A selected font must contain 1 byte through 8 MiB.");
+  if (/\.(?:ttc|otc)$/i.test(name) && faceIndex === undefined)
+    throw error("FONT_COLLECTION_FACE_INDEX", "Choose a zero-based face index for this collection; 0 selects its first face.");
+  const maximum = faceIndex === undefined ? BOOK_FONT_LIMITS.faceBytes : BOOK_FONT_LIMITS.collectionBytes;
+  if (!Number.isSafeInteger(size) || size < 1 || size > maximum) {
+    throw error("FONT_LIMIT", faceIndex === undefined ? "A selected font must contain 1 byte through 8 MiB."
+      : "A selected font collection must contain 1 byte through 32 MiB.");
   }
+  return Object.freeze({ file, read, name, size, slot, weight,
+    ...(faceIndex === undefined ? {} : { faceIndex: faceIndex === 0 ? 0 : faceIndex }) });
+}
+
+/** Read a previously admitted selection without consulting mutable host metadata
+ * again. Collection bytes still require worker extraction before installation. */
+export async function readCapturedBookFont(selection) {
+  const { file, read, name, size, slot, weight, faceIndex } = selection;
   let buffer;
   try { buffer = await read.call(file); }
   catch { throw error("FONT_READ_FAILED", "The font file could not be read; the previous assignment was kept."); }
   if (Object.prototype.toString.call(buffer) !== "[object ArrayBuffer]" || buffer.byteLength !== size) {
     throw error("FONT_READ_FAILED", "The font file changed size while reading; the previous assignment was kept.");
   }
-  return { slot, name, weight, bytes: new Uint8Array(buffer) };
+  const bytes = new Uint8Array(buffer);
+  if (faceIndex === undefined && bytes[0] === 0x74 && bytes[1] === 0x74 && bytes[2] === 0x63 && bytes[3] === 0x66)
+    throw error("FONT_COLLECTION_FACE_INDEX", "This file contains a font collection; choose a zero-based face index before assigning it.");
+  return { slot, name, weight, bytes, ...(faceIndex === undefined ? {} : { faceIndex }) };
+}
+
+/** Read only an explicitly selected font file. This admits bytes, not font
+ * validity or embedding rights. Collections are returned with faceIndex for
+ * extraction by the publishing worker; standalone bytes preserve their shape. */
+export async function readBookFont(file, slot, weight, faceIndex) {
+  return readCapturedBookFont(captureBookFont(file, slot, weight, faceIndex));
 }

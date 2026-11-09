@@ -46,7 +46,8 @@ test("panel is idempotent, labels every role and keeps resource ownership explic
   assert.equal(f.get("book-font-status").getAttribute("role"), "status");
   assert.match(f.get("book-font-save-help").textContent, /not source-only projects/);
   for (const slot of BOOK_FONT_SLOTS) {
-    assert.equal(f.get(`book-font-file-${slot}`).accept, ".ttf,.otf,font/ttf,font/otf");
+    assert.equal(f.get(`book-font-file-${slot}`).accept, ".ttf,.otf,.ttc,.otc,font/ttf,font/otf,font/collection");
+    assert.equal(f.get(`book-font-face-${slot}`).getAttribute("aria-describedby"), "book-font-face-help");
     assert.equal(f.get(`book-font-weight-${slot}`).getAttribute("aria-describedby"), "book-font-weight-help");
     assert.equal(f.get(`book-font-remove-${slot}`).disabled, true);
   }
@@ -176,4 +177,45 @@ test("portable-restored metadata and resource revocation refresh without retaini
   assert.equal(f.get("book-font-file-body-regular").files.length, 0);
   assert.match(f.get("book-font-current-body-bold").textContent, /restored\.ttf.*600/);
   f.collection.revokeFonts(); assert.match(f.get("book-font-current-body-bold").textContent, /No supplied font/); f.ui.dispose();
+});
+
+test("collection selection requires an explicit index and retains only the selected face after preflight", async () => {
+  const f = fixture(), faceBytes = new Uint8Array([0,1,0,0,0,0,0,0,0,0,0,1]);
+  const requests = [];
+  f.engine.extractFontCollectionFace = async (bytes, faceIndex, { signal }) => {
+    requests.push({ bytes, faceIndex, signal });
+    return { bytes: faceBytes, faceIndex, faceCount: 3 };
+  };
+  f.choose("body-regular", "Family.ttc", "625");
+  await assert.rejects(f.ui.assign(), { code: "FONT_COLLECTION_FACE_INDEX" });
+  assert.equal(requests.length, 0); assert.equal(f.engine.jobs.length, 0);
+  const face = f.get("book-font-face-body-regular"); face.value = "1"; face.emit("input");
+  await f.ui.assign();
+  assert.equal(requests.length, 1); assert.equal(requests[0].faceIndex, 1);
+  assert.equal(f.collection.fonts[0].name, "Family.ttc [face 1]");
+  assert.equal(f.collection.fonts[0].weight, 625);
+  assert.deepEqual(f.store.snapshot()[0].bytes, faceBytes);
+  assert.deepEqual(f.engine.jobs[0].options.fontAssets[0].bytes, faceBytes);
+  assert.equal(face.value, ""); assert.equal(f.get("book-font-file-body-regular").files.length, 0);
+  f.ui.dispose();
+});
+
+test("invalid and silently changed face selections cannot install a different collection member", async () => {
+  const f = fixture(), extraction = deferred(); let calls = 0;
+  f.engine.extractFontCollectionFace = () => { calls++; return extraction.promise; };
+  f.choose("body-regular", "Faces.otc");
+  const face = f.get("book-font-face-body-regular");
+  for (const value of ["-1", "1024", "0.5", "0x1", "1e2", "NaN", "Infinity"]) {
+    face.value = value;
+    await assert.rejects(f.ui.assign(), { code: "FONT_COLLECTION_FACE_INDEX" });
+  }
+  assert.equal(calls, 0);
+  face.value = "0"; const pending = f.ui.assign();
+  await until(() => calls === 1); face.value = "1";
+  extraction.resolve({ bytes: new Uint8Array([0,1,0,0,0,0,0,0,0,0,0,0]), faceIndex: 0, faceCount: 2 });
+  await assert.rejects(pending, { code: "STALE_SOURCE" });
+  assert.equal(f.collection.fonts.length, 0); assert.equal(f.engine.jobs.length, 0);
+  assert.equal(face.value, "1");
+  f.choose("body-regular", "Replacement.ttc"); assert.equal(face.value, "");
+  f.ui.dispose();
 });

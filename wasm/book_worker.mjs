@@ -5,6 +5,8 @@ import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
+const FONT_COLLECTION_LIMIT = 32 * 1024 * 1024;
+const FONT_COLLECTION_FORMAT = "font-collection";
 const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
 const sourceFormats = new Set(["links", "diagnostics"]);
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
@@ -17,6 +19,7 @@ const formats = Object.freeze({
   inspection: ["inspectBook", "application/json", "json"],
   links: ["checkBookLinks", "application/json", "json"],
   diagnostics: ["checkBookSourceDiagnostics", "application/json", "json"],
+  [FONT_COLLECTION_FORMAT]: ["extractFontCollectionFace", "font/sfnt", "sfnt"],
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
@@ -55,6 +58,44 @@ function checkedOutput(bytes, sourceLength, maximum) {
   }
   if (bytes.byteLength === 0 || bytes.byteLength > maximum)
     throw bookError("OUTPUT_LIMIT", "Book output is empty or exceeds the output byte limit.");
+}
+
+// Collection extraction is a separate, data-only worker operation. It never
+// constructs a book or grants access to a chapter, image, URL or retained font.
+const collectionBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+function collectionViewField(value, field) {
+  try { return Object.getOwnPropertyDescriptor(DataView.prototype, field).get.call(value); }
+  catch { return Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), field).get.call(value); }
+}
+function prepareFontCollection(bytes, faceIndex) {
+  if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= 1024)
+    throw bookError("FONT_COLLECTION_FACE_INDEX", "Choose a zero-based collection face index from 0 through 1023.");
+  let view;
+  try {
+    const isView = ArrayBuffer.isView(bytes);
+    const buffer = isView ? collectionViewField(bytes, "buffer") : bytes;
+    const length = collectionBufferLength.call(buffer);
+    view = new Uint8Array(buffer, isView ? collectionViewField(bytes, "byteOffset") : 0,
+      isView ? collectionViewField(bytes, "byteLength") : length);
+  } catch {
+    throw bookError("INVALID_FONT_BYTES", "Font collection bytes need an attached, unshared ArrayBuffer or byte view.");
+  }
+  if (!view.length || view.length > FONT_COLLECTION_LIMIT)
+    throw bookError("FONT_COLLECTION_LIMIT", "A font collection must contain 1 byte through 32 MiB.");
+  return { fontBytes: new Uint8Array(view), faceIndex: faceIndex === 0 ? 0 : faceIndex };
+}
+
+function checkedFontFace(data, faceIndex, sourceLength, maximum) {
+  if (data.faceIndex !== faceIndex || data.sourceLength !== sourceLength
+      || !Number.isInteger(data.faceCount) || data.faceCount < 1 || data.faceCount > 1024
+      || faceIndex >= data.faceCount)
+    throw bookError("WORKER_PROTOCOL_ERROR", "Font worker replied for a different collection face.");
+  checkedOutput(data.bytes, data.sourceLength, Math.min(maximum, FONT_COLLECTION_LIMIT));
+  const bytes = data.bytes;
+  if (bytes.length < 12 || !((bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0)
+      || String.fromCharCode(...bytes.subarray(0, 4)) === "OTTO"
+      || String.fromCharCode(...bytes.subarray(0, 4)) === "true"))
+    throw bookError("WORKER_PROTOCOL_ERROR", "Font worker did not return a standalone TrueType or OpenType face.");
 }
 // Private scalar policy, independent of option containers passed to host
 // postMessage adapters. A worker must acknowledge it even when the first
@@ -302,6 +343,7 @@ export function createBookWorkerClient({
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
+    const extractingFont = format === FONT_COLLECTION_FORMAT;
     const selected = chapterSelection(format, selectedChapter);
     // Full links requests remain source-only and one-shot. Only an explicit
     // revision-fenced delta may check the already-authorized publication.
@@ -333,7 +375,9 @@ export function createBookWorkerClient({
         archive = null,
         fontEmbedding,
         authoringProfile,
-        chapterCount = null;
+        chapterCount = null,
+        collectionIndex = null,
+        collectionBytes = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
       function retireWorker(keep = false) {
@@ -391,7 +435,15 @@ export function createBookWorkerClient({
           }
           if (data.error) {
             const detail = diagnostic(data.error);
+            if (extractingFont && detail.code === "INVALID_FORMAT")
+              throw bookError("UNSUPPORTED_WASM_PACKAGE", "Font collections require the matching renderer and book worker package.");
             throw bookError(detail.code, detail.message);
+          }
+          if (extractingFont) {
+            checkedFontFace(data, collectionIndex, collectionBytes, maxOutputBytes);
+            finish(null, Object.freeze({ bytes: new Uint8Array(data.bytes),
+              faceIndex: collectionIndex, faceCount: data.faceCount }));
+            return;
           }
           if (retainingBook && data.retainedBook !== true)
             throw bookError("WORKER_PROTOCOL_ERROR", "Rebuild the matching book worker for retained publications.");
@@ -496,7 +548,11 @@ export function createBookWorkerClient({
           onAbort();
           return;
         }
-        if (!sourceOnly) input = prepareBookInput(
+        if (extractingFont) {
+          input = prepareFontCollection(files, options.faceIndex);
+          collectionIndex = input.faceIndex;
+          collectionBytes = input.fontBytes.length;
+        } else if (!sourceOnly) input = prepareBookInput(
           files,
           format === "inspection" ? {} : sourceFormats.has(format) ? bookLinkOptions(options) : options,
         );
@@ -505,16 +561,16 @@ export function createBookWorkerClient({
           onAbort();
           return;
         }
-        if (!sourceOnly) archive = archivalPolicy(input.options);
-        if (!sourceOnly) fontEmbedding = input.options.fontEmbedding;
-        if (!sourceOnly) authoringProfile = input.options.profile;
+        if (!sourceOnly && !extractingFont) archive = archivalPolicy(input.options);
+        if (!sourceOnly && !extractingFont) fontEmbedding = input.options.fontEmbedding;
+        if (!sourceOnly && !extractingFont) authoringProfile = input.options.profile;
         if (!sourceOnly && retaining) sources = captureSources(input);
         if (selected !== undefined) {
           chapterCount = (sourceOnly ? sources.files : input.files).length;
           chapterSelection(format, selected, chapterCount);
         }
         // Transfer only private copies, never detach caller-owned assets.
-        transfer = sourceOnly ? [] : [...input.options.images, ...input.options.fontAssets].map(
+        transfer = extractingFont ? [input.fontBytes.buffer] : sourceOnly ? [] : [...input.options.images, ...input.options.fontAssets].map(
           (asset) => asset.bytes.buffer,
         );
       } catch (error) {
@@ -569,6 +625,8 @@ export function createBookWorkerClient({
     // Protocol support, not a claim about the loaded native package.
     supportsChapterPreview: true,
     supportsSourceSet: true,
+    extractFontCollectionFace: (bytes, faceIndex = 0, request) =>
+      run(bytes, FONT_COLLECTION_FORMAT, { faceIndex }, request),
     render: (files, format, options, request) => run(files, format, options, request),
     renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
     renderSources: (files, format, options, request) => run(files, format, options, request, 2),
@@ -640,6 +698,29 @@ export function installBookWorker(scope, engine) {
       }
       busy = true;
       owned = true;
+      if (data.format === FONT_COLLECTION_FORMAT) {
+        if (data.retainBook || data.retainPreview || Object.hasOwn(data, "files")
+            || Object.hasOwn(data, "options") || Object.hasOwn(data, "sourceUpdate")
+            || Object.hasOwn(data, "sourceSet"))
+          throw bookError("WORKER_PROTOCOL_ERROR", "Font extraction must not carry book source or resource authority.");
+        releaseCapture();
+        const input = prepareFontCollection(data.fontBytes, data.faceIndex);
+        if (typeof engine.fontCollectionFaceCount !== "function"
+            || typeof engine.extractFontCollectionFace !== "function")
+          throw bookError("UNSUPPORTED_WASM_PACKAGE", "Font collections require the matching renderer and worker package.");
+        const faceCount = await engine.fontCollectionFaceCount(input.fontBytes);
+        if (!Number.isInteger(faceCount) || faceCount < 1 || faceCount > 1024)
+          throw bookError("WORKER_PROTOCOL_ERROR", "The font parser returned an invalid collection face count.");
+        if (input.faceIndex >= faceCount)
+          throw bookError("FONT_COLLECTION_FACE_INDEX", `This collection has ${faceCount} faces; choose an index from 0 through ${faceCount - 1}.`);
+        const selectedBytes = await engine.extractFontCollectionFace(input.fontBytes, input.faceIndex);
+        const result = { bytes: selectedBytes, faceIndex: input.faceIndex,
+          faceCount, sourceLength: input.fontBytes.length };
+        checkedFontFace(result, input.faceIndex, input.fontBytes.length, data.maxOutputBytes);
+        const bytes = new Uint8Array(selectedBytes);
+        scope.postMessage({ ...envelope, ...result, bytes }, [bytes.buffer]);
+        return;
+      }
       const mode = data.retainBook ? "book" : data.retainPreview ? "preview" : null;
       let input;
       const sourceSet = Object.hasOwn(data, "sourceSet");

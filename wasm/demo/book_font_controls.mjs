@@ -20,9 +20,10 @@ export function createBookFontPanel(root) {
   const panel = make("section", undefined, null, "book-font-panel");
   panel.setAttribute("aria-labelledby", "book-font-title");
   make("h2", "Book fonts", panel, "book-font-title");
-  make("p", "Assign local TrueType (.ttf) or OpenType (.otf) files to any of the five publishing roles. Choose one or several files, then validate and assign the batch. Files are checked by the existing native PDF engine before replacing any font. This works before adding a chapter; it does not certify whole-book glyph coverage.", panel, "book-font-help");
+  make("p", "Assign local TrueType (.ttf), OpenType (.otf), or collection (.ttc, .otc) files to any of the five publishing roles. Choose one or several files, then validate and assign the batch. Files are checked by the existing native PDF engine before replacing any font. This works before adding a chapter; it does not certify whole-book glyph coverage.", panel, "book-font-help");
   make("p", "Blank weight uses the renderer's role default. A weight pin must be an integer from 1 through 1000 and is interpreted by the engine for variable fonts. Reselect a file to change its pin. Unassigned roles use the engine's normal bundled/inherited fallback; changing the Sans/Serif selector does not revoke supplied fonts.", panel, "book-font-weight-help");
-  make("p", "Only assign fonts you have permission to embed. Fonts stay in this page session and are included in explicit portable backups, but not source-only projects or local-library saves. A source-only restore or page suspension revokes them. No font is uploaded or installed in your operating system. Limit: 8 MiB per role, 32 MiB total. Save a portable backup before removal; source undo does not restore fonts.", panel, "book-font-save-help");
+  make("p", "Collections require an explicit face index: 0 selects the first face, 1 the second. Leave it blank for a standalone font. Assign the same collection to different roles with different indices. Only each selected face is retained in the book and its portable backups.", panel, "book-font-face-help");
+  make("p", "Only assign fonts you have permission to embed. Fonts stay in this page session and are included in explicit portable backups, but not source-only projects or local-library saves. A source-only restore or page suspension revokes them. No font is uploaded or installed in your operating system. Limit: 8 MiB per selected face, 32 MiB total stored; 32 MiB per collection file and 64 MiB per selected batch of distinct files. Save a portable backup before removal; source undo does not restore fonts.", panel, "book-font-save-help");
   make("p", "No supplied fonts.", panel, "book-font-inventory");
   for (let i = 0; i < BOOK_FONT_SLOTS.length; i++) {
     const slot = BOOK_FONT_SLOTS[i], group = make("fieldset", undefined, panel);
@@ -33,8 +34,14 @@ export function createBookFontPanel(root) {
     const fileLabel = make("label", "Assign or replace font file", group);
     fileLabel.setAttribute("for", `book-font-file-${slot}`);
     const file = make("input", undefined, group, `book-font-file-${slot}`);
-    file.type = "file"; file.accept = ".ttf,.otf,font/ttf,font/otf";
+    file.type = "file"; file.accept = ".ttf,.otf,.ttc,.otc,font/ttf,font/otf,font/collection";
     file.setAttribute("aria-describedby", `book-font-current-${slot} book-font-help book-font-save-help`);
+    const faceLabel = make("label", "Collection face index (blank for standalone)", group);
+    faceLabel.setAttribute("for", `book-font-face-${slot}`);
+    const face = make("input", undefined, group, `book-font-face-${slot}`);
+    face.type = "text"; face.inputMode = "numeric"; face.maxLength = 4;
+    face.placeholder = "0 = first collection face"; face.autocomplete = "off";
+    face.setAttribute("aria-describedby", "book-font-face-help");
     const weightLabel = make("label", "Optional weight pin", group);
     weightLabel.setAttribute("for", `book-font-weight-${slot}`);
     const weight = make("input", undefined, group, `book-font-weight-${slot}`);
@@ -65,20 +72,21 @@ export function createBookFontControls({ root, collection, controls, worker, con
   const el = Object.fromEntries(ids.map(id => [id, root.querySelector(`#${id}`)]));
   const rows = BOOK_FONT_SLOTS.map(slot => ({ slot,
     file: root.querySelector(`#book-font-file-${slot}`), weight: root.querySelector(`#book-font-weight-${slot}`),
+    face: root.querySelector(`#book-font-face-${slot}`),
     current: root.querySelector(`#book-font-current-${slot}`), remove: root.querySelector(`#book-font-remove-${slot}`),
   }));
-  if (Object.values(el).some(node => !node) || rows.some(row => !row.file || !row.weight || !row.current || !row.remove)
+  if (Object.values(el).some(node => !node) || rows.some(row => !row.file || !row.weight || !row.face || !row.current || !row.remove)
       || typeof confirm !== "function") throw new TypeError("Book font controls and an explicit confirmation handler are required.");
   let disposed = false, suspended = false, operation = null, inventory = "";
   const unlisten = [], session = createBookFontAuthoring({ collection, controls, worker });
   const status = text => { if (!disposed) el["book-font-status"].textContent = text; };
   const drafts = () => rows.map(row => ({ file: row.file.files?.[0] ?? null,
-    count: row.file.files?.length ?? 0, weight: row.weight.value }));
+    count: row.file.files?.length ?? 0, weight: row.weight.value, face: row.face.value }));
   const matches = captured => drafts().every((now, i) => now.file === captured[i].file
-    && now.count === captured[i].count && now.weight === captured[i].weight);
+    && now.count === captured[i].count && now.weight === captured[i].weight && now.face === captured[i].face);
   function clearDrafts() {
     const fonts = new Map(collection.fonts.map(font => [font.slot, font]));
-    for (const row of rows) { row.file.value = ""; row.weight.value = String(fonts.get(row.slot)?.weight ?? ""); }
+    for (const row of rows) { row.file.value = ""; row.face.value = ""; row.weight.value = String(fonts.get(row.slot)?.weight ?? ""); }
   }
   function refresh() {
     if (disposed) return;
@@ -93,7 +101,7 @@ export function createBookFontControls({ root, collection, controls, worker, con
         : "No supplied font; normal engine fallback.";
       // Changing a draft can cancel a running operation instead of trapping the
       // user in an invalid choice. Silent draft edits are fenced by isCurrent.
-      row.file.disabled = row.weight.disabled = stopped;
+      row.file.disabled = row.weight.disabled = row.face.disabled = stopped;
       row.remove.disabled = stopped || busy || !font;
       if (row.file.files?.length) selected++;
     }
@@ -105,6 +113,7 @@ export function createBookFontControls({ root, collection, controls, worker, con
     el["book-font-panel"].setAttribute("aria-busy", String(busy));
     if (operation) {
       const message = { reading: "Reading selected font files; existing assignments are unchanged.",
+        extracting: "Extracting selected collection faces in the font worker; existing assignments are unchanged.",
         validating: "Validating proposed fonts through the native PDF worker; existing assignments are unchanged.",
         confirming: "Review font removal before confirming." }[session.phase];
       if (message) status(message);
@@ -144,7 +153,11 @@ export function createBookFontControls({ root, collection, controls, worker, con
       const raw = row.weight.value.trim();
       if (raw && (!/^\d{1,4}$/.test(raw) || Number(raw) < 1 || Number(raw) > 1000))
         throw failure("INVALID_FONT_WEIGHT", "Weight must be blank or an integer from 1 through 1000; no font was assigned.");
-      selected.push({ slot: row.slot, file: row.file.files[0], weight: raw ? Number(raw) : undefined });
+      const face = row.face.value.trim();
+      if (face && (!/^\d{1,4}$/.test(face) || Number(face) > 1023))
+        throw failure("FONT_COLLECTION_FACE_INDEX", "Collection face must be an integer from 0 through 1023, or blank for a standalone font.");
+      selected.push({ slot: row.slot, file: row.file.files[0], weight: raw ? Number(raw) : undefined,
+        faceIndex: face ? Number(face) : undefined });
     }
     return run(options => session.assign(selected, options),
       "Selected fonts passed native preflight and were assigned together. Rebuild the book preview or PDF proof to check the full document. Use a portable backup to retain these font bytes.");
@@ -160,7 +173,8 @@ export function createBookFontControls({ root, collection, controls, worker, con
     node.addEventListener(event, listener); unlisten.push(() => node.removeEventListener(event, listener));
   }
   for (const row of rows) {
-    for (const node of [row.file, row.weight]) {
+    on(row.file, "change", () => { row.face.value = ""; });
+    for (const node of [row.file, row.weight, row.face]) {
       on(node, "input", () => retire("Font selection changed. Validate the selected files when ready."));
       on(node, "change", () => retire("Font selection changed. Validate the selected files when ready."));
     }

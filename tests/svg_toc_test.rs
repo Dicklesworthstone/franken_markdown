@@ -50,10 +50,7 @@ fn views(svg: &str) -> Vec<(&str, f64)> {
 }
 
 fn assert_link_geometry(svg: &str) {
-    let root = svg
-        .lines()
-        .find(|line| line.starts_with("<svg "))
-        .unwrap();
+    let root = svg.lines().find(|line| line.starts_with("<svg ")).unwrap();
     let root_box: Vec<f64> = attr(root, "viewBox")
         .split_whitespace()
         .map(|part| part.parse().unwrap())
@@ -245,7 +242,7 @@ fn empty_headings_and_formatted_titles_have_exact_distinct_destinations() {
         [
             ("#fmd-heading-0", "Section"),
             ("#fmd-heading-1", "Section"),
-            ("#fmd-heading-2", "A &amp; B"),
+            ("#fmd-heading-2", "A &amp; B")
         ]
     );
     assert_eq!(svg.matches("href=\"https://example.com\"").count(), 1);
@@ -254,13 +251,15 @@ fn empty_headings_and_formatted_titles_have_exact_distinct_destinations() {
 
 #[test]
 fn narrow_long_outlines_wrap_and_all_entry_points_remain_deterministic() {
-    let title =
-        "A long multibyte résumé title with several words and aVeryLongUnbrokenSourceToken";
+    let title = "A long multibyte résumé title with several words and aVeryLongUnbrokenSourceToken";
     let document = parse_markdown(&format!("[TOC]\n\n# {title}\n\n###### Deep\n"));
-    let options = SvgOptions {
+    let mut options = SvgOptions {
         max_width_pt: 144.0,
         ..SvgOptions::default()
     };
+    // Keep a narrow 72pt content measure without requiring margin adjustment.
+    options.theme.page.margins.left_pt = 36.0;
+    options.theme.page.margins.right_pt = 36.0;
     let result = render_svg_with_diagnostics(&document, &options);
     assert!(result.2.is_empty(), "{:?}", result.2);
     assert_eq!(

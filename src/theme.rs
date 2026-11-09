@@ -609,6 +609,27 @@ impl Theme {
         }
     }
 
+    /// Resolve one shared syntax token against an effective document palette.
+    ///
+    /// Custom renderers can pass the result of [`Self::effective_colors`] to
+    /// use the same light, dark and high-contrast choices as HTML and PDF.
+    /// Plain text and punctuation retain the foreground; operators use the
+    /// numeric token color. No host appearance or environment is consulted.
+    #[must_use]
+    pub fn code_color<'a>(&self, colors: &'a ThemeColors, token: crate::highlight::Tok) -> &'a str {
+        use crate::highlight::Tok;
+        let syntax = self.code_colors(colors);
+        match token {
+            Tok::Plain | Tok::Punct => &colors.fg,
+            Tok::Keyword => syntax.keyword,
+            Tok::Type => syntax.type_name,
+            Tok::Func => syntax.function,
+            Tok::Str => syntax.string,
+            Tok::Number | Tok::Operator => syntax.number,
+            Tok::Comment => syntax.comment,
+        }
+    }
+
     /// The default sans theme.
     #[must_use]
     pub fn sans() -> Self {

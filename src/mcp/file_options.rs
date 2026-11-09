@@ -54,7 +54,10 @@ fn supports(target: &str, name: &str) -> bool {
         // have no effect there and must not masquerade as publication options.
         "epub" => html && !matches!(name, "allowRawHtml" | "interactiveHtml" | "htmlFontFormat"),
         // SVG resolves the shared font scale before measurement and painting.
-        "svg" => matches!(name, "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth"),
+        "svg" => matches!(
+            name,
+            "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth"
+        ),
         _ => false,
     }
 }

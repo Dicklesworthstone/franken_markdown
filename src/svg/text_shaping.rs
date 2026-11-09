@@ -7,7 +7,7 @@
 use std::cell::OnceCell;
 use std::ops::Range;
 
-use super::super::SLOT_COUNT;
+use super::super::{Ink, SLOT_COUNT};
 use super::{Op, Poster, RStyle, SvgWarning};
 use franken_markdown::text::{Kerning, Ligatures};
 
@@ -193,6 +193,45 @@ impl ShapedText {
         style: RStyle,
         size: f64,
     ) -> f64 {
+        self.paint_with_ink(poster, x, baseline, style, size, |_| style.ink)
+    }
+
+    /// Color a prepared run by source cluster without reshaping, splitting a
+    /// ligature/mark cluster or changing its measured and positioned glyphs.
+    /// Every glyph in a cluster uses the class of its first source byte.
+    pub(in super::super) fn paint_colored(
+        &self,
+        poster: &mut Poster,
+        x: f64,
+        baseline: f64,
+        style: RStyle,
+        size: f64,
+        mut source_ink: impl FnMut(usize) -> Ink,
+    ) -> f64 {
+        let mut cluster = 0;
+        self.paint_with_ink(poster, x, baseline, style, size, |glyph| {
+            while self
+                .clusters
+                .get(cluster)
+                .is_some_and(|entry| entry.glyphs.end <= glyph)
+            {
+                cluster += 1;
+            }
+            self.clusters
+                .get(cluster)
+                .map_or(style.ink, |entry| source_ink(entry.bytes.start))
+        })
+    }
+
+    fn paint_with_ink(
+        &self,
+        poster: &mut Poster,
+        x: f64,
+        baseline: f64,
+        style: RStyle,
+        size: f64,
+        mut glyph_ink: impl FnMut(usize) -> Ink,
+    ) -> f64 {
         if self.wrap_limited {
             poster.warnings.push(SvgWarning {
                 code: "svg_text_wrap_limit",
@@ -218,7 +257,7 @@ impl ShapedText {
                     x: pen + glyph.offset_x,
                     y: baseline - glyph.offset_y,
                     size,
-                    ink: style.ink,
+                    ink: glyph_ink(index),
                 });
             }
             pen += glyph.advance;

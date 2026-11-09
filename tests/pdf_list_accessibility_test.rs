@@ -447,7 +447,11 @@ fn nonparagraph_first_children_and_empty_items_keep_labels_outside_their_bodies(
                     }],
                 }])]),
                 item(Vec::new()),
-                item(vec![list(true, 7, vec![item(vec![paragraph("Nested item")])])]),
+                item(vec![list(
+                    true,
+                    7,
+                    vec![item(vec![paragraph("Nested item")])],
+                )]),
             ],
         )],
     };
@@ -491,8 +495,8 @@ fn nonparagraph_first_children_and_empty_items_keep_labels_outside_their_bodies(
 fn continued_items_keep_one_label_and_body_across_pages_and_emitters() {
     // Monosyllabic prose keeps exact text comparisons independent of optional
     // discretionary hyphens while still requiring several physical pages.
-    let prose = "A list has a link and its text runs on from page to page with each new line. "
-        .repeat(35);
+    let prose =
+        "A list has a link and its text runs on from page to page with each new line. ".repeat(35);
     let doc = Document {
         blocks: vec![Block::BlockQuote(vec![list(
             false,
@@ -503,11 +507,7 @@ fn continued_items_keep_one_label_and_body_across_pages_and_emitters() {
                     title: None,
                     content: vec![Inline::Text(prose.clone())],
                 }]),
-                list(
-                    true,
-                    12,
-                    vec![item(vec![paragraph("Nested continuation")])],
-                ),
+                list(true, 12, vec![item(vec![paragraph("Nested continuation")])]),
             ])],
         )])],
     };

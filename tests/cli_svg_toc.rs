@@ -67,11 +67,25 @@ fn svg_flags_frontmatter_and_explicit_markers_reach_the_same_renderer() {
     );
     run(
         &root,
-        &["metadata.md", "--to", "svg", "--out", "metadata.svg", "--no-config"],
+        &[
+            "metadata.md",
+            "--to",
+            "svg",
+            "--out",
+            "metadata.svg",
+            "--no-config",
+        ],
     );
     run(
         &root,
-        &["marker.md", "--to", "svg", "--out", "marker.svg", "--no-config"],
+        &[
+            "marker.md",
+            "--to",
+            "svg",
+            "--out",
+            "marker.svg",
+            "--no-config",
+        ],
     );
     for name in ["flags.svg", "metadata.svg", "marker.svg"] {
         assert_eq!(std::fs::read(root.join(name)).unwrap(), expected, "{name}");
@@ -80,7 +94,15 @@ fn svg_flags_frontmatter_and_explicit_markers_reach_the_same_renderer() {
     {
         run(
             &root,
-            &["batch", "metadata.md", "--to", "svg", "--out-dir", "batch", "--no-config"],
+            &[
+                "batch",
+                "metadata.md",
+                "--to",
+                "svg",
+                "--out-dir",
+                "batch",
+                "--no-config",
+            ],
         );
         assert_eq!(
             std::fs::read(root.join("batch/metadata.svg")).unwrap(),

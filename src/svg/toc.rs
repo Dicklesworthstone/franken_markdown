@@ -147,7 +147,12 @@ impl Contents {
     }
 
     pub(super) fn take_automatic(&mut self, target: HeadingTarget) -> bool {
-        if self.automatic && self.entries.first().is_some_and(|entry| entry.target == target) {
+        if self.automatic
+            && self
+                .entries
+                .first()
+                .is_some_and(|entry| entry.target == target)
+        {
             self.automatic = false;
             true
         } else {
@@ -219,7 +224,13 @@ impl Poster {
         }
     }
 
-    pub(super) fn table_of_contents(&mut self, depth: Option<u8>, l: f64, r: f64, quote: bool) -> bool {
+    pub(super) fn table_of_contents(
+        &mut self,
+        depth: Option<u8>,
+        l: f64,
+        r: f64,
+        quote: bool,
+    ) -> bool {
         if !self.contents.reserve(depth) {
             self.warn_toc_limit();
             return false;

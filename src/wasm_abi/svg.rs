@@ -397,7 +397,9 @@ mod tests {
     #[test]
     fn configured_navigation_reaches_native_outline_and_marker_depth() {
         let source = "Intro.\n\n# Main\n\n## Detail\n\n### Hidden\n";
-        let options = WasmRenderOptions::default().with_toc(true).with_toc_depth(2);
+        let options = WasmRenderOptions::default()
+            .with_toc(true)
+            .with_toc_depth(2);
         let result = render_with_options(source, &options, 360.0).unwrap();
         let expected = crate::render_svg(
             &crate::parse_markdown(source),

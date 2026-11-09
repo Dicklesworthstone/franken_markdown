@@ -60,6 +60,13 @@ radical/delimiter paths. `glyphs_drawn` counts emitted glyph uses, including mat
 
 ## Text flow
 
+Recognized fenced-code languages use the shared syntax highlighter and effective
+theme palette. Classification spans a complete fence, so multiline comments and
+strings retain their context through tab expansion and wrapping. Colors are
+applied to already-shaped glyph clusters; token boundaries never change the
+code's fonts, spacing, line breaks or panel height. Unknown languages stay plain.
+See [SVG code highlighting](SVG_CODE_HIGHLIGHTING.md) for usage and work limits.
+
 Styling boundaries do not insert spaces or create word breaks. Source spaces
 become explicit measured gaps; consecutive hard breaks retain blank lines.
 Inline-code spacing and nonbreaking spaces are preserved. Overlong tokens use
@@ -197,6 +204,13 @@ prepared documents, resource-bearing notes, cycles and PDF preparation parity.
 `src/svg/geometry_tests.rs` checks real painter placement and sizing, and
 `tests/mcp_svg_geometry_test.rs` compares configured file responses and saved
 artifacts against the native core.
+
+`src/svg/code_tests.rs` checks complete-fence classifications, UTF-8 and tab
+projection, positioned clusters, custom fonts and bounded fallback.
+`tests/svg_code_highlighting_test.rs` checks actual emitted token colors, exact
+geometry parity with plain code, nested/note fences, appearance, API parity and
+diagram priority. Color parity masks only glyph fill values; every other emitted
+byte remains part of the comparison.
 
 `src/svg/paragraph_plan_tests.rs` compares the production shared-breaker adapter
 with an independent exhaustive partition oracle and covers numeric admission,

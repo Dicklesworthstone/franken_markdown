@@ -62,6 +62,8 @@ const SLOT_CJK: usize = 7;
 const SLOT_COUNT: usize = 8;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
+#[path = "svg/code.rs"]
+mod code;
 #[path = "svg/financial_tables.rs"]
 mod financial_tables;
 #[path = "svg/geometry.rs"]
@@ -89,11 +91,11 @@ mod math_tests;
 mod table;
 #[path = "svg/text.rs"]
 mod text;
-#[path = "svg/toc.rs"]
-mod toc;
 #[cfg(test)]
 #[path = "svg/text_tests.rs"]
 mod text_tests;
+#[path = "svg/toc.rs"]
+mod toc;
 
 /// Options for the SVG poster backend.
 #[derive(Debug, Clone)]
@@ -310,13 +312,14 @@ enum Ink {
     QuoteFg,
     QuoteBar,
     Accent,
+    Syntax(franken_markdown::highlight::Tok),
     Rgb(franken_markdown::math::Color),
 }
 
 impl Ink {
     #[inline(always)]
-    fn write(self, colors: &ThemeColors, out: &mut String) {
-        let color = match self {
+    fn write(self, colors: &ThemeColors, syntax: &code::Palette, out: &mut String) {
+        let color: &str = match self {
             Self::Fg => &colors.fg,
             Self::FgMuted => &colors.fg_muted,
             Self::BgSubtle => &colors.bg_subtle,
@@ -326,6 +329,7 @@ impl Ink {
             Self::QuoteFg => &colors.quote_fg,
             Self::QuoteBar => &colors.quote_bar,
             Self::Accent => &colors.accent,
+            Self::Syntax(token) => syntax.color(token),
             Self::Rgb(color) => {
                 // Percentages retain numeric-model and mix precision without
                 // quantizing the engine's channels to an 8-bit palette.
@@ -459,6 +463,7 @@ struct Poster {
     navigation: RefCell<links::Navigation>,
     has_note_navigation: bool,
     contents: toc::Contents,
+    code: code::Highlighting,
     warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
@@ -499,6 +504,7 @@ impl Poster {
             navigation: RefCell::new(links::Navigation::default()),
             has_note_navigation: false,
             contents: toc::Contents::new(opts),
+            code: code::Highlighting::new(theme),
             warnings: geometry.warnings,
             colors: theme.effective_colors(false, false).clone(),
             scale: geometry.scale,
@@ -784,7 +790,11 @@ impl Poster {
             }
             Block::CodeBlock { lang, code } => {
                 // Mermaid diagrams draw as figures, as in HTML and PDF.
-                match franken_markdown::diagrams::figure_svg(code, lang.as_deref().unwrap_or("")) {
+                let language = lang.as_deref().unwrap_or("");
+                let diagram = code::bounded_language(language)
+                    .then(|| franken_markdown::diagrams::figure_svg(code, language))
+                    .flatten();
+                match diagram {
                     Some((svg, alt)) => {
                         let dest = format!(
                             "data:image/svg+xml;base64,{}",
@@ -797,7 +807,7 @@ impl Poster {
                         };
                         self.paragraph(std::slice::from_ref(&image), l, r, quote);
                     }
-                    None => self.code_panel(code, l, r),
+                    None => self.fenced_code_panel(code, lang.as_deref(), l, r),
                 }
             }
             Block::MathBlock(src) => self.math_block(src, l, r, quote),
@@ -955,37 +965,9 @@ impl Poster {
         self.text_lines(&pieces, size, l, r, quote, size * 0.7);
     }
 
-    /// Fenced code and unsupported math: mono face on a themed panel.
+    /// Plain source fallbacks retain the ordinary monospaced panel.
     fn code_panel(&mut self, code: &str, l: f64, r: f64) {
-        let size = f64::from(self.scale.code);
-        let leading = size * 1.45;
-        let pad = 8.0 * self.unit_scale();
-        let inset = (12.0 * self.unit_scale()).min((r - l).max(0.0) * 0.25);
-        let lines = self.code_words(code, size, r - l - 2.0 * inset);
-        let h = lines
-            .iter()
-            .map(|line| {
-                self.line_metrics(std::slice::from_ref(line), size * 0.8, leading)
-                    .1
-            })
-            .sum::<f64>()
-            + 2.0 * pad;
-        self.ops.push(Op::Rect {
-            x: l,
-            y: self.y,
-            w: r - l,
-            h,
-            fill: Ink::CodeBg,
-            stroke: Some(Ink::BorderMuted),
-        });
-        let mut ly = self.y + pad;
-        for line in &lines {
-            let row = std::slice::from_ref(line);
-            let (ascent, height) = self.line_metrics(row, size * 0.8, leading);
-            self.draw_words(row, l + inset, ly + ascent, size);
-            ly += height;
-        }
-        self.y += h + f64::from(self.scale.body) * 0.7;
+        self.fenced_code_panel(code, None, l, r);
     }
 
     fn blockquote(&mut self, inner: &[Block], l: f64, r: f64) {
@@ -1221,7 +1203,7 @@ impl Poster {
                     out.push_str("<path d=\"");
                     out.push_str(data);
                     out.push_str("\" fill=\"");
-                    ink.write(&self.colors, &mut out);
+                    ink.write(&self.colors, &self.code.palette, &mut out);
                     out.push_str("\"/>\n");
                 }
                 Op::Rect {
@@ -1241,11 +1223,11 @@ impl Poster {
                     out.push_str("\" height=\"");
                     push_q2(&mut out, *h);
                     out.push_str("\" fill=\"");
-                    fill.write(&self.colors, &mut out);
+                    fill.write(&self.colors, &self.code.palette, &mut out);
                     out.push('"');
                     if let Some(stroke) = stroke {
                         out.push_str(" stroke=\"");
-                        stroke.write(&self.colors, &mut out);
+                        stroke.write(&self.colors, &self.code.palette, &mut out);
                         out.push_str("\" stroke-width=\"0.5\"");
                     }
                     out.push_str("/>\n");
@@ -1267,7 +1249,7 @@ impl Poster {
                     out.push_str("\" y2=\"");
                     push_q2(&mut out, *y2);
                     out.push_str("\" stroke=\"");
-                    ink.write(&self.colors, &mut out);
+                    ink.write(&self.colors, &self.code.palette, &mut out);
                     out.push_str("\" stroke-width=\"");
                     push_q2(&mut out, *w);
                     out.push_str("\"/>\n");
@@ -1293,7 +1275,7 @@ impl Poster {
                     out.push_str(") scale(");
                     push_trim4(&mut out, *size / DEF_EM_PT);
                     out.push_str(")\" fill=\"");
-                    ink.write(&self.colors, &mut out);
+                    ink.write(&self.colors, &self.code.palette, &mut out);
                     out.push_str("\"/>\n");
                     drawn += 1;
                 }

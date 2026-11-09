@@ -120,8 +120,7 @@ fn repeated_outline_limits_keep_markers_visible_and_prior_forward_links_live() {
         svg.contains("<view id=\"fmd-heading-0\"") && svg.contains("<view id=\"fmd-heading-1\"")
     );
     let ordinary = parse_markdown("[TOC]\n\n# First\n\n## Second\n");
-    let (_, baseline) =
-        super::super::render_svg_with_report(&ordinary, &SvgOptions::default());
+    let (_, baseline) = super::super::render_svg_with_report(&ordinary, &SvgOptions::default());
     assert_eq!(
         report.glyphs_drawn,
         baseline.glyphs_drawn + 2 * "[TOC]".len()

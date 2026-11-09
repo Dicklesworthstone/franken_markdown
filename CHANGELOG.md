@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SVG fenced code uses the shared syntax lexer and theme palette, including
+  multiline tokens, supplied fonts and high-contrast appearances. Colors are
+  applied after shaping, preserving glyph positions, wrapping and panel
+  geometry. Bounded classification retains complete plain source on refusal;
+  existing native and WASM SVG exports share the behavior. See
+  [SVG code highlighting](docs/SVG_CODE_HIGHLIGHTING.md).
 - The book workbench reopens externally edited source folders using current
   Markdown files and the exported manifest's chapter order, include-only roles
   and applied settings. A cancellable review validates the entire selection

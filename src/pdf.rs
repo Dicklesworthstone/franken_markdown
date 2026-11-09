@@ -55,6 +55,7 @@ mod inline_math_fit;
 mod joint_pagination;
 mod jpeg_color;
 mod jpeg_orientation;
+pub(crate) mod language;
 mod list_geometry;
 mod list_labels;
 #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
@@ -1634,6 +1635,12 @@ struct FlowMark {
     /// This is an anchor only: unlike `note`, it never creates a page-foot
     /// region or removes the line from ordinary pagination.
     note_destination: u32,
+    /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
+    /// its source block. Language strings are shared once per render.
+    language_scope: u32,
+    /// Generated TOC content uses the document language without breaking
+    /// the chapter ownership of its enclosing source list or quote.
+    document_language: bool,
 }
 
 impl Default for FlowMark {
@@ -1647,6 +1654,8 @@ impl Default for FlowMark {
             heading_level: 0,
             note: 0,
             note_destination: 0,
+            language_scope: language::UNASSIGNED,
+            document_language: false,
         }
     }
 }
@@ -3026,9 +3035,10 @@ fn fit_to_target_pages(
     opts: &PdfOptions,
     faces: &Faces,
     target_pages: usize,
+    languages: &language::Context,
 ) -> (PdfOptions, PageGeom) {
     let base_page = PageGeom::from_theme(&opts.theme);
-    let initial_pages = layout_with_pagination_report(&doc.blocks, opts, faces, base_page)
+    let initial_pages = layout_with_languages(&doc.blocks, opts, faces, base_page, languages)
         .ok()
         .and_then(|(lines, _)| page_count_for_fit(&lines, base_page, opts));
 
@@ -3064,10 +3074,15 @@ fn fit_to_target_pages(
         };
 
         let candidate_page = PageGeom::from_theme(&candidate_opts.theme);
-        let pages =
-            layout_with_pagination_report(&doc.blocks, &candidate_opts, faces, candidate_page)
-                .ok()
-                .and_then(|(lines, _)| page_count_for_fit(&lines, candidate_page, &candidate_opts));
+        let pages = layout_with_languages(
+            &doc.blocks,
+            &candidate_opts,
+            faces,
+            candidate_page,
+            languages,
+        )
+        .ok()
+        .and_then(|(lines, _)| page_count_for_fit(&lines, candidate_page, &candidate_opts));
 
         if pages.is_some_and(|pages| pages <= target_pages) {
             best_opts = candidate_opts;
@@ -3094,10 +3109,19 @@ fn effective_pdf_options(
     opts: &PdfOptions,
     faces: &Faces,
 ) -> (PdfOptions, PageGeom) {
+    effective_pdf_options_with_languages(doc, opts, faces, &language::EMPTY)
+}
+
+fn effective_pdf_options_with_languages(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: &Faces,
+    languages: &language::Context,
+) -> (PdfOptions, PageGeom) {
     if let Some(target_pages) = opts.fit_to_pages.filter(|&target| target > 0)
         && opts.theme.page.baseline_grid.is_none()
     {
-        fit_to_target_pages(doc, opts, faces, target_pages)
+        fit_to_target_pages(doc, opts, faces, target_pages, languages)
     } else {
         (opts.clone(), PageGeom::from_theme(&opts.theme))
     }
@@ -3111,6 +3135,29 @@ fn render_inner(
     emit: PdfEmitOptions,
     collect_navigation: bool,
     collect_warnings: bool,
+) -> Result<RenderedPdf> {
+    render_inner_with_languages(
+        doc,
+        opts,
+        pdf_a,
+        profiled,
+        emit,
+        collect_navigation,
+        collect_warnings,
+        &language::EMPTY,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_inner_with_languages(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    profiled: bool,
+    emit: PdfEmitOptions,
+    collect_navigation: bool,
+    collect_warnings: bool,
+    languages: &language::Context,
 ) -> Result<RenderedPdf> {
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
@@ -3127,7 +3174,7 @@ fn render_inner(
         || Faces::load(opts),
         |result| usize::from(result.is_ok()),
     )?;
-    let (effective_opts, page) = effective_pdf_options(doc, opts, &faces);
+    let (effective_opts, page) = effective_pdf_options_with_languages(doc, opts, &faces, languages);
     // Running chrome is validated against the final page geometry before
     // layout, so a band that cannot fit its margin fails fast.
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
@@ -3135,7 +3182,7 @@ fn render_inner(
         "layout",
         doc.blocks.len(),
         "block layout, text measuring, and paragraph line breaking",
-        || layout_with_pagination_report(&doc.blocks, &effective_opts, &faces, page),
+        || layout_with_languages(&doc.blocks, &effective_opts, &faces, page, languages),
         |_| 0,
     )?;
     let line_count = lines.len();
@@ -3149,6 +3196,7 @@ fn render_inner(
         pdf_a,
         emit,
         &mut profiler,
+        &languages.scopes,
     )?;
     faces.cjk_load_error()?;
     profiler.record_since(
@@ -3581,6 +3629,8 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 bg: 0,
                 shade: false,
                 flow: FlowMark {
+                    document_language: true,
+                    language_scope: 0,
                     group,
                     index,
                     count,
@@ -3689,6 +3739,16 @@ fn layout_with_pagination_report(
     faces: &Faces,
     page: PageGeom,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
+    layout_with_languages(blocks, opts, faces, page, &language::EMPTY)
+}
+
+fn layout_with_languages(
+    blocks: &[Block],
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+    languages: &language::Context,
+) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
     spacing::validate_options(opts)?;
     spacing::validate_tables(blocks, opts, page)?;
     inline_image::prepare(blocks, &opts.image_assets, faces);
@@ -3698,6 +3758,8 @@ fn layout_with_pagination_report(
         let type_scale = opts.type_scale();
         let mut cx = LayoutCx {
             opts,
+            languages,
+            language_scope: 0,
             pending_page_break: false,
             type_scale,
             faces,
@@ -3766,6 +3828,8 @@ fn layout_with_pagination_report(
     let type_scale = opts.type_scale();
     let mut cx = LayoutCx {
         opts,
+        languages,
+        language_scope: 0,
         pending_page_break: false,
         type_scale,
         faces,
@@ -4384,6 +4448,7 @@ impl WidthCache {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct SimpleParagraphLayoutKey {
     text: String,
+    language: u32,
     left_bits: u32,
     content_width_milli: i32,
     size_bits: u32,
@@ -4405,6 +4470,7 @@ impl SimpleParagraphLayoutKey {
     ) -> Self {
         Self {
             text: text.to_string(),
+            language: 0,
             left_bits: left.to_bits(),
             content_width_milli: content_width.milli_points(),
             size_bits: size.to_bits(),
@@ -4735,6 +4801,8 @@ struct ListFrame {
 
 struct LayoutCx<'a> {
     opts: &'a PdfOptions,
+    languages: &'a language::Context,
+    language_scope: u32,
     /// Set by Block::PageBreak (book chapters, j0o4): the NEXT line produced
     /// gets page_break_before, forcing a page boundary in choose_page_break.
     pending_page_break: bool,
@@ -4864,11 +4932,23 @@ fn apply_incoming_page_break(incoming: bool, start: usize, out: &mut [Line], pen
 }
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let previous_scope = cx.language_scope;
+    cx.language_scope = cx.languages.scope(block).unwrap_or(previous_scope);
     let incoming = std::mem::take(&mut cx.pending_page_break);
     let start = out.len();
     layout_block_content(block, indent, out, cx);
     apply_incoming_page_break(incoming, start, out, &mut cx.pending_page_break);
     spacing::apply(&mut out[start..], cx.opts);
+    for line in &mut out[start..] {
+        if line.flow.language_scope == language::UNASSIGNED
+            || (line.flow.document_language
+                && line.flow.language_scope == 0
+                && (!line.list_path.is_empty() || !line.quote_bars.is_empty()))
+        {
+            line.flow.language_scope = cx.language_scope;
+        }
+    }
+    cx.language_scope = previous_scope;
 }
 
 fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
@@ -5133,6 +5213,8 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 bg: 0,
                 shade: false,
                 flow: FlowMark {
+                    document_language: false,
+                    language_scope: crate::pdf::language::UNASSIGNED,
                     group,
                     index: 0,
                     count: 1,
@@ -5275,9 +5357,10 @@ fn layout_simple_text_paragraph(
         && !cx.paragraph_candidates.enabled();
 
     if cacheable {
-        let key = SimpleParagraphLayoutKey::new(
+        let mut key = SimpleParagraphLayoutKey::new(
             text, left, content_w, size, gap_after, flow.kind, policy,
         );
+        key.language = cx.languages.cache_id(cx.language_scope);
         if let Some(template) = cx.simple_paragraph_cache.get(&key) {
             let start = out.len();
             out.extend(template.iter().cloned());
@@ -5334,6 +5417,8 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         bg: 0,
         shade: false,
         flow: FlowMark {
+            document_language: false,
+            language_scope: crate::pdf::language::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -5430,6 +5515,8 @@ fn push_figure_line(
         bg: 0,
         shade: false,
         flow: FlowMark {
+            document_language: false,
+            language_scope: crate::pdf::language::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -17308,6 +17395,8 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
     }
     for (index, line) in lines.iter_mut().enumerate() {
         line.flow = FlowMark {
+            document_language: false,
+            language_scope: crate::pdf::language::UNASSIGNED,
             group,
             index,
             count,
@@ -18811,6 +18900,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 bg: 0,
                 shade,
                 flow: FlowMark {
+                    document_language: false,
+                    language_scope: crate::pdf::language::UNASSIGNED,
                     group,
                     index: row_idx,
                     count: depth,
@@ -18858,6 +18949,8 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         bg: 0,
         shade: false,
         flow: FlowMark {
+            document_language: false,
+            language_scope: crate::pdf::language::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -20591,7 +20684,7 @@ fn layout_inlines(
         fs,
         cx.faces,
         policy,
-        cx.opts.lang.as_deref(),
+        cx.languages.language(cx.language_scope, cx.opts),
         &cx.hyphen_cache,
         &cx.width_cache,
         Some(content_w),
@@ -20845,7 +20938,7 @@ fn layout_prefixed_inlines(
         fs,
         cx.faces,
         policy,
-        cx.opts.lang.as_deref(),
+        cx.languages.language(cx.language_scope, cx.opts),
         &cx.hyphen_cache,
         &cx.width_cache,
         Some(content_w),
@@ -22740,6 +22833,7 @@ fn serialize(
     pdf_a: crate::PdfASettings,
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
+    languages: &language::Scopes,
 ) -> Result<(Vec<u8>, PdfPageBreakReport, Vec<OutlineEntry>)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
@@ -23131,6 +23225,7 @@ fn serialize(
         profiler,
         serialized.precompressed,
         emit,
+        languages,
     )?;
     Ok((bytes, report, serialized.outlines))
 }
@@ -24725,12 +24820,15 @@ fn append_table_cell_content_begin(
 /// equal at the same path depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SKey {
+    LanguageSection(u32),
     BlockQuote(usize),
     List(u32, ListNumbering),
     ListItem(u32),
     ListLabel(u32),
     ListBody(u32),
     Paragraph(u32),
+    /// Global contents text may live inside a chapter-owned list or quote.
+    DocumentParagraph(u32),
     Heading(u32),
     Code(u32),
     Table(u32),
@@ -24888,6 +24986,7 @@ struct LinkAnnotation {
 /// single dynamic count.
 struct SNode {
     tag: &'static str,
+    language: Option<std::sync::Arc<str>>,
     /// Parent node index (node 0's parent is the `/StructTreeRoot`).
     parent: usize,
     kids: Vec<SKid>,
@@ -24930,9 +25029,19 @@ struct StructTree {
 /// each MCR still names its own page and each page has its own dense parent
 /// tree. Inline formulas/images use page-local MCIDs, so their keys include
 /// the page rather than accidentally merging unrelated occurrences.
+#[cfg(test)]
 fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> StructTree {
+    build_struct_tree_with_languages(pages, dest_ids, &language::EMPTY.scopes)
+}
+
+fn build_struct_tree_with_languages(
+    pages: &[PageContent],
+    dest_ids: &BTreeSet<&str>,
+    languages: &language::Scopes,
+) -> StructTree {
     let mut nodes: Vec<SNode> = vec![SNode {
         tag: "Document",
+        language: None,
         parent: 0,
         kids: Vec::new(),
         alt: None,
@@ -24988,6 +25097,13 @@ fn build_struct_tree(pages: &[PageContent], dest_ids: &BTreeSet<&str>) -> Struct
                 let node_index = nodes.len();
                 nodes.push(SNode {
                     tag: elem.tag,
+                    language: match elem.key {
+                        SKey::LanguageSection(scope) => languages.language(scope).cloned(),
+                        SKey::DocumentParagraph(_) if parent_node != 0 => {
+                            languages.document_language().cloned()
+                        }
+                        _ => None,
+                    },
                     parent: parent_node,
                     kids: Vec::new(),
                     alt: None,
@@ -30650,7 +30766,11 @@ fn leaf_elem(line: &Line) -> SElem {
         },
         // Links inside the line are nested /Link runs (see the page writer).
         _ => SElem {
-            key: SKey::Paragraph(line.flow.group),
+            key: if line.flow.document_language {
+                SKey::DocumentParagraph(line.flow.group)
+            } else {
+                SKey::Paragraph(line.flow.group)
+            },
             tag: "P",
         },
     }
@@ -30666,8 +30786,16 @@ fn leaf_elem(line: &Line) -> SElem {
 /// gets `> - item` (list inside quote) and `- > quote` (quote inside list)
 /// right, rather than always nesting one kind inside the other.
 fn container_prefix(line: &Line) -> SmallPath {
+    let mut path = SmallPath::empty();
+    let scope = line.flow.language_scope;
+    if scope != 0 && scope != language::UNASSIGNED {
+        path.push(SElem {
+            key: SKey::LanguageSection(scope),
+            tag: "Sect",
+        });
+    }
     if line.quote_bars.is_empty() && line.list_path.is_empty() {
-        return SmallPath::empty();
+        return path;
     }
 
     #[derive(Clone, Copy)]
@@ -30725,8 +30853,6 @@ fn container_prefix(line: &Line) -> SmallPath {
         &mut spilled_stack
     };
     containers.sort_by_key(|(start, _)| *start);
-
-    let mut path = SmallPath::empty();
     for (_, container) in containers.iter() {
         match *container {
             Container::Quote(qid) => path.push(SElem {
@@ -31717,6 +31843,8 @@ mod keep_with_next_tests {
             bg: 0,
             shade: false,
             flow: FlowMark {
+                document_language: false,
+                language_scope: crate::pdf::language::UNASSIGNED,
                 group,
                 index,
                 count,
@@ -31985,6 +32113,8 @@ mod void_budget_tests {
             bg: 0,
             shade: false,
             flow: FlowMark {
+                document_language: false,
+                language_scope: crate::pdf::language::UNASSIGNED,
                 group,
                 index,
                 count,
@@ -33274,6 +33404,10 @@ fn append_pdf_struct_element_object(
     out.extend_from_slice(parts.node.tag.as_bytes());
     out.extend_from_slice(b" /P ");
     append_pdf_object_ref_bytes(out, parts.parent_ref);
+    if let Some(language) = &parts.node.language {
+        out.extend_from_slice(b" /Lang ");
+        append_pdf_text_string_bytes(out, language);
+    }
     if let Some(page) = parts.node.page {
         out.extend_from_slice(b" /Pg ");
         append_pdf_object_ref_bytes(out, page_obj(page));
@@ -33751,6 +33885,7 @@ fn build_pdf(
     profiler: &mut PdfProfiler,
     precompressed: Option<Vec<OwnedPdfStream>>,
     emit: PdfEmitOptions,
+    languages: &language::Scopes,
 ) -> Result<Vec<u8>> {
     let build_started = profiler.checkpoint();
     let p = pages.len();
@@ -33798,7 +33933,7 @@ fn build_pdf(
     // Assemble the hierarchical structure tree up front so its node count drives
     // object numbering (containers + leaves are all numbered objects).
     let stree = if tagged {
-        build_struct_tree(pages, &dest_ids)
+        build_struct_tree_with_languages(pages, &dest_ids, languages)
     } else {
         StructTree {
             nodes: Vec::new(),
@@ -35607,6 +35742,8 @@ mod pdf_writer_tests {
 
     fn test_layout_cx<'a>(opts: &'a PdfOptions, faces: &'a Faces, page: PageGeom) -> LayoutCx<'a> {
         LayoutCx {
+            languages: &crate::pdf::language::EMPTY,
+            language_scope: 0,
             opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -37906,6 +38043,8 @@ mod pdf_writer_tests {
                 bg: 0,
                 shade: false,
                 flow: FlowMark {
+                    document_language: false,
+                    language_scope: crate::pdf::language::UNASSIGNED,
                     group: 42,
                     index: 0,
                     count: 1,
@@ -39879,6 +40018,7 @@ mod pdf_writer_tests {
             SKid::ObjR { page: 2, local: 3 },
         ];
         let node = SNode {
+            language: None,
             tag: "Figure",
             parent: 0,
             kids,
@@ -39948,6 +40088,7 @@ mod pdf_writer_tests {
     #[test]
     fn struct_element_object_byte_writer_preserves_table_scope_attribute() {
         let node = SNode {
+            language: None,
             tag: "TH",
             parent: 0,
             kids: Vec::new(),
@@ -42408,6 +42549,8 @@ mod table_wrap_tests {
         let faces = Faces::load(&opts).unwrap();
         let page = test_page();
         let mut cx = LayoutCx {
+            languages: &crate::pdf::language::EMPTY,
+            language_scope: 0,
             opts: &opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -44430,6 +44573,8 @@ mod coverage_gap_tests {
         page: PageGeom,
     ) -> LayoutCx<'a> {
         LayoutCx {
+            languages: &crate::pdf::language::EMPTY,
+            language_scope: 0,
             opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -45186,6 +45331,8 @@ mod plass_pagination_tests {
             bg: 0,
             shade: false,
             flow: FlowMark {
+                document_language: false,
+                language_scope: crate::pdf::language::UNASSIGNED,
                 group,
                 index,
                 count,

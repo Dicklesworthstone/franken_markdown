@@ -518,6 +518,8 @@ pub(super) fn layout_block(
         bg: 0,
         shade: false,
         flow: FlowMark {
+            document_language: false,
+            language_scope: crate::pdf::language::UNASSIGNED,
             group: cx.alloc_flow(),
             index: 0,
             count: 1,

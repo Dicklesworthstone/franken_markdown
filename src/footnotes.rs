@@ -13,6 +13,9 @@ use crate::ast::{Block, Document, Inline};
 #[path = "footnotes/endnote_navigation.rs"]
 mod endnote_navigation;
 pub use endnote_navigation::{EndnoteTarget, PreparedEndnotes};
+#[path = "footnotes/root_origins.rs"]
+mod root_origins;
+pub(crate) use root_origins::paged_root_origins;
 
 /// Internal provenance for a document whose page notes have been prepared.
 ///

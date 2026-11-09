@@ -31,6 +31,8 @@ fn unselected(
     page: PageGeom,
 ) -> (Vec<Line>, Candidates) {
     let mut cx = LayoutCx {
+        languages: &crate::pdf::language::EMPTY,
+        language_scope: 0,
         opts,
         pending_page_break: false,
         type_scale: opts.type_scale(),

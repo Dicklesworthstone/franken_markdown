@@ -47,6 +47,7 @@ pub(super) fn complete_empty_bodies(nodes: &mut Vec<SNode>) {
         }
         let index = nodes.len();
         nodes.push(SNode {
+            language: None,
             tag: "LBody",
             parent,
             kids: Vec::new(),

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Book PDFs honor each chapter's language for hyphenation and tagged reading
+  sections. Chapter ownership survives normalized content, navigation headings,
+  page fitting, reused layouts and relocated notes. Generated tables of contents
+  keep the document language while nested lists and quotes retain their source
+  structure. Native, WASM, reported and PDF/A exports share the behavior. See
+  [Chapter languages in PDF](docs/BOOK_PDF_LANGUAGES.md).
 - The browser demo prepares a complete editable offline workspace containing
   the exact Markdown, matching native WASM engine, supported document settings
   and explicitly selected images. A cancellable worker bounds runtime reads and

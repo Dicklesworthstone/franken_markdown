@@ -75,7 +75,32 @@ pub(crate) fn render_complete_with_diagnostics(
     collect_navigation: bool,
     collect_warnings: bool,
 ) -> Result<NavigationRender> {
-    let rendered = super::render_inner(
+    render_complete_with_languages(
+        doc,
+        options,
+        settings,
+        emit,
+        profiled,
+        collect_navigation,
+        collect_warnings,
+        &super::language::EMPTY,
+    )
+}
+
+/// Book language ownership is retained through the same final writer, fitting
+/// trials and diagnostics used by the ordinary source-navigation path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_complete_with_languages(
+    doc: &Document,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    profiled: bool,
+    collect_navigation: bool,
+    collect_warnings: bool,
+    languages: &super::language::Context,
+) -> Result<NavigationRender> {
+    let rendered = super::render_inner_with_languages(
         doc,
         options,
         settings,
@@ -83,6 +108,7 @@ pub(crate) fn render_complete_with_diagnostics(
         emit,
         collect_navigation,
         collect_warnings,
+        languages,
     )?;
     Ok(NavigationRender {
         bytes: rendered.bytes,

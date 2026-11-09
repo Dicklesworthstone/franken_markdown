@@ -15,6 +15,8 @@ use crate::{
 
 #[path = "document_pdf_links.rs"]
 pub(crate) mod document;
+#[path = "pdf_languages.rs"]
+mod languages;
 #[path = "pdf_link_wire.rs"]
 mod wire;
 
@@ -184,7 +186,10 @@ fn render_plan_complete(
         profiled.as_ref(),
         options.footnote_backlinks,
     );
-    let mut rendered = crate::pdf::source_navigation::render_complete_with_diagnostics(
+    let language_context =
+        plan.languages
+            .prepared(&plan.document, profiled.as_ref(), &prepared, options)?;
+    let mut rendered = crate::pdf::source_navigation::render_complete_with_languages(
         &prepared,
         options,
         settings,
@@ -192,6 +197,7 @@ fn render_plan_complete(
         false,
         !plan.targets.is_empty(),
         diagnostics,
+        &language_context,
     )?;
     if plan.targets.is_empty() {
         return Ok(rendered);
@@ -251,6 +257,7 @@ fn render_plan_complete(
 
 struct Plan {
     document: Document,
+    languages: languages::Plan,
     /// Temporary URI -> immutable source target; None means unresolved.
     targets: BTreeMap<String, Option<Target>>,
 }
@@ -463,6 +470,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
     }
     if candidates == 0 {
         return Ok(Plan {
+            languages: languages::Plan::new(book, &ranges, &document, options)?,
             document,
             targets: BTreeMap::new(),
         });
@@ -612,7 +620,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
     }
 
     let mut tokens: BTreeMap<Option<Target>, String> = BTreeMap::new();
-    for (index, range) in assembled_ranges.into_iter().enumerate() {
+    for (index, range) in assembled_ranges.iter().cloned().enumerate() {
         walk_links(&mut document.blocks[range], &mut |dest| {
             let Some(target) = local_target(index, &sources[index], dest, &known) else {
                 return;
@@ -644,7 +652,12 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         .into_iter()
         .map(|(target, token)| (token, target))
         .collect();
-    Ok(Plan { document, targets })
+    let languages = languages::Plan::new(book, &assembled_ranges, &document, options)?;
+    Ok(Plan {
+        document,
+        languages,
+        targets,
+    })
 }
 
 fn reserve_link_nonce(destination: &str, reserved: &mut BTreeSet<usize>) {

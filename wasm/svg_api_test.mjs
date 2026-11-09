@@ -16,7 +16,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const image = (bytes = new Uint8Array([1]), destination = "a.png") => ({ destination, bytes });
 const font = (bytes = new Uint8Array([1]), slot = "body-regular", weight) => ({ slot, bytes, weight });
 
-async function harness({ advanced = true, init, result, invoke } = {}) {
+async function harness({ advanced = true, navigation = false, navigationArity = 17, metadata, init, result, invoke } = {}) {
   const state = { initializations: 0, calls: [], frees: 0 };
   const context = vm.createContext({ Uint8Array, Uint32Array, ArrayBuffer, TextDecoder, Blob });
   function render(route, args) {
@@ -30,7 +30,8 @@ async function harness({ advanced = true, init, result, invoke } = {}) {
       free: () => { state.frees++; },
     };
   }
-  const exports = [...named, "default", ...(advanced ? ["renderSvgConfiguredResources"] : [])];
+  const exports = [...named, "default", ...(advanced ? ["renderSvgConfiguredResources"] : []),
+    ...(navigation ? ["renderSvgConfiguredNavigation"] : []), ...(metadata ? ["sourceMetadata"] : [])];
   const bindings = new vm.SyntheticModule(exports, function () {
     for (const name of named) this.setExport(name, (...args) => render(name, args));
     this.setExport("default", () => {
@@ -38,6 +39,12 @@ async function harness({ advanced = true, init, result, invoke } = {}) {
       return init ? init(state.initializations) : Promise.resolve();
     });
     if (advanced) this.setExport("renderSvgConfiguredResources", (...args) => render("resources", args));
+    if (navigation) {
+      const binding = (...args) => render("navigation", args);
+      Object.defineProperty(binding, "length", { value: navigationArity });
+      this.setExport("renderSvgConfiguredNavigation", binding);
+    }
+    if (metadata) this.setExport("sourceMetadata", () => JSON.stringify(metadata));
   }, { context });
   const geometry = new vm.SyntheticModule(["pdfPageGeometry"], function () {
     this.setExport("pdfPageGeometry", () => []);
@@ -90,6 +97,49 @@ test("packs actual sliced image bytes and canonical font slot order", async () =
   assert.equal(output.text(), "<svg/>");
   assert.equal(state.frees, 1);
   assert.ok(Object.isFrozen(output));
+});
+
+test("navigation binding combines outlines, profiles, assets and inherited source defaults", async () => {
+  const { api, state } = await harness({ navigation: true, metadata: { toc: true, tocDepth: 2 } });
+  await api.renderSvg("# Body", { profile: "gfm-plus", maxWidthPt: 360,
+    pdfImages: [image()], fontAssets: [font()] });
+  assert.equal(state.calls[0].route, "navigation");
+  assert.equal(state.calls[0].args.length, 17);
+  assert.deepEqual(plain(state.calls[0].args.slice(14)), ["gfm-plus", true, 2]);
+  assert.deepEqual([...state.calls[0].args[6]], [1]);
+  await api.renderSvg("# Body", { toc: false, tocDepth: 1 });
+  assert.deepEqual(plain(state.calls[1].args.slice(15)), [false, 1]);
+  assert.equal(state.frees, 2);
+});
+
+test("TOC choices are captured before asynchronous initialization", async () => {
+  let resume;
+  const gate = new Promise(resolve => { resume = resolve; });
+  const { api, state } = await harness({ navigation: true, init: () => gate,
+    metadata: { toc: false, tocDepth: 6 } });
+  const options = { toc: true, tocDepth: 2 };
+  const pending = api.renderSvg("# Body", options);
+  options.toc = false; options.tocDepth = 6;
+  resume(); await pending;
+  assert.deepEqual(plain(state.calls[0].args.slice(15)), [true, 2]);
+});
+
+test("unsupported TOC options and mismatched bindings fail before initialization", async () => {
+  for (const options of [{ toc: true }, { toc: false }, { tocDepth: 2 }]) {
+    await refuses(options, { code: "UNSUPPORTED_WASM_PACKAGE" });
+  }
+  await refuses({ toc: true }, { code: "UNSUPPORTED_WASM_PACKAGE" },
+    { navigation: true, navigationArity: 16 });
+});
+
+test("SVG TOC admission accepts only booleans and heading depths 1 through 6", async () => {
+  for (const toc of [null, 0, 1, "true", {}])
+    await refuses({ toc }, /toc/, { navigation: true });
+  for (const tocDepth of [null, 0, 7, -1, 1.5, NaN, Infinity, "2"])
+    await refuses({ tocDepth }, /tocDepth/, { navigation: true });
+  const { api, state } = await harness({ navigation: true });
+  for (const depth of [1, 6]) await api.renderSvg("[TOC]\n\n# Body", { tocDepth: depth });
+  assert.deepEqual(state.calls.map(call => call.args[16]), [1, 6]);
 });
 
 test("snapshots text, primitive options and bytes before asynchronous initialization", async () => {

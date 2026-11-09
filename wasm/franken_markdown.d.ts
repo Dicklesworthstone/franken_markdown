@@ -121,9 +121,9 @@ export interface FmdRenderOptions {
   tableFontSize?: number;
   /** BCP-47 language tag used for metadata and hyphenation. HTML/PDF/EPUB inherit frontmatter when omitted. */
   lang?: "en" | "de" | "fr" | "es" | "nl" | string;
-  /** HTML/PDF/EPUB document TOC. Omitted inherits frontmatter; explicit false overrides it. */
+  /** HTML/PDF/SVG/EPUB document TOC. Omitted inherits frontmatter; explicit false overrides it. */
   toc?: boolean;
-  /** HTML/PDF/EPUB TOC heading depth (1...6); omitted inherits frontmatter toc_depth. */
+  /** HTML/PDF/SVG/EPUB TOC heading depth (1...6); omitted inherits frontmatter toc_depth. */
   tocDepth?: number;
   /** Adaptive PDF page-count target. */
   fitToPages?: number;
@@ -242,10 +242,12 @@ export interface FmdRenderOutput {
 
 /** Single-page SVG options. Assets are snapshotted before asynchronous init;
  * a matching resource-capable WASM binary is required when assets are supplied.
- * SVG remains light-only; darkMode is retained for shared option compatibility.
+ * TOC options require the navigation-capable binding; explicit markers also
+ * render linked outlines in matching packages. Explicit darkMode selects the
+ * shared theme palette; Auto is deterministic light.
  */
 export interface FmdSvgRenderOptions extends Pick<FmdRenderOptions,
-  "profile" | "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets"> {}
+  "profile" | "font" | "darkMode" | "fontScale" | "typeSize" | "maxWidthPt" | "pdfImages" | "fontAssets" | "toc" | "tocDepth"> {}
 export interface FmdSvgRenderOutput extends FmdRenderOutput {
   format: "svg";
   mimeType: "image/svg+xml";

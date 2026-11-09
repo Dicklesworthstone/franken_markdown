@@ -501,6 +501,10 @@ export interface FlowEpubExportOptions extends FlowExportOptions {
 export interface FlowSvgExportOptions {
   /** Poster width in points: 144..14400, default 612. */
   maxWidthPt?: number;
+  /** Insert a native linked body outline; explicit Markdown markers own placement. */
+  toc?: boolean;
+  /** Greatest source heading level to include (1..6). */
+  tocDepth?: number;
   /** Published bytes only, not a WASM-heap ceiling. Default/max 64 MiB. */
   maxOutputBytes?: number;
 }

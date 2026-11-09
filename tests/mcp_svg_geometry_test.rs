@@ -61,6 +61,7 @@ fn svg_file_scale_matches_core_for_returned_and_saved_artifacts() {
         &SvgOptions {
             theme,
             max_width_pt: 400.0,
+            ..SvgOptions::default()
         },
     );
     let result = call(arguments.clone()).unwrap();
@@ -77,7 +78,8 @@ fn svg_file_scale_matches_core_for_returned_and_saved_artifacts() {
             &doc,
             &SvgOptions {
                 theme: Theme::serif(),
-                max_width_pt: 400.0
+                max_width_pt: 400.0,
+                ..SvgOptions::default()
             }
         )
     );

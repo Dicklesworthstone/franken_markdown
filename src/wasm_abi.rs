@@ -41,7 +41,10 @@ mod font_embedding_tests;
 mod authoring_profile_tests;
 
 mod svg;
-pub use svg::{render_svg_configured_profiled, render_svg_configured_resources};
+pub use svg::{
+    render_svg_configured_navigation, render_svg_configured_profiled,
+    render_svg_configured_resources,
+};
 
 mod font_collection;
 pub use font_collection::{extract_font_collection_face, font_collection_face_count};

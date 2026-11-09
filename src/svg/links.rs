@@ -108,6 +108,9 @@ pub(super) struct Navigation {
     links: Vec<Link>,
     ids: BTreeMap<Link, usize>,
     headings: BTreeMap<String, Heading>,
+    /// Exact body-heading identities used by generated outlines. Authored
+    /// fragment strings cannot create these or alias a note destination.
+    toc_headings: BTreeMap<super::toc::HeadingTarget, usize>,
     /// Exact immutable prepared Inline identities, never authored destinations.
     note_inlines: BTreeMap<usize, EndnoteTarget>,
     note_aliases: BTreeMap<String, EndnoteTarget>,
@@ -177,6 +180,18 @@ impl Navigation {
         })
     }
 
+    pub(super) fn intern_heading(
+        &mut self,
+        target: super::toc::HeadingTarget,
+        title: &str,
+    ) -> usize {
+        self.intern_link(Link {
+            target: Target::Heading(target),
+            title: String::new(),
+            label: text_label(title),
+        })
+    }
+
     pub(super) fn intern(&mut self, raw: &str, title: Option<&str>, content: &[Inline]) -> usize {
         if raw.len() > targets::MAX_TARGET_BYTES {
             return LIMITED;
@@ -201,7 +216,7 @@ impl Navigation {
         }
         let destination_bytes = match &link.target {
             Target::External(value) | Target::Fragment(value) => value.len(),
-            Target::Endnote(_) => 0,
+            Target::Endnote(_) | Target::Heading(_) => 0,
         };
         // The map key and the ordered entry each own their metadata bytes.
         let bytes = (destination_bytes + link.title.len() + link.label.len()) * 2;
@@ -213,6 +228,21 @@ impl Navigation {
         self.ids.insert(link.clone(), id);
         self.links.push(link);
         id
+    }
+
+    pub(super) fn source_heading(
+        &mut self,
+        inlines: &[Inline],
+        top: f64,
+        source: Option<super::toc::HeadingTarget>,
+    ) {
+        let next = self.headings.len();
+        self.heading(inlines, top);
+        if let Some(source) = source
+            && self.headings.len() > next
+        {
+            self.toc_headings.insert(source, next);
+        }
     }
 
     pub(super) fn heading(&mut self, inlines: &[Inline], top: f64) {
@@ -344,6 +374,9 @@ impl Navigation {
                         .note_positions
                         .contains_key(target)
                         .then_some(View::Endnote(*target)),
+                    Target::Heading(target) => {
+                        self.toc_headings.get(target).copied().map(View::Heading)
+                    }
                     _ => None,
                 };
                 if let Some(view) = view {
@@ -403,7 +436,7 @@ impl Navigation {
             part.push_str("<a href=\"");
             match &link.target {
                 Target::External(uri) => esc_attr(uri, &mut part),
-                Target::Fragment(_) | Target::Endnote(_) => {
+                Target::Fragment(_) | Target::Endnote(_) | Target::Heading(_) => {
                     let Some(&view) = resolved.get(&region.link) else {
                         continue;
                     };
@@ -459,7 +492,7 @@ impl Navigation {
             && self
                 .links
                 .iter()
-                .any(|link| matches!(&link.target, Target::Fragment(_)))
+                .any(|link| matches!(&link.target, Target::Fragment(_) | Target::Heading(_)))
         {
             warn(
                 warnings,

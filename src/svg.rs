@@ -89,6 +89,8 @@ mod math_tests;
 mod table;
 #[path = "svg/text.rs"]
 mod text;
+#[path = "svg/toc.rs"]
+mod toc;
 #[cfg(test)]
 #[path = "svg/text_tests.rs"]
 mod text_tests;
@@ -102,6 +104,12 @@ pub struct SvgOptions {
     /// Values outside 144..=14400 points fall back to US Letter width, with
     /// an `svg_layout_adjusted` diagnostic from the diagnostic APIs.
     pub max_width_pt: f32,
+    /// Insert a linked body outline before the first body heading. An explicit
+    /// `[TOC]` or `[[_TOC_]]` paragraph owns placement when present.
+    pub toc: bool,
+    /// Greatest heading level to include (1..=6); `None` includes every level.
+    /// An explicit marker depth overrides this default at that location.
+    pub toc_depth: Option<u8>,
 }
 
 impl Default for SvgOptions {
@@ -109,6 +117,8 @@ impl Default for SvgOptions {
         Self {
             theme: Theme::default(),
             max_width_pt: 612.0,
+            toc: false,
+            toc_depth: None,
         }
     }
 }
@@ -448,6 +458,7 @@ struct Poster {
     images: images::ImageStore,
     navigation: RefCell<links::Navigation>,
     has_note_navigation: bool,
+    contents: toc::Contents,
     warnings: Vec<SvgWarning>,
     colors: ThemeColors,
     scale: TypeScale,
@@ -487,6 +498,7 @@ impl Poster {
             images: images::ImageStore::default(),
             navigation: RefCell::new(links::Navigation::default()),
             has_note_navigation: false,
+            contents: toc::Contents::new(opts),
             warnings: geometry.warnings,
             colors: theme.effective_colors(false, false).clone(),
             scale: geometry.scale,
@@ -533,6 +545,8 @@ impl Poster {
         // With no footnote syntax this borrows the source rather than cloning it.
         let prepared = franken_markdown::PreparedEndnotes::new(doc);
         self.has_note_navigation = self.navigation.borrow_mut().prepare_endnotes(&prepared);
+        self.contents.prepare(&prepared, &self.navigation.borrow());
+        self.warn_toc_limit();
         for (index, block) in prepared.document().blocks.iter().enumerate() {
             if let Some(number) = prepared.note_at_block(index) {
                 self.navigation.borrow_mut().note_start(number, self.y);
@@ -749,8 +763,25 @@ impl Poster {
 
     fn block(&mut self, block: &Block, l: f64, r: f64, quote: bool) {
         match block {
-            Block::Heading { level, inlines } => self.heading(*level, inlines, l, r, quote),
-            Block::Paragraph(inlines) => self.paragraph(inlines, l, r, quote),
+            Block::Heading { level, inlines } => {
+                let target = toc::HeadingTarget::new(block);
+                if self.contents.take_automatic(target) {
+                    self.table_of_contents(None, l, r, quote);
+                }
+                let source = self.contents.active().then_some(target);
+                self.heading(*level, inlines, l, r, quote, source);
+            }
+            Block::Paragraph(inlines) => {
+                if self.contents.active()
+                    && let Some(depth) = crate::toc::marker_depth(inlines)
+                {
+                    if !self.table_of_contents(depth, l, r, quote) {
+                        self.paragraph(inlines, l, r, quote);
+                    }
+                } else {
+                    self.paragraph(inlines, l, r, quote);
+                }
+            }
             Block::CodeBlock { lang, code } => {
                 // Mermaid diagrams draw as figures, as in HTML and PDF.
                 match franken_markdown::diagrams::figure_svg(code, lang.as_deref().unwrap_or("")) {
@@ -842,13 +873,23 @@ impl Poster {
         self.y += gap_after;
     }
 
-    fn heading(&mut self, level: u8, inlines: &[Inline], l: f64, r: f64, quote: bool) {
+    fn heading(
+        &mut self,
+        level: u8,
+        inlines: &[Inline],
+        l: f64,
+        r: f64,
+        quote: bool,
+        source: Option<toc::HeadingTarget>,
+    ) {
         let idx = usize::from(level.clamp(1, 6) - 1);
         let size = f64::from(self.scale.h[idx]);
         if self.y > self.top + 0.01 {
             self.y += size * 0.8;
         }
-        self.navigation.borrow_mut().heading(inlines, self.y);
+        self.navigation
+            .borrow_mut()
+            .source_heading(inlines, self.y, source);
         let ink = Self::default_ink(quote);
         let mut pieces = Vec::new();
         self.flatten(

@@ -21,7 +21,7 @@ const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "profile", "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat", "fontEmbedding"],
   pdf: [...SHARED, "profile", "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "footnoteBacklinks", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
-  svg: [...SHARED, "profile", "maxWidthPt", "pdfImages", "fontAssets"],
+  svg: [...SHARED, "profile", "maxWidthPt", "pdfImages", "fontAssets", "toc", "tocDepth"],
   epub: [...SHARED, "profile", "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
   "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
 };

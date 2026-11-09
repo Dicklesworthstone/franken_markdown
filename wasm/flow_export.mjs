@@ -126,7 +126,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     fail("INVALID_OPTIONS", "export format must be html, pdf, epub or svg");
   if (!options || typeof options !== "object" || Array.isArray(options))
     fail("INVALID_OPTIONS", "export options must be an object");
-  const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes"] : [
+  const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes", "toc", "tocDepth"] : [
     ...COMMON,
     ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding", "customCss"]),
     ...(format === "html" ? ["htmlFontFormat"] : []),
@@ -147,6 +147,11 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     if (typeof width !== "number" || !Number.isFinite(width) || width < 144 || width > 14400)
       fail("INVALID_OPTIONS", "maxWidthPt must be 144..14400 points");
     result.maxWidthPt = width;
+    if (options.toc !== undefined) {
+      if (typeof options.toc !== "boolean") fail("INVALID_OPTIONS", "toc must be boolean");
+      result.toc = options.toc;
+    }
+    if (options.tocDepth !== undefined) result.tocDepth = uint(options.tocDepth, "tocDepth", 1, 6);
     return [format, Object.freeze(result), token(expectedToken)];
   }
   for (const key of ["title", ...(format === "pdf" ? ["author"] : [])]) {

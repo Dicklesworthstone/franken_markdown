@@ -94,13 +94,27 @@ test("SVG rejects coercions, foreign format settings and injected assets before 
   const f = fixture();
   for (const options of [
     ...[0, 143.9, 14400.1, NaN, Infinity, null, "612"].map(maxWidthPt => ({ maxWidthPt })),
-    { title: "ignored" }, { toc: true }, { darkMode: "auto" }, { lang: "en" },
+    { title: "ignored" }, { toc: 1 }, { tocDepth: 0 }, { tocDepth: 7 }, { darkMode: "auto" }, { lang: "en" },
     { pageNumbers: true }, { page: {} }, { allowRawHtml: true },
     { pdfImages: [] }, { fontAssets: [] }, { font: "sans" },
     { maxOutputBytes: 0 }, { maxOutputBytes: 64 * 1024 * 1024 + 1 },
   ]) await assert.rejects(f.api.exportDocument("svg", options, f.api.token), rejects("INVALID_OPTIONS"));
   assert.equal(f.calls.length, 0);
   assert.equal(f.reads.length, 0);
+});
+
+test("SVG outlines survive Flow normalization and publication option capture", async () => {
+  const f = fixture();
+  const options = { toc: true, tocDepth: 2 };
+  const result = await f.api.exportDocument("svg", options, f.api.token);
+  assert.equal(result.format, "svg");
+  assert.equal(f.calls[0].options.toc, true);
+  assert.equal(f.calls[0].options.tocDepth, 2);
+  const normalized = normalizeFlowExport("svg", options, f.api.token);
+  options.toc = false; options.tocDepth = 6;
+  assert.equal(normalized[1].toc, true);
+  assert.equal(normalized[1].tocDepth, 2);
+  assert.deepEqual(normalizeFlowExport(...structuredClone(normalized)), normalized);
 });
 
 test("missing SVG renderer refuses explicitly without reading assets or invoking another format", async () => {

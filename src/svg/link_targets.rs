@@ -11,6 +11,7 @@ pub(super) enum Target {
     External(String),
     Fragment(String),
     Endnote(franken_markdown::EndnoteTarget),
+    Heading(super::super::toc::HeadingTarget),
 }
 
 /// Deliberately narrower than HTML: a portable poster has no document base URL.

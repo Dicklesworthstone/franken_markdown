@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SVG exports render linked tables of contents at explicit Markdown markers
+  or automatically before the first body heading, with depth filtering and
+  exact heading identity. Native commands, MCP, browser workers and Flow share
+  the options; additive WASM bindings preserve existing signatures. Bounded
+  inventories and cumulative expansion retain source text on refusal. See
+  [SVG tables of contents](docs/SVG_TOC.md).
 - The language server completes footnote and explicit reference-link labels,
   including image references, unfinished suffixes and mid-label edits. Parser
   ownership and UTF-16 ranges preserve surrounding text; bounded inventories

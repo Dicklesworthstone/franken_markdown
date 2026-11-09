@@ -88,6 +88,56 @@ pub fn render_svg_configured_profiled(
     font_weights: Vec<u32>,
     authoring_profile: Option<String>,
 ) -> Result<FmdRenderResult, JsValue> {
+    render_svg_configured_navigation(
+        markdown,
+        font,
+        dark_mode,
+        font_scale,
+        max_width_pt,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        authoring_profile,
+        false,
+        None,
+    )
+}
+
+/// Render a native linked table of contents with resources and an authoring
+/// profile. Existing configured bindings retain their original signatures.
+/// Explicit Markdown markers own placement; `toc` inserts an outline before
+/// the first body heading when no body marker is present.
+///
+/// # Errors
+/// Rejects depths outside 1..=6 and the same invalid geometry, profiles,
+/// resources and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderSvgConfiguredNavigation)]
+pub fn render_svg_configured_navigation(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    font_scale: Option<f64>,
+    max_width_pt: Option<f64>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    authoring_profile: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+) -> Result<FmdRenderResult, JsValue> {
     let authoring_profile =
         super::parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     admit_assets(
@@ -108,6 +158,8 @@ pub fn render_svg_configured_profiled(
     let width = geometry(font_scale, max_width_pt).map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
     options.profile = authoring_profile;
+    options.toc = toc;
+    options.toc_depth = super::heading_depth(toc_depth)?;
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     apply_font_assets(
         &mut options,
@@ -231,6 +283,8 @@ pub(super) fn render_with_options(
     let svg_options = SvgOptions {
         theme: theme_options.html_options().theme,
         max_width_pt: width,
+        toc: options.toc,
+        toc_depth: options.toc_depth,
     };
     let parsed = crate::parse_markdown_spanned_with_profile(markdown, options.profile);
     let mut diagnostics = String::from("[");
@@ -338,6 +392,49 @@ mod tests {
         assert_eq!(result.mime_type(), "image/svg+xml");
         assert_eq!(result.extension(), "svg");
         assert_eq!(result.diagnostics_json(), "[]");
+    }
+
+    #[test]
+    fn configured_navigation_reaches_native_outline_and_marker_depth() {
+        let source = "Intro.\n\n# Main\n\n## Detail\n\n### Hidden\n";
+        let options = WasmRenderOptions::default().with_toc(true).with_toc_depth(2);
+        let result = render_with_options(source, &options, 360.0).unwrap();
+        let expected = crate::render_svg(
+            &crate::parse_markdown(source),
+            &SvgOptions {
+                max_width_pt: 360.0,
+                toc: true,
+                toc_depth: Some(2),
+                ..SvgOptions::default()
+            },
+        );
+        assert_eq!(result.bytes(), expected);
+        let text = String::from_utf8(expected).unwrap();
+        assert!(text.contains("aria-label=\"Main\""));
+        assert!(text.contains("aria-label=\"Detail\""));
+        assert!(!text.contains("aria-label=\"Hidden\""));
+        let binding = render_svg_configured_navigation(
+            source,
+            None,
+            None,
+            None,
+            Some(360.0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some("commonmark-gfm".to_owned()),
+            true,
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(binding.bytes(), result.bytes());
+        assert_eq!(binding.diagnostics_json(), "[]");
     }
 
     #[test]

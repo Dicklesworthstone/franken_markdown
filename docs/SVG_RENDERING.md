@@ -5,6 +5,15 @@ outlined fonts and deterministic glyph definitions, without `<text>`,
 `foreignObject`, JavaScript or a browser math dependency. Explicit PNG/JPEG/GIF/SVG
 image resources retain their own content; see `SVG_RESOURCES.md`.
 
+## Table of contents
+
+`[TOC]`, `[[TOC]]` and `[[_TOC_]]` paragraphs render linked body outlines, with
+optional marker depths such as `[TOC:2]`. Library/browser `toc` options and native
+`--toc` insert an automatic outline before the first body heading when no body
+marker owns placement. Rows use normal outlined text, wrapping and keyboard
+accessible SVG links. See [SVG tables of contents](SVG_TOC.md) for native,
+browser, worker and MCP usage, note handling and work limits.
+
 ## Mathematics
 
 Inline math, display-style inline math, and math blocks use the existing

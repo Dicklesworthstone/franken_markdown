@@ -13,7 +13,7 @@ worker.renderPdf("custom", { page: { size: { widthPt: 700, heightPt: 900 }, marg
 for (const size of ["a5", "legal", "tabloid"] as const) {
   worker.renderPdf("standard", { page: { size } });
 }
-worker.renderSvg("poster", { maxWidthPt: 720,
+worker.renderSvg("poster", { maxWidthPt: 720, toc: true, tocDepth: 2,
   pdfImages: [{ destination: "plot.png", bytes }],
   fontAssets: [{ slot: "body-bold", bytes, weight: 700 }],
 });

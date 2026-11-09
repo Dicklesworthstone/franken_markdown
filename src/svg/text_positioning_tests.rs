@@ -305,7 +305,7 @@ fn table_row_sizing_contains_marks_in_headers_and_body_cells() {
 fn heading_rule_stays_below_descenders_and_the_following_paragraph() {
     // Use real bundled descenders, whose bottom extends below the baseline.
     let mut p = Poster::new(&SvgOptions::default());
-    p.heading(1, &[Inline::Text("gy".into())], 0.0, 300.0, false);
+    p.heading(1, &[Inline::Text("gy".into())], 0.0, 300.0, false, None);
     let deepest = ink_bounds(&p).iter().map(|v| v.1).fold(0.0, f64::max);
     let rule = p
         .ops

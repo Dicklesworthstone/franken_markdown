@@ -516,14 +516,25 @@ function runningImageOption(value, label) {
 
 export async function renderSvg(markdown, options = {}) {
   const profile = normalizeAuthoringProfile(options?.profile);
-  const render = profile === undefined ? wasmBindings.renderSvgConfiguredResources
+  const navigation = wasmBindings.renderSvgConfiguredNavigation;
+  const supportsNavigation = typeof navigation === "function";
+  const render = supportsNavigation ? navigation
+    : profile === undefined ? wasmBindings.renderSvgConfiguredResources
     : requireBrowserBinding("renderSvgConfiguredProfiled", "Markdown authoring profiles");
-  if (profile !== undefined) requireBindingArguments(render, 15, "Markdown authoring profiles");
+  if (supportsNavigation) requireBindingArguments(render, 17, "SVG tables of contents");
+  else if (profile !== undefined) requireBindingArguments(render, 15, "Markdown authoring profiles");
   // Capture options and exact owned byte views before initialization yields.
   const prepared = svgArguments(markdown, options, typeof render === "function");
-  if (profile !== undefined) prepared.args.push(profile);
+  if (prepared.requiresNavigation && !supportsNavigation) {
+    requireBrowserBinding("renderSvgConfiguredNavigation", "SVG tables of contents");
+  }
+  if (supportsNavigation) prepared.args.push(profile, prepared.toc, prepared.depth);
+  else if (profile !== undefined) prepared.args.push(profile);
   await init();
   try {
+    if (supportsNavigation) {
+      applySourceMetadata(prepared.args, { toc: 15, tocDepth: 16 }, prepared.inheritToc);
+    }
     if (typeof render === "function") return normalizeResult(render(...prepared.args));
     const legacy = normalizeResult(renderSvgConfigured(...prepared.args.slice(0, 5)));
     // New JavaScript cannot give an older binary complete renderer diagnostics.
@@ -542,9 +553,14 @@ function svgArguments(markdown, options, supportsResources) {
     throw new TypeError("SVG options must be an object");
   }
   const source = String(markdown);
-  const { font, darkMode, fontScale, typeSize, maxWidthPt, pdfImages, fontAssets } = options;
+  const { font, darkMode, fontScale, typeSize, maxWidthPt, pdfImages, fontAssets, toc, tocDepth } = options;
   const family = stringOption(font), dark = darkModeOption(darkMode);
   const scale = fontScaleOption(fontScale ?? typeSize), width = numberOption(maxWidthPt);
+  if (toc !== undefined && typeof toc !== "boolean") throw new TypeError("SVG toc must be a boolean");
+  const depth = integerOption(tocDepth, "SVG tocDepth");
+  if (tocDepth !== undefined && (depth === undefined || depth > 6)) {
+    throw new RangeError("SVG tocDepth must be 1..6");
+  }
   svgTextBytes(source, 32 * 1024 * 1024, "source");
   svgTextBytes(family ?? "", 1024, "font name");
   if (width !== undefined && (width < 144 || width > 14400)) {
@@ -593,7 +609,9 @@ function svgArguments(markdown, options, supportsResources) {
     offset += lengths[index];
   }
   const ownedFonts = fonts.map((asset, index) => ({ ...asset, bytes: new Uint8Array(fontViews[index]) }));
-  return { args: [source, family, dark, scale, width,
+  return { toc: Boolean(toc), depth, inheritToc: toc === undefined,
+    requiresNavigation: toc !== undefined || tocDepth !== undefined,
+    args: [source, family, dark, scale, width,
     images.map(image => image.destination), flat, lengths,
     fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
     fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),

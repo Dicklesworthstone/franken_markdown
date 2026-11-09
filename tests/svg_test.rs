@@ -6,6 +6,8 @@
 use franken_markdown::{Block, ast};
 #[path = "../src/table_format.rs"]
 mod table_format;
+#[path = "../src/toc.rs"]
+mod toc;
 
 #[path = "../src/svg.rs"]
 mod svg;

@@ -2095,6 +2095,8 @@ fn run_render_with_preview(
     let svg_render = if want_svg {
         let mut opts = crate::svg::SvgOptions {
             theme: theme.clone(),
+            toc: args.style.toc || frontmatter_toc.unwrap_or(false),
+            toc_depth: args.style.toc_depth.or(frontmatter_toc_depth),
             ..crate::svg::SvgOptions::default()
         };
         if let Some(width) = args.style.svg_width_pt {

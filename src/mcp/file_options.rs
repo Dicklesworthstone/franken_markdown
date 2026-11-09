@@ -5,7 +5,7 @@
 
 use super::{
     FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, boolean, html_options,
-    invalid_options, pdf_options, string, theme, validate_arguments,
+    invalid_options, pdf_options, string, theme, toc_depth, validate_arguments,
 };
 use crate::{HtmlOptions, PdfASettings, PdfOptions, SvgOptions};
 use std::collections::BTreeMap;
@@ -54,7 +54,7 @@ fn supports(target: &str, name: &str) -> bool {
         // have no effect there and must not masquerade as publication options.
         "epub" => html && !matches!(name, "allowRawHtml" | "interactiveHtml" | "htmlFontFormat"),
         // SVG resolves the shared font scale before measurement and painting.
-        "svg" => matches!(name, "font" | "fontScale" | "maxWidthPt"),
+        "svg" => matches!(name, "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth"),
         _ => false,
     }
 }
@@ -126,6 +126,8 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
         SvgOptions {
             theme: theme(args)?,
             max_width_pt: width as f32,
+            toc: boolean(args, "toc"),
+            toc_depth: toc_depth(args)?,
         }
     } else {
         SvgOptions::default()
@@ -185,7 +187,6 @@ mod tests {
             ("epub", "interactiveHtml"),
             ("epub", "allowRawHtml"),
             ("svg", "title"),
-            ("svg", "toc"),
             ("html", "maxWidthPt"),
         ] {
             let value = match field {

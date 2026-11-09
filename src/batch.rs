@@ -1331,6 +1331,17 @@ fn render_one(
         }
         let mut svg_opts = crate::SvgOptions {
             theme: options.pdf.theme.clone(),
+            toc: options.pdf.toc
+                || frontmatter
+                    .as_ref()
+                    .and_then(|fm| fm.toc)
+                    .or(options.document_defaults.toc)
+                    .unwrap_or(false),
+            toc_depth: options
+                .pdf
+                .toc_depth
+                .or_else(|| frontmatter.as_ref().and_then(|fm| fm.toc_depth))
+                .or(options.document_defaults.toc_depth),
             ..crate::SvgOptions::default()
         };
         if let Some(width) = options.shell.as_ref().and_then(|shell| shell.svg_width_pt) {

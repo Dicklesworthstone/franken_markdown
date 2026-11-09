@@ -112,7 +112,7 @@ fn body_headings_code_and_table_paint_the_resolved_sizes() {
     close(glyphs(&p)[0].3, f64::from(sizes.body));
     for level in 1..=6 {
         p.ops.clear();
-        p.heading(level, &[Inline::Text("A".into())], 0.0, 500.0, false);
+        p.heading(level, &[Inline::Text("A".into())], 0.0, 500.0, false, None);
         close(glyphs(&p)[0].3, f64::from(sizes.h[usize::from(level - 1)]));
     }
     p.ops.clear();

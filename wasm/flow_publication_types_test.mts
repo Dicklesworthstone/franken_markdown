@@ -2,7 +2,7 @@ import type { FlowSession, FlowExportResult, FlowSvgExportOptions } from "./flow
 import type { WorkerFlowSession, FlowSvgExportOptions as WorkerSvgOptions } from "./flow-worker.js";
 declare const direct: FlowSession;
 declare const worker: WorkerFlowSession;
-const options: FlowSvgExportOptions = { maxWidthPt: 360, maxOutputBytes: 1024 };
+const options: FlowSvgExportOptions = { maxWidthPt: 360, maxOutputBytes: 1024, toc: true, tocDepth: 2 };
 const workerOptions: WorkerSvgOptions = options;
 const a: Promise<FlowExportResult> = direct.exportDocument("svg", options, direct.token);
 const b: Promise<FlowExportResult> = worker.exportDocument("svg", workerOptions, worker.token, {
@@ -16,8 +16,8 @@ void Promise.all([a, b]).then(results => {
     void [possibleMime, reason, scope];
   }
 });
-// @ts-expect-error SVG is not an HTML TOC export.
-direct.exportDocument("svg", { toc: true }, direct.token);
+// @ts-expect-error Native SVG TOC depth must be numeric.
+direct.exportDocument("svg", { tocDepth: "2" }, direct.token);
 // @ts-expect-error Paper is a PDF concern, not a poster-width option.
 worker.exportDocument("svg", { pageNumbers: true }, worker.token);
 // @ts-expect-error Assets come from the captured session, never options.

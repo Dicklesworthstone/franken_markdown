@@ -36,6 +36,7 @@ pub enum EndnoteTarget {
 /// Addresses are used only for lookup and never for numbering or output order.
 pub struct PreparedEndnotes<'a> {
     document: Cow<'a, Document>,
+    body_len: usize,
     inline_targets: BTreeMap<usize, EndnoteTarget>,
     note_starts: BTreeMap<usize, usize>,
     aliases: BTreeMap<String, EndnoteTarget>,
@@ -53,8 +54,10 @@ impl<'a> PreparedEndnotes<'a> {
         let mut notes = Notes::default();
         notes.collect(&source.blocks);
         if notes.definitions.is_empty() && !notes.has_reference {
+            let body_len = source.blocks.len();
             return Self {
                 document: source,
+                body_len,
                 inline_targets: BTreeMap::new(),
                 note_starts: BTreeMap::new(),
                 aliases: BTreeMap::new(),
@@ -150,6 +153,7 @@ impl<'a> PreparedEndnotes<'a> {
         }
         Self {
             document: Cow::Owned(document),
+            body_len,
             inline_targets: metadata.targets,
             note_starts: starts,
             aliases,
@@ -162,6 +166,14 @@ impl<'a> PreparedEndnotes<'a> {
     #[must_use]
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Prepared source body, excluding the generated Notes heading and appended
+    /// note bodies. Hosts can build a body outline without guessing from visible
+    /// heading text or treating a note heading as an authoring directive.
+    #[must_use]
+    pub fn body_blocks(&self) -> &[Block] {
+        &self.document.blocks[..self.body_len]
     }
 
     /// The numbered note beginning at a root block index, if any. Its first

@@ -4,7 +4,7 @@ import { renderSvg, createRenderer, type FmdRenderOptions, type FmdRenderOutput,
   type FmdSvgRenderOutput, type FmdSvgRenderOptions } from "./franken_markdown.js";
 
 async function useSvgContract() {
-  const options: FmdSvgRenderOptions = { maxWidthPt: 360,
+  const options: FmdSvgRenderOptions = { maxWidthPt: 360, toc: true, tocDepth: 2,
     pdfImages: [{ destination: "plot.svg", bytes: new DataView(new ArrayBuffer(2)) }],
     fontAssets: [{ slot: "body-regular", bytes: new Uint8Array([1]), weight: 500 }] };
   const output: FmdSvgRenderOutput = await renderSvg("# Image", options);
@@ -21,6 +21,8 @@ async function useSvgContract() {
   await renderSvg("x", shared);
   // @ts-expect-error SVG geometry must be numeric.
   await renderSvg("x", { maxWidthPt: "wide" });
+  // @ts-expect-error TOC depth is a numeric heading level.
+  await renderSvg("x", { tocDepth: "2" });
   // @ts-expect-error The SVG-specific surface does not advertise PDF-only flags.
   await renderSvg("x", { fitToPages: 1 });
   return { format, extension, mime, generic, code, scope, facade };

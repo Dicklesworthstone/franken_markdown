@@ -677,18 +677,21 @@ if (!isMainThread) {
     const first = api.renderHtml("slow");
     const image = new Uint8Array([99, 1, 2, 3, 88]);
     const font = new Uint8Array([77, 4, 5, 66]);
-    const options = { maxWidthPt: 720,
+    const options = { maxWidthPt: 720, toc: true, tocDepth: 2,
       pdfImages: [{ destination: "plot.png", bytes: image.subarray(1, 4) }],
       fontAssets: [{ slot: "body-regular", weight: 650, bytes: new DataView(font.buffer, 1, 2) }] };
     const pending = api.renderSvg("![plot](plot.png)", options);
     image.fill(0); font.fill(0);
     options.pdfImages[0].destination = "changed";
     options.fontAssets[0].weight = 900;
+    options.toc = false; options.tocDepth = 6;
     const [, output] = await Promise.all([first, pending]);
     const actual = JSON.parse(output.text()).options;
     assert.deepEqual(actual.pdfImages, [{ destination: "plot.png", bytes: [1, 2, 3] }]);
     assert.deepEqual(actual.fontAssets, [{ slot: "body-regular", weight: 650, bytes: [4, 5] }]);
     assert.equal(actual.maxWidthPt, 720);
+    assert.equal(actual.toc, true);
+    assert.equal(actual.tocDepth, 2);
     assert.equal(image.byteLength, 5);
     assert.equal(font.byteLength, 4);
   });
@@ -697,6 +700,8 @@ if (!isMainThread) {
     const api = renderer(t);
     for (const maxWidthPt of [0, 143, 14401, Infinity, NaN, "720"])
       await rejects(api.renderSvg("x", { maxWidthPt }), "INVALID_OPTIONS");
+    for (const options of [{ toc: 1 }, { tocDepth: 0 }, { tocDepth: 7 }, { tocDepth: "2" }])
+      await rejects(api.renderSvg("x", options), "INVALID_OPTIONS");
     for (const maxWidthPt of [144, 14400]) {
       const output = await api.renderSvg("valid", { maxWidthPt, pdfImages: [], fontAssets: [] });
       assert.equal(JSON.parse(output.text()).options.maxWidthPt, maxWidthPt);

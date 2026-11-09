@@ -234,12 +234,34 @@ fn svg_file_consumes_font_and_actual_poster_width() {
         &SvgOptions {
             theme,
             max_width_pt: 300.0,
+            ..SvgOptions::default()
         },
     );
     assert_eq!(
         content(&call("fmd.render_file", arguments).unwrap()).as_bytes(),
         expected
     );
+}
+
+#[test]
+fn svg_file_consumes_navigation_options_and_rejects_invalid_depths() {
+    let (_, arguments) = file_args("svg", r#"{"toc":true,"tocDepth":1}"#);
+    let expected = franken_markdown::render_svg(
+        &parse_markdown(SOURCE),
+        &SvgOptions {
+            toc: true,
+            toc_depth: Some(1),
+            ..SvgOptions::default()
+        },
+    );
+    let result = call("fmd.render_file", arguments).unwrap();
+    let actual = content(&result);
+    assert_eq!(actual.as_bytes(), expected);
+    assert!(actual.contains("<a href=\"#fmd-heading-"));
+    for depth in [0, 7] {
+        let (_, arguments) = file_args("svg", &format!("{{\"tocDepth\":{depth}}}"));
+        assert!(call("fmd.render_file", arguments).is_err());
+    }
 }
 
 #[test]

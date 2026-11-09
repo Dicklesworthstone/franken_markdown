@@ -5,7 +5,7 @@ type Shared = Pick<FmdRenderOptions, "profile" | "font" | "darkMode" | "fontScal
 export interface DocumentOptions {
   html: Shared & Pick<FmdRenderOptions, "title" | "customCss" | "allowRawHtml" | "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat" | "fontEmbedding">;
   pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "strictPagination" | "footnoteBacklinks" | "baselineGridPt" | "pdfImages" | "fontAssets" | "page" | "running" | "pdfA" | "pdfAStrict">;
-  svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets">;
+  svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets" | "toc" | "tocDepth">;
   epub: Shared & Pick<FmdRenderOptions, "title" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding">;
   "interactive-html": FmdInteractiveRenderOptions;
 }

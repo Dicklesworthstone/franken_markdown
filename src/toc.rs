@@ -5,14 +5,30 @@ use crate::ast::{Block, Inline};
 /// A marker is a whole paragraph, never an inline substring or code span.
 /// The optional depth is the greatest source heading level to include.
 pub(crate) fn marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
-    let [Inline::Text(text)] = inlines else {
-        return None;
+    let inner = match inlines {
+        [Inline::Text(text)] => {
+            let trimmed = text.trim();
+            trimmed
+                .strip_prefix("[[")
+                .and_then(|s| s.strip_suffix("]]"))
+                .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
+        }
+        // The documented underscored forms parse as inline emphasis/strong.
+        // Only bracket-only surrounding text makes that node a marker: a
+        // styled sentence, code span or marker embedded in prose stays content.
+        [
+            Inline::Text(open),
+            Inline::Emphasis(content) | Inline::Strong(content),
+            Inline::Text(close),
+        ] if matches!((open.trim(), close.trim()), ("[", "]") | ("[[", "]]")) => {
+            let [Inline::Text(text)] = content.as_slice() else {
+                return None;
+            };
+            text
+        }
+        _ => return None,
     };
-    let trimmed = text.trim();
-    let inner = trimmed
-        .strip_prefix("[[")
-        .and_then(|s| s.strip_suffix("]]"))
-        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')))?
+    let inner = inner
         .trim_start_matches('_')
         .trim_end_matches('_')
         .to_ascii_lowercase();
@@ -22,6 +38,33 @@ pub(crate) fn marker_depth(inlines: &[Inline]) -> Option<Option<u8>> {
     }
     let depth = inner.strip_prefix(':')?.trim().parse::<u8>().ok()?;
     (depth >= 1).then_some(Some(depth))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn underscored_markers_survive_actual_inline_parsing() {
+        for (source, expected) in [
+            ("[TOC]", Some(None)),
+            ("[[TOC]]", Some(None)),
+            ("[[_TOC_]]", Some(None)),
+            ("[__toc:2__]", Some(Some(2))),
+            ("`[TOC]`", None),
+            ("**[TOC]**", None),
+            ("Before [TOC]", None),
+            ("[TOC] after", None),
+            ("[TOC](https://example.com)", None),
+        ] {
+            let document = crate::parse_markdown(source);
+            let result = match document.blocks.as_slice() {
+                [Block::Paragraph(inlines)] => marker_depth(inlines),
+                _ => None,
+            };
+            assert_eq!(result, expected, "{source}");
+        }
+    }
 }
 
 #[derive(Default)]

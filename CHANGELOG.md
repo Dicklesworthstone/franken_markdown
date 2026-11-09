@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Book parser warnings retain verified original chapter/include locations
+  through transclusion and URL rebasing. The workbench selects exact UTF-8
+  source ranges, labels rewritten tokens and generated boundaries, and rejects
+  stale navigation without discarding newer edits. Mapping-only source changes
+  refresh locations without reparsing; bounded optional provenance preserves
+  existing diagnostic admission and public Rust structs. See
+  [Book source diagnostics](docs/BOOK_SOURCE_DIAGNOSTICS.md).
 - Book PDFs honor each chapter's language for hyphenation and tagged reading
   sections. Chapter ownership survives normalized content, navigation headings,
   page fitting, reused layouts and relocated notes. Generated tables of contents

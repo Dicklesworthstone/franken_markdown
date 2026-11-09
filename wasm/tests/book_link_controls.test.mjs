@@ -140,6 +140,7 @@ function setup(t, initial = source()) {
       assert.equal(checkpoint, this.checkpoint());
       selections.push({ index, start, end });
       view++;
+      return this.checkpoint();
     },
   };
   const jobs = [],

@@ -684,11 +684,30 @@ export function createBookControls({
         throw bookError("INVALID_SELECTION", "Choose a valid source match.");
       const from = bookEditorOffset(file.source, start),
         to = bookEditorOffset(file.source, end);
+      const revision = collection.revision, source = file.source, path = file.path;
       active = index;
       showChapter();
-      el["chapter-source"].focus();
-      el["chapter-source"].setSelectionRange(from, to);
+      const expected = JSON.stringify([collection.revision, signature()]);
+      const editor = el["chapter-source"];
+      const verify = () => {
+        alive();
+        const current = collection.files[index];
+        if (reading || composing || collection.revision !== revision || active !== index
+            || !current || current.path !== path || current.source !== source
+            || expected !== JSON.stringify([collection.revision, signature()]))
+          throw bookError("STALE_SOURCE", "The editor changed during source navigation. Run the check again.");
+      };
+      verify();
+      editor.focus();
+      // Focus and selection can synchronously invoke host handlers. Refuse
+      // their newer state without capturing it or overwriting their edits.
+      verify();
+      editor.setSelectionRange(from, to);
+      verify();
+      if (editor.selectionStart !== from || editor.selectionEnd !== to)
+        throw bookError("STALE_SOURCE", "The source selection changed during navigation.");
       el.status.textContent = `Selected source in ${file.path}. Search navigation did not change the book.`;
+      return expected;
     },
     replaceProject(project, checkpoint) {
       alive();

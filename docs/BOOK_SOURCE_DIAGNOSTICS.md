@@ -14,6 +14,9 @@ their ordinary parse. `source_diagnostics()` returns an immutable
 including chapters with no findings. `diagnostic_count()` and `is_empty()` give
 the complete count, and `to_json()` copies a prevalidated, cached JSON report.
 Inspection does not reparse text, load assets, or render any output.
+`source_location(chapter_index, diagnostic_index)` returns separate original-source
+attribution. The public fields and construction of `BookChapterDiagnostics`
+remain unchanged; source locations live in the report's private sidecar.
 
 `build_book_with_diagnostics(inputs)` returns `(Book, BookSourceDiagnostics)` for
 hosts using the public book model directly. The older `build_book` function
@@ -27,6 +30,8 @@ Include edits update the chapters whose expanded text changes. Source-set
 replacement rebuilds the report in the new reading order. Failed, stale, or
 over-budget updates preserve the previous AST, source revision, report,
 presentation settings, and authorized resources.
+Moving a selected snippet within its original file refreshes its source locations
+even if the expanded chapter is byte-for-byte unchanged and no chapter is reparsed.
 
 The browser binding exposes `FmdBook.sourceDiagnostics()` as the same JSON
 string. The native facade method only reads the current capture; it does not
@@ -62,11 +67,56 @@ length. Without expansion/rebasing, these are offsets in the caller's original
 chapter string, preserving Unicode, BOM and original newline bytes.
 
 An included file can appear in several chapters, or only a selected portion of
-it can appear. URL rebasing can also change text length. The report therefore
-does **not** claim that a range addresses the original include file or an editor's
-unexpanded buffer. It never invents an original source filename, line number, or
-caret position. Unused include-only resources have no report entry and are not
-parsed merely to produce diagnostics.
+it can appear. URL rebasing can also change text length. The expanded `start` and
+`end` fields therefore retain their existing meaning. New builds add a separate
+`source` field to each diagnostic:
+
+```json
+{
+  "status": "mapped",
+  "ranges": [{
+    "path": "parts/example.md",
+    "start": 23,
+    "end": 41,
+    "kind": "exact"
+  }]
+}
+```
+
+These are half-open UTF-8 ranges in the caller's original chapter or include-only
+source. They come from the shared include expander's byte map, composed with the
+actual parser-owned URL replacements. No text matching, filename inference,
+second include grammar, filesystem read or reparsing is used to locate a finding.
+Nested selections, stripped anchor markers, repeated equal-looking snippets,
+BOM, Unicode and original newline bytes keep their own coordinates.
+
+| Range kind | Meaning for navigation |
+| --- | --- |
+| `exact` | The diagnostic bytes were copied unchanged from this original range. |
+| `rewritten` | URL rebasing replaced this complete original token. An interior position in its new spelling selects the complete original token. |
+| `generated` | Expansion inserted a separator at this original source boundary; `start` equals `end`. |
+
+A warning spanning multiple sources has multiple ranges. Disjoint original
+fragments remain separate rather than selecting removed markers or an invented
+contiguous region. If a complete location cannot be represented within its limits,
+the diagnostic instead carries `{"status":"unavailable","reason":"range_limit"}`
+or another stable reason. Unavailable locations never include partial ranges.
+Unused include-only resources still have no report entry and are not parsed just
+to produce diagnostics.
+
+The book workbench offers a **Select source** button for each verified range,
+including include-only files. It validates the named source against the captured
+project and checks every requested UTF-8 boundary in one scan per used file.
+Selections use UTF-16 offsets and the existing editor's CRLF normalization.
+Edits, source replacement, cancellation and stale asynchronous completions retire
+the result. Generated boundaries and rewritten tokens are labeled explicitly.
+The **Open publishing chapter** action remains available separately.
+
+Older generated packages omit `source`. Their diagnostics remain readable, and
+the workbench explains that matching WASM is required for original-source jumps.
+Expanded offsets are never substituted for unavailable original offsets. This
+source navigation applies to parser findings; the separate link report continues
+to identify publishing chapters.
 
 The parser's stable classifications currently include `inline_work_limit`,
 `inline_depth_limit`, `emphasis_work_limit`, `emphasis_depth_limit`,
@@ -103,14 +153,32 @@ describe the same parsed revision used for verification and publication.
 ## Admission and regression coverage
 
 The diagnosed builder admits at most 4096 chapters and 64 MiB of chapter text and
-paths. A report contains at most 4096 diagnostics and at most 4 MiB of serialized
-JSON. Diagnostic codes are 1–64 ASCII letters, digits, or underscores; messages
+paths. A report contains at most 4096 diagnostics. The original report data retains
+its **4 MiB** serialized limit. Optional source metadata has a separate **2 MiB**
+allowance, for at most **6 MiB** on the wire. This separate admission preserves
+previously valid near-limit diagnostic reports. Diagnostic codes are 1–64 ASCII
+letters, digits, or underscores; messages
 contain 1–2048 UTF-8 bytes, and ranges must be inside their chapter.
 Exceeding a limit returns `RenderError::InvalidInput` with a
 `book_source_diagnostics` context. No truncated or falsely clean report escapes,
 and native publication never replaces existing output after that refusal.
 
+The complete book's temporary provenance map admits at most 65,536 fragments and
+256 KiB of logical source paths, with a 4096-byte individual path limit. One
+diagnostic can expose at most 64 source ranges; the whole report admits 16,384
+ranges and 256 KiB of repeated path text. Metadata exhaustion produces explicit
+unavailability and leaves the warning and publication intact. Native and browser
+workers use the separate diagnostics wire allowance; link reports retain their
+existing 4 MiB limit.
+
 `tests/book_parser_diagnostics.rs` covers work/depth fallback codes, Unicode and
 CRLF ranges, include/rebasing coordinates, unchanged export bytes, repaired and
 rejected workspace revisions, report budgets, native warnings, and MCP reports.
 The `wasm-book` feature adds a binding test against the same retained capture.
+`tests/book_source_locations.rs` and the source-map unit regressions cover nested
+and selected includes, repeated snippets, rewritten URL interiors, split-source
+warnings, generated separators, mapping-only edits, transaction rollback and
+unchanged publication bytes. The adapter/worker/DOM-double tests in
+`wasm/tests/book_source_diagnostics.test.mjs` cover source identity, UTF-8-to-UTF-16
+selection, stale results, old packages, metadata admission and both worker
+directions. They are not a claim of real-browser or generated-WASM execution.

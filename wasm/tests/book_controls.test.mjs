@@ -24,6 +24,8 @@ class Element extends EventTarget {
   disabled = false;
   checked = false;
   hidden = false;
+  selectionStart = 0;
+  selectionEnd = 0;
   get value() {
     return this.#value;
   }
@@ -40,6 +42,11 @@ class Element extends EventTarget {
     const event = new Event("click", { cancelable: true });
     this.dispatchEvent(event);
     return event;
+  }
+  focus() { this.dispatchEvent(new Event("focus")); }
+  setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
   }
 }
 function setup(t) {
@@ -94,6 +101,51 @@ function setup(t) {
 async function initial(f) {
   await f.controls.importFiles([new File(["# One\r\n"], "one.md"), new File(["# Two"], "two.md")]);
 }
+
+test("source navigation returns only the verified intended editor checkpoint", async t => {
+  const f = setup(t);
+  await initial(f);
+  const receipt = f.controls.selectSourceRange(0, 0, "# One\r\n".length, f.controls.checkpoint());
+  assert.equal(receipt, f.controls.checkpoint());
+  assert.equal(f.el["chapter-source"].value, "# One\n");
+  assert.equal(f.el["chapter-source"].selectionStart, 0);
+  assert.equal(f.el["chapter-source"].selectionEnd, "# One\n".length);
+});
+
+test("focus reentry cannot bless silently edited source or overwrite the newer textarea", async t => {
+  const f = setup(t);
+  await initial(f);
+  const editor = f.el["chapter-source"], original = f.collection.files[1].source;
+  let selections = 0;
+  editor.focus = () => { editor.value = "# Newer unsaved text 😀"; };
+  editor.setSelectionRange = () => { selections++; };
+  assert.throws(() => f.controls.selectSourceRange(1, 0, 5, f.controls.checkpoint()), code("STALE_SOURCE"));
+  assert.equal(editor.value, "# Newer unsaved text 😀");
+  assert.equal(f.collection.files[1].source, original, "refusal must not capture or roll back the newer textarea");
+  assert.equal(selections, 0, "changed content must not receive an old selection");
+});
+
+test("selection reentry and notified collection replacement invalidate navigation receipts", async t => {
+  for (const phase of ["selection", "collection"]) {
+    const f = setup(t);
+    await initial(f);
+    const editor = f.el["chapter-source"];
+    if (phase === "selection") {
+      editor.setSelectionRange = (start, end) => {
+        editor.selectionStart = start; editor.selectionEnd = end;
+        editor.value = "# New selection-handler text";
+      };
+    } else {
+      editor.focus = () => {
+        f.collection.edit(1, "two.md", "# New model source");
+        editor.value = "# New model source";
+      };
+    }
+    assert.throws(() => f.controls.selectSourceRange(1, 0, 5, f.controls.checkpoint()), code("STALE_SOURCE"));
+    assert.match(editor.value, /^# New/);
+    if (phase === "collection") assert.equal(f.collection.files[1].source, "# New model source");
+  }
+});
 function type(el, value, event = "input") {
   el.value = value;
   el.dispatchEvent(new Event(event));

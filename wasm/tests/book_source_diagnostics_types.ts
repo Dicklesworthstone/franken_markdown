@@ -6,6 +6,19 @@ async function check() {
   const chapters = [{ path: "guide.md", source: "# Guide" }] as const;
   const result = await checkBookSourceDiagnostics(chapters);
   const report: BookSourceDiagnosticsReport = parseBookSourceDiagnosticsReport(result.bytes, ["guide.md"]);
+  const source = report.chapters[0]?.diagnostics[0]?.source;
+  if (source?.status === "mapped") {
+    const path: string = source.ranges[0].path;
+    const kind: "exact" | "rewritten" | "generated" = source.ranges[0].kind;
+    // @ts-expect-error verified source ranges are immutable
+    source.ranges[0].start = 1;
+    void path; void kind;
+  } else if (source) {
+    const reason: string = source.reason;
+    // @ts-expect-error unavailable attribution has no partial ranges
+    source.ranges;
+    void reason;
+  }
   const book = await createBook(chapters);
   try { book.sourceDiagnostics().blob(); } finally { book.dispose(); }
   const worker = createBookWorker();

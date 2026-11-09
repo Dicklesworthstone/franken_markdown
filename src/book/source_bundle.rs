@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use super::{BookInput, BookRenderer, MAX_CHAPTERS, MAX_SOURCE_BYTES, paths};
+use crate::book::source_locations::{SourceMap, SourceMapBudget};
 use crate::transclude::{
     ResolveResult, expand_includes_mapped_with_limit_and_profile, has_includes,
 };
@@ -19,7 +20,7 @@ impl BookRenderer {
         chapters: &[BookInput],
         resources: &[BookInput],
         profile: Option<crate::Profile>,
-    ) -> Result<(Vec<BookInput>, usize)> {
+    ) -> Result<(Vec<BookInput>, usize, Vec<SourceMap>)> {
         prepare_with_profile(
             chapters,
             resources,
@@ -33,8 +34,10 @@ impl BookRenderer {
         expanded: &[BookInput],
         source_length: usize,
         profile: Option<crate::Profile>,
+        maps: &[SourceMap],
     ) -> Result<Self> {
         let mut renderer = Self::new_with_profile(expanded, profile)?;
+        renderer.source_diagnostics = renderer.source_diagnostics.with_source_maps(maps)?;
         renderer.source_length = source_length;
         Ok(renderer)
     }
@@ -98,7 +101,7 @@ impl BookRenderer {
         include_sources: &[BookInput],
         profile: Option<crate::Profile>,
     ) -> Result<Self> {
-        let (expanded, source_length) = prepare_with_profile(
+        let (expanded, source_length, maps) = prepare_with_profile(
             chapters,
             include_sources,
             MAX_SOURCE_BYTES,
@@ -106,6 +109,7 @@ impl BookRenderer {
             profile,
         )?;
         let mut renderer = Self::new_with_profile(&expanded, profile)?;
+        renderer.source_diagnostics = renderer.source_diagnostics.with_source_maps(&maps)?;
         renderer.source_length = source_length;
         Ok(renderer)
     }
@@ -131,6 +135,7 @@ fn prepare(
     max_resolutions: usize,
 ) -> Result<(Vec<BookInput>, usize)> {
     prepare_with_profile(chapters, include_sources, max_bytes, max_resolutions, None)
+        .map(|(sources, bytes, _)| (sources, bytes))
 }
 
 fn prepare_with_profile(
@@ -139,7 +144,7 @@ fn prepare_with_profile(
     max_bytes: usize,
     max_resolutions: usize,
     profile: Option<crate::Profile>,
-) -> Result<(Vec<BookInput>, usize)> {
+) -> Result<(Vec<BookInput>, usize, Vec<SourceMap>)> {
     if chapters.is_empty()
         || chapters.len() > MAX_CHAPTERS
         || include_sources.len() > MAX_CHAPTERS.saturating_sub(chapters.len())
@@ -182,6 +187,8 @@ fn prepare_with_profile(
     let copied_bytes = Cell::new(source_length);
     let mut output_bytes = 0usize;
     let mut expanded = Vec::with_capacity(chapters.len());
+    let mut maps = Vec::with_capacity(chapters.len());
+    let mut map_budget = SourceMapBudget::default();
     for (input, path) in chapters.iter().zip(ordered) {
         add(
             &mut output_bytes,
@@ -190,7 +197,7 @@ fn prepare_with_profile(
             "expanded chapter text and paths",
         )?;
         let remaining = max_bytes - output_bytes;
-        let source = if has_includes(&input.source) {
+        let (source, map) = if has_includes(&input.source) {
             let resolve = |requested: &str, origin: &str| -> ResolveResult {
                 if resolutions.get() >= max_resolutions {
                     return Err(format!(
@@ -226,7 +233,7 @@ fn prepare_with_profile(
                 profile,
             )
             .map_err(|error| invalid(format!("{path}: {error}")))?;
-            crate::source_origins::rebase_destinations_with_profile(
+            crate::source_origins::rebase_destinations_mapped_with_profile(
                 expanded,
                 &path,
                 |origin| Some(origin.to_owned()),
@@ -240,7 +247,10 @@ fn prepare_with_profile(
                     "expanded chapter text and paths exceed the book limit",
                 ));
             }
-            input.source.clone()
+            (
+                input.source.clone(),
+                SourceMap::identity(&path, input.source.len()),
+            )
         };
         add(
             &mut output_bytes,
@@ -249,8 +259,9 @@ fn prepare_with_profile(
             "expanded chapter text and paths",
         )?;
         expanded.push(BookInput { path, source });
+        maps.push(map_budget.admit(map));
     }
-    Ok((expanded, source_length))
+    Ok((expanded, source_length, maps))
 }
 
 // Same literal-path policy as native book ingress. Percent signs and '#'

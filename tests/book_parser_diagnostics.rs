@@ -90,7 +90,7 @@ fn diagnostics_do_not_change_the_book_ast_or_publication_bytes() {
 }
 
 #[test]
-fn includes_report_the_expanded_and_rebased_chapter_not_invented_original_offsets() {
+fn includes_retain_expanded_ranges_and_verified_original_source_ranges() {
     let hostile = work_limited();
     let inputs = [
         source(
@@ -120,7 +120,19 @@ fn includes_report_the_expanded_and_rebased_chapter_not_invented_original_offset
         Some(hostile.as_str())
     );
     assert!(report.chapters()[1].diagnostics.is_empty());
-    assert!(!report.to_json().contains("fragments/body.txt"));
+    let original_start = includes[0].source.find(&hostile).unwrap();
+    assert_eq!(
+        report.source_location(0, 0),
+        Some(&franken_markdown::book::BookSourceLocation::Mapped(vec![
+            franken_markdown::book::BookSourceRange {
+                path: "fragments/body.txt".into(),
+                start: original_start,
+                end: original_start + hostile.len(),
+                kind: franken_markdown::book::BookSourceRangeKind::Exact,
+            },
+        ])),
+    );
+    assert!(report.to_json().contains("fragments/body.txt"));
     assert_eq!(renderer.validate_links().unwrap().finding_count(), 0);
 }
 

@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::manifest::{self, Manifest};
+use crate::book::source_locations::{SourceMap, SourceMapBudget};
 use crate::book::{
     Book, BookInput, BookSourceDiagnostics, build_book_with_diagnostics_and_profile,
     resolve_book_destination,
@@ -88,6 +89,8 @@ pub(super) fn load_sources(
         return Err(format!("{message} in {}", input.display()));
     }
     let mut inputs = Vec::with_capacity(order.len());
+    let mut maps = Vec::with_capacity(order.len());
+    let mut map_budget = SourceMapBudget::default();
     let mut source_bytes = Vec::with_capacity(order.len());
     let read_bytes = Cell::new(0u64);
     let mut expanded_bytes = 0u64;
@@ -107,7 +110,7 @@ pub(super) fn load_sources(
         source_bytes.push(bytes.len());
         let raw =
             String::from_utf8(bytes).map_err(|_| format!("{relative}: Markdown must be UTF-8"))?;
-        let source = if crate::transclude::has_includes(&raw) {
+        let (source, map) = if crate::transclude::has_includes(&raw) {
             let resolve = |requested: &str, origin: &str| -> crate::transclude::ResolveResult {
                 let origin = if origin == "<input>" {
                     &relative
@@ -128,7 +131,7 @@ pub(super) fn load_sources(
                 &raw, &relative, &resolve, remaining, profile,
             )
             .map_err(|error| format!("{relative}: {error}"))?;
-            crate::cli::source_origins::rebase_destinations_with_profile(
+            crate::cli::source_origins::rebase_destinations_mapped_with_profile(
                 expanded,
                 &relative,
                 |origin| Some(origin.to_owned()),
@@ -137,7 +140,8 @@ pub(super) fn load_sources(
             )
             .map_err(|error| format!("{relative}: {error}"))?
         } else {
-            raw
+            let map = SourceMap::identity(&relative, raw.len());
+            (raw, map)
         };
         expanded_bytes = expanded_bytes
             .checked_add(source.len() as u64)
@@ -149,9 +153,13 @@ pub(super) fn load_sources(
             path: relative,
             source,
         });
+        maps.push(map_budget.admit(map));
     }
     protected_paths.extend(include_paths.into_inner());
     let (book, source_diagnostics) = build_book_with_diagnostics_and_profile(&inputs, profile)
+        .map_err(|error| error.to_string())?;
+    let source_diagnostics = source_diagnostics
+        .with_source_maps(&maps)
         .map_err(|error| error.to_string())?;
     warnings.sort();
     warnings.dedup();

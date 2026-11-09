@@ -5,6 +5,7 @@ import test from "node:test";
 import { createBookBindings, parseBookSourceDiagnosticsReport } from "../book_session.mjs";
 import { createBookWorkerClient, installBookWorker } from "../book_worker.mjs";
 import { createBookSourceDiagnosticsControls, createBookSourceDiagnosticsPanel } from "../demo/book_inspection_controls.mjs";
+import { bookDiagnosticSelections, BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "../book_source_diagnostics.mjs";
 
 const files = [{ path: "guide.md", source: "# Guide\n{{#include part.md}}" }];
 const resources = [{ path: "part.md", source: "literal fallback" }];
@@ -206,7 +207,10 @@ test("worker cancellation retires pending diagnostic work", async () => {
   client.dispose();
 });
 
-function controlsFixture(t, render) {
+function controlsFixture(t, render, selectedFiles = [
+  ...files.map(file => ({ ...file, role: "chapter" })),
+  ...resources.map(file => ({ ...file, role: "include" })),
+]) {
   const ids = new Map(), listeners = new Set(), selected = [], revoked = [];
   class Element extends EventTarget {
     constructor(tag = "") { super(); this.tagName = tag; this.children = []; this.textContent = ""; }
@@ -228,15 +232,14 @@ function controlsFixture(t, render) {
   createBookSourceDiagnosticsPanel(root);
   let stamp = 0;
   const collection = {
-    files: [...files.map(file => ({ ...file, role: "chapter" })),
-      ...resources.map(file => ({ ...file, role: "include" }))],
+    files: selectedFiles,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const controls = {
     sourceBusy: false,
     checkpoint: () => stamp,
     captureProject: () => ({ files: collection.files.map(file => ({ ...file })) }),
-    selectSourceRange(...args) { selected.push(args); stamp++; },
+    selectSourceRange(...args) { selected.push(args); return ++stamp; },
     subscribeSourceState: () => () => {},
   };
   const worker = { render, cancel() {}, dispose() {} };
@@ -245,7 +248,9 @@ function controlsFixture(t, render) {
     urls: { createObjectURL: () => "blob:parser", revokeObjectURL: url => revoked.push(url) },
   });
   t.after(() => api.dispose());
-  return { api, ids, selected, revoked, change() { stamp++; for (const listener of listeners) listener(); } };
+  return { api, ids, selected, revoked, collection, controls,
+    silentChange() { stamp++; },
+    change() { stamp++; for (const listener of listeners) listener(); } };
 }
 
 test("browser diagnostics show honest expanded ranges and retire stale report downloads", async t => {
@@ -279,4 +284,179 @@ test("browser diagnostics reject a result completed for an older source capture"
   await assert.rejects(result, code("STALE_SOURCE_DIAGNOSTICS"));
   assert.equal(fixture.ids.get("parser-findings").children.length, 0);
   assert.equal(fixture.ids.get("parser-summary").textContent, "");
+});
+
+function withSource(ranges, value = report()) {
+  value.chapters[0].diagnostics[0].source = { status: "mapped", ranges };
+  return value;
+}
+const origin = (path = "part.md", start = 0, end = 7, kind = "exact") => ({ path, start, end, kind });
+
+test("source locations remain frozen and legacy packages explicitly lack attribution", () => {
+  const value = withSource([origin()]);
+  const parsed = parseBookSourceDiagnosticsReport(encoded(value), ["guide.md"]);
+  const source = parsed.chapters[0].diagnostics[0].source;
+  assert.deepEqual(source, value.chapters[0].diagnostics[0].source);
+  assert.ok(Object.isFrozen(source) && Object.isFrozen(source.ranges) && Object.isFrozen(source.ranges[0]));
+  assert.equal(parseBookSourceDiagnosticsReport(encoded(report())).chapters[0].diagnostics[0].source, undefined);
+  value.chapters[0].diagnostics[0].source = { status: "unavailable", reason: "provenance_limit" };
+  assert.deepEqual(parseBookSourceDiagnosticsReport(encoded(value)).chapters[0].diagnostics[0].source,
+    { status: "unavailable", reason: "provenance_limit" });
+});
+
+test("source location validation rejects partial, malformed and oversized mappings", () => {
+  for (const source of [
+    null, { status: "mapped", ranges: [] },
+    { status: "mapped", ranges: Array.from({ length: 65 }, () => origin()) },
+    { status: "unavailable", reason: "limit", ranges: [origin()] },
+    { status: "unavailable", reason: "invented location" },
+    ...[origin("../part.md"), origin("/part.md"), origin("https:part.md"),
+      origin("part.md", 1, 2, "generated"), origin("part.md", 0.5),
+      origin("part.md", 4, 3), origin("part.md", 0, 1, "guessed"),
+      origin("x".repeat(4097))].map(range => ({ status: "mapped", ranges: [range] })),
+  ]) {
+    const value = report();
+    value.chapters[0].diagnostics[0].source = source;
+    assert.throws(() => parseBookSourceDiagnosticsReport(encoded(value)), code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
+  }
+});
+
+test("original byte coordinates convert to UTF-16 without flattening CRLF or splitting scalars", () => {
+  const source = "\uFEFF😀\r\nPréface\r\n[broken]:\r\n";
+  const from = source.indexOf("[broken]"), to = from + "[broken]:".length;
+  const start = new TextEncoder().encode(source.slice(0, from)).length;
+  const end = new TextEncoder().encode(source.slice(0, to)).length;
+  const parsed = parseBookSourceDiagnosticsReport(encoded(withSource([origin("part.md", start, end)])));
+  const range = parsed.chapters[0].diagnostics[0].source.ranges[0];
+  const selections = bookDiagnosticSelections(parsed, [{ path: "part.md", source }]);
+  assert.deepEqual(selections.get(range), { path: "part.md", source, start: from, end: to });
+  assert.notEqual(start, from);
+  for (const [start, end] of [[1, 2], [3, 5], [0, 1000]]) {
+    const invalid = parseBookSourceDiagnosticsReport(encoded(withSource([origin("part.md", start, end)])));
+    assert.throws(() => bookDiagnosticSelections(invalid, [{ path: "part.md", source }]),
+      code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
+  }
+});
+
+test("workbench selects include-only source ranges and keeps split origins separate", async t => {
+  const snippet = "😀\r\n[broken]:\r\n";
+  const start = new TextEncoder().encode("😀\r\n").length;
+  const value = withSource([origin("part.md", start, start + 9), origin("guide.md", 0, 7)]);
+  const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(value) }), [
+    { ...files[0], role: "chapter" }, { path: "part.md", source: snippet, role: "include" },
+  ]);
+  const checked = await fixture.api.run();
+  const finding = checked.chapters[0].diagnostics[0];
+  const row = fixture.ids.get("parser-findings").children[0];
+  assert.match(row.children[3].textContent, /Select source: part.md/);
+  assert.match(row.children[4].textContent, /Select source: guide.md/);
+  fixture.api.openSource(finding, 0);
+  assert.deepEqual(fixture.selected[0].slice(0, 3), [1, 4, 13]);
+  fixture.api.openSource(finding, 1);
+  assert.deepEqual(fixture.selected[1].slice(0, 3), [0, 0, 7]);
+  fixture.change();
+  assert.throws(() => fixture.api.openSource(finding), code("STALE_SOURCE_DIAGNOSTICS"));
+  assert.equal(fixture.selected.length, 2);
+});
+
+test("generated boundaries and rewritten tokens retain truthful source-selection labels", async t => {
+  const value = withSource([origin("part.md", 7, 7, "generated"), origin("part.md", 0, 7, "rewritten")]);
+  const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(value) }));
+  const checked = await fixture.api.run();
+  const row = fixture.ids.get("parser-findings").children[0];
+  assert.match(row.children[3].textContent, /Open boundary/);
+  assert.match(row.children[4].textContent, /original URL token/);
+  fixture.api.openSource(checked.chapters[0].diagnostics[0], 0);
+  assert.deepEqual(fixture.selected[0].slice(0, 3), [1, 7, 7]);
+  assert.match(fixture.ids.get("parser-status").textContent, /inserted a separator/);
+});
+
+test("unknown sources and changed source bodies cannot acquire navigation authority", async t => {
+  const unknown = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(withSource([origin("unselected.md")])) }));
+  await assert.rejects(unknown.api.run(), code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
+  assert.equal(unknown.selected.length, 0);
+  const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(withSource([origin()])) }));
+  const checked = await fixture.api.run();
+  fixture.collection.files[1].source = "changed without a notification";
+  assert.throws(() => fixture.api.openSource(checked.chapters[0].diagnostics[0]), code("STALE_SOURCE_DIAGNOSTICS"));
+  assert.equal(fixture.selected.length, 0);
+});
+
+test("legacy or unavailable mappings keep expanded diagnostics and explain absent navigation", async t => {
+  for (const source of [undefined, { status: "unavailable", reason: "range_limit" }]) {
+    const value = report();
+    if (source) value.chapters[0].diagnostics[0].source = source;
+    const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(value) }));
+    const checked = await fixture.api.run();
+    const row = fixture.ids.get("parser-findings").children[0];
+    assert.equal(row.children.length, 4);
+    assert.match(row.children[3].textContent, source ? /unavailable \(range_limit\)/ : /does not provide original-source locations/);
+    assert.throws(() => fixture.api.openSource(checked.chapters[0].diagnostics[0]), code("INVALID_SELECTION"));
+    fixture.api.open("guide.md");
+    assert.deepEqual(fixture.selected[0].slice(0, 3), [0, 0, 0]);
+  }
+});
+
+test("provenance has its own wire allowance without expanding the base diagnostic limit", () => {
+  const value = report();
+  const base = encoded(value).byteLength;
+  value.padding = "x".repeat(4 * 1024 * 1024 - base - 14);
+  const baseBytes = encoded(value).byteLength;
+  assert.ok(baseBytes <= 4 * 1024 * 1024);
+  value.chapters[0].diagnostics[0].source = { status: "unavailable", reason: "provenance_limit" };
+  const bytes = encoded(value);
+  assert.ok(bytes.byteLength > 4 * 1024 * 1024 && bytes.byteLength < BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES);
+  assert.equal(parseBookSourceDiagnosticsReport(bytes).summary.diagnostics, 1);
+  value.padding += "x".repeat(32);
+  assert.throws(() => parseBookSourceDiagnosticsReport(encoded(value)), code("INVALID_BOOK_SOURCE_DIAGNOSTICS"));
+});
+
+test("both worker directions admit the separate provenance allowance above four MiB", async () => {
+  const value = report();
+  value.padding = "x".repeat(4 * 1024 * 1024 - encoded(value).byteLength - 14);
+  value.chapters[0].diagnostics[0].source = { status: "unavailable", reason: "provenance_limit" };
+  const bytes = encoded(value);
+  const { api } = bindings({ value: () => new TextDecoder().decode(bytes) });
+  const wire = transport(api);
+  const client = createBookWorkerClient({ workerFactory: wire.workerFactory });
+  try {
+    const result = await client.render(files, "diagnostics", { includeSources: resources });
+    assert.equal(result.bytes.byteLength, bytes.byteLength);
+    assert.equal(parseBookSourceDiagnosticsReport(result.bytes).summary.diagnostics, 1);
+  } finally { client.dispose(); }
+});
+
+test("source navigation never adopts a checkpoint changed during host focus or selection", async t => {
+  const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(withSource([origin()])) }));
+  const checked = await fixture.api.run();
+  fixture.api.save();
+  const select = fixture.controls.selectSourceRange;
+  fixture.controls.selectSourceRange = (...args) => {
+    const receipt = select(...args);
+    fixture.collection.files[1].source = "Newer source from a focus handler";
+    fixture.silentChange();
+    return receipt;
+  };
+  assert.throws(() => fixture.api.openSource(checked.chapters[0].diagnostics[0]), code("STALE_SOURCE_DIAGNOSTICS"));
+  assert.throws(() => fixture.api.save(), code("STALE_SOURCE_DIAGNOSTICS"));
+  assert.equal(fixture.ids.get("parser-download").hidden, true);
+  assert.equal(fixture.collection.files[1].source, "Newer source from a focus handler");
+});
+
+test("a notified reentrant replacement cannot bind an old report to an otherwise current receipt", async t => {
+  for (const parserSource of [true, false]) {
+    const fixture = controlsFixture(t, async () => ({ format: "book-diagnostics", bytes: encoded(withSource([origin()])) }));
+    const checked = await fixture.api.run();
+    const select = fixture.controls.selectSourceRange;
+    fixture.controls.selectSourceRange = (...args) => {
+      select(...args);
+      fixture.change();
+      return fixture.controls.checkpoint();
+    };
+    assert.throws(() => parserSource
+      ? fixture.api.openSource(checked.chapters[0].diagnostics[0])
+      : fixture.api.open("guide.md"), code("STALE_SOURCE_DIAGNOSTICS"));
+    assert.throws(() => fixture.api.save(), code("STALE_SOURCE_DIAGNOSTICS"));
+    assert.equal(fixture.ids.get("parser-findings").children.length, 0);
+  }
 });

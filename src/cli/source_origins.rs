@@ -9,11 +9,13 @@
 //! their explicitly supplied source collection and asset bytes.
 
 use crate::book::resolve_book_destination;
+use crate::book::source_locations::SourceMap;
 use crate::transclude::ExpandedDocument;
 
 /// Rewrite destinations from included files relative to the published source.
 /// `logical_origin` maps canonical host keys to paths inside the same input
 /// root. Root-source destinations retain their original Markdown spelling.
+#[cfg(any(feature = "cli", test))]
 pub(crate) fn rebase_destinations(
     expanded: ExpandedDocument,
     output_source: &str,
@@ -26,11 +28,14 @@ pub(crate) fn rebase_destinations(
         logical_origin,
         max_output_bytes,
         None,
+        false,
     )
+    .map(|(text, _)| text)
 }
 
 /// Identify resource tokens using the same dialect that will parse the rebased
 /// chapter, including links and images spanning a definition-looking line.
+#[cfg(any(feature = "cli", test))]
 pub(crate) fn rebase_destinations_with_profile(
     expanded: ExpandedDocument,
     output_source: &str,
@@ -47,6 +52,26 @@ pub(crate) fn rebase_destinations_with_profile(
         logical_origin,
         max_output_bytes,
         profile,
+        false,
+    )
+    .map(|(text, _)| text)
+}
+
+/// The same URL rewrite with a bounded, composed original-source sidecar.
+pub(crate) fn rebase_destinations_mapped_with_profile(
+    expanded: ExpandedDocument,
+    output_source: &str,
+    logical_origin: impl Fn(&str) -> Option<String>,
+    max_output_bytes: usize,
+    profile: Option<crate::Profile>,
+) -> Result<(String, SourceMap), String> {
+    rebase_destinations_inner(
+        expanded,
+        output_source,
+        logical_origin,
+        max_output_bytes,
+        profile,
+        true,
     )
 }
 
@@ -56,7 +81,13 @@ fn rebase_destinations_inner(
     logical_origin: impl Fn(&str) -> Option<String>,
     max_output_bytes: usize,
     profile: Option<crate::Profile>,
-) -> Result<String, String> {
+    capture_origins: bool,
+) -> Result<(String, SourceMap), String> {
+    let origins = if capture_origins {
+        SourceMap::from_expanded(&expanded, &logical_origin)
+    } else {
+        SourceMap::unavailable(expanded.text.len(), "not_captured")
+    };
     let mut edits = Vec::new();
     let mut output_len = expanded.text.len();
     let destinations = match profile {
@@ -104,8 +135,9 @@ fn rebase_destinations_inner(
         edits.push((destination.range, replacement));
     }
     if edits.is_empty() {
-        return Ok(expanded.text);
+        return Ok((expanded.text, origins));
     }
+    let origins = origins.rebase(&edits, output_len);
     let mut output = String::with_capacity(output_len);
     let mut offset = 0;
     for (range, replacement) in edits {
@@ -117,7 +149,7 @@ fn rebase_destinations_inner(
         offset = range.end;
     }
     output.push_str(&expanded.text[offset..]);
-    Ok(output)
+    Ok((output, origins))
 }
 
 fn parent(source: &str) -> &str {

@@ -1,5 +1,6 @@
 import { inspectionDownload, readBookInspection } from "../book_inspection.mjs";
 import { parseBookLinkReport, parseBookSourceDiagnosticsReport } from "../book_session.mjs";
+import { bookDiagnosticSelections } from "../book_source_diagnostics.mjs";
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const PAGE_SIZE = 50;
@@ -533,6 +534,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     rows = [],
     page = 0,
     url = null;
+  let sourceSelections = new Map();
   const listeners = [];
   function alive() {
     if (disposed || suspended) throw fail(parser ? "SOURCE_DIAGNOSTICS_CLOSED" : "LINK_CHECK_CLOSED", "Book checking is not active.");
@@ -563,6 +565,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     report = null;
     stamp = null;
     rows = [];
+    sourceSelections = new Map();
     page = 0;
     revoke();
     el["links-findings"].replaceChildren();
@@ -596,11 +599,35 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     );
     if (index < 0)
       throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "The publishing chapter is no longer in this book.");
-    controls.selectSourceRange(index, 0, 0, stamp);
-    stamp = controls.checkpoint();
+    navigate(index, 0, 0);
     el["links-status"].textContent = parser
       ? `Opened ${path}. Diagnostic byte ranges describe the expanded chapter and can include transcluded text. No original include range is selected.`
       : `Opened ${path}. The destination occurs in this expanded chapter and may come from an include. No exact original-source span is available; no automatic edit was made.`;
+  }
+  function navigate(index, start, end) {
+    const snapshot = report, ticket = generation;
+    const receipt = controls.selectSourceRange(index, start, end, stamp);
+    if (!snapshot || report !== snapshot || ticket !== generation || controls.sourceBusy
+        || receipt === undefined || receipt !== controls.checkpoint())
+      throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK",
+        "The editor or report changed during source navigation. Check the current book again.");
+    stamp = receipt;
+  }
+  function openSource(finding, rangeIndex = 0) {
+    current();
+    if (!parser || !rows.some(row => row.finding === finding)
+        || finding.source?.status !== "mapped" || !Number.isInteger(rangeIndex))
+      throw fail("INVALID_SELECTION", "Choose a reported original-source range.");
+    const range = finding.source.ranges[rangeIndex], selection = sourceSelections.get(range);
+    const index = selection ? collection.files.findIndex(file => file.path === selection.path) : -1;
+    if (index < 0 || collection.files[index].source !== selection.source)
+      throw fail("STALE_SOURCE_DIAGNOSTICS", "The original source changed. Check the current book again.");
+    navigate(index, selection.start, selection.end);
+    el["links-status"].textContent = range.kind === "generated"
+      ? `Opened the source boundary in ${range.path} where include expansion inserted a separator.`
+      : range.kind === "rewritten"
+        ? `Selected the original URL token in ${range.path}. Its published spelling was rewritten during include expansion.`
+        : `Selected original source in ${range.path}. The expanded diagnostic range remains in the report.`;
   }
   function invoke(fn) {
     try {
@@ -634,6 +661,26 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
         }),
       );
       row.append(label, destination, button);
+      if (parser) {
+        if (finding.source?.status === "mapped") {
+          finding.source.ranges.forEach((range, index) => {
+            const sourceButton = root.createElement("button");
+            sourceButton.type = "button";
+            sourceButton.textContent = `${range.kind === "generated" ? "Open boundary" : "Select source"}: ${range.path} (${range.start}–${range.end} UTF-8 bytes${range.kind === "rewritten" ? "; original URL token" : ""})`;
+            sourceButton.addEventListener("click", () => invoke(() => {
+              if (report !== snapshot) throw fail("STALE_SOURCE_DIAGNOSTICS", "This result belongs to an older check.");
+              openSource(finding, index);
+            }));
+            row.append(sourceButton);
+          });
+        } else {
+          const unavailable = root.createElement("p");
+          unavailable.textContent = finding.source
+            ? `Original-source navigation is unavailable (${finding.source.reason}). The expanded range is still valid.`
+            : "This WASM package does not provide original-source locations. Rebuild the matching package to select chapter and include-file ranges.";
+          row.append(unavailable);
+        }
+      }
       el["links-findings"].append(row);
     }
     el["links-count"].textContent = rows.length
@@ -642,7 +689,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
         : "No broken local chapter or anchor references were reported by this check.";
     const s = report.summary;
     el["links-summary"].textContent = parser
-      ? `${s.diagnostics} parser diagnostics in ${s.chapters} expanded chapters. Work/depth fallbacks and malformed Markdown are shown here. Byte ranges refer to the expanded chapter; opening source selects its publishing chapter.`
+      ? `${s.diagnostics} parser diagnostics in ${s.chapters} expanded chapters. Expanded byte ranges are retained. Select source opens verified original chapter/include ranges when available; separate buttons preserve findings that cross source files.`
       : `${s.findings} findings in ${s.chapters} expanded chapters; ${s.checked} local link and footnote-reference checks. ${s.external} external URLs and ${s.unchecked} other local resources were NOT verified. Images, raw HTML IDs, and PDF/EPUB conformance are outside this check.`;
     buttons();
   }
@@ -681,6 +728,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
         result.bytes,
         files.map((file) => file.path),
       );
+      if (parser) sourceSelections = bookDiagnosticSelections(report, project.files);
       stamp = captured;
       busy = false;
       rows = report.chapters.flatMap((chapter) =>
@@ -723,7 +771,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
     el["links-download"].download = parser ? "book-source-diagnostics.json" : "book-links.json";
     el["links-download"].hidden = false;
     el["links-status"].textContent = parser
-      ? "Report prepared. Click Download parser report to save the chapter names, expanded byte ranges and diagnostics."
+      ? "Report prepared. Click Download parser report to save the diagnostics, expanded byte ranges and available original-source locations."
       : "Report prepared. Click Download link report to save it. It contains chapter names and destinations, which may be sensitive; review it before sharing.";
   }
   function on(element, type, handler) {
@@ -794,6 +842,7 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
   return Object.freeze({
     run,
     open,
+    openSource,
     save,
     suspend() {
       if (disposed) return;
@@ -877,7 +926,7 @@ function createBookCheckPanel(root, parser) {
       "p",
       {},
       parser
-        ? "Ranges are UTF-8 bytes in expanded chapters, including rewritten resource destinations. They are not original include-file or editor selection offsets. These checks do not validate links, images or final PDF/EPUB conformance."
+        ? "Expanded ranges are UTF-8 bytes in the published chapter. Separate source ranges identify original selected chapters and include files; rewritten URL tokens and generated boundaries are labeled. Unavailable mappings never become guessed editor offsets. These checks do not validate links, images or final PDF/EPUB conformance."
         : "Scope: safe HTML navigation from the expanded AST. External URLs, downloads, images, raw HTML IDs, and final PDF/EPUB conformance are not verified. Findings identify publishing chapters, not exact original-source locations. Report destinations may contain sensitive information.",
     ),
   );

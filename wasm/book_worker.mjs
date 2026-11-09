@@ -2,6 +2,7 @@
 import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
 import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
+import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "./book_source_diagnostics.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
@@ -474,7 +475,8 @@ export function createBookWorkerClient({
           const fontReceipt = bookFontEmbeddingReceipt(data,
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength,
-            sourceFormats.has(format) ? Math.min(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes);
+            sourceFormats.has(format) ? Math.min(maxOutputBytes,
+              format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : 4 * 1024 * 1024) : maxOutputBytes);
           const renderReceipt = bookRenderDiagnosticsReceipt(data, format);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
@@ -756,7 +758,8 @@ export function installBookWorker(scope, engine) {
       const fontReceipt = bookFontEmbeddingReceipt(result,
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength,
-        sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes, 4 * 1024 * 1024) : data.maxOutputBytes);
+        sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes,
+          data.format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : 4 * 1024 * 1024) : data.maxOutputBytes);
       const renderReceipt = bookRenderDiagnosticsReceipt(result, data.format);
       if (data.format === "pdf") {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))

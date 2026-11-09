@@ -123,7 +123,8 @@ impl BookRenderer {
 
     /// Complete parser findings from the same chapter capture as the retained
     /// AST. Reading this report never reparses source or loads host resources.
-    /// Ranges refer to expanded/rebased chapter bytes, not include-file offsets.
+    /// Diagnostic ranges retain expanded/rebased chapter coordinates; the
+    /// additive source-location sidecar names verified original source ranges.
     #[must_use]
     pub fn source_diagnostics(&self) -> &BookSourceDiagnostics {
         &self.source_diagnostics

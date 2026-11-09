@@ -134,9 +134,10 @@ impl BookWorkspace {
         resources: &[BookInput],
         profile: Option<crate::Profile>,
     ) -> Result<Self> {
-        let (expanded, source_length) =
+        let (expanded, source_length, maps) =
             BookRenderer::prepare_workspace_sources(chapters, resources, profile)?;
-        let renderer = BookRenderer::from_workspace_sources(&expanded, source_length, profile)?;
+        let renderer =
+            BookRenderer::from_workspace_sources(&expanded, source_length, profile, &maps)?;
         Ok(Self {
             renderer,
             chapters: capture(chapters)?,
@@ -182,9 +183,10 @@ impl BookWorkspace {
             return Ok(());
         }
         let (expanded, mut renderer) = if self.expanded.is_some() {
-            let (expanded, source_length) =
+            let (expanded, source_length, maps) =
                 BookRenderer::prepare_workspace_sources(&self.chapters, &self.resources, profile)?;
-            let renderer = BookRenderer::from_workspace_sources(&expanded, source_length, profile)?;
+            let renderer =
+                BookRenderer::from_workspace_sources(&expanded, source_length, profile, &maps)?;
             (Some(expanded), renderer)
         } else {
             (
@@ -326,12 +328,12 @@ impl BookWorkspace {
             };
             source.clone_into(&mut target.source);
         }
-        let expanded = if self.expanded.is_some() {
-            let (expanded, _) =
+        let (expanded, maps) = if self.expanded.is_some() {
+            let (expanded, _, maps) =
                 BookRenderer::prepare_workspace_sources(&chapters, &resources, self.parse_profile)?;
-            Some(expanded)
+            (Some(expanded), Some(maps))
         } else {
-            None
+            (None, None)
         };
         let next = expanded.as_deref().unwrap_or(&chapters);
         let previous = self.expanded.as_deref().unwrap_or(&self.chapters);
@@ -356,6 +358,10 @@ impl BookWorkspace {
         // Admit the complete report before publishing either AST or source.
         // Refused diagnostics must leave the previous usable revision intact.
         let diagnostics = BookSourceDiagnostics::new(diagnostics)?;
+        let diagnostics = match maps {
+            Some(maps) => diagnostics.with_source_maps(&maps)?,
+            None => diagnostics,
+        };
         let report = BookSourceUpdate {
             revision,
             source_length,

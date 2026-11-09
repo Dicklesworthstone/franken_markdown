@@ -20,7 +20,10 @@ mod diagnostics;
 mod merge;
 #[path = "book/paths.rs"]
 mod paths;
+#[path = "book/source_locations.rs"]
+pub(crate) mod source_locations;
 pub use diagnostics::{BookChapterDiagnostics, BookSourceDiagnostics};
+pub use source_locations::{BookSourceLocation, BookSourceRange, BookSourceRangeKind};
 #[path = "book/render.rs"]
 mod render;
 #[path = "book/workspace.rs"]
@@ -129,7 +132,9 @@ pub fn build_book_with_profile(
 /// # Errors
 /// In addition to [`build_book`]'s path checks, admits at most 4096 chapters,
 /// 64 MiB of chapter text and paths, 4096 diagnostics, and 4 MiB of serialized
-/// findings. Admission failure never returns a partial or falsely clean report.
+/// findings. Original-source metadata has a separate 2 MiB allowance and can
+/// become explicitly unavailable without rejecting the base report.
+/// Admission failure never returns a partial or falsely clean report.
 pub fn build_book_with_diagnostics(inputs: &[BookInput]) -> Result<(Book, BookSourceDiagnostics)> {
     build_book_with_diagnostics_and_profile(inputs, None)
 }

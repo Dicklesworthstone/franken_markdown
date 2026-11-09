@@ -280,7 +280,21 @@ export interface BookSourceDiagnostic {
   readonly start: number;
   readonly end: number;
   readonly message: string;
+  /** Original-source attribution. Absent in older generated packages. */
+  readonly source?: BookSourceLocation;
 }
+export interface BookSourceRange {
+  readonly path: string;
+  /** Half-open UTF-8 bytes in the original selected source, not UTF-16 offsets. */
+  readonly start: number;
+  readonly end: number;
+  /** A rewritten token has no one-to-one interior byte mapping. A generated
+   * separator addresses a zero-width source boundary. */
+  readonly kind: "exact" | "rewritten" | "generated";
+}
+export type BookSourceLocation =
+  | Readonly<{ status: "mapped"; ranges: readonly BookSourceRange[] }>
+  | Readonly<{ status: "unavailable"; reason: string }>;
 export interface BookSourceDiagnosticsReport {
   readonly schema: "fmd-book-source-diagnostics-v1";
   readonly coordinateSpace: "expanded_chapter";
@@ -302,12 +316,14 @@ export interface BookSourceDiagnosticsOutput {
 }
 /** Source-only parsing check with guaranteed session disposal. Includes are
  * captured; image/font/presentation properties are not read. Reports contain
- * complete diagnostics for at most 4096 chapters/diagnostics in 4 MiB. */
+ * complete diagnostics for at most 4096 chapters/diagnostics in 4 MiB, plus a
+ * separate 2 MiB original-source metadata allowance (6 MiB total). */
 export function checkBookSourceDiagnostics(
   files: readonly BookFile[], options?: BookOptions,
 ): Promise<BookSourceDiagnosticsOutput>;
 /** Verify bounded report data and totals; optionally bind chapter identity and
- * order to canonical paths. Does not parse Markdown or map include locations. */
+ * order to canonical paths. Validates native original-source metadata without
+ * parsing Markdown or reconstructing include locations in JavaScript. */
 export function parseBookSourceDiagnosticsReport(
   bytes: Uint8Array, expectedPaths?: readonly string[],
 ): BookSourceDiagnosticsReport;

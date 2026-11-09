@@ -1,9 +1,12 @@
 # Editable Markdown files in the browser
 
-Open `demo/flow-canvas.html` from the assembled package. The **Direct Markdown
-file saving** panel sits beside the existing original-source download controls.
-It is independent of the renderer: a failed preview does not prevent saving or
-recovering source.
+The ordinary HTML/PDF demo at `demo/index.html` has an **Open and save a Markdown
+file directly** panel. The Flow demo at `demo/flow-canvas.html` has a **Direct
+Markdown file saving** panel beside its original-source controls. Both use the
+same bounded file transaction engine, independently of rendering: a failed
+preview does not prevent saving or recovering source. This workflow belongs to
+these served demos; it does not add native file-picker access to downloaded
+standalone workspaces.
 
 **Open editable Markdown** connects one explicitly selected file. **Save current
 file** writes the current source back to that file. **Save Markdown as…** chooses
@@ -14,9 +17,10 @@ writing the old file.
 
 These controls require a secure page and the browser's file-picker APIs. Their
 availability is detected separately; unsupported browsers retain the ordinary
-file input and **Prepare Markdown** / **Download** workflow. In those browsers,
-the Save shortcut prepares a source download instead. Download preparation does
-not prove that a file was saved, so it never marks a disk baseline as saved.
+file input and source downloads. In the ordinary demo, **Download Markdown** and
+the Save shortcut request an immediate source download. In Flow, the shortcut
+prepares the **Download** link. Neither requesting nor preparing a download
+proves that a file was saved, so it never marks a disk baseline as saved.
 Native pickers and permission requests are initiated from the click/key action.
 No automatic saves to user-selected files occur.
 
@@ -36,8 +40,10 @@ use transparent Blob line endings, not operating-system newline conversion.
 Saving does not replace the source document, clear undo/redo, revoke image
 access, or restart the renderer. Successful Save as changes only the filename
 and the file association. Open and Reload use the established document-replacement
-transaction: they explicitly confirm replacing edits, clear document-local undo
-history, and revoke the previous document's image access. Importing through the
+transaction: they explicitly confirm replacing edits and revoke the previous
+document's image access. Flow also clears document-local undo history. The
+ordinary demo turns off raw HTML and retires the previous document's render and
+offline-workspace exports, while keeping its rendering preferences. Importing through the
 ordinary file input or restoring a browser draft disconnects the previous file;
 a filename alone never grants permission to overwrite it.
 
@@ -58,8 +64,10 @@ unsaved. A failed close or unverifiable read-back is shown as **uncertain**, not
 saved; current-file retries are paused rather than automatically repeated.
 
 When a disk conflict or uncertain outcome occurs, **Keep editing** leaves edits
-untouched. **Prepare recovery download** preserves a separate source copy through
-the existing download link. Save as can write a different file. Selecting another
+untouched. **Download recovery Markdown** in the ordinary demo requests a separate
+source download; **Prepare recovery download** in Flow prepares its existing
+download link. Neither changes the connected file or marks it saved. Save as can
+write a different file. Selecting another
 handle for the same file cannot bypass a conflict: actual file-entry identity is
 checked. **Reload file version** is an explicit discard/reopen operation, with a
 second disk comparison after confirmation so a changing file is not installed
@@ -96,15 +104,19 @@ browser draft was updated. No source or file bytes are uploaded by these tools.
 ## Verification
 
 ```sh
-node --test wasm/tests/flow_file_*.test.mjs
+node --test --test-concurrency=1 wasm/tests/flow_file_*.test.mjs wasm/tests/demo_file_*.test.mjs
 ```
 
-The Node suites exercise the production file session, panel, original-source
+The Node suites exercise the production file session, both demo panels, the
+ordinary demo's source/draft/export integration, Flow's original-source
 controller, and undo/redo controller. File-system, permission, and DOM doubles are
 explicit; native Node File, Blob, UTF-8 codecs and Blob URLs are used. Tests cover
 same-size external edits, staged-write aborts, picker/confirmation races,
 same-entry Save as conflicts, newer edits during close, uncertain saves,
-composition, restoration, downloads and disposal. Package tests check the actual
+composition, restoration, downloads and disposal. The ordinary-demo checks also
+cover BOM/CRLF preservation, source replacement during focus, synchronous native
+picker invocation, temporary access changes, rendering failures, and file saving
+while an offline workspace is prepared. Package tests check the actual
 entrypoint, manifest and both assemblers; they do not substitute for a generated
 WASM package build.
 

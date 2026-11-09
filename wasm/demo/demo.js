@@ -1,9 +1,10 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
-import { markdownDownload, readMarkdownFile } from "./flow_document.mjs";
+import { documentName, markdownDownload, readMarkdownFile } from "./flow_document.mjs";
 import { captureDocumentImageFiles } from "./local_image_sources.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
 import { createDemoWorkspaceWorker } from "./demo_workspace_worker.mjs";
+import { createDemoFileControls } from "./demo_file_controls.mjs";
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -57,6 +58,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   let alive = true, suspended = false, composing = false, generation = 0;
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
+  let sourceRevision = 0, sourceIdentity = 0, directFiles = null, directSourcePending = false;
   let sourceDownload = null, sourceDownloadId = 0;
   let imageAssets = [], imageJob = null;
   let workspaceJob = null, workspaceOutput = null, workspaceSequence = 0;
@@ -88,14 +90,15 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
     refreshImageControls();
     refreshWorkspaceControls();
+    directFiles?.refresh();
   }
   function refreshWorkspaceControls() {
-    const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null;
+    const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null || directSourcePending;
     els.prepareWorkspace.disabled = blocked || workspaceJob !== null;
     els.cancelWorkspace.disabled = blocked || workspaceJob === null;
   }
   function workspaceFresh(captured) {
-    return alive && !suspended && !composing && !imageJob && !fileJob
+    return alive && !suspended && !composing && !imageJob && !fileJob && !directSourcePending
       && captured.sequence === workspaceSequence && captured.generation === generation
       && captured.images === imageAssets && unchanged(captured.raw);
   }
@@ -126,9 +129,9 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     return true;
   }
   async function prepareWorkspace() {
-    if (!alive || suspended || composing || imageJob || fileJob) return false;
+    if (!alive || suspended || composing || imageJob || fileJob || directSourcePending) return false;
     const sequence = retireWorkspace();
-    if (sequence !== workspaceSequence || !alive || suspended || composing || imageJob || fileJob) return false;
+    if (sequence !== workspaceSequence || !alive || suspended || composing || imageJob || fileJob || directSourcePending) return false;
     const captured = { sequence, raw: raw(), generation, images: imageAssets, source: sourceDocument().source };
     const job = { ...captured, abort: new AbortController(), client: null };
     workspaceJob = job;
@@ -429,7 +432,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       source: els.markdown.value === cleanSource ? originalSource : els.markdown.value };
   }
   function sourceChanged() {
-    if (alive && !suspended) sourceChanges.dispatchEvent(new Event("input"));
+    if (alive && !suspended) {
+      sourceRevision++;
+      sourceChanges.dispatchEvent(new Event("input"));
+    }
   }
   function requireReplacement() {
     if (!alive || suspended || composing)
@@ -437,6 +443,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   }
   function replaceSource(next, action) {
     requireReplacement();
+    const identity = ++sourceIdentity, revision = sourceRevision;
+    directFiles?.replaced(); // An import/recovery never inherits an older file handle.
     fileJob = null;
     els.markdown.value = next.source;
     cleanSource = els.markdown.value; // Browsers normalize CR/CRLF in textareas.
@@ -449,8 +457,47 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     // before notifying draft storage and Document Lab through input listeners.
     schedulePreview(true);
     els.markdown.dispatchEvent(new Event("input", { bubbles: true }));
-    els.fileStatus.textContent = `${action} ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
     els.markdown.focus();
+    const installed = sourceDocument();
+    if (!alive || suspended || composing || sourceIdentity !== identity || sourceRevision !== revision + 1
+      || installed.filename !== next.filename || installed.source !== next.source)
+      throw Object.assign(new Error("The editor changed during source replacement. Its newer state is retained; no file connection was adopted."), { code: "STALE_SOURCE" });
+    els.fileStatus.textContent = `${action} ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
+  }
+  function renameSource(filename) {
+    requireReplacement();
+    const identity = sourceIdentity, revision = sourceRevision, source = sourceDocument().source;
+    sourceFilename = documentName(filename);
+    sourceDownloadId++;
+    revokeMarkdown();
+    filenameChanges.dispatchEvent(new Event("input"));
+    const current = sourceDocument();
+    if (!alive || suspended || composing || identity !== sourceIdentity || revision !== sourceRevision
+      || current.source !== source || current.filename !== filename)
+      throw Object.assign(new Error("The saved file was verified, but the editor changed while naming it. Choose the file again to reconnect."), { code: "STALE_SOURCE" });
+  }
+  function startFiles() {
+    try {
+      directFiles = createDemoFileControls({
+        root: doc, window: win, sourceEditor: els.markdown,
+        readDocument: sourceDocument, replaceDocument: next => replaceSource(next, "Opened"),
+        renameDocument: renameSource, downloadMarkdown,
+        isBlocked: () => !alive || suspended || composing || fileJob !== null,
+        beforeOpen() {
+          requireReplacement();
+          sourceChanged(); // Retire a pending browser-draft restore before the picker.
+          cancelImages();
+          retireWorkspace("File opening started. Prepare the editable workspace after the source is ready.");
+        },
+        onState(state) {
+          directSourcePending = state?.busy === "Open" || state?.busy === "Reload";
+          refreshWorkspaceControls();
+        },
+      });
+    } catch {
+      const status = doc.querySelector("#direct-file-status");
+      if (status) status.textContent = "Direct file access is unavailable. Open Markdown and Download Markdown remain available.";
+    }
   }
   function startDrafts() {
     drafts?.dispose();
@@ -510,6 +557,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   listen(els.downloadMarkdown, "click", () => { downloadMarkdown(); });
   async function openMarkdown(file) {
     if (!alive || suspended || composing || !file) return false;
+    directFiles?.changed(); // A newer file-open intent cannot commit an older staged save.
     sourceChanged(); // A later file-open intent supersedes an in-flight restore.
     // The later source selection owns replacement. Retire an earlier image
     // read before capturing fileJob, so its cleanup cannot cancel this open.
@@ -518,6 +566,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     const job = { raw: raw(), generation };
     fileJob = job; // A newer selection owns publication, even if an old read settles last.
     refreshWorkspaceControls();
+    directFiles?.refresh();
     const owns = () => alive && !suspended && fileJob === job;
     const fresh = () => owns() && !composing && generation === job.generation && unchanged(job.raw);
     els.fileStatus.textContent = "Reading local Markdown…";
@@ -541,6 +590,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
         if (owns() && !fresh()) els.fileStatus.textContent = "The draft changed during file loading; choose the file again.";
         fileJob = null;
         refreshWorkspaceControls();
+        directFiles?.refresh();
       }
     }
   }
@@ -611,6 +661,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   listen(win, "pagehide", () => {
     suspended = true;
     composing = false;
+    directFiles?.suspend();
     pauseDrafts();
     releaseImages();
     invalidate();
@@ -619,21 +670,24 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     status("paused; source retained");
   });
   listen(win, "pageshow", event => {
-    if (event.persisted) { suspended = false; startDrafts(); schedulePreview(true); }
+    if (event.persisted) { suspended = false; directFiles?.resume(); startDrafts(); schedulePreview(true); }
   });
   if (!els.markdown.value) els.markdown.value = sampleMarkdown;
   if (!directorySupported)
     els.imageFolderHelp.textContent = "Folder selection is unavailable in this browser. Select individual images above; only their filenames are authorized.";
   originalSource = cleanSource = els.markdown.value;
+  startFiles();
   startDrafts();
   schedulePreview();
   return Object.freeze({
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
     importImages, clearImages, cancelImages,
     prepareWorkspace, cancelWorkspace,
+    get fileAccess() { return directFiles; },
     dispose() {
       if (!alive) return;
       alive = false;
+      directFiles?.dispose();
       pauseDrafts();
       releaseImages();
       invalidate();

@@ -40,6 +40,38 @@ until a fresh preview completes; page suspension and disposal release its Blob
 URL. The preview stays sandboxed; source HTML uses the safe-markup sanitizer
 unless raw HTML is explicitly enabled for trusted input.
 
+### Open and save a Markdown file directly
+
+Expand **Open and save a Markdown file directly** to connect a file selected with
+the browser's native picker. **Save current file** checks its exact previous
+contents, writes the current source, then verifies the saved bytes. **Save
+Markdown as…** chooses another destination and confirms overwriting nonempty
+contents. Ctrl/Cmd+S saves, and Shift+Ctrl/Cmd+S chooses a destination. No automatic
+disk saving occurs. Untouched imported source keeps its UTF-8 BOM and original
+line endings; source files are bounded to 4 MiB and must be valid UTF-8 Markdown.
+
+Saving preserves the selected font, rendering settings, authorized images and
+prepared HTML/PDF or editable-workspace downloads. Save as changes the source
+filename only after verification. Open and **Reload file version** confirm
+replacing the source, turn off raw HTML, revoke prior image access, and retire
+older exports. Ordinary source imports and browser-draft recovery disconnect
+the previous file association; a matching filename never grants write access.
+
+If the disk file changed, saving pauses. Keep editing, use **Download recovery
+Markdown**, save to a different file, or explicitly reload the disk version.
+An uncertain write is never reported as saved or automatically retried. Source
+edits, composition, access changes and suspension fence pending operations; an
+older callback cannot reconnect a newer document. Handles are private to this
+page session and never enter drafts, render workers or exported workspaces.
+
+Direct pickers require browser support and a secure page. Unsupported browsers
+retain **Open Markdown** and **Download Markdown**, and the save shortcut
+downloads a source copy. Suspending or leaving the page disconnects direct file
+access, without an unload save. Another application can race the final disk
+write: verification checks that completed operation, not future external edits.
+See [file saving and conflict recovery](./FILES.md) for the shared engine's
+guarantees, limits and focused checks.
+
 ### Download an editable offline workspace
 
 Expand **Editable workspace to keep offline**, then choose **Prepare editable

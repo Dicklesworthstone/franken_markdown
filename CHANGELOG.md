@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The ordinary browser demo opens and saves explicitly selected Markdown files
+  through the shared bounded file transaction engine. Verified writes preserve
+  exact untouched source bytes, rendering settings and authorized images;
+  external edits produce conflict recovery with explicit reload, Save As and
+  recovery downloads. Source replacement and suspension disconnect file access,
+  and stale picker/write callbacks cannot adopt newer editor state. See
+  [Direct file saving](wasm/FILES.md).
 - Book parser warnings retain verified original chapter/include locations
   through transclusion and URL rebasing. The workbench selects exact UTF-8
   source ranges, labels rewritten tokens and generated boundaries, and rejects

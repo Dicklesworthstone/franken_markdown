@@ -117,6 +117,7 @@
     "demo/demo_workspace_runtime.mjs",
     "demo/demo_workspace_worker.mjs",
     "demo/demo_workspace_worker_entry.js",
+    "demo/demo_file_controls.mjs",
     "pkg/franken_markdown.js",
     "pkg/franken_markdown_bg.wasm",
     "pkg/franken_markdown_bg.wasm.d.ts",

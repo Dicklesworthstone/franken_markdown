@@ -36,6 +36,7 @@ cp wasm/demo/review.html wasm/demo/revision_review.mjs wasm/demo/REVISION_REVIEW
 cp wasm/demo/document_lab.mjs "$PACKAGE/demo/"
 cp wasm/demo/index.html wasm/demo/demo.js wasm/demo/web-component.html wasm/demo/sample.md "$PACKAGE/demo/"
 cp wasm/demo/demo_workspace_runtime.mjs wasm/demo/demo_workspace_worker.mjs wasm/demo/demo_workspace_worker_entry.js "$PACKAGE/demo/"
+cp wasm/demo/demo_file_controls.mjs "$PACKAGE/demo/"
 cp wasm/demo/flow-canvas.html wasm/demo/flow-canvas.js wasm/demo/flow_preview_controller.mjs wasm/demo/local_image_sources.mjs wasm/demo/flow_reading_controls.mjs wasm/demo/flow_preview_export.mjs wasm/demo/flow_export_controls.mjs "$PACKAGE/demo/"
 for file in book.html book.js book_pdf_controls.mjs book_collection.mjs book_font_assets.mjs book_font_authoring.mjs book_font_controls.mjs book_image_controls.mjs book_controls.mjs book_edition.mjs book_zip.mjs book_edition_controls.mjs book_library_store.mjs book_library_session.mjs book_library_controls.mjs book_preview_controls.mjs book_source_search.mjs book_source_history.mjs book_source_formatting.mjs book_file_session.mjs book_file_controls.mjs book_directory_session.mjs book_source_merge.mjs book_directory_controls.mjs book_source_archive.mjs book_source_archive_controls.mjs book_source_folder.mjs book_source_folder_controls.mjs book_search_controls.mjs book_inspection_controls.mjs flow-source.js source_commands.mjs source_formatting.mjs SOURCE_FORMATTING.md flow_document.mjs flow_file_session.mjs flow_file_controls.mjs flow_render_settings.mjs flow_draft_store.mjs flow_draft_session.mjs flow_draft_controls.mjs; do
   cp "wasm/demo/$file" "$PACKAGE/demo/$file"
@@ -60,6 +61,7 @@ node --test wasm/tests/book_source_folder*.test.mjs
 node --test wasm/document_batch*.test.mjs wasm/document_publication.test.mjs
 node --test wasm/document_comparison.test.mjs wasm/document_worker.test.mjs wasm/demo_worker.test.mjs wasm/pdf_page.test.mjs wasm/pdf_page_abi.test.mjs
 node --test --test-concurrency=1 wasm/tests/demo_workspace*.test.mjs
+node --test --test-concurrency=1 wasm/tests/demo_file_*.test.mjs
 node --test wasm/interactive.test.mjs wasm/interactive_runtime.test.mjs wasm/interactive_export.test.mjs wasm/native_workspace_page.test.mjs wasm/native_workspace_images.test.mjs wasm/native_workspace_settings.test.mjs wasm/native_workspace_source.test.mjs wasm/native_workspace_publishing.test.mjs
 node --test wasm/interactive_preview.test.mjs wasm/native_workspace_preview.test.mjs wasm/native_workspace_preview_package.test.mjs
 node --test wasm/native_workspace_export_worker.test.mjs wasm/native_workspace_exports.test.mjs

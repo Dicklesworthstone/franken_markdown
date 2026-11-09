@@ -421,6 +421,21 @@
               </div>
             </div>
             <details class="image-controls">
+              <summary>Open and save a Markdown file directly</summary>
+              <p id="direct-file-help">Connect a file you choose, then save edits back to it. Saving checks for external changes and verifies the written bytes. Open and Reload replace source after confirmation, turn off raw HTML and revoke local image access. Save keeps the current settings and images. No automatic disk saves occur.</p>
+              <div class="actions">
+                <button id="direct-file-open" class="button secondary" type="button" disabled aria-describedby="direct-file-help direct-file-status">Open editable Markdown…</button>
+                <button id="direct-file-save" class="button secondary" type="button" disabled>Save current file</button>
+                <button id="direct-file-save-as" class="button secondary" type="button" disabled>Save Markdown as…</button>
+                <button id="direct-file-reload" class="button secondary" type="button" disabled>Reload file version</button>
+                <button id="direct-file-keep" class="button secondary" type="button" disabled>Keep editing</button>
+                <button id="direct-file-backup" class="button secondary" type="button" disabled>Download recovery Markdown</button>
+                <button id="direct-file-disconnect" class="button secondary" type="button" disabled>Disconnect file</button>
+              </div>
+              <p id="direct-file-status" class="status" role="status" aria-live="polite">Checking direct file access. Ordinary source import and downloads remain available.</p>
+              <p>Ctrl/Cmd+S saves; Shift+Ctrl/Cmd+S chooses a file. Unsupported browsers download a source copy instead. File access lasts only in this page session and disconnects on suspension. A conflict never force-overwrites or automatically reloads. Another application can still race the final write; a verified save is not continuous disk monitoring. <a href="../FILES.md">File saving details</a>.</p>
+            </details>
+            <details class="image-controls">
               <summary>Editable workspace to keep offline</summary>
               <p>Prepare one HTML file containing this Markdown, the rendering engine, current font and document settings, and the local images you authorized below. Open the downloaded file to continue editing and export HTML or PDF without this demo. Custom CSS and raw HTML must be turned off. Preparing does not download automatically.</p>
               <div class="actions">

@@ -22,7 +22,9 @@ leaves no stale suffix.
 Queries and titles are preserved: `[label](?view=read#inst "Guide")` changes only
 `#inst`. Angle delimiters and container prefixes remain intact. Positions and
 edits use UTF-16, including text after astral characters and CRLF line endings.
-Reference labels are not fragment destinations and receive no completion edits.
+Reference labels are not fragment destinations. A separate
+[label completion provider](LSP_LABEL_COMPLETION.md) offers reference definitions
+and footnote labels without inserting heading IDs into those labels.
 
 The shared document analyzer supplies collision-correct heading IDs, including
 headings inside containers and referenced notes. Ambiguous IDs are not suggested.

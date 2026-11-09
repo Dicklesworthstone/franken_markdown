@@ -286,6 +286,31 @@ impl Inventory {
     }
 }
 
+/// Completion uses the same exact source inventory as navigation and rename.
+/// The caller may have closed an unfinished marker, but must preserve its
+/// existing text so code/HTML delimiters cannot disappear during the probe.
+pub(super) fn completion_labels(
+    source: &str,
+    selected: SourceSpan,
+) -> Result<Option<Vec<String>>, Failure> {
+    let mut inventory = Inventory::parse(source, candidates(source)?)?;
+    if !inventory.notes.iter().any(|note| {
+        note.kind == Kind::Reference && note.candidate.label == selected
+    }) {
+        return Ok(None);
+    }
+    inventory.notes.sort_by_key(|note| note.order);
+    let mut seen = std::collections::BTreeSet::new();
+    Ok(Some(
+        inventory.notes.into_iter()
+            .filter(|note| note.kind == Kind::Definition)
+            .filter_map(|note| {
+                seen.insert(note.candidate.id.clone()).then_some(note.candidate.id)
+            })
+            .collect(),
+    ))
+}
+
 fn range(index: &LineIndex, source: &str, span: SourceSpan) -> Json {
     object([
         ("start", position(index.position(source, span.start))),

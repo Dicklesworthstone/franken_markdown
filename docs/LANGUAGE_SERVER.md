@@ -70,9 +70,15 @@ synchronized buffer on demand; requests against an unsynchronized buffer return
 
 `textDocument/completion` offers publication-correct heading IDs while the caret
 is inside an explicit same-document fragment, such as `[label](#par)` or the
-unfinished `[label](#par`. The advertised trigger is `#`. Text edits replace the
+unfinished `[label](#par`. Its fragment trigger is `#`. Text edits replace the
 whole fragment without disturbing its query, angle delimiters or title. Results
 are capped at 256 and set `isIncomplete` when more matches remain.
+
+The same completion route now offers document-local footnote labels in
+`[^prefix]` and reference definitions in `[visible text][prefix]`, including
+unfinished markers and image references. The additional triggers are `[` and
+`^`; parser ownership prevents edits in code or other literal contexts. See
+[label completion](LSP_LABEL_COMPLETION.md) for exact edit ranges and limits.
 
 `textDocument/definition` follows an existing fragment destination to its actual
 source block. Missing or ambiguous targets return no location. Forward and

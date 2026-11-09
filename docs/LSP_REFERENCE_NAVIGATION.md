@@ -31,8 +31,9 @@ request returns null rather than treating map order as source authority.
 
 No buffer or file is modified. Fragment completion still applies only to
 explicit URL destinations: it never overwrites a reference label with a heading
-ID. Multiline reference-use navigation, reference-label completion and
-filesystem discovery remain outside this slice. Parser-backed
+ID. Document-local [reference-label completion](LSP_LABEL_COMPLETION.md) is
+available separately. Multiline reference-use navigation and filesystem
+discovery remain outside this slice. Parser-backed
 [reference-label rename](LSP_REFERENCE_RENAME.md) is available separately for
 definitions and full/collapsed/shortcut links and images.
 

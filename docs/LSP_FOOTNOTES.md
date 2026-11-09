@@ -5,6 +5,10 @@ The native `fmd-lsp` supports direct footnote markers such as `[^note]` and
 definitions, references, document highlights, and versioned rename edits.
 Footnote labels are local to one document.
 
+[Label completion](LSP_LABEL_COMPLETION.md) also offers existing definitions
+inside complete or unfinished `[^prefix]` references. It shares this provider's
+parser-proven source inventory and returns UTF-16 label-only edits.
+
 Ordinary links such as `[read](#fn-note)` continue to use
 [Markdown link navigation](LSP_LINK_NAVIGATION.md). Their targets are emitted
 anchors. Direct footnote operations also cover unresolved references and

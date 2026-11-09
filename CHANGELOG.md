@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language server completes footnote and explicit reference-link labels,
+  including image references, unfinished suffixes and mid-label edits. Parser
+  ownership and UTF-16 ranges preserve surrounding text; bounded inventories
+  retain definition order, Unicode reference identity and existing heading
+  fragment completion. See [Label completion](docs/LSP_LABEL_COMPLETION.md).
 - The book workbench downloads editable source ZIPs without folder-access or
   rendering-engine support. Archives retain exact source bytes under `sources/`
   plus a reopenable source-only project with order, roles and applied settings.

@@ -65,6 +65,47 @@ fn array(value: &Json) -> &[Json] {
 }
 
 #[test]
+fn real_label_completion_returns_exact_edits_and_reads_live_document_revisions() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:labels","languageId":"markdown","version":7,"text":"😀 Claim [^remainder]\r\n\r\n[^research]: Evidence.\r\n\r\n[Guide][ma]\r\n\r\n[manual]: /guide\r\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"untitled:labels"},"position":{"line":0,"character":13}}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"untitled:labels"},"position":{"line":4,"character":10}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:labels","version":8},"contentChanges":[{"text":"[Guide][ma]\n\n[map]: /current\n"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"untitled:labels"},"position":{"line":0,"character":10}}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let result = |id| {
+        replies.iter().find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result")).ok_or("missing completion result")
+    };
+    let triggers = result(1)?.get("capabilities").and_then(|v| v.get("completionProvider"))
+        .and_then(|v| v.get("triggerCharacters")).ok_or("missing triggers")?;
+    assert_eq!(array(triggers).iter().filter_map(Json::as_str).collect::<Vec<_>>(), ["#", "[", "^"]);
+    for (id, label, line, start, end, inserted) in [
+        (2, "[^research]", 0, 11, 20, "research"),
+        (3, "manual", 4, 8, 10, "manual"),
+        (4, "map", 0, 8, 10, "map"),
+    ] {
+        let items = array(result(id)?.get("items").ok_or("missing items")?);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("label").and_then(Json::as_str), Some(label));
+        let edit = items[0].get("textEdit").ok_or("missing edit")?;
+        assert_eq!(edit.get("newText").and_then(Json::as_str), Some(inserted));
+        let range = edit.get("range").ok_or("missing edit range")?;
+        for (side, column) in [("start", start), ("end", end)] {
+            let position = range.get(side).ok_or("missing edit position")?;
+            assert_eq!(position.get("line").and_then(Json::as_u64), Some(line));
+            assert_eq!(position.get("character").and_then(Json::as_u64), Some(column));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn real_reference_rename_returns_versioned_edits_without_changing_the_open_buffer() -> TestResult {
     let (status, replies) = session(&[
         r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}}}}}"###,

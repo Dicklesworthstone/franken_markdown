@@ -4,6 +4,7 @@
 mod diagnostics;
 mod footnotes;
 mod heading_rename;
+mod label_completion;
 mod links;
 mod navigation;
 mod reference_rename;
@@ -192,7 +193,10 @@ impl Server {
                             (
                                 "completionProvider",
                                 object([
-                                    ("triggerCharacters", Json::Array(vec![string("#")])),
+                                    (
+                                        "triggerCharacters",
+                                        Json::Array(vec![string("#"), string("["), string("^")]),
+                                    ),
                                     ("resolveProvider", Json::Bool(false)),
                                 ]),
                             ),
@@ -292,6 +296,11 @@ impl Server {
             .ok_or((-32602, "document is not open"))?;
         if !buffer.synchronized {
             return Err((-32801, "document requires full-text resynchronization"));
+        }
+        if method == "textDocument/completion"
+            && let Some(result) = label_completion::request(params, &buffer.text)?
+        {
+            return Ok(result);
         }
         if matches!(
             method,

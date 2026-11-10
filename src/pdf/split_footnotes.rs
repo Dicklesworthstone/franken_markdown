@@ -1,4 +1,4 @@
-//! Opt-in continuation of paragraph footnotes in the final physical page walk.
+//! Opt-in continuation of text-bearing footnotes in the final physical page walk.
 //!
 //! Pending work consists only of ranges into the immutable measured note
 //! region. Every consumer creates its own cursor, so counts, running bands,
@@ -21,37 +21,70 @@ pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
     Ok(())
 }
 
-/// Rich, indivisible note blocks retain the established full-fidelity fallback.
-/// Inline styles, code and links already have measured, independently paintable
-/// paragraph rows; images, formulas and containers need separate split rules.
+/// Text-bearing containers already retain independently paintable rows and
+/// source-owned list/quote/code identities. Tables, figures, formulas, explicit
+/// breaks and generated TOCs need their own split rules and keep the complete
+/// ordinary-note/endnote fallback.
 pub(super) fn eligible(blocks: &[Block]) -> bool {
     fn text(inlines: &[Inline]) -> bool {
-        inlines.iter().all(|inline| match inline {
-            Inline::Text(_)
-            | Inline::Code(_)
-            | Inline::SoftBreak
-            | Inline::HardBreak
-            | Inline::FootnoteRef { .. } => true,
-            Inline::Emphasis(inner)
-            | Inline::Strong(inner)
-            | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => text(inner),
-            _ => false,
-        })
+        let mut pending = vec![inlines];
+        while let Some(inlines) = pending.pop() {
+            for inline in inlines {
+                match inline {
+                    Inline::Text(_)
+                    | Inline::Code(_)
+                    | Inline::SoftBreak
+                    | Inline::HardBreak
+                    | Inline::FootnoteRef { .. } => {}
+                    Inline::Emphasis(inner)
+                    | Inline::Strong(inner)
+                    | Inline::Strikethrough(inner)
+                    | Inline::Link { content: inner, .. } => pending.push(inner),
+                    _ => return false,
+                }
+            }
+        }
+        true
     }
-    !blocks.is_empty()
-        && blocks
-            .iter()
-            .all(|block| matches!(block, Block::Paragraph(inlines) if text(inlines)))
+
+    if blocks.is_empty() {
+        return false;
+    }
+    let mut pending = vec![blocks];
+    while let Some(blocks) = pending.pop() {
+        for block in blocks {
+            match block {
+                Block::Paragraph(inlines)
+                    if toc_marker_depth(inlines).is_none() && text(inlines) => {}
+                Block::CodeBlock { lang, code }
+                    if !crate::diagrams::is_diagram_code(code, lang.as_deref().unwrap_or("")) => {}
+                Block::BlockQuote(inner) => pending.push(inner),
+                Block::List(list) => {
+                    pending.extend(list.items.iter().map(|item| item.blocks.as_slice()));
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
-/// An interior paragraph row can become a page's last row. Record real glyph
-/// ink and the source font's descent before admission, rather than relying on
-/// the final source paragraph's trailing gap to protect the page bottom.
+/// An interior row can become a page's first or last row. Record real glyph
+/// ink and font descent, retain decoration clearance at internal container
+/// seams, and prove each mandatory unit fits a note-only page.
 pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool {
     let mut scratch = ShapeScratch::default();
     for line in lines.iter_mut() {
-        if line.image.is_some() || line.rule || line.grid.is_some() {
+        if line.image.is_some()
+            || line.rule
+            || line.grid.is_some()
+            || !matches!(
+                line.flow.kind,
+                FlowKind::Paragraph | FlowKind::Heading | FlowKind::Code
+            )
+            || !line.gap_after.is_finite()
+            || line.gap_after < 0.0
+        {
             return false;
         }
         for seg in &line.segs {
@@ -81,25 +114,98 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
                     }
                 }
             }
+            if let Some(done) = seg.task {
+                // The checkbox has a minimum physical size even at small
+                // note type sizes. Its invisible marker text is not its ink.
+                let side = (line.size * 0.72).clamp(5.5, 9.0);
+                let stroke = if done {
+                    (side * 0.16).max(0.9)
+                } else {
+                    (side * 0.11).max(0.8)
+                } * 0.5;
+                line.text_ink.0 = line.text_ink.0.max(side - line.size * 0.07 + stroke);
+                line.text_ink.1 = line.text_ink.1.max(line.size * 0.07 + stroke);
+            }
         }
-        let height = fragment_height(std::slice::from_ref(line));
-        if !height.is_finite()
-            || height <= 0.0
-            || height > capacity
-            || !line.gap_after.is_finite()
-            || line.gap_after < 0.0
-        {
+    }
+    // Backgrounds continue through rows in the same source container. Only
+    // a real container boundary needs additional clearance; ordinary prose
+    // and interior code rows retain their measured spacing.
+    for index in 1..lines.len() {
+        let extra = container_clearance(&lines[index - 1], &lines[index]);
+        lines[index - 1].gap_after += extra;
+    }
+    let mut start = 0;
+    while start < lines.len() {
+        let end = unit_end(lines, start, lines.len());
+        let height = fragment_height(&lines[start..end]);
+        if !height.is_finite() || height <= 0.0 || height > capacity {
             return false;
         }
+        start = end;
     }
     !lines.is_empty()
 }
 
+/// The same painted bounds as the writer. A continuing panel/quote is omitted
+/// at an internal seam; its background intentionally surrounds both rows.
+fn paint_ink(line: &Line, code_edge: bool, quote_edge: bool) -> (f32, f32) {
+    let mut above = line.text_ink.0;
+    let mut below = line.text_ink.1.max(line.size * INLINE_MATH_DESCENT_ROOM);
+    if code_edge && line.bg != 0 {
+        above = above.max((line.size * PANEL_ASCENT_FRAC).max(line.text_ink.0) + PANEL_PAD_V);
+        below = below.max((line.size * PANEL_DESCENT_FRAC).max(line.text_ink.1) + PANEL_PAD_V);
+    }
+    if quote_edge && !line.quote_bars.is_empty() {
+        let (quote_above, quote_below) = if let Some(image) = &line.image {
+            let mut above = image.height_pt;
+            let mut below = 0.0_f32;
+            if image.marker_size.is_some() {
+                let (size, y) = line_text_position(line, 0.0);
+                above = above.max(y + size * 0.85);
+                below = below.max(size * 0.20 - y);
+            }
+            (above, below)
+        } else if line.spacing.leading.is_some() {
+            spacing::table_bounds(line)
+        } else {
+            (
+                (line.size * 0.85).max(line.text_ink.0),
+                (line.size * 0.20).max(line.text_ink.1),
+            )
+        };
+        above = above.max(quote_above + QUOTE_BG_PAD_V);
+        below = below.max(quote_below + QUOTE_BG_PAD_V);
+    }
+    (above, below)
+}
+
+fn top_guard(line: &Line) -> f32 {
+    (paint_ink(line, true, true).0 + line_baseline_lift(line) - line_leading(line)).max(0.0)
+}
+
 fn bottom_guard(line: &Line) -> f32 {
-    (line.text_ink.1.max(line.size * INLINE_MATH_DESCENT_ROOM)
-        - line_baseline_lift(line)
-        - line.gap_after)
-        .max(0.0)
+    (paint_ink(line, true, true).1 - line_baseline_lift(line) - line.gap_after).max(0.0)
+}
+
+fn container_clearance(before: &Line, after: &Line) -> f32 {
+    let code_edge = before.bg != after.bg;
+    let closes_quote = before
+        .quote_bars
+        .iter()
+        .any(|(id, _)| !after.quote_bars.iter().any(|(next, _)| next == id));
+    let opens_quote = after
+        .quote_bars
+        .iter()
+        .any(|(id, _)| !before.quote_bars.iter().any(|(previous, _)| previous == id));
+    if !code_edge && !closes_quote && !opens_quote {
+        return 0.0;
+    }
+    let below = paint_ink(before, code_edge, closes_quote).1;
+    let above = paint_ink(after, code_edge, opens_quote).0;
+    let distance = before.gap_after + line_leading(after) + line_baseline_lift(before)
+        - line_baseline_lift(after);
+    (below + above - distance).max(0.0)
 }
 
 fn fragment_height(lines: &[Line]) -> f32 {
@@ -107,14 +213,79 @@ fn fragment_height(lines: &[Line]) -> f32 {
         .iter()
         .map(|line| line_leading(line) + line.gap_after)
         .sum::<f32>()
+        + lines.first().map_or(0.0, top_guard)
         + lines.last().map_or(0.0, bottom_guard)
+}
+
+fn note_label_only(line: &Line) -> bool {
+    let mut labelled = false;
+    for seg in &line.segs {
+        for (offset, _) in seg.text.char_indices().filter(|(_, ch)| !ch.is_whitespace()) {
+            if !matches!(
+                seg.note_spans.at(offset),
+                Some(note_tags::Mark::Label(number)) if number == line.flow.note_owner
+            ) {
+                return false;
+            }
+            labelled = true;
+        }
+    }
+    labelled
+}
+
+fn marker_only(line: &Line) -> bool {
+    list_labels::has_label(line)
+        && line
+            .segs
+            .iter()
+            .all(|seg| seg.list_label || seg.text.trim().is_empty())
+}
+
+fn keeps_next(before: &Line, after: &Line) -> bool {
+    if before.flow.kind == FlowKind::Heading
+        && (before.flow.group == after.flow.group
+            || before
+                .quote_bars
+                .first()
+                .is_some_and(|(id, _)| after.quote_bars.iter().any(|(next, _)| next == id)))
+    {
+        return true;
+    }
+    if marker_only(before)
+        && before.list_path.last().is_some_and(|item| {
+            after
+                .list_path
+                .iter()
+                .any(|next| item.list == next.list && item.item == next.item)
+        })
+    {
+        return true;
+    }
+    // Rich-first notes have an inserted label paragraph. Bind its first
+    // source row too, using semantic provenance rather than superscript text.
+    // Ordinary paragraph-only notes keep their historical row boundaries.
+    (after.bg != 0
+        || !after.quote_bars.is_empty()
+        || !after.list_path.is_empty()
+        || (before.flow.group == after.flow.group && note_label_only(after)))
+        && note_label_only(before)
+}
+
+/// The smallest consecutive unit that may end a fragment. Heading and label
+/// chains are bounded by the immutable note range, including empty containers.
+fn unit_end(lines: &[Line], start: usize, end: usize) -> usize {
+    let mut next = start + 1;
+    while next < end && keeps_next(&lines[next - 1], &lines[next]) {
+        next += 1;
+    }
+    next
 }
 
 /// Mandatory space on a note's first citation page. Multiple marks on one
 /// physical body row are admitted together against these same measurements.
 pub(super) fn minimum_reserve(lines: &[Line]) -> f32 {
     if lines.first().is_some_and(|line| line.flow.split_note) {
-        fragment_height(&lines[..1])
+        fragment_height(&lines[..unit_end(lines, 0, lines.len())])
     } else {
         fragment_height(lines)
     }
@@ -147,22 +318,26 @@ impl Cursor {
     }
 }
 
-/// Extend an already admitted prefix without splitting a physical text row.
+/// Extend an admitted prefix without separating a heading or label from its
+/// first content row. Each source row is measured once per extension probe.
 fn extend(lines: &[Line], fragment: &mut Range<usize>, end: usize, budget: f32) {
     let mut height = fragment_height(&lines[fragment.clone()]);
     while fragment.end < end {
-        let previous_guard = if fragment.start >= fragment.end {
-            0.0
+        let next_end = unit_end(lines, fragment.end, end);
+        let mut candidate = if fragment.start >= fragment.end {
+            height + top_guard(&lines[fragment.end])
         } else {
-            bottom_guard(&lines[fragment.end - 1])
+            height - bottom_guard(&lines[fragment.end - 1])
         };
-        let next = &lines[fragment.end];
-        let candidate =
-            height - previous_guard + line_leading(next) + next.gap_after + bottom_guard(next);
+        for line in &lines[fragment.end..next_end] {
+            candidate += line_leading(line);
+            candidate += line.gap_after;
+        }
+        candidate += bottom_guard(&lines[next_end - 1]);
         if candidate > budget + 0.001 {
             break;
         }
-        fragment.end += 1;
+        fragment.end = next_end;
         height = candidate;
     }
 }
@@ -183,7 +358,7 @@ fn allocate(
     let mut used = 0.0;
     for (_, range) in introduced {
         let fragment = if lines[range.start].flow.split_note {
-            range.start..range.start + 1
+            range.start..unit_end(lines, range.start, range.end)
         } else {
             range.clone()
         };
@@ -281,6 +456,9 @@ fn place<'a>(
     });
     y -= separator.gap_after;
     for fragment in &allocation.fragments {
+        if let Some(first) = lines[fragment.clone()].first() {
+            y -= top_guard(first);
+        }
         for line in &lines[fragment.clone()] {
             y -= line_leading(line);
             placed.push(Placed {
@@ -310,7 +488,7 @@ pub(super) fn next_page<'a>(
             return None;
         }
         // Once the body is exhausted the whole page is available to notes.
-        // Admission proved that every pending physical row fits this space.
+        // Admission proved that every pending mandatory unit fits this space.
         let allocation = allocate(lines, notes, cursor, *start, *start, capacity);
         debug_assert!(!allocation.fragments.is_empty());
         let mut placed = Vec::new();

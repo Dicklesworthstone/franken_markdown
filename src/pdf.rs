@@ -1649,7 +1649,7 @@ struct FlowMark {
     note_destination: u32,
     /// Complete logical note body, independent of page-foot/endnote placement.
     note_owner: u32,
-    /// This paragraph note may continue at line boundaries on later pages.
+    /// This text note may continue at measured row boundaries on later pages.
     split_note: bool,
     /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
     /// its source block. Language strings are shared once per render.

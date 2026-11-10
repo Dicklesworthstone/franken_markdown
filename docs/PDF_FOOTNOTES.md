@@ -44,10 +44,10 @@ HTML and EPUB retain those literal names in their anchor IDs and encode them
 when generating links: a note named `evidence%41` links to
 `#fn-evidence%2541`, keeping it distinct from a note named `evidenceA`.
 
-## Continue long prose notes across pages
+## Continue long text notes across pages
 
-Enable `--pdf-split-footnotes` to keep long paragraph-only notes in the page-foot
-flow instead of moving them into the trailing Notes section:
+Enable `--pdf-split-footnotes` to keep long text notes in the page-foot flow
+instead of moving them into the trailing Notes section:
 
 ```sh
 fmd report.md --to pdf --pdf-split-footnotes --out report.pdf
@@ -62,10 +62,21 @@ line belongs to the same logical note across its fragments, and the citation
 still links to the first fragment. `--pdf-footnote-backlinks` can be combined
 with this mode.
 
-This first continuation mode supports paragraph-only note bodies, including
-styled text, inline code and ordinary links. Notes containing tables, figures,
-math or other rich blocks keep the full-fidelity endnote fallback when they
-cannot fit as an ordinary page note. Unreferenced notes remain endnotes.
+Continuation supports paragraphs with styled text, inline code and ordinary
+links, ordinary fenced or indented code, ordered/unordered/task lists, and
+blockquotes (including alerts).
+Lists and quotations can nest, and code blocks can appear inside them. Fragments
+retain syntax highlighting, source line numbers, list labels, indentation,
+quotation bars, code backgrounds, links and logical note ownership. Code and
+quotation decorations reserve their own space at fragment boundaries. Generated
+note labels, list markers on their own row, and alert titles stay with the first
+content row they introduce.
+
+Notes containing tables, figures, mathematics, diagrams, headings, definition
+lists, generated contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
+fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
+or a required label-and-content group that cannot fit on a note-only page also
+sends its complete note to that fallback.
 
 Continuation requires **greedy pagination without a baseline grid**. Combining
 it with `--pdf-optimal-pagination`, `--pdf-strict-pagination`, or a positive
@@ -154,7 +165,7 @@ moves to a page foot or to the trailing Notes section.
 ## Tests
 
 `tests/pdf_footnote_continuation_test.rs` independently reads emitted text,
-geometry, links and page objects to check prose-note continuation, source-line
+geometry, links and page objects to check text-note continuation, source-line
 conservation, tail pages, book note scope, running folios, shared browser-core
 output, emitter parity, and incompatible-policy refusals.
 

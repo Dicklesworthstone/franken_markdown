@@ -68,7 +68,7 @@ pub struct RenderDefaults {
     pub pdf_page_numbers: Option<bool>,
     /// Link PDF note numbers back to their first citation.
     pub pdf_footnote_backlinks: Option<bool>,
-    /// Continue long paragraph-only PDF notes across page feet.
+    /// Continue long text PDF notes across page feet.
     pub pdf_split_footnotes: Option<bool>,
     /// Apply shared theme body leading and per-side table-cell padding to PDF.
     pub pdf_theme_spacing: Option<bool>,

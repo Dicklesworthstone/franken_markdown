@@ -574,6 +574,131 @@ fn assert_destinations(pdf: &[u8], pages: &[PaintedPage], targets: &[&str]) {
     assert!(actual.is_empty());
 }
 
+/// Read the physical bounds of filled artifact paths. The fixtures use the
+/// default white page, so these are emitted code/quote panels and inline chips,
+/// not a page-colour rectangle. Control points of their rounded corners stay
+/// within the enclosing rectangle and give its exact outer bounds.
+fn artifact_fills(page: &PaintedPage) -> Vec<[f64; 4]> {
+    let mut artifacts = Vec::new();
+    let mut path: Option<[f64; 4]> = None;
+    let mut fills = Vec::new();
+    for operation in pdf_content::operations(&page.content) {
+        match operation.operator {
+            "BDC" | "BMC" => artifacts.push(
+                operation.operands[0] == "/Artifact" || artifacts.last().copied().unwrap_or(false),
+            ),
+            "EMC" => {
+                artifacts.pop().expect("balanced artifact scope");
+            }
+            "cm" => panic!("extend the bounds reader before accepting transformed fixtures"),
+            "m" | "l" | "c" if artifacts.last() == Some(&true) => {
+                for pair in operation.operands.as_chunks::<2>().0 {
+                    let x = pair[0].parse::<f64>().unwrap();
+                    let y = pair[1].parse::<f64>().unwrap();
+                    let bounds = path.get_or_insert([x, y, x, y]);
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                }
+            }
+            "re" if artifacts.last() == Some(&true) => {
+                let values: Vec<f64> = operation
+                    .operands
+                    .iter()
+                    .map(|value| value.parse().unwrap())
+                    .collect();
+                let [x, y, width, height] = values.as_slice() else {
+                    panic!("complete rectangle operands");
+                };
+                path = Some([*x, *y, x + width, y + height]);
+            }
+            "v" | "y" => panic!("extend the bounds reader before accepting shorthand curves"),
+            "f" | "f*" => {
+                if artifacts.last() == Some(&true)
+                    && let Some(bounds) = path.take()
+                {
+                    fills.push(bounds);
+                }
+                path = None;
+            }
+            "S" | "s" | "n" | "B" | "B*" | "b" | "b*" => path = None,
+            _ => {}
+        }
+    }
+    assert!(artifacts.is_empty());
+    fills
+}
+
+fn assert_panel_bounds(pages: &[PaintedPage], options: &PdfOptions) {
+    let margins = options.theme.page.margins;
+    let mut panels = 0;
+    for (index, page) in pages.iter().enumerate() {
+        let body_bottom = page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && run.size >= 10.9)
+            .filter(|run| run.text.chars().any(|c| c.is_ascii_alphabetic()))
+            .map(|run| run.y + run.descent * run.size)
+            .fold(f64::INFINITY, f64::min);
+        for [left, bottom, right, top] in artifact_fills(page) {
+            panels += 1;
+            assert!(
+                left >= f64::from(margins.left_pt) - 0.025
+                    && right <= page.width - f64::from(margins.right_pt) + 0.025
+                    && bottom >= f64::from(margins.bottom_pt) - 0.025
+                    && top <= page.height - f64::from(margins.top_pt) + 0.025,
+                "page {} paints a panel outside the content box: {left}/{bottom}/{right}/{top}",
+                index + 1,
+            );
+            assert!(
+                top < body_bottom,
+                "page {} paints a note panel into body ink",
+                index + 1,
+            );
+        }
+    }
+    assert!(panels > 0, "fixture must exercise actual painted panels");
+}
+
+fn structure_count(pdf: &[u8], tag: &str) -> usize {
+    let objects = Objects::new(pdf);
+    let marker = format!("/S /{tag} ");
+    (1..objects.offsets.len())
+        .filter(|&id| {
+            let dictionary = objects.dictionary(id);
+            dictionary.contains("/Type /StructElem ") && dictionary.contains(&marker)
+        })
+        .count()
+}
+
+fn assert_first_note_navigation(pdf: &[u8], pages: &[PaintedPage], citation: &str) {
+    let (body_page, body) = locate(pages, citation);
+    let (label_page, label) = pages
+        .iter()
+        .enumerate()
+        .find_map(|(index, page)| {
+            page.runs
+                .iter()
+                .find(|run| !run.artifact && run.size < 10.9 && run.text.trim() == "¹")
+                .map(|run| (index, run))
+        })
+        .expect("first-block rich note keeps its standalone numbered prefix");
+    assert_eq!(label_page, body_page);
+    let mut actual = destinations(pdf, pages);
+    assert_eq!(actual.len(), 2, "citation and optional return navigation");
+    for (page, run) in [(label_page, label), (body_page, body)] {
+        let y = run.y + run.size * 0.9;
+        let index = actual
+            .iter()
+            .position(|&(target_page, target_y)| {
+                page == target_page && (target_y - y).abs() < 0.025
+            })
+            .expect("navigation binds to the actual painted prefix or citation");
+        actual.remove(index);
+    }
+}
+
 #[test]
 fn long_note_continues_through_body_and_note_only_pages_without_lost_or_repeated_text() {
     let mut source = String::from("BODY000 first citation.[^long]\n\n");
@@ -765,7 +890,9 @@ fn rich_and_unreferenced_notes_keep_the_complete_existing_fallback() {
     for index in 0..40 {
         source.push_str(&format!("    CODE{index:03} retained code row.\n"));
     }
-    source.push_str("    ```\n\n[^orphan]: ORPHAN remains an endnote.\n");
+    source.push_str(
+        "    ```\n\n    | Column |\n    | --- |\n    | TABLECELL |\n\n[^orphan]: ORPHAN remains an endnote.\n",
+    );
     let split = options();
     let mut original = split.clone();
     original.split_footnotes = false;
@@ -774,6 +901,7 @@ fn rich_and_unreferenced_notes_keep_the_complete_existing_fallback() {
     assert_markers(&pages, "CODE", 40);
     assert!(text(&pages).contains("Notes"));
     assert_eq!(text(&pages).matches("RICHSTART").count(), 1);
+    assert_eq!(text(&pages).matches("TABLECELL").count(), 1);
     assert_eq!(text(&pages).matches("ORPHAN").count(), 1);
     pdf_content::assert_same_paint(&bytes, &render_pdf(&source, &original).unwrap());
     assert_destinations(&bytes, &pages, &["RICHSTART"]);
@@ -860,4 +988,158 @@ fn incompatible_pagination_modes_fail_explicitly_without_weakened_constraints() 
             "{name}: {error}",
         );
     }
+}
+
+#[test]
+fn first_block_code_note_continues_with_numbering_panels_and_return_navigation() {
+    let mut source = String::from("CODECITATION.[^rich]\n\n");
+    for index in 0..8 {
+        source.push_str(&format!("BODY{index:03} ordinary document paragraph.\n\n"));
+    }
+    source.push_str("[^rich]:\n    ```rust\n");
+    for index in 0..48 {
+        if index > 0 && index % 8 == 0 {
+            source.push_str("    \n");
+        }
+        source.push_str(&format!("    let item = \"CODE{index:03}\";\n"));
+    }
+    source.push_str("    ```\n");
+    let mut options = options();
+    options.footnote_backlinks = true;
+    options.code_line_numbers = true;
+    let document = parse_markdown(&source);
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "CODE", 48);
+    assert_markers(&pages, "BODY", 8);
+    assert_eq!(locate(&pages, "CODE000").0, locate(&pages, "CODECITATION").0);
+    assert!(locate(&pages, "CODE047").0 > locate(&pages, "CODE000").0);
+    assert!(!text(&pages).contains("Notes"));
+    for index in 0..48 {
+        let (page, row) = locate(&pages, &format!("CODE{index:03}"));
+        let number = (index + 1 + index / 8).to_string();
+        assert!(
+            pages[page].runs.iter().any(|run| {
+                !run.artifact
+                    && run.text.trim() == number
+                    && (run.y - row.y).abs() < PRECISION
+            }),
+            "source code row {index} retains its original line number",
+        );
+        assert!(
+            artifact_fills(&pages[page]).iter().any(|bounds| {
+                bounds[0] <= row.x
+                    && row.x <= bounds[2]
+                    && bounds[1] < row.y
+                    && row.y < bounds[3]
+            }),
+            "source code row {index} retains its painted panel",
+        );
+    }
+    let numbers: BTreeMap<_, _> = pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .filter(|run| !run.artifact)
+        .filter_map(|run| run.text.trim().parse::<usize>().ok())
+        .fold(BTreeMap::new(), |mut counts, number| {
+            *counts.entry(number).or_insert(0usize) += 1;
+            counts
+        });
+    assert_eq!(
+        numbers,
+        (1..=53).map(|number| (number, 1)).collect(),
+        "all source rows, including blank lines, retain one line number",
+    );
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "Code"), 1);
+    assert_first_note_navigation(&bytes, &pages, "CODECITATION");
+    assert_geometry(&pages, &options);
+    assert_panel_bounds(&pages, &options);
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap(),
+    );
+    assert_eq!(
+        franken_markdown::verify::verify_pdf(&document, &options)
+            .unwrap()
+            .page_count,
+        pages.len(),
+    );
+}
+
+#[test]
+fn nested_lists_and_alert_note_keep_source_labels_containers_and_panel_bounds() {
+    let mut source = String::from(
+        "LISTCITATION.[^rich]\n\n[^rich]:\n    > [!NOTE]\n    > QUOTEINTRO retained introduction.\n    >\n",
+    );
+    for index in 0..12 {
+        let marker = format!("{}.", index + 1);
+        let indent = " ".repeat(marker.len() + 1);
+        source.push_str(&format!(
+            "    > {marker} NOTE_LIST{index:03} outer item.\n    > {indent}- NOTE_NEST{index:03} inner item.\n",
+        ));
+    }
+    for height in [192.0, 216.0, 240.0] {
+        let mut options = options();
+        options.theme.page.size.height_pt = height;
+        options.footnote_backlinks = true;
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pages = painted_pages(&bytes);
+        assert_markers(&pages, "NOTE_LIST", 12);
+        assert_markers(&pages, "NOTE_NEST", 12);
+        assert_eq!(locate(&pages, "QUOTEINTRO").0, locate(&pages, "LISTCITATION").0);
+        assert_eq!(locate(&pages, "Note").0, locate(&pages, "QUOTEINTRO").0);
+        assert!(locate(&pages, "NOTE_NEST011").0 > locate(&pages, "QUOTEINTRO").0);
+        assert!(!text(&pages).contains("Notes"));
+        for index in 0..12 {
+            let (page, row) = locate(&pages, &format!("NOTE_LIST{index:03}"));
+            let label = format!("{}.", index + 1);
+            assert!(
+                pages[page].runs.iter().any(|run| {
+                    !run.artifact
+                        && run.text.trim() == label
+                        && (run.y - row.y).abs() < PRECISION
+                }),
+                "ordered item {index} retains its source marker on the same row",
+            );
+        }
+        assert_eq!(structure_count(&bytes, "Note"), 1);
+        assert_eq!(structure_count(&bytes, "BlockQuote"), 1);
+        assert_eq!(structure_count(&bytes, "L"), 13);
+        assert_eq!(structure_count(&bytes, "LI"), 24);
+        assert_eq!(structure_count(&bytes, "Lbl"), 25);
+        assert_first_note_navigation(&bytes, &pages, "LISTCITATION");
+        assert_geometry(&pages, &options);
+        assert_panel_bounds(&pages, &options);
+    }
+}
+
+#[test]
+fn first_block_list_marker_and_alert_title_stay_with_the_first_source_row() {
+    let mut source = String::from(
+        "NESTEDCITATION.[^rich]\n\n[^rich]:\n    - > [!WARNING]\n      > FIRSTSOURCE retained warning.\n      >\n",
+    );
+    for index in 0..36 {
+        source.push_str(&format!("      > NOTE_QUOTE{index:03} preserved source row.  \n"));
+    }
+    let mut options = options();
+    options.theme.page.size.height_pt = 192.0;
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "NOTE_QUOTE", 36);
+    let citation_page = locate(&pages, "NESTEDCITATION").0;
+    assert_eq!(locate(&pages, "FIRSTSOURCE").0, citation_page);
+    assert_eq!(locate(&pages, "Warning").0, citation_page);
+    assert!(locate(&pages, "NOTE_QUOTE035").0 > citation_page);
+    assert!(!text(&pages).contains("Notes"));
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "L"), 1);
+    assert_eq!(structure_count(&bytes, "LI"), 1);
+    assert_eq!(structure_count(&bytes, "Lbl"), 2);
+    assert_eq!(structure_count(&bytes, "BlockQuote"), 1);
+    assert_first_note_navigation(&bytes, &pages, "NESTEDCITATION");
+    assert_geometry(&pages, &options);
+    assert_panel_bounds(&pages, &options);
 }

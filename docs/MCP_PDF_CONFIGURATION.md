@@ -89,17 +89,18 @@ site artifacts keep their own layout settings.
 ## Footnote continuation
 
 The PDF routes, including verification and book output, accept
-`splitFootnotes: true` to continue long paragraph-only notes across page feet.
+`splitFootnotes: true` to continue long notes containing paragraphs, code,
+lists or quotations across page feet.
 The first fragment stays with the citation, and the remaining fragments retain
 the note's numbering, links and logical ownership. Omission or `false` retains
-the existing indivisible-note layout. Rich or unreferenced notes retain their
-lossless endnote fallback.
+the existing indivisible-note layout. Notes containing tables, figures, math
+or headings, and unreferenced notes, retain their lossless endnote fallback.
 
 Continuation cannot be combined with `optimalPagination: true`,
 `strictPagination: true`, or a positive `baselineGridPt`. The native renderer
 refuses these combinations with `pdf_split_footnotes_incompatible`; it does not
 silently drop continuation or weaken the requested planner. See
-[PDF footnotes](PDF_FOOTNOTES.md) for the supported prose-note scope.
+[PDF footnotes](PDF_FOOTNOTES.md) for supported blocks and continuation rules.
 
 ## Running header and footer
 

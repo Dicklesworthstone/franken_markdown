@@ -166,7 +166,7 @@ const PDF_FIELDS: &[Field] = &[
     (
         "splitFootnotes",
         "boolean",
-        "Continue long paragraph-only notes across page feet; requires greedy pagination (default false)",
+        "Continue long text notes across page feet; requires greedy pagination (default false)",
     ),
     (
         "strictPagination",

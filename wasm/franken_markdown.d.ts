@@ -205,7 +205,7 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
   strictPagination?: boolean;
   /** Link PDF note numbers back to their first citation. Default false. */
   footnoteBacklinks?: boolean;
-  /** Continue long paragraph-only notes across page feet. Default false.
+  /** Continue long text notes across page feet. Default false.
    * Requires greedy pagination without a baseline grid and a matching WASM
    * package; unsupported policies and older token parsers fail explicitly. */
   splitFootnotes?: boolean;

@@ -51,7 +51,7 @@ pub(super) struct PublishingArgs {
     /// Link PDF note numbers back to their first citation; accepts =false.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_footnote_backlinks: Option<bool>,
-    /// Continue long paragraph-only notes across PDF page feet; accepts =false.
+    /// Continue long text notes across PDF page feet; accepts =false.
     /// Requires greedy pagination.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,

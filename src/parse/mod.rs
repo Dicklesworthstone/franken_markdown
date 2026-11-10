@@ -4299,9 +4299,10 @@ fn split_task_marker(text: &str) -> (Option<bool>, &str) {
     // literal code. Stripping it here would turn that block into live prose
     // (or even a reference definition) before either parser sees it.
     // Do not remeasure an unexpanded tab from column zero: its width depends
-    // on the enclosing marker's original column. Four literal spaces are an
-    // unambiguous code prefix, including the expanded immediate-tab path.
-    if text.starts_with("    ") {
+    // on the enclosing marker's original column. Admit only indentation that
+    // reaches four columns at every possible tab phase. This includes mixed
+    // spaces/tabs without changing ambiguous container-padding behavior.
+    if has_unambiguous_code_indent(text) {
         return (None, text);
     }
     let trimmed = trim_start_space_tab(text);
@@ -4328,6 +4329,27 @@ fn split_task_marker(text: &str) -> (Option<bool>, &str) {
         // Any other following character means this was never a checkbox.
         _ => (None, text),
     }
+}
+
+/// Container stripping does not retain the original physical tab column.
+/// Four-column indentation is nevertheless certain when every tab phase
+/// reaches it. Each phase examines at most four whitespace bytes, so even
+/// very long indentation needs only bounded work and no allocation here.
+fn has_unambiguous_code_indent(text: &str) -> bool {
+    (0..4).all(|start| {
+        let mut column = start;
+        for byte in text.bytes() {
+            match byte {
+                b' ' => column += 1,
+                b'\t' => column += 4 - column % 4,
+                _ => return false,
+            }
+            if column - start >= 4 {
+                return true;
+            }
+        }
+        false
+    })
 }
 
 // ---- tables -----------------------------------------------------------------

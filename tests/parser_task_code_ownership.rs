@@ -44,6 +44,18 @@ fn fragment(document: &Document) -> String {
     franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default())
 }
 
+fn first_container_code(block: &Block) -> &str {
+    match block {
+        Block::CodeBlock { code, .. } => code,
+        Block::List(list) => {
+            assert_eq!(list.items[0].task, None);
+            first_container_code(&list.items[0].blocks[0])
+        }
+        Block::BlockQuote(blocks) => first_container_code(&blocks[0]),
+        other => panic!("expected a container with literal code: {other:?}"),
+    }
+}
+
 #[test]
 fn checkbox_shaped_tokens_in_indented_code_remain_literal() {
     // CommonMark 5.2: five or more columns after a list marker leave four or
@@ -100,6 +112,74 @@ fn checkbox_shaped_code_cannot_define_references_or_editable_links() {
         assert!(rendered.contains("[x] [hidden]: /secret"), "{source:?}");
         assert!(!rendered.contains("href=\"/secret\""), "{source:?}");
     }
+}
+
+#[test]
+fn unambiguous_mixed_tab_code_cannot_define_references() {
+    // Two tabs, or a tab followed by three spaces, span at least four
+    // columns regardless of the original container's physical tab phase.
+    // This checks code/source ownership without pinning the parser's existing
+    // treatment of the exact residual indentation inside nested containers.
+    for container in ["", "> ", "- "] {
+        for marker in ["-", "1.", "23)"] {
+            for padding in [" \t\t", " \t   ", "  \t\t"] {
+                let source =
+                    format!("{container}{marker}{padding}[x] [hidden]: /secret\n\n[hidden]\n");
+                let parsed = document(&source);
+                assert!(
+                    first_container_code(&parsed.blocks[0]).contains("[x] [hidden]: /secret"),
+                    "{source:?}"
+                );
+                assert_eq!(
+                    parsed.blocks.last(),
+                    Some(&paragraph("[hidden]")),
+                    "{source:?}"
+                );
+                assert!(destination_spans(&source).is_empty(), "{source:?}");
+                let html = fragment(&parsed);
+                assert!(html.contains("<pre><code>"), "{source:?}");
+                assert!(html.contains("[x] [hidden]: /secret"), "{source:?}");
+                assert!(!html.contains("type=\"checkbox\""), "{source:?}");
+                assert!(!html.contains("href=\"/secret\""), "{source:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_tab_code_keeps_real_reference_ranges_and_closes_lazy_continuation() {
+    for padding in [" \t\t", " \t   ", "  \t\t"] {
+        let source = format!(
+            "\u{feff}-{padding}[x] [réad]: /hidden\r\noutside\r\n\r\n[réad]: /réal#β\r\n\r\n[réad]\r\n"
+        );
+        let parsed = document(&source);
+        assert!(first_container_code(&parsed.blocks[0]).contains("[x] [réad]: /hidden"));
+        assert_eq!(parsed.blocks[1], paragraph("outside"), "{source:?}");
+        let spans = destination_spans(&source);
+        assert_eq!(spans.len(), 1, "{source:?}: {spans:?}");
+        assert_eq!(spans[0].dest, "/réal#β");
+        assert_eq!(&source[spans[0].range.clone()], "/réal#β");
+        let spanned = parse_markdown_spanned(&source);
+        assert_eq!(
+            spanned.blocks.last().unwrap().span.slice(&source),
+            Some("[réad]")
+        );
+        assert!(!fragment(&parsed).contains("href=\"/hidden\""));
+    }
+}
+
+#[test]
+fn mixed_tab_code_stays_literal_in_pdf_and_svg() {
+    let source = "- \t\t[x] [hidden]: /secret\n\n[hidden]\n";
+    let parsed = document(source);
+    assert!(first_container_code(&parsed.blocks[0]).contains("[x] [hidden]: /secret"));
+    let pdf = render_pdf(source, &PdfOptions::default()).unwrap();
+    let pdf_text = String::from_utf8_lossy(&pdf);
+    assert!(pdf_text.contains("/S /Code"));
+    assert!(!pdf_text.contains("/URI"));
+    let svg =
+        franken_markdown::svg::render_svg(&parsed, &franken_markdown::svg::SvgOptions::default());
+    assert!(!String::from_utf8_lossy(&svg).contains("href=\"/secret\""));
 }
 
 #[test]

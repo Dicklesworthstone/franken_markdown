@@ -44,6 +44,42 @@ HTML and EPUB retain those literal names in their anchor IDs and encode them
 when generating links: a note named `evidence%41` links to
 `#fn-evidence%2541`, keeping it distinct from a note named `evidenceA`.
 
+## Continue long prose notes across pages
+
+Enable `--pdf-split-footnotes` to keep long paragraph-only notes in the page-foot
+flow instead of moving them into the trailing Notes section:
+
+```sh
+fmd report.md --to pdf --pdf-split-footnotes --out report.pdf
+fmd book ./manual --to pdf --pdf-split-footnotes --out manual.pdf
+```
+
+The first fragment stays on its first citation's page. Remaining measured lines
+continue at later page feet under the repeated separator rule. Pending notes
+can create note-only pages after the document body; these pages participate in
+running folios, total page counts, destinations, and verification. Every source
+line belongs to the same logical note across its fragments, and the citation
+still links to the first fragment. `--pdf-footnote-backlinks` can be combined
+with this mode.
+
+This first continuation mode supports paragraph-only note bodies, including
+styled text, inline code and ordinary links. Notes containing tables, figures,
+math or other rich blocks keep the full-fidelity endnote fallback when they
+cannot fit as an ordinary page note. Unreferenced notes remain endnotes.
+
+Continuation requires **greedy pagination without a baseline grid**. Combining
+it with `--pdf-optimal-pagination`, `--pdf-strict-pagination`, or a positive
+`--pdf-baseline-grid-pt` fails with `pdf_split_footnotes_incompatible`. Disable
+continuation or the incompatible policy; the renderer does not silently change
+the requested pagination contract.
+
+The option is off by default. `fmd config set pdf_split_footnotes true` supplies
+a persistent default, and `--pdf-split-footnotes=false` overrides it for one
+render, watch, batch or book invocation. Rust callers set
+`PdfOptions::split_footnotes` or `WasmRenderOptions::split_footnotes`. The MCP
+PDF routes use `splitFootnotes: true`. The native browser core also accepts the
+typography token `split-footnotes` through its configured PDF interfaces.
+
 ## Return to a citation
 
 Enable `--pdf-footnote-backlinks` to make the existing superscript label at the
@@ -108,12 +144,18 @@ moves to a page foot or to the trailing Notes section.
   outcome and paginates greedily (the legacy fallback planner does not model
   note space). With `--pdf-strict-pagination`, it returns an error instead of
   falling back.
-- Notes placed at a page foot are indivisible. Notes that exceed the available
-  space print as endnotes, where ordinary block pagination can span pages.
+- By default, notes placed at a page foot are indivisible. Notes that exceed
+  the available space print as endnotes, where ordinary block pagination can span pages.
   Their complete text, block structure, numbering, and link destinations are
   retained.
 
 ## Tests
+
+`tests/pdf_footnote_continuation_test.rs` independently reads emitted text,
+geometry, links and page objects to check prose-note continuation, source-line
+conservation, tail pages, book note scope, running folios, shared browser-core
+output, emitter parity, and incompatible-policy refusals.
+
 
 `tests/pdf_page_footnotes_test.rs` pins placement (every note on its
 reference's page, below the body, smaller than body text), linking without

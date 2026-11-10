@@ -549,3 +549,62 @@ fn discovery_exposes_page_shape_and_auditable_resources_without_pdfa_claims() {
         }
     }
 }
+
+#[test]
+fn continuation_reaches_mcp_pdf_and_configured_verification_without_policy_downgrade() {
+    let mut source = "# Evidence\n\nClaim[^n].\n\n[^n]: Opening evidence.\n".to_owned();
+    for index in 0..80 {
+        source.push_str(&format!(
+            "\n    Evidence{index:03} survives every continuation page.\n"
+        ));
+    }
+    let doc = parse_markdown(&source);
+    let ordinary = franken_markdown::render_pdf(&source, &PdfOptions::default()).unwrap();
+    for enabled in [true, false] {
+        let options = PdfOptions {
+            split_footnotes: enabled,
+            ..PdfOptions::default()
+        };
+        let expected = franken_markdown::render_pdf(&source, &options).unwrap();
+        if enabled {
+            assert_ne!(expected, ordinary);
+        }
+        let parameters = format!("{{\"splitFootnotes\":{enabled}}}");
+        let rendered = call("fmd.render_pdf", args(&parameters, &source)).unwrap();
+        assert_eq!(content(&rendered), base64_encode(&expected));
+        let verified = call("fmd.verify", args(&parameters, &source)).unwrap();
+        let report = franken_markdown::verify::verify_pdf_result(&doc, &options).unwrap();
+        assert_eq!(
+            content(&verified),
+            franken_markdown::verify::to_json(&report)
+        );
+    }
+    for tool in ["fmd.render_pdf", "fmd.verify"] {
+        for value in ["null", "1", "\"true\"", "{}"] {
+            assert_eq!(
+                call(
+                    tool,
+                    args(&format!("{{\"splitFootnotes\":{value}}}"), &source)
+                )
+                .unwrap_err()
+                .2,
+                "invalid_params"
+            );
+        }
+        for policy in [
+            "\"optimalPagination\":true",
+            "\"strictPagination\":true",
+            "\"baselineGridPt\":12",
+        ] {
+            let error = call(
+                tool,
+                args(&format!("{{\"splitFootnotes\":true,{policy}}}"), &source),
+            )
+            .unwrap_err();
+            assert!(
+                error.1.contains("pdf_split_footnotes_incompatible"),
+                "{tool}: {error:?}"
+            );
+        }
+    }
+}

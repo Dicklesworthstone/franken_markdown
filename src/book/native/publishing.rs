@@ -51,6 +51,10 @@ pub(super) struct PublishingArgs {
     /// Link PDF note numbers back to their first citation; accepts =false.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_footnote_backlinks: Option<bool>,
+    /// Continue long paragraph-only notes across PDF page feet; accepts =false.
+    /// Requires greedy pagination.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    pdf_split_footnotes: Option<bool>,
     /// Apply shared theme body leading and per-side table-cell padding to PDF.
     /// Default off; accepts =false to override config.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
@@ -180,6 +184,7 @@ pub(super) fn prepare(
             || args.pdf_optimal_pagination.is_some()
             || args.pdf_strict_pagination.is_some()
             || args.pdf_footnote_backlinks.is_some()
+            || args.pdf_split_footnotes.is_some()
             || args.pdf_theme_spacing.is_some()
             || args.fit_to_pages.is_some()
             || args.pdf_base_font_size.is_some()
@@ -274,6 +279,10 @@ pub(super) fn prepare(
         footnote_backlinks: args
             .pdf_footnote_backlinks
             .or(defaults.pdf_footnote_backlinks)
+            .unwrap_or(false),
+        split_footnotes: args
+            .pdf_split_footnotes
+            .or(defaults.pdf_split_footnotes)
             .unwrap_or(false),
         use_theme_spacing: args
             .pdf_theme_spacing
@@ -423,6 +432,7 @@ impl Publishing {
         options.optimal_pagination = self.pdf.optimal_pagination;
         options.strict_pagination = self.pdf.strict_pagination;
         options.footnote_backlinks = self.pdf.footnote_backlinks;
+        options.split_footnotes = self.pdf.split_footnotes;
         options.use_theme_spacing = self.pdf.use_theme_spacing;
         options.page_numbers = self.pdf.page_numbers;
         options.fit_to_pages = self.pdf.fit_to_pages;

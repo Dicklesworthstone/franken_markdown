@@ -63,6 +63,7 @@ mod native_compression;
 mod page_note_grid;
 mod pagination_report;
 mod spacing;
+mod split_footnotes;
 pub use pagination_report::{
     PdfPageBreakReport, PdfPaginationFailure, PdfPaginationReport, PdfPaginationStrategy,
     PdfParagraphVariantReport, PdfParagraphVariantStatus, PdfRenderReport,
@@ -1648,6 +1649,8 @@ struct FlowMark {
     note_destination: u32,
     /// Complete logical note body, independent of page-foot/endnote placement.
     note_owner: u32,
+    /// This paragraph note may continue at line boundaries on later pages.
+    split_note: bool,
     /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
     /// its source block. Language strings are shared once per render.
     language_scope: u32,
@@ -1668,6 +1671,7 @@ impl Default for FlowMark {
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
             language_scope: language::UNASSIGNED,
             document_language: false,
         }
@@ -3237,6 +3241,7 @@ fn render_inner_with_languages(
     let notes = note_tags::Context::bind(input);
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
+    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     let mut profiler = if profiled {
         PdfProfiler::enabled()
@@ -3727,6 +3732,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     note: 0,
                     note_destination: 0,
                     note_owner: 0,
+                    split_note: false,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -3848,6 +3854,7 @@ fn layout_with_languages(
     languages: &language::Context,
     notes: &note_tags::Context,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
+    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     spacing::validate_tables(blocks, opts, page)?;
     inline_image::prepare(blocks, &opts.image_assets, faces);
@@ -4112,6 +4119,13 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
     for size in &mut cx.type_scale.h {
         *size *= PAGE_NOTE_SIZE_SCALE;
     }
+    let mut separator = page_note_separator(cx.page);
+    baseline_grid::apply(
+        std::slice::from_mut(&mut separator),
+        cx.opts.theme.page.baseline_grid,
+        cx.faces,
+    );
+    let separator_height = line_leading(&separator) + separator.gap_after;
     let mut notes = Vec::with_capacity(defs.len());
     for &(id, body) in defs {
         let number = page_note_number(id).unwrap_or(0);
@@ -4138,13 +4152,17 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
                     .map(|line| line_leading(line) + line.gap_after)
                     .sum()
             };
-            if note.height > capacity * PAGE_NOTE_MAX_SHARE {
+            let split_candidate = cx.opts.split_footnotes && split_footnotes::eligible(body);
+            let split = split_candidate
+                && split_footnotes::prepare(&mut note.lines, cx.faces, capacity - separator_height);
+            if !split && (split_candidate || note.height > capacity * PAGE_NOTE_MAX_SHARE) {
                 // The ordinary full-size endnote layout is produced below.
                 // Do not retain a second measured copy of an oversized note.
                 note.lines.clear();
             } else {
                 for line in &mut note.lines {
                     line.flow.note = number;
+                    line.flow.split_note = split;
                     line.page_break_before = false;
                 }
             }
@@ -4153,18 +4171,11 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
     }
     cx.type_scale = body_scale;
 
-    let mut separator = page_note_separator(cx.page);
-    baseline_grid::apply(
-        std::slice::from_mut(&mut separator),
-        cx.opts.theme.page.baseline_grid,
-        cx.faces,
-    );
     if cx.opts.theme.page.baseline_grid.is_some() {
         page_note_grid::finish(&mut notes, out, separator, cx);
         finish_page_note_marks(out);
         return;
     }
-    let separator_height = line_leading(&separator) + separator.gap_after;
     admit_page_notes(&mut notes, out, capacity, separator_height, false);
     if notes.iter().any(|note| !note.at_foot) {
         // Adding the Notes heading increases the original body's last gap.
@@ -4245,6 +4256,9 @@ fn admit_page_notes(
     with_endnotes: bool,
 ) {
     let mut reserved = BTreeMap::<usize, f32>::new();
+    let continued = notes
+        .iter()
+        .any(|note| note.lines.first().is_some_and(|line| line.flow.split_note));
     for note in notes {
         note.at_foot = false;
         let Some(index) = note.first_reference else {
@@ -4261,8 +4275,13 @@ fn admit_page_notes(
         };
         let body_height = line_leading(line) + line.gap_after + heading_gap;
         let used = reserved.entry(index).or_default();
-        if body_height + separator_height + *used + note.height <= capacity {
-            *used += note.height;
+        let minimum = if continued {
+            split_footnotes::minimum_reserve(&note.lines)
+        } else {
+            note.height
+        };
+        if body_height + separator_height + *used + minimum <= capacity {
+            *used += minimum;
             note.at_foot = true;
         }
     }
@@ -5378,6 +5397,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     note: 0,
                     note_destination: 0,
                     note_owner: 0,
+                    split_note: false,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -5583,6 +5603,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -5682,6 +5703,7 @@ fn push_figure_line(
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -17563,6 +17585,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
         };
     }
 }
@@ -19087,6 +19110,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     note: 0,
                     note_destination: 0,
                     note_owner: 0,
+                    split_note: false,
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
@@ -19137,6 +19161,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -23635,6 +23660,8 @@ struct PageNotes {
     separator: usize,
     /// `(body line, note region range)` for each note's first reference.
     first_refs: Vec<(usize, std::ops::Range<usize>)>,
+    /// Each independent count/paint/verification walk owns its pending ranges.
+    continuation: Option<RefCell<split_footnotes::Cursor>>,
 }
 
 impl PageNotes {
@@ -23670,10 +23697,15 @@ impl PageNotes {
                 }
             }
         }
+        let continuation = first_refs
+            .iter()
+            .any(|(_, range)| lines[range.start].flow.split_note)
+            .then(|| RefCell::new(split_footnotes::Cursor::default()));
         Some(Self {
             body_end,
             separator,
             first_refs,
+            continuation,
         })
     }
 
@@ -23761,6 +23793,19 @@ fn next_placed_page_with_notes<'a>(
     emitted_any: &mut bool,
     plan: Option<&PageBreakPlan>,
 ) -> Option<Vec<Placed<'a>>> {
+    if let Some(cursor) = &notes.continuation {
+        // Option validation excludes exact pagination before fit/layout. All
+        // final page consumers walk this same source-owned continuation state.
+        debug_assert!(plan.is_none());
+        return split_footnotes::next_page(
+            lines,
+            notes,
+            &mut cursor.borrow_mut(),
+            start,
+            page,
+            emitted_any,
+        );
+    }
     let body = &lines[..notes.body_end];
     if *start >= body.len() {
         return None;
@@ -32141,6 +32186,7 @@ mod keep_with_next_tests {
                 note: 0,
                 note_destination: 0,
                 note_owner: 0,
+                split_note: false,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -32413,6 +32459,7 @@ mod void_budget_tests {
                 note: 0,
                 note_destination: 0,
                 note_owner: 0,
+                split_note: false,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -38373,6 +38420,7 @@ mod pdf_writer_tests {
                     note: 0,
                     note_destination: 0,
                     note_owner: 0,
+                    split_note: false,
                 },
                 list_path: lists
                     .iter()
@@ -45416,6 +45464,7 @@ pub(crate) fn verification_text_layer_for_layout(
 ) -> Result<VerifyTextLayer> {
     opts.font_assets.validate()?;
     baseline_grid::validate_options(opts)?;
+    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     let notes = note_tags::Context::bind(input);
     let lowered = if input.is_pdf_prepared() {
@@ -45695,6 +45744,7 @@ mod plass_pagination_tests {
                 note: 0,
                 note_destination: 0,
                 note_owner: 0,
+                split_note: false,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),

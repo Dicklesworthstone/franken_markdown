@@ -268,3 +268,114 @@ fn batch_uses_configured_return_links_and_an_explicit_opt_out() {
         );
     }
 }
+
+fn continuation_source() -> String {
+    let mut source = "# Continuation\n\nClaim[^long].\n\n[^long]: Opening evidence.\n".to_owned();
+    for index in 0..80 {
+        source.push_str(&format!(
+            "\n    Evidence{index:03} remains attached to its citation and continues at the foot of later pages.\n"
+        ));
+    }
+    source
+}
+
+#[test]
+fn long_note_continuation_reaches_render_config_and_explicit_opt_out() {
+    let workspace = Workspace::new();
+    let source = continuation_source();
+    fs::write(workspace.0.join("document.md"), &source).unwrap();
+    let split = PdfOptions {
+        split_footnotes: true,
+        ..PdfOptions::default()
+    };
+    let enabled = render_pdf(&source, &split).unwrap();
+    let ordinary = render_pdf(&source, &PdfOptions::default()).unwrap();
+    assert_ne!(enabled, ordinary, "the fixture must exercise continuation");
+    assert_eq!(
+        workspace.render("split.pdf", &["--pdf-split-footnotes"]),
+        enabled
+    );
+    succeeded(&workspace.run(&["config", "set", "pdf_split_footnotes", "true"]));
+    let show = workspace.run(&["config", "show", "--json"]);
+    succeeded(&show);
+    assert!(String::from_utf8_lossy(&show.stdout).contains("\"pdf_split_footnotes\":true"));
+    assert_eq!(workspace.render("configured.pdf", &[]), enabled);
+    assert_eq!(
+        workspace.render("opt-out.pdf", &["--pdf-split-footnotes=false"]),
+        ordinary
+    );
+    assert_eq!(
+        workspace.render("no-config.pdf", &["--no-config"]),
+        ordinary
+    );
+    let wrong_target = workspace.run(&[
+        "document.md",
+        "--to",
+        "html",
+        "--out",
+        "invalid.html",
+        "--pdf-split-footnotes",
+    ]);
+    assert_eq!(wrong_target.status.code(), Some(64));
+    assert!(!workspace.0.join("invalid.html").exists());
+    for (name, flags) in [
+        ("optimal.pdf", vec!["--pdf-optimal-pagination"]),
+        ("strict.pdf", vec!["--pdf-strict-pagination"]),
+        ("grid.pdf", vec!["--pdf-baseline-grid-pt", "12"]),
+    ] {
+        let output = workspace
+            .command()
+            .args(["document.md", "--to", "pdf", "--out", name])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("pdf_split_footnotes_incompatible")
+        );
+        assert!(
+            !workspace.0.join(name).exists(),
+            "failed layout must not publish output"
+        );
+    }
+}
+
+#[test]
+fn book_continuation_flag_reaches_the_shared_pager_and_can_override_config() {
+    let workspace = Workspace::new();
+    let source = continuation_source();
+    fs::create_dir_all(workspace.0.join("book")).unwrap();
+    fs::write(workspace.0.join("book/chapter.md"), &source).unwrap();
+    fs::write(workspace.0.join("config"), "pdf_split_footnotes=true\n").unwrap();
+    let book = BookRenderer::new(&[BookInput {
+        path: "chapter.md".into(),
+        source,
+    }])
+    .unwrap();
+    for (enabled, flag, name) in [
+        (true, "--pdf-split-footnotes", "book-split.pdf"),
+        (false, "--pdf-split-footnotes=false", "book-default.pdf"),
+    ] {
+        succeeded(&workspace.run(&[
+            "book",
+            "book",
+            "--to",
+            "pdf",
+            "--out",
+            name,
+            "--toc=false",
+            "--pdf-page-numbers=false",
+            flag,
+        ]));
+        let expected = PdfOptions {
+            title: Some("Continuation".into()),
+            split_footnotes: enabled,
+            ..PdfOptions::default()
+        };
+        assert_eq!(
+            fs::read(workspace.0.join(name)).unwrap(),
+            book.render_pdf_with_options(&expected, PdfASettings::OFF)
+                .unwrap()
+        );
+    }
+}

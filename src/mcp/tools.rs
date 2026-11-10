@@ -164,6 +164,11 @@ const PDF_FIELDS: &[Field] = &[
         "Link PDF note numbers back to their first citation (default false)",
     ),
     (
+        "splitFootnotes",
+        "boolean",
+        "Continue long paragraph-only notes across page feet; requires greedy pagination (default false)",
+    ),
+    (
         "strictPagination",
         "boolean",
         "Require exact final page breaking; implies optimalPagination and refuses planner fallback",
@@ -690,6 +695,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
             optimal_pagination: boolean(args, "optimalPagination") || strict_pagination,
             strict_pagination,
             footnote_backlinks: boolean(args, "footnoteBacklinks"),
+            split_footnotes: boolean(args, "splitFootnotes"),
             code_line_numbers: boolean(args, "codeLineNumbers"),
             page_numbers: boolean(args, "pageNumbers"),
             running: running::parse(args.get("running"))?,

@@ -113,6 +113,13 @@ fmd book ./manual --to pdf --out ./compact.pdf \
   --pdf-heading-scale 1.2 --pdf-table-font-size 10
 ```
 
+`--pdf-split-footnotes` continues long paragraph-only notes across page feet,
+including note-only pages after body text. The default remains indivisible notes
+with a trailing fallback. Use `--pdf-split-footnotes=false` to override a saved
+`pdf_split_footnotes=true` setting. This mode requires greedy pagination without
+a baseline grid; optimal/strict pagination and a positive grid are explicit
+errors. See [PDF footnotes](PDF_FOOTNOTES.md) for rich-note fallback and navigation.
+
 `--microtype` accepts `off`, `protrusion`, and `expansion`, with the same
 policies as ordinary rendering. The three typography switches and
 `--pdf-optimal-pagination` select the existing shared algorithms.

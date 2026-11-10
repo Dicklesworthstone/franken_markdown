@@ -86,6 +86,21 @@ HTML, EPUB, SVG, and site-only requests reject these PDF-only fields, including
 an explicit `false` or `0`. In `both` and `all` exports, HTML, EPUB, and
 site artifacts keep their own layout settings.
 
+## Footnote continuation
+
+The PDF routes, including verification and book output, accept
+`splitFootnotes: true` to continue long paragraph-only notes across page feet.
+The first fragment stays with the citation, and the remaining fragments retain
+the note's numbering, links and logical ownership. Omission or `false` retains
+the existing indivisible-note layout. Rich or unreferenced notes retain their
+lossless endnote fallback.
+
+Continuation cannot be combined with `optimalPagination: true`,
+`strictPagination: true`, or a positive `baselineGridPt`. The native renderer
+refuses these combinations with `pdf_split_footnotes_incompatible`; it does not
+silently drop continuation or weaken the requested planner. See
+[PDF footnotes](PDF_FOOTNOTES.md) for the supported prose-note scope.
+
 ## Running header and footer
 
 `fmd.render_pdf` and `fmd.render_file` (`pdf`/`both`) accept a `running` object

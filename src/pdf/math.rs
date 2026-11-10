@@ -529,6 +529,7 @@ pub(super) fn layout_block(
             note: 0,
             note_destination: 0,
             note_owner: 0,
+            split_note: false,
         },
         page_break_before: false,
         list_path: Vec::new(),

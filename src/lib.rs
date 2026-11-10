@@ -833,6 +833,15 @@ pub struct PdfOptions {
     /// inside notes and notes moved to the trailing Notes section. Unreferenced
     /// notes have no return destination. Default false preserves existing output.
     pub footnote_backlinks: bool,
+    /// Continue long paragraph-only footnotes across physical page feet.
+    ///
+    /// The first fragment stays with its citation; remaining fragments can
+    /// continue onto later pages, including note-only pages after the body.
+    /// Rich or unreferenced notes retain their full-fidelity endnote fallback.
+    /// Default false preserves indivisible page notes and existing output.
+    /// This mode requires greedy pagination without a baseline grid;
+    /// incompatible layout policies are rejected rather than silently weakened.
+    pub split_footnotes: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///
     /// Scales the whole typographic hierarchy proportionally when no explicit

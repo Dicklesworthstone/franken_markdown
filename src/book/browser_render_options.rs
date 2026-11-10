@@ -141,6 +141,7 @@ impl PdfSettings {
         options.optimal_pagination = candidate.optimal_pagination;
         options.strict_pagination = candidate.strict_pagination;
         options.footnote_backlinks = candidate.footnote_backlinks;
+        options.split_footnotes = candidate.split_footnotes;
         options.use_theme_spacing = candidate.use_theme_spacing;
         options.pdf_line_height = candidate.pdf_line_height;
         options.pdf_table_cell_padding_x_em = candidate.pdf_table_cell_padding_x_em;

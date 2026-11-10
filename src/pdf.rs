@@ -2892,11 +2892,9 @@ fn source_render_warnings(
         if let Ok(Some(running)) =
             running::resolve(doc, opts, faces, PageGeom::from_theme(&opts.theme))
         {
-            let mut running_text = Vec::new();
-            running.collect_positioning_sources(faces, &mut running_text);
-            for (slot, source) in running_text {
-                text_positioning::prepare(faces.face(slot), &source).warnings(&mut warnings);
-            }
+            running.visit_positioning_sources(faces, |slot, source| {
+                text_positioning::prepare(faces.face(slot), source).warnings(&mut warnings);
+            });
         }
     }
 
@@ -23052,12 +23050,10 @@ fn serialize(
     // One break plan for the chrome page count and the emitter, so both see
     // the same pages (and optimal pagination runs once).
     let (break_plan, report) = validated_page_break_plan(lines, page, opts)?;
-    // Running chrome needs `{pages}` and every page's exact text before font
-    // subsetting, so it counts pages with the emitter's own pager up front.
-    let mut chrome = running.map(|spec| {
-        let page_count = count_pages_with(lines, page, break_plan.as_ref());
-        spec.layout_pages(faces, page, page_count)
-    });
+    // Running chrome needs `{pages}` and source heading context before font
+    // subsetting. Resolve both with the same final pager the emitter uses.
+    let mut chrome =
+        running.map(|spec| spec.layout_document_pages(faces, page, lines, break_plan.as_ref()));
     if let Some(chrome) = &mut chrome {
         chrome.fit_positioned_ink(faces, page)?;
     }
@@ -45443,7 +45439,7 @@ pub(crate) fn verification_text_layer_for_layout(
     let (plan, _) = validated_page_break_plan(&lines, page, &effective_opts)?;
     let pages = paginate_lines_with(&lines, page, plan.as_ref());
     if let Some(running) = running {
-        let mut chrome = running.layout_pages(&faces, page, pages.len());
+        let mut chrome = running.layout_document_pages(&faces, page, &lines, plan.as_ref());
         chrome.fit_positioned_ink(&faces, page)?;
     }
     let mut out_pages = Vec::with_capacity(pages.len());

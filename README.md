@@ -627,7 +627,7 @@ fmd --text '<markdown>' --out out.html
 | `--pdf-line-numbers` | Render muted line numbers in PDF fenced code blocks |
 | `--svg-width-pt <POINTS>` | SVG poster width (144..=14400 points; default 612). SVG output draws the same auto-loaded, `--pdf-image` and remote images and `--pdf-font` faces as PDF |
 | `--pdf-page-numbers` | Centered page number in the PDF bottom margin (sugar for `--pdf-footer-center '{page}'`) |
-| `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
+| `--pdf-header-left\|center\|right <text>`, `--pdf-footer-left\|center\|right <text>` | Opt-in running header/footer text in the PDF margins. Tokens `{page}`, `{pages}`, `{title}`, `{chapter}`, `{section}`, `{author}`, `{date}` (from `SOURCE_DATE_EPOCH`, never the clock); overlong slots get an ellipsis; a band that does not fit its margin fails the render. Add `--pdf-header-rule`/`--pdf-footer-rule` for hairlines and `--pdf-running-skip-first` to leave page 1 bare |
 | `--pdf-header-image DEST`, `--pdf-footer-image DEST` | One decorative PNG/JPEG/GIF/SVG logo per PDF band, resolved from `--pdf-image DEST=PATH`; the destination need not appear in Markdown. Use `--pdf-header-image-position left\|right` or `--pdf-footer-image-position left\|right` (default left) and optional `--pdf-header-image-height-pt`/`--pdf-footer-image-height-pt` positive integer points. Images shrink proportionally to fit the existing margin and leave room for text. Missing or invalid images fail the render. Available in render, watch and batch; requires `--to pdf` or `--to both` |
 | `--pdf-image DEST=PATH` | Provide or override one image destination for HTML, PDF, SVG or EPUB, including stdin/`--text` input and PDF running logos; repeat for multiple images. `DEST` matches the source destination exactly and can be an extensionless key or URL. HTML identifies PNG/JPEG/GIF/SVG from the supplied bytes and embeds data URIs; unsupported bytes keep the original safe URL. Explicit mappings take precedence over auto-loaded files in both HTML and PDF. File-input renders also auto-load relative local PNG/SVG/JPEG/GIF destinations, and PDF renders fetch remote http(s) destinations via the system `curl`/`wget` (see `--no-remote-images`, `--remote-image-timeout-secs`). Watch rebuilds when a mapped file changes. The render core never reads files or fetches network resources itself |
 | `--max-pdf-image-bytes <n>` | Max bytes accepted per explicitly mapped or auto-loaded local image file before rendering; also caps each remote image fetch (default `33554432`, 32 MiB) |
@@ -657,6 +657,27 @@ apply. Failed downloads warn and retain the format's normal fallback; HTML may
 keep the unresolved source URL, while EPUB preserves an accessible placeholder.
 The core and browser/WASM APIs continue to accept bytes without fetching.
 See [remote image publishing](docs/REMOTE_IMAGES.md) for the complete policy.
+
+### PDF chapter and section headers
+
+Long reports and books can repeat their current chapter and section in the page
+margins:
+
+```bash
+fmd manual.md --to pdf --out manual.pdf \
+  --pdf-header-left '{chapter}' --pdf-header-right '{section}' \
+  --pdf-footer-center '{page} / {pages}' --pdf-header-rule
+```
+
+The first body heading beginning on a page selects that page's `{section}` and
+its owning H1 `{chapter}`. Later headings update the context carried to the
+next page. Continuation pages retain the complete title, including wrapped and
+styled headings. Before the first body heading or H1, the corresponding token
+is empty. Generated contents/Notes headings and headings in footnotes do not
+replace the body context. Titles remain literal text and use the existing
+ellipsis, font-subset and margin-fit rules. These tokens work through the
+shared Rust, native render/watch/batch/book, MCP and browser PDF options;
+browser packages must be rebuilt to include the renderer change.
 
 ### PDF baseline grids
 

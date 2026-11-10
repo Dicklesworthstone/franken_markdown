@@ -171,8 +171,9 @@ export interface FmdPdfRunningImage {
   /** Positive integer points, at most 65535. Omitted height fits the margin. */
   heightPt?: number;
 }
-/** One running band. Slot templates accept {page}, {pages}, {title}, {author}
- * and {date} (from metadataEpochSeconds, never the clock); unknown tokens stay literal. */
+/** One running band. Slot templates accept {page}, {pages}, {title}, {chapter},
+ * {section}, {author} and {date} (from metadataEpochSeconds, never the clock).
+ * Chapter/section follow the final body's page context; unknown tokens stay literal. */
 export interface FmdPdfRunningBand {
   left?: string;
   center?: string;

@@ -10,13 +10,14 @@
 //! are untouched.
 
 use super::{
-    EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, ImageLine, LinkAnnotation, PageGeom,
-    Palette, PdfImageData, Seg, ShapedRunCache, SvgPageResources, append_oriented_image_xobject_do,
-    append_rgb_stroke_line_operator, append_svg_text_viewport_clip, civil_from_unix_days, draw_seg,
-    draw_svg_image, fallback_slot_runs, font_size_of, parse_pdf_image_asset, seg_text_hash,
-    text_composition, text_positioning,
+    EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, HeadingSource, ImageLine, Line,
+    LinkAnnotation, PageBreakPlan, PageGeom, PageNotes, Palette, PdfImageData, Seg, ShapedRunCache,
+    SvgPageResources, append_oriented_image_xobject_do, append_rgb_stroke_line_operator,
+    append_svg_text_viewport_clip, civil_from_unix_days, draw_seg, draw_svg_image, fallback_slot_runs,
+    font_size_of, next_placed_page, parse_pdf_image_asset, seg_text_hash, text_composition,
+    text_positioning,
 };
-use crate::ast::Document;
+use crate::ast::{Block, Document};
 use crate::{PdfOptions, PdfRunningBand, PdfRunningImage, PdfRunningImagePosition, RenderError};
 use std::{collections::BTreeMap, fmt, rc::Rc};
 
@@ -44,6 +45,87 @@ enum Piece {
     Text(String),
     Page,
     Pages,
+    Section,
+    Chapter,
+}
+
+/// A coherent heading pair. Titles are shared across continuation pages, so
+/// a long heading is retained once rather than copied for every physical page.
+#[derive(Debug, Clone, Default)]
+struct PageContext {
+    section: Rc<str>,
+    chapter: Rc<str>,
+}
+
+#[derive(Debug)]
+struct SourceHeading {
+    title: Rc<str>,
+    level: u8,
+}
+
+/// Only headings in ordinary source flow may change running text. Prepared
+/// footnote definitions are excluded, and headings manufactured during layout
+/// (such as the trailing Notes label) cannot acquire source authority.
+#[derive(Debug, Default)]
+struct SourceHeadings {
+    indices: BTreeMap<usize, usize>,
+    ordered: Vec<SourceHeading>,
+}
+
+impl SourceHeadings {
+    fn from_document(doc: &Document) -> Self {
+        fn visit(blocks: &[Block], headings: &mut SourceHeadings) {
+            for block in blocks {
+                match block {
+                    Block::Heading { level, inlines } => {
+                        let title = HeadingSource::from_inlines(inlines).title;
+                        let title: String = title
+                            .chars()
+                            .map(|c| if c.is_control() { ' ' } else { c })
+                            .collect();
+                        headings
+                            .indices
+                            .insert(std::ptr::from_ref(block) as usize, headings.ordered.len());
+                        headings.ordered.push(SourceHeading {
+                            title: Rc::from(title),
+                            level: (*level).clamp(1, 6),
+                        });
+                    }
+                    Block::BlockQuote(inner) => visit(inner, headings),
+                    Block::List(list) => {
+                        for item in &list.items {
+                            visit(&item.blocks, headings);
+                        }
+                    }
+                    // Do not visit a note's children, even when a note is
+                    // eventually moved into ordinary endnote pagination.
+                    _ => {}
+                }
+            }
+        }
+        let mut headings = Self::default();
+        visit(&doc.blocks, &mut headings);
+        headings
+    }
+
+    fn for_line(&self, line: &Line) -> Option<&SourceHeading> {
+        if line.flow.note != 0 || line.flow.note_owner != 0 || line.flow.document_language {
+            return None;
+        }
+        let identity = line.heading_source.as_ref()?.source_identity?;
+        self.indices
+            .get(&identity)
+            .and_then(|&index| self.ordered.get(index))
+    }
+}
+
+impl PageContext {
+    fn enter(&mut self, heading: &SourceHeading) {
+        self.section = Rc::clone(&heading.title);
+        if heading.level == 1 {
+            self.chapter = Rc::clone(&heading.title);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +155,9 @@ struct BandSpec {
     kind: BandKind,
     /// Left, center, right. An empty vector is an absent slot.
     slots: [Vec<Piece>; 3],
+    /// The band became empty only because unavailable heading tokens vanished.
+    /// Other explicit bands retain their historical margin-admission behavior.
+    empty_context: bool,
     baseline: f32,
     rule_y: Option<f32>,
     image: Option<ImagePlacement>,
@@ -112,6 +197,7 @@ pub(super) struct RunningSpec {
     images: Images,
     skip_first_page: bool,
     size: f32,
+    headings: SourceHeadings,
 }
 
 /// One drawn slot: its fitted text, split into per-face pieces so glyphs the
@@ -237,6 +323,8 @@ fn parse_template(template: &str, values: &TokenValues) -> Vec<Piece> {
         let piece = match token {
             Some(("page", tail)) => Some((Some(Piece::Page), tail)),
             Some(("pages", tail)) => Some((Some(Piece::Pages), tail)),
+            Some(("section", tail)) => Some((Some(Piece::Section), tail)),
+            Some(("chapter", tail)) => Some((Some(Piece::Chapter), tail)),
             Some(("title", tail)) => {
                 text.push_str(&values.title);
                 Some((None, tail))
@@ -288,13 +376,15 @@ fn parse_template(template: &str, values: &TokenValues) -> Vec<Piece> {
     if blank { Vec::new() } else { pieces }
 }
 
-fn expand(pieces: &[Piece], page: usize, pages: usize) -> String {
+fn expand(pieces: &[Piece], page: usize, pages: usize, context: &PageContext) -> String {
     let mut out = String::new();
     for piece in pieces {
         match piece {
             Piece::Text(text) => out.push_str(text),
             Piece::Page => out.push_str(&page.to_string()),
             Piece::Pages => out.push_str(&pages.to_string()),
+            Piece::Section => out.push_str(&context.section),
+            Piece::Chapter => out.push_str(&context.chapter),
         }
     }
     out
@@ -342,6 +432,29 @@ pub(super) fn resolve(
             .map(iso_date)
             .unwrap_or_default(),
     };
+    // Source identities are lookup-only and are never serialized or iterated
+    // to determine heading order. Ordinary templates retain the count-only
+    // path and do not walk or retain any heading titles.
+    let uses_headings = [
+        running.header.left.as_deref(),
+        running.header.center.as_deref(),
+        running.header.right.as_deref(),
+        running.footer.left.as_deref(),
+        running.footer.center.as_deref(),
+        running.footer.right.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|template| {
+        parse_template(template, &values)
+            .iter()
+            .any(|piece| matches!(piece, Piece::Section | Piece::Chapter))
+    });
+    let headings = if uses_headings {
+        SourceHeadings::from_document(doc)
+    } else {
+        SourceHeadings::default()
+    };
     let size = opts.type_scale().body * SIZE_RATIO;
     let font = faces.get(F_BODY);
     let upem = if font.units_per_em == 0 {
@@ -368,10 +481,11 @@ pub(super) fn resolve(
             &running.header,
             None,
             &values,
+            &headings,
             baseline,
             rule_y,
         );
-        if (running.header.image.is_none()
+        if ((!band.empty_context && running.header.image.is_none())
             || band.rule_y.is_some()
             || band.slots.iter().any(|slot| !slot.is_empty()))
             && (needed > page.top || baseline + ascent > page.height)
@@ -404,11 +518,12 @@ pub(super) fn resolve(
             &running.footer,
             center,
             &values,
+            &headings,
             baseline,
             rule_y,
         );
         if explicit
-            && (running.footer.image.is_none()
+            && ((!band.empty_context && running.footer.image.is_none())
                 || band.rule_y.is_some()
                 || band.slots.iter().any(|slot| !slot.is_empty()))
             && (highest > page.bottom || baseline - descent < 0.0)
@@ -444,6 +559,7 @@ pub(super) fn resolve(
         images,
         skip_first_page: running.skip_first_page,
         size,
+        headings,
     }))
 }
 
@@ -452,18 +568,43 @@ fn band_spec(
     band: &PdfRunningBand,
     center_override: Option<&str>,
     values: &TokenValues,
+    headings: &SourceHeadings,
     baseline: f32,
     rule_y: Option<f32>,
 ) -> BandSpec {
-    let slot =
-        |template: Option<&str>| template.map_or_else(Vec::new, |t| parse_template(t, values));
+    let has_section = !headings.ordered.is_empty();
+    let has_chapter = headings.ordered.iter().any(|heading| heading.level == 1);
+    let slot = |template: Option<&str>| {
+        let mut pieces = template.map_or_else(Vec::new, |t| parse_template(t, values));
+        let original_len = pieces.len();
+        pieces.retain(|piece| match piece {
+            Piece::Section => has_section,
+            Piece::Chapter => has_chapter,
+            _ => true,
+        });
+        let removed_context = original_len != pieces.len();
+        // A token that can never have a value must not reserve a margin band
+        // or embed glyphs. Keep existing static-template admission unchanged.
+        if removed_context
+            && pieces
+                .iter()
+                .all(|piece| matches!(piece, Piece::Text(text) if text.trim().is_empty()))
+        {
+            pieces.clear();
+        }
+        (pieces, removed_context)
+    };
+    let slots = [
+        slot(nonempty(band.left.as_ref())),
+        slot(center_override.or_else(|| nonempty(band.center.as_ref()))),
+        slot(nonempty(band.right.as_ref())),
+    ];
+    let empty_context =
+        slots.iter().any(|(_, removed)| *removed) && slots.iter().all(|(slot, _)| slot.is_empty());
     BandSpec {
         kind,
-        slots: [
-            slot(nonempty(band.left.as_ref())),
-            slot(center_override.or_else(|| nonempty(band.center.as_ref()))),
-            slot(nonempty(band.right.as_ref())),
-        ],
+        slots: slots.map(|(pieces, _)| pieces),
+        empty_context,
         baseline,
         rule_y,
         image: None,
@@ -623,13 +764,81 @@ impl RunningSpec {
     /// Static title/author/date tokens have already been resolved. A sample
     /// folio keeps adjacent literal text in its actual source context without
     /// requiring a second pagination pass merely to report render warnings.
-    pub(super) fn collect_positioning_sources(&self, faces: &Faces, out: &mut Vec<(u8, String)>) {
+    pub(super) fn visit_positioning_sources(
+        &self,
+        faces: &Faces,
+        mut visit: impl FnMut(u8, &str),
+    ) {
         for slot in self.bands.iter().flat_map(|band| &band.slots) {
-            out.extend(fallback_slot_runs(faces, F_BODY, &expand(slot, 1, 1)));
+            let section = slot.iter().any(|piece| matches!(piece, Piece::Section));
+            let chapter = slot.iter().any(|piece| matches!(piece, Piece::Chapter));
+            let mut context = PageContext::default();
+            let mut scan = |context: &PageContext| {
+                for (font, source) in
+                    fallback_slot_runs(faces, F_BODY, &expand(slot, 1, 1, context))
+                {
+                    visit(font, &source);
+                }
+            };
+            scan(&context);
+            if section || chapter {
+                for heading in &self.headings.ordered {
+                    // A static slot is checked once; a chapter-only slot
+                    // changes only at H1. Validate one source at a time so a
+                    // long carried title is never retained per section.
+                    if section || heading.level == 1 {
+                        context.enter(heading);
+                        scan(&context);
+                    }
+                }
+            }
         }
         for image in &self.images.0 {
-            super::collect_svg_image_text(&image.image, out);
+            let mut sources = Vec::new();
+            super::collect_svg_image_text(&image.image, &mut sources);
+            for (slot, source) in sources {
+                visit(slot, &source);
+            }
         }
+    }
+
+    /// Resolve heading context with the emitter's final page walk, before
+    /// collecting subset glyphs. A page uses its first source heading's pair;
+    /// later headings update the state carried to the next page. With no new
+    /// heading it keeps the previous pair, and front matter remains blank.
+    pub(super) fn layout_document_pages(
+        &self,
+        faces: &Faces,
+        page: PageGeom,
+        lines: &[Line],
+        plan: Option<&PageBreakPlan>,
+    ) -> ChromePages {
+        if self.headings.ordered.is_empty() {
+            return self.layout_pages(faces, page, super::count_pages_with(lines, page, plan));
+        }
+        let mut contexts = Vec::new();
+        let mut context = PageContext::default();
+        let mut start = 0;
+        let mut emitted_any = false;
+        let notes = PageNotes::scan(lines);
+        while let Some(placed) = next_placed_page(
+            lines,
+            &mut start,
+            page,
+            &mut emitted_any,
+            plan,
+            notes.as_ref(),
+        ) {
+            let mut first = None;
+            for positioned in placed {
+                if let Some(heading) = self.headings.for_line(positioned.line) {
+                    context.enter(heading);
+                    first.get_or_insert_with(|| context.clone());
+                }
+            }
+            contexts.push(first.unwrap_or_else(|| context.clone()));
+        }
+        self.layout_contexts(faces, page, contexts.len(), &contexts)
     }
 
     /// Expand and fit every page's chrome. `page_count` must be the count
@@ -639,6 +848,16 @@ impl RunningSpec {
         faces: &Faces,
         page: PageGeom,
         page_count: usize,
+    ) -> ChromePages {
+        self.layout_contexts(faces, page, page_count, &[])
+    }
+
+    fn layout_contexts(
+        &self,
+        faces: &Faces,
+        page: PageGeom,
+        page_count: usize,
+        contexts: &[PageContext],
     ) -> ChromePages {
         let ellipsis = if faces.get(F_BODY).glyph_index('\u{2026}') != 0 {
             "\u{2026}"
@@ -651,6 +870,7 @@ impl RunningSpec {
             ellipsis,
         };
         let mut pages = Vec::with_capacity(page_count);
+        let empty = PageContext::default();
         for page_idx in 0..page_count {
             if page_idx == 0 && self.skip_first_page {
                 pages.push(Vec::new());
@@ -659,12 +879,37 @@ impl RunningSpec {
             let bands = self
                 .bands
                 .iter()
-                .map(|band| BandPaint {
-                    kind: band.kind,
-                    baseline: band.baseline,
-                    rule_y: band.rule_y,
-                    runs: fitter.fit_band(band, page_idx + 1, page_count, page),
-                    image: band.image,
+                .filter_map(|band| {
+                    let paint = BandPaint {
+                        kind: band.kind,
+                        baseline: band.baseline,
+                        rule_y: band.rule_y,
+                        runs: fitter.fit_band(
+                            band,
+                            page_idx + 1,
+                            page_count,
+                            page,
+                            contexts.get(page_idx).unwrap_or(&empty),
+                        ),
+                        image: band.image,
+                    };
+                    let contextual = band
+                        .slots
+                        .iter()
+                        .flatten()
+                        .any(|piece| matches!(piece, Piece::Section | Piece::Chapter));
+                    // Before a first heading, a heading-only slot paints no
+                    // band. Static templates retain their existing artifacts,
+                    // including a slot whose fitted text becomes empty.
+                    if contextual
+                        && paint.rule_y.is_none()
+                        && paint.image.is_none()
+                        && paint.runs.is_empty()
+                    {
+                        None
+                    } else {
+                        Some(paint)
+                    }
                 })
                 .collect();
             pages.push(bands);
@@ -711,8 +956,10 @@ impl Fitter<'_> {
         page_no: usize,
         pages: usize,
         page: PageGeom,
+        context: &PageContext,
     ) -> Vec<ChromeRun> {
-        let texts: [String; 3] = std::array::from_fn(|i| expand(&band.slots[i], page_no, pages));
+        let texts: [String; 3] =
+            std::array::from_fn(|i| expand(&band.slots[i], page_no, pages, context));
         let natural: [f32; 3] = std::array::from_fn(|i| {
             if texts[i].is_empty() {
                 0.0
@@ -986,7 +1233,12 @@ mod tests {
     }
 
     fn expanded(template: &str, page: usize, pages: usize) -> String {
-        expand(&parse_template(template, &values()), page, pages)
+        expand(
+            &parse_template(template, &values()),
+            page,
+            pages,
+            &PageContext::default(),
+        )
     }
 
     #[test]
@@ -1010,7 +1262,164 @@ mod tests {
             date: String::new(),
         };
         let pieces = parse_template("{title}", &values);
-        assert_eq!(expand(&pieces, 5, 9), "{page}");
+        assert_eq!(expand(&pieces, 5, 9, &PageContext::default()), "{page}");
+    }
+
+    #[test]
+    fn heading_tokens_expand_once_and_are_blank_without_source_context() {
+        let pieces = parse_template("{chapter} | {section} | {page}/{pages}", &values());
+        assert_eq!(
+            expand(&pieces, 3, 8, &PageContext::default()),
+            " |  | 3/8"
+        );
+        let context = PageContext {
+            chapter: Rc::from("Guide {page}"),
+            section: Rc::from("Use {chapter} & {pages}"),
+        };
+        assert_eq!(
+            expand(&pieces, 3, 8, &context),
+            "Guide {page} | Use {chapter} & {pages} | 3/8"
+        );
+    }
+
+    #[test]
+    fn source_heading_authority_excludes_notes_but_retains_real_notes_headings() {
+        let doc = crate::parse_markdown(
+            "# Book\n\n> ## Quoted section\n\n- ### Listed section\n\n\
+             ## Notes\n\n[^n]: # Note chapter\n\n    ## Note section\n",
+        );
+        let headings = SourceHeadings::from_document(&doc);
+        let actual: Vec<_> = headings
+            .ordered
+            .iter()
+            .map(|heading| (heading.level, heading.title.as_ref()))
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                (1, "Book"),
+                (2, "Quoted section"),
+                (3, "Listed section"),
+                (2, "Notes"),
+            ]
+        );
+        assert_eq!(headings.indices.len(), 4);
+    }
+
+    #[test]
+    fn heading_sources_preserve_complete_logical_text_without_control_characters() {
+        let doc = Document {
+            blocks: vec![Block::Heading {
+                level: 2,
+                inlines: vec![
+                    crate::Inline::Strong(vec![crate::Inline::Text("Styled".into())]),
+                    crate::Inline::HardBreak,
+                    crate::Inline::Code("literal {pages}\tvalue\nend".into()),
+                ],
+            }],
+        };
+        let headings = SourceHeadings::from_document(&doc);
+        assert_eq!(
+            headings.ordered[0].title.as_ref(),
+            "Styled literal {pages} value end"
+        );
+        let mut context = PageContext::default();
+        context.enter(&headings.ordered[0]);
+        assert!(context.chapter.is_empty());
+        let pieces = parse_template("{section}", &values());
+        assert_eq!(
+            expand(&pieces, 1, 2, &context),
+            "Styled literal {pages} value end"
+        );
+    }
+
+    #[test]
+    fn unavailable_heading_tokens_do_not_reserve_empty_margin_bands() {
+        let mut opts = PdfOptions::default();
+        opts.theme.page.margins.top_pt = 0.0;
+        opts.theme.page.margins.bottom_pt = 0.0;
+        opts.running.header.center = Some("{section}".into());
+        opts.running.footer.center = Some("{chapter}".into());
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        assert!(
+            resolve(&crate::parse_markdown("Only prose."), &opts, &faces, page)
+                .unwrap()
+                .is_none()
+        );
+
+        opts.running.header.center = Some("{chapter}".into());
+        assert!(
+            resolve(&crate::parse_markdown("## Section only"), &opts, &faces, page)
+                .unwrap()
+                .is_none()
+        );
+
+        opts.running.header.center = Some("{section}".into());
+        assert!(
+            resolve(&crate::parse_markdown("## Section only"), &opts, &faces, page).is_err(),
+            "real section text still requires space inside the header margin"
+        );
+    }
+
+    #[test]
+    fn shaping_preflight_visits_static_and_carried_chapter_text_only_when_it_changes() {
+        let chapter = "A long chapter title ".repeat(80);
+        let mut source = format!("# {chapter}\n\n");
+        for index in 0..100 {
+            source.push_str(&format!("## Section {index}\n\nBody.\n\n"));
+        }
+        let doc = crate::parse_markdown(&source);
+        let mut opts = PdfOptions {
+            title: Some("Static publication title".into()),
+            ..PdfOptions::default()
+        };
+        opts.running.header.left = Some("{title}".into());
+        opts.running.header.center = Some("{chapter}".into());
+        opts.running.footer.center = Some("{section}".into());
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let spec = resolve(&doc, &opts, &faces, page).unwrap().unwrap();
+        let mut static_visits = 0;
+        let mut chapter_visits = 0;
+        let mut section_visits = 0;
+        spec.visit_positioning_sources(&faces, |_, text| {
+            static_visits += usize::from(text == "Static publication title");
+            chapter_visits += usize::from(text == chapter.trim());
+            section_visits += usize::from(text.starts_with("Section "));
+        });
+        assert_eq!(static_visits, 1);
+        // The H1 appears once in each dynamic slot, never once per later H2.
+        assert_eq!(chapter_visits, 2);
+        assert_eq!(section_visits, 100);
+    }
+
+    #[test]
+    fn existing_empty_static_tokens_keep_their_explicit_margin_admission() {
+        let mut opts = PdfOptions::default();
+        opts.theme.page.margins.top_pt = 0.0;
+        opts.running.header.center = Some("{date}".into());
+        let faces = Faces::load(&opts).unwrap();
+        let page = PageGeom::from_theme(&opts.theme);
+        let error = resolve(&crate::parse_markdown("Body."), &opts, &faces, page)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("pdf_running_header_does_not_fit"));
+    }
+
+    #[test]
+    fn static_slots_fitted_to_empty_text_keep_their_existing_band_artifact() {
+        let mut opts = PdfOptions::default();
+        opts.running.header.center = Some("A static caption".into());
+        let faces = Faces::load(&opts).unwrap();
+        let mut page = PageGeom::from_theme(&opts.theme);
+        page.content_w = 0.001;
+        let spec = resolve(&crate::parse_markdown("Body."), &opts, &faces, page)
+            .unwrap()
+            .unwrap();
+        let chrome = spec.layout_pages(&faces, page, 1);
+        assert_eq!(chrome.pages[0].len(), 1);
+        assert!(chrome.pages[0][0].runs.is_empty());
     }
 
     #[test]

@@ -104,9 +104,12 @@ that draws text in the page margins:
 
 Each band has optional `left`, `center` and `right` string templates and a
 `rule` boolean. Tokens are `{page}`, `{pages}`, `{title}` (the `title` argument,
-else the first heading), `{author}` and `{date}` (`metadataEpochSeconds` as
-`YYYY-MM-DD` UTC, empty when absent; never the clock). Unknown tokens stay
-literal. Text is one line in the body face at 9/11 of the body size; an overlong
+else the first heading), `{chapter}`, `{section}`, `{author}` and `{date}`
+(`metadataEpochSeconds` as `YYYY-MM-DD` UTC, empty when absent; never the clock).
+Unknown tokens stay literal. Chapter/section use the final PDF's first body
+heading on each page and its owning H1, carrying the latest pair onto continuation
+pages. Generated contents/Notes headings and footnote headings do not change this
+context. Text is one line in the body face at 9/11 of the body size; an overlong
 slot is shortened with an ellipsis. A band that does not fit its margin fails
 the call with a message naming the margin to enlarge (`page.margins.topPt` or
 `bottomPt`). `pageNumbers: true` is sugar for `footer.center: "{page}"` and

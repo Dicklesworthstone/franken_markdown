@@ -936,11 +936,19 @@ pub struct PdfOptions {
 /// | `{page}` | 1-based physical page number |
 /// | `{pages}` | total page count |
 /// | `{title}` | [`PdfOptions::title`], else the first heading, else empty |
+/// | `{chapter}` | H1 owning this page's first body heading, or the carried chapter |
+/// | `{section}` | first body heading beginning on this page, or the carried section |
 /// | `{author}` | [`PdfOptions::author`], else empty |
 /// | `{date}` | [`PdfOptions::metadata_epoch_seconds`] as `YYYY-MM-DD` (UTC), else empty |
 ///
 /// `{date}` never reads the clock: library and WASM callers pass the epoch
 /// explicitly and the CLI populates it only from `SOURCE_DATE_EPOCH`.
+///
+/// Chapter and section titles come from the final paginated body. Later headings
+/// on a page take effect on the next page; continuation pages retain the last
+/// complete heading title. Generated contents/Notes headings and headings inside
+/// footnotes do not change this context. Before a body heading or H1 occurs, the
+/// corresponding token is empty. Heading text is literal, never another template.
 ///
 /// [`PdfOptions::page_numbers`] is sugar for `footer.center = "{page}"` when
 /// `footer.center` is empty; an explicit `footer.center` wins.

@@ -131,7 +131,7 @@ fn band_schema(description: &str) -> JsonValue {
                 (*slot).to_string(),
                 typed(
                     "string",
-                    "Slot template; tokens {page} {pages} {title} {author} {date}",
+                    "Slot template; tokens {page} {pages} {title} {chapter} {section} {author} {date}",
                 ),
             )
         })

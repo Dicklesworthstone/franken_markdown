@@ -162,8 +162,13 @@ fmd book ./manual --to both --out-dir ./publication \
   --pdf-running-skip-first
 ```
 
-All six text slots use the shared `{page}`, `{pages}`, `{title}`, `{author}`,
-and `{date}` tokens. The date comes only from `SOURCE_DATE_EPOCH`; it does
+All six text slots use the shared `{page}`, `{pages}`, `{title}`, `{chapter}`,
+`{section}`, `{author}`, and `{date}` tokens. Chapter and section follow authored
+body headings in the final PDF: the first heading on a page selects that page's
+section and its owning H1; later headings carry forward to the next page.
+Continuation pages retain their context. Generated contents/Notes headings and
+headings inside footnotes do not replace it. A chapter is defined by H1, rather
+than by the source filename. The date comes only from `SOURCE_DATE_EPOCH`; it does
 not read the clock. `--pdf-header-rule` and `--pdf-footer-rule` draw rules,
 and `--pdf-running-skip-first` omits both bands and page numbers on the
 first physical page. An explicit footer center overrides automatic page

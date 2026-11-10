@@ -413,6 +413,31 @@ construction. Their page overrides and retained publication caches preserve the
 grid. Omitted or zero values keep existing calls, signatures and default bytes.
 These are programmatic options; the editor and book workbench add no new controls.
 
+## PDF chapter and section headers
+
+Text slots in single-document and book PDF exports accept `{chapter}` and
+`{section}` alongside `{page}`, `{pages}`, `{title}`, `{author}`, and `{date}`:
+
+```js
+const pdf = await fmd.renderPdf(markdown, {
+  running: {
+    header: { left: "{chapter}", right: "{section}", rule: true },
+    footer: { center: "{page} / {pages}" },
+  },
+});
+```
+
+The first body heading beginning on a physical page supplies its section title
+and owning H1 chapter. Later headings update the context carried to the next
+page. A continuation page retains the complete heading title, even when the
+heading itself wraps. Before a body heading or H1 appears, the corresponding
+token is empty. Generated contents/Notes headings and footnote headings do not
+change the context. Titles are literal text, fitted to the margin slots and
+included in the actual font subsets; text such as `{page}` in a heading is not
+expanded again. The ordinary pagination and tagged reading order are unchanged.
+Use a package rebuilt from this source; older renderers treat unknown tokens
+literally.
+
 ## PDF running logos
 
 Single-document and book PDFs can repeat a host-supplied logo in either margin band:

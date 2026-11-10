@@ -43,7 +43,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
-    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
+    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'running'];
   function settingData(value, keys = settingKeys) {
     // Inspect descriptors before reading values: accessors, inherited options,
     // symbols and unsupported switches must not enter a saved workspace.
@@ -70,6 +70,49 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
       if (size > limit) throw new RangeError(name + ' exceeds its UTF-8 byte limit');
     }
+  }
+  // Standalone files validate saved bands without importing another module.
+  // Keep the same data/Unicode/budget contract as normalizePdfRunning.
+  function captureRunning(input) {
+    const value = settingData(input, ['header', 'footer', 'skipFirstPage']), result = {};
+    let units = 0, draws = false;
+    for (const name of ['header', 'footer']) {
+      if (value[name] === undefined) continue;
+      const band = settingData(value[name], ['left', 'center', 'right', 'rule', 'image']), next = {};
+      for (const slot of ['left', 'center', 'right']) {
+        if (band[slot] === undefined) continue;
+        settingsText(band[slot], 4096, 'running.' + name + '.' + slot);
+        units += band[slot].length;
+        if (units > 16384) throw new TypeError('Running templates exceed 16384 UTF-16 units');
+        next[slot] = band[slot]; draws ||= band[slot].length > 0;
+      }
+      if (band.rule !== undefined) {
+        if (typeof band.rule !== 'boolean') throw new TypeError('Running rules must be boolean');
+        next.rule = band.rule; draws ||= band.rule;
+      }
+      if (band.image !== undefined) {
+        const image = settingData(band.image, ['dest', 'position', 'heightPt']);
+        if (typeof image.dest !== 'string' || image.dest.length > 4096) throw new TypeError('Invalid running image destination');
+        settingsText(image.dest, 16384, 'running image destination');
+        const dest = image.dest.trim();
+        if (!dest) throw new TypeError('Running images require a nonempty destination');
+        settingsText(dest, 4096, 'running image destination');
+        if (image.position !== undefined && !['left', 'right'].includes(image.position)) throw new TypeError('Running image position must be left or right');
+        if (image.heightPt !== undefined && (!Number.isSafeInteger(image.heightPt)
+            || image.heightPt < 1 || image.heightPt > 65535)) throw new TypeError('Running image height must be 1..65535 points');
+        next.image = Object.freeze({dest,
+          ...(image.position === undefined ? {} : {position: image.position}),
+          ...(image.heightPt === undefined ? {} : {heightPt: image.heightPt})});
+        draws = true;
+      }
+      result[name] = Object.freeze(next);
+    }
+    if (value.skipFirstPage !== undefined) {
+      if (typeof value.skipFirstPage !== 'boolean') throw new TypeError('running.skipFirstPage must be boolean');
+      if (value.skipFirstPage && !draws) throw new TypeError('skipFirstPage requires a nonempty header or footer');
+      result.skipFirstPage = value.skipFirstPage;
+    }
+    return Object.freeze(result);
   }
   function captureSettings(input) {
     const value = settingData(input);
@@ -119,6 +162,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     if (value.baselineGridPt > 0 && value.fitToPages > 0) {
       throw new RangeError('pdf_baseline_grid_incompatible: baseline grids cannot be combined with fitToPages');
     }
+    if (value.running !== undefined) value.running = captureRunning(value.running);
     if (value.pageGeometry !== undefined) {
       const input = value.pageGeometry;
       // Copy data elements without invoking an iterator, getter or sparse-array
@@ -136,9 +180,6 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
           || g[0] - g[5] - g[3] < 72 || g[1] - g[2] - g[4] < 72
           || extent(g[0], g[5], g[3]) < 72 || extent(g[1], g[2], g[4]) < 72) {
         throw new RangeError('Invalid saved PDF page geometry');
-      }
-      if (value.pdfA !== '2b' && !(value.baselineGridPt > 0) && typeof bindings.renderPdfConfiguredPage !== 'function') {
-        throw Object.assign(new Error('PDF paper and margins require matching page-capable WASM bindings'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
       }
       value.pageGeometry = Object.freeze(g);
     }
@@ -162,14 +203,31 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     if (settings.microtype === 'expansion') tokens.push('expansion');
     return tokens.length ? tokens.join(',') : undefined;
   }
+  function runningArguments(value) {
+    if (value === undefined) return null;
+    const bands = [value.header, value.footer];
+    const slots = bands.flatMap(band => ['left', 'center', 'right'].map(slot => band?.[slot] ?? ''));
+    const images = bands.map(band => band?.image);
+    const hasImages = images.some(image => image !== undefined);
+    const headerRule = value.header?.rule ?? false, footerRule = value.footer?.rule ?? false;
+    if (slots.every(slot => slot === '') && !headerRule && !footerRule && !hasImages) return null;
+    return {slots, headerRule, footerRule, skipFirstPage: value.skipFirstPage ?? false, hasImages,
+      destinations: images.map(image => image?.dest ?? ''),
+      positions: new Uint32Array(images.map(image => image?.position === 'right' ? 1 : 0)),
+      heights: new Uint32Array(images.map(image => image?.heightPt ?? 0))};
+  }
   function pdfBinding(settings) {
     const grid = settings.baselineGridPt > 0;
     const archival = settings.pdfA === '2b';
+    const running = runningArguments(settings.running), typography = typographyTokens(settings);
     const binding = bindings[archival ? 'renderPdfConfiguredArchival' : grid ? 'renderPdfConfiguredGrid'
+      : running?.hasImages ? 'renderPdfConfiguredRunningImages' : running ? 'renderPdfConfiguredRunning'
       : settings.pageGeometry ? 'renderPdfConfiguredPage' : 'renderPdfConfiguredMulti'];
-    const needed = archival ? grid ? 39 : 38 : grid ? 37 : typographyTokens(settings) === undefined ? 0 : settings.pageGeometry ? 29 : 28;
+    const needed = archival ? grid ? 39 : 38 : grid ? 37
+      : running ? (running.hasImages ? 35 : 32) + (typography === undefined ? 0 : 1)
+      : typography === undefined ? 0 : settings.pageGeometry ? 29 : 28;
     if (typeof binding !== 'function' || binding.length < needed) {
-      throw Object.assign(new Error('PDF archival, typography, pagination and baseline grids require matching WASM bindings'),
+      throw Object.assign(new Error('PDF running headers/footers, archival, typography, pagination and baseline grids require matching WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
     return binding;
@@ -693,7 +751,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       ), 'image/svg+xml');
     },
     pdf(markdown) {
-      const render = pdfBinding(options), typography = typographyTokens(options);
+      const render = pdfBinding(options), typography = typographyTokens(options), running = runningArguments(options.running);
       const args = [
         source(markdown), options.font, options.darkMode, options.title, options.author,
         options.metadataEpochSeconds, false, options.codeLineNumbers,
@@ -705,15 +763,27 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       let result;
       try {
         if (options.pdfA === '2b') {
-          result = render(...args, pageGeometry ?? new Float64Array(), [], false, false, false,
-            [], new Uint32Array(), new Uint32Array(), typography, '2b', options.pdfAStrict ?? false,
+          result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
+            running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+            running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array(),
+            typography, '2b', options.pdfAStrict ?? false,
             ...(options.baselineGridPt > 0 ? [options.baselineGridPt] : []));
         } else if (options.baselineGridPt > 0) {
-          result = render(...args, pageGeometry ?? new Float64Array(), [], false, false, false,
-            [], new Uint32Array(), new Uint32Array(), typography, options.baselineGridPt);
+          result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
+            running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+            running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array(),
+            typography, options.baselineGridPt);
         } else {
           const tail = typography === undefined ? [] : [typography];
-          result = pageGeometry ? render(...args, pageGeometry, ...tail) : render(...args, ...tail);
+          if (running) {
+            const bands = [pageGeometry ?? new Float64Array(), running.slots,
+              running.headerRule, running.footerRule, running.skipFirstPage];
+            result = running.hasImages
+              ? render(...args, ...bands, running.destinations, running.positions, running.heights, ...tail)
+              : render(...args, ...bands, ...tail);
+          } else {
+            result = pageGeometry ? render(...args, pageGeometry, ...tail) : render(...args, ...tail);
+          }
         }
       } catch (error) {throw paginationError(error);}
       const bytes = take(result, 'application/pdf');

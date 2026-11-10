@@ -5,7 +5,10 @@ const bytes = new Uint8Array([0,97,115,109,1,0,0,0]);
 const runtime: FmdOfflineRuntime = {bindings:'trusted generated module source',wasm:bytes};
 const options: FmdOfflineWorkspaceOptions = {font:'serif',fontScale:1.125,lang:'fr',toc:true,
   metadataEpochSeconds:0,pdfImages:[{destination:'a.png',bytes:new DataView(bytes.buffer)}],
-  fontAssets:[{slot:'body-regular',bytes,weight:550}],pdfA:'2b',pdfAStrict:true,footnoteBacklinks:true,baselineGridPt:13.125};
+  fontAssets:[{slot:'body-regular',bytes,weight:550}],pdfA:'2b',pdfAStrict:true,footnoteBacklinks:true,baselineGridPt:13.125,
+  page:{size:'a4',orientation:'landscape',margins:{topPt:24,rightPt:36,bottomPt:48,leftPt:60}},
+  running:{header:{left:'{chapter}',right:'{section}',image:{dest:'a.png',position:'right',heightPt:20}},
+    footer:{center:'{page} / {pages}'},skipFirstPage:true}};
 const output = await renderOfflineWorkspace('# Source',runtime,options);
 const data: Uint8Array = output.bytes;
 const blob: Blob = output.blob();
@@ -38,3 +41,8 @@ renderInteractiveHtml('source',{footnoteBacklinks:true});
 renderInteractiveHtml('source',{pdfA:'off'});
 // @ts-expect-error Even disabled PDF-only settings must not disappear silently.
 renderInteractiveHtml('source',{pdfAStrict:false});
+
+// @ts-expect-error Running slots preserve strings, not truthy numeric titles.
+renderOfflineWorkspace('source',runtime,{running:{header:{left:7}}});
+// @ts-expect-error Per-side margins use numbers in PDF points.
+renderOfflineWorkspace('source',runtime,{page:{margins:{topPt:'24'}}});

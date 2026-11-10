@@ -10,7 +10,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
-    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
+    'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'running'];
   const fail = (code, message) => { throw Object.assign(new Error(message), {code}); };
   const invalid = message => fail('INVALID_SOURCE_PROJECT', message);
   const exceeded = label => fail('SOURCE_PROJECT_LIMIT', label + ' exceeds the source-project limit');
@@ -59,6 +59,49 @@ export function createNativeSourceProjectCodec(overrides = {}) {
     }
     return copy;
   }
+  // Standalone files validate saved bands without importing another module.
+  // Keep the same data/Unicode/budget contract as normalizePdfRunning.
+  function captureRunning(input) {
+    const value = record(input, ['header', 'footer', 'skipFirstPage']), result = {};
+    let units = 0, draws = false;
+    for (const name of ['header', 'footer']) {
+      if (value[name] === undefined) continue;
+      const band = record(value[name], ['left', 'center', 'right', 'rule', 'image']), next = {};
+      for (const slot of ['left', 'center', 'right']) {
+        if (band[slot] === undefined) continue;
+        textSize(band[slot], 4096, 'running.' + name + '.' + slot);
+        units += band[slot].length;
+        if (units > 16384) invalid('Running templates exceed 16384 UTF-16 units');
+        next[slot] = band[slot]; draws ||= band[slot].length > 0;
+      }
+      if (band.rule !== undefined) {
+        if (typeof band.rule !== 'boolean') invalid('Running rules must be boolean');
+        next.rule = band.rule; draws ||= band.rule;
+      }
+      if (band.image !== undefined) {
+        const image = record(band.image, ['dest', 'position', 'heightPt']);
+        if (typeof image.dest !== 'string' || image.dest.length > 4096) invalid('Invalid running image destination');
+        textSize(image.dest, 16384, 'running image destination');
+        const dest = image.dest.trim();
+        if (!dest) invalid('Running images require a nonempty destination');
+        textSize(dest, 4096, 'running image destination');
+        if (image.position !== undefined && !['left', 'right'].includes(image.position)) invalid('Running image position must be left or right');
+        if (image.heightPt !== undefined && (!Number.isSafeInteger(image.heightPt)
+            || image.heightPt < 1 || image.heightPt > 65535)) invalid('Running image height must be 1..65535 points');
+        next.image = Object.freeze({dest,
+          ...(image.position === undefined ? {} : {position: image.position}),
+          ...(image.heightPt === undefined ? {} : {heightPt: image.heightPt})});
+        draws = true;
+      }
+      result[name] = Object.freeze(next);
+    }
+    if (value.skipFirstPage !== undefined) {
+      if (typeof value.skipFirstPage !== 'boolean') invalid('running.skipFirstPage must be boolean');
+      if (value.skipFirstPage && !draws) invalid('skipFirstPage requires a nonempty header or footer');
+      result.skipFirstPage = value.skipFirstPage;
+    }
+    return Object.freeze(result);
+  }
   function captureSettings(input) {
     const value = {font: 'sans', darkMode: 'auto', fontScale: 1,
       pageNumbers: false, codeLineNumbers: false, toc: false, ...record(input, settingKeys)};
@@ -97,6 +140,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
     if (value.fitToPages !== undefined && (!Number.isSafeInteger(value.fitToPages)
         || value.fitToPages < 1 || value.fitToPages > 0xffffffff)) invalid('fitToPages must be 1..4294967295');
     if (value.baselineGridPt > 0 && value.fitToPages > 0) invalid('pdf_baseline_grid_incompatible: baseline grids cannot be combined with fitToPages');
+    if (value.running !== undefined) value.running = captureRunning(value.running);
     if (value.pageGeometry !== undefined) {
       if (!Array.isArray(value.pageGeometry) || value.pageGeometry.length !== 6) invalid('Page geometry requires six finite numbers');
       const g = array(value.pageGeometry, 6, 'Page geometry');
@@ -256,6 +300,14 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   function renderOptions(input) {
     const {data} = snapshot(input, true), options = {...data.options, allowRawHtml: false};
     if (options.typography !== undefined) options.typography = {...options.typography};
+    if (options.running !== undefined) {
+      options.running = {...options.running};
+      for (const name of ['header', 'footer']) if (options.running[name] !== undefined) {
+        options.running[name] = {...options.running[name]};
+        if (options.running[name].image !== undefined)
+          options.running[name].image = {...options.running[name].image};
+      }
+    }
     const geometry = options.pageGeometry;
     delete options.pageGeometry;
     if (geometry !== undefined) {

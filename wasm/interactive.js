@@ -1,6 +1,8 @@
 import { init, renderInteractiveHtml } from './franken_markdown.js';
 import { bootNativeWorkspace, createNativeWorkspaceRenderer } from './interactive_runtime.mjs';
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
+import {pdfPageGeometry} from './pdf_page.mjs';
+import {normalizePdfRunning} from './pdf_running.mjs';
 import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
 
 const MiB = 1024 * 1024;
@@ -8,7 +10,7 @@ const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', '
 const fields = ['font', 'darkMode', 'title', 'lang', 'fontScale', 'toc', 'tocDepth',
   'author', 'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'pdfImages', 'fontAssets',
   'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
-  'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
+  'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'page', 'running'];
 
 // Count without allocating an encoded copy. Reject unpaired surrogates rather
 // than silently changing the Markdown, asset keys, or trusted binding source.
@@ -74,6 +76,9 @@ function capture(markdown, runtime, input) {
     author: captured.author, metadataEpochSeconds: captured.metadataEpochSeconds,
     pageNumbers: captured.pageNumbers ?? false, codeLineNumbers: captured.codeLineNumbers ?? false,
   };
+  const geometry = pdfPageGeometry(captured.page);
+  if (geometry.length) options.pageGeometry = Array.from(geometry);
+  if (captured.running !== undefined) options.running = normalizePdfRunning(captured.running);
   normalizePdfArchival(captured.pdfA, captured.pdfAStrict);
   // Validate policy while retaining omitted and explicit off/false settings in
   // saved documents, just like the standalone native workspace exporter.

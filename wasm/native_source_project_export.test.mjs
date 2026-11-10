@@ -50,7 +50,7 @@ test('metadata omission, epoch zero and exact metadata newlines survive the publ
   }
 });
 test('unsafe and unsupported creation settings fail instead of silently losing options', () => {
-  for (const options of [{allowRawHtml: true}, {customCss: 'body{}'}, {running: {}}, {wasm: new Uint8Array([1])}, {fontScale: 'lg'}])
+  for (const options of [{allowRawHtml: true}, {customCss: 'body{}'}, {running: {unknown: true}}, {wasm: new Uint8Array([1])}, {fontScale: 'lg'}])
     assert.throws(() => api.createNativeSourceProject('', options));
 });
 test('renderProject uses only the exporter-selected engine and preserves its full input', async () => {

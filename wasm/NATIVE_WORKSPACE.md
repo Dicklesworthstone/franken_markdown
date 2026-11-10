@@ -26,6 +26,8 @@ const output = exporter.render(await readFile('./article.md', 'utf8'), {
   font: 'serif', fontScale: 1.125, title: 'Article', lang: 'en',
   toc: true, tocDepth: 3, pageNumbers: true, metadataEpochSeconds: 0,
   page: {size: 'a4', orientation: 'landscape', margins: 36},
+  running: {header: {left: '{chapter}', right: '{section}', rule: true},
+    footer: {center: '{page} / {pages}'}, skipFirstPage: true},
   pdfImages: [{destination: 'chart.svg', bytes: await readFile('./chart.svg')}],
 });
 await writeFile('./article.workspace.html', output.bytes);
@@ -125,7 +127,7 @@ embedded editor scripts. Existing exported documents do not upgrade themselves.
 A new editor paired with an old native runtime rejects unsupported imports
 explicitly instead of silently selecting the lightweight parser.
 
-## Change typography, navigation and PDF paper in the editor
+## Change typography, navigation and PDF publishing in the editor
 
 Native workspaces expose **Document settings** after engine initialization.
 Choose sans/serif, a document type scale, automatic/light document color mode,
@@ -144,6 +146,25 @@ the page export; an explicit paper request reports a capability error instead
 of silently using default paper. The HTML preview remains continuous rather
 than paginated; paper geometry applies to PDF. View zoom and theme are separate
 from document export settings.
+
+The **PDF headers and footers** fields author left, center and right text,
+separator rules and an optional first-page omission. Templates support
+`{title}`, `{author}`, `{date}`, `{chapter}`, `{section}`, `{page}` and `{pages}`;
+the Rust engine expands them against the final physical pages. Each band can
+also reference an imported image, choose its left/right position and set its
+height in whole points. The image picker lists the workspace's existing image
+references; selecting a reference grants no new file or network access.
+Blank image references remove that band's image. Unedited templates, image
+defaults and explicit false flags retain their saved spelling.
+
+Both `createNativeWorkspaceExporter().render()` and `renderOfflineWorkspace()`
+accept the shared `page` and `running` options. The workspace retains them in
+saved HTML, source projects, recovery copies and reopened documents. Running
+bands reach the appropriate text, image, grid or archival PDF export together
+with the same captured image/font resources. Older bindings that cannot honor
+the requested bands fail with `UNSUPPORTED_WASM_PACKAGE`; default documents
+continue to use their original PDF call. A supplied image reference is resolved
+by the engine from the embedded resources, never fetched as a URL.
 
 **Apply settings** validates an owned snapshot and renders current source with
 the native engine before publishing saved JSON and replacing the preview.
@@ -173,18 +194,22 @@ Lightweight workspaces do not show controls for unsupported native settings.
 
 Supported options are `font`, `darkMode`, numeric `fontScale` (0.5..3), `title`,
 `author`, `lang`, `metadataEpochSeconds`, `pageNumbers`, `codeLineNumbers`, `toc`,
-`tocDepth`, `pdfImages`, `fontAssets` and `page`. `allowRawHtml` may only be false. Other
-options, including custom CSS, are rejected rather than
-silently lost on saving. Viewing zoom is distinct from PDF typography.
+`tocDepth`, `pdfImages`, `fontAssets`, `page`, `running`, `typography`,
+`optimalPagination`, `strictPagination`, `footnoteBacklinks`, `splitFootnotes`,
+`baselineGridPt`, `microtype`, `microtypeProtrusion`, `fitToPages`, `pdfA` and
+`pdfAStrict`. The reusable exporter admits `allowRawHtml: false`; both workspace
+APIs retain the safe Markdown policy. Other options, including custom CSS, are
+rejected. Viewing zoom is distinct from PDF typography.
 
 `page` uses the same contract as direct, worker and flow PDF exports: Letter,
-A4 or explicit width/height in points, portrait/landscape orientation, and
+A4, A5, US Legal, Tabloid or explicit width/height in points, portrait/landscape orientation, and
 uniform or per-side margins. The shared normalizer validates plain data (no
 accessors), bounds and the 72-point minimum content rectangle, including native
 f32 rounding. The saved payload carries the exact six-number ABI representation.
-The offline renderer revalidates it, snapshots it, and dispatches to
-`renderPdfConfiguredPage`. A binary missing that function is rejected for an
-explicit page request; omitted `page` retains the existing PDF ABI and defaults.
+The offline renderer revalidates it, snapshots it, and dispatches to the page,
+running, grid or archival binding selected by the complete request. An
+unavailable capability is rejected before rendering; omitted `page` retains
+the existing paper defaults.
 Paper and margins survive save/reopen and do not change with display zoom.
 
 Admission limits are 32 MiB source, 64 MiB WASM, 4 MiB binding JavaScript,
@@ -251,3 +276,11 @@ where browser policy blocks it. That alternative reparses saved bytes in fresh
 pages and does not establish file-navigation compatibility. Use `--browser PATH`
 for an existing Chromium executable or `--output NEW_DIRECTORY` for retained
 artifacts. The probe never downloads dependencies or removes artifacts.
+
+The focused `node --test wasm/native_workspace_running.test.mjs` suite executes
+production option capture, serialization, project reopening and every running
+PDF dispatch combination with explicit native ABI adapters. It checks
+unsupported older bindings, unchanged default calls, immutable settings,
+malformed records and exact source/resources. It does not prove native PDF
+layout or generated-WASM/browser execution. The Document settings controls
+require rebuilding the embedded controller with the matching WASM package.

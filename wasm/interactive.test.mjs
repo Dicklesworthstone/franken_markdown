@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 const dir = await mkdtemp(join(tmpdir(),'fmd-offline-contract-'));
 after(() => rm(dir,{recursive:true,force:true}));
 await writeFile(join(dir,'package.json'),'{"type":"module"}');
-for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
+for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs','pdf_page.mjs','pdf_running.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
 await writeFile(join(dir,'franken_markdown.js'),`
 export const state={calls:[], gate:null,legacy:false,preWorker:false};
 export async function init(bytes) { state.calls.push({kind:'init',bytes}); if(state.gate) await state.gate; }
@@ -36,7 +36,9 @@ function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWor
 function pdfBindings(archival = 39) {
   const calls = [];
   const bindings = {renderHtmlConfiguredAdvanced() {throw Error('Unexpected preview render');}};
-  for (const [name, arity] of [['renderPdfConfiguredMulti', 28], ['renderPdfConfiguredArchival', archival]]) {
+  for (const [name, arity] of [['renderPdfConfiguredMulti', 28], ['renderPdfConfiguredPage', 29],
+    ['renderPdfConfiguredRunning', 33], ['renderPdfConfiguredRunningImages', 36],
+    ['renderPdfConfiguredGrid', 37], ['renderPdfConfiguredArchival', archival]]) {
     if (arity === null) continue;
     const render = (...args) => {
       calls.push({name, args});
@@ -252,4 +254,44 @@ test('native but pre-worker controllers are refused even when source advertises 
   await assert.rejects(renderOfflineWorkspace(source,runtime()), {code:'UNSUPPORTED_WASM_PACKAGE'});
   assert.equal(state.calls.filter(call=>call.kind==='render').length,1);
   reset();
+});
+
+test('one-shot workspace captures paper and running bands before initialization and reopens the complete PDF request',async()=>{
+  reset();let release;state.gate=new Promise(resolve=>{release=resolve;});
+  const running={header:{left:'{chapter}',right:'{section}',rule:true,image:{dest:' logo.png ',position:'right',heightPt:20}},
+    footer:{center:'{page} / {pages}'},skipFirstPage:true};
+  const page={size:{widthPt:792,heightPt:612},margins:{topPt:24,rightPt:36,bottomPt:48,leftPt:60}};
+  const pending=renderOfflineWorkspace('Source',runtime(),{page,running,pdfImages:[{destination:'logo.png',bytes:Uint8Array.of(1,2,3)}]});
+  running.header.left='Changed';running.header.image.dest='other.png';page.size.widthPt=500;page.margins.leftPt=1;release();
+  const p=payload(await pending);
+  assert.deepEqual(p.options.pageGeometry,[792,612,24,36,48,60]);
+  assert.deepEqual(p.options.running,{header:{left:'{chapter}',right:'{section}',rule:true,image:{dest:'logo.png',position:'right',heightPt:20}},
+    footer:{center:'{page} / {pages}'},skipFirstPage:true});
+  assert.deepEqual(state.calls.find(call=>call.kind==='render').options,{title:undefined,lang:undefined});
+  const f=pdfBindings(null);delete f.bindings.renderPdfConfiguredPage;
+  const renderer=createNativeWorkspaceRenderer(f.bindings,p);
+  renderer.pdf('Current source');
+  assert.equal(f.calls[0].name,'renderPdfConfiguredRunningImages');assert.equal(f.calls[0].args.length,35);
+  assert.deepEqual([...f.calls[0].args[27]],[792,612,24,36,48,60]);
+  assert.deepEqual(f.calls[0].args[28],['{chapter}','','{section}','','{page} / {pages}','']);
+  assert.deepEqual(f.calls[0].args.slice(29,33),[true,false,true,['logo.png','']]);
+  assert.deepEqual([...f.calls[0].args[33]],[1,0]);assert.deepEqual([...f.calls[0].args[34]],[20,0]);
+});
+
+test('one-shot paper and running options use their shared admission before initialization',async()=>{
+  let reads=0;
+  const accessor=Object.defineProperty({},'left',{get(){reads++;return 'wrong';}});
+  for(const options of [
+    {page:null},{page:{size:'a3'}},{page:{margins:-1}},{page:{size:{widthPt:144,heightPt:144},margins:72}},
+    {running:null},{running:{header:accessor}},{running:{header:{left:'\ud800'}}},
+    {running:{header:{left:'é'.repeat(2049)}}},{running:{skipFirstPage:true}},
+    {running:{header:{image:{dest:'x',heightPt:0}}}},
+  ]) {
+    reset();await assert.rejects(renderOfflineWorkspace('Source',runtime(),options));assert.deepEqual(state.calls,[]);
+  }
+  assert.equal(reads,0);
+  reset();const p=payload(await renderOfflineWorkspace('Source',runtime(),{running:{header:{left:''},skipFirstPage:false}}));
+  const f=pdfBindings(null);delete f.bindings.renderPdfConfiguredRunning;
+  createNativeWorkspaceRenderer(f.bindings,p).pdf('Source');
+  assert.equal(f.calls[0].name,'renderPdfConfiguredMulti');assert.equal(f.calls[0].args.length,27);
 });

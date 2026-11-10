@@ -105,6 +105,8 @@ const project = createNativeSourceProject(source, {
   title: 'Article', author: 'Author', font: 'serif', fontScale: 1.125,
   metadataEpochSeconds: 0, toc: true, tocDepth: 3, pageNumbers: true,
   page: {size: 'a4', margins: 36},
+  running: {header: {left: '{chapter}', right: '{section}'},
+    footer: {center: '{page} / {pages}'}, skipFirstPage: true},
   pdfImages: [{destination: 'chart.svg', bytes: await readFile('./chart.svg')}],
 });
 await writeFile('./article.fmd.json', project.bytes);
@@ -159,6 +161,14 @@ The saved options retain the native six-number `pageGeometry` representation
 (width, height, top, right, bottom, left, in points). Reading converts it back to
 the shared public `page` representation without rounding dimensions or changing
 margin sides. Both f64 and staged native f32 content-rectangle checks apply.
+Running header/footer templates, rules, image references, image positions/heights
+and first-page omission are retained as inert data too. They are validated
+against the same limits as direct PDF options and copied before a save begins.
+Reopening returns editable nested `running` records; editing them cannot mutate
+the decoded project or another workspace. Image references still require the
+corresponding embedded image resource and never acquire network/file authority.
+The selected runtime must support the requested running PDF binding.
+
 An omitted page remains omitted. Optional metadata and TOC depth remain omitted;
 an explicit metadata epoch of zero is never replaced by the clock.
 

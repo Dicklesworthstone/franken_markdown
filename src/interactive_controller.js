@@ -523,6 +523,27 @@
           <label>Left margin (pt)<input name="left" data-page type="number" min="0" max="14400" step="any" required></label>
         </div>
       </fieldset>
+      <fieldset><legend>PDF headers and footers</legend>
+        <p id="fmd-running-help">Use {title}, {author}, {date}, {chapter}, {section}, {page}, and {pages} for document and page text. Images use an existing imported image reference. These bands appear in PDF exports; the reading preview stays continuous.</p>
+        <datalist id="fmd-running-images"></datalist>
+        <div data-grid>
+          <label>Header left<input name="headerLeft" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label>Header center<input name="headerCenter" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label>Header right<input name="headerRight" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label><input name="headerRule" type="checkbox"> Header rule</label>
+          <label>Header image reference<input name="headerImage" type="text" maxlength="4096" list="fmd-running-images" placeholder="No image"></label>
+          <label>Header image position<select name="headerImagePosition"><option value="left">Left</option><option value="right">Right</option></select></label>
+          <label>Header image height (pt, blank = default)<input name="headerImageHeight" type="number" min="1" max="65535" step="1" placeholder="Default"></label>
+          <label>Footer left<input name="footerLeft" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label>Footer center<input name="footerCenter" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label>Footer right<input name="footerRight" type="text" maxlength="4096" aria-describedby="fmd-running-help"></label>
+          <label><input name="footerRule" type="checkbox"> Footer rule</label>
+          <label>Footer image reference<input name="footerImage" type="text" maxlength="4096" list="fmd-running-images" placeholder="No image"></label>
+          <label>Footer image position<select name="footerImagePosition"><option value="left">Left</option><option value="right">Right</option></select></label>
+          <label>Footer image height (pt, blank = default)<input name="footerImageHeight" type="number" min="1" max="65535" step="1" placeholder="Default"></label>
+          <label><input name="skipFirstPage" type="checkbox"> Omit headers and footers on the first page</label>
+        </div>
+      </fieldset>
       <fieldset><legend>PDF typesetting</legend>
         <p>These settings affect PDF export. The HTML preview does not show page breaks. Exact page layout refuses an export when the required page constraints cannot be met.</p>
         <div data-grid>
@@ -551,7 +572,11 @@
     const settingsFields = [...flags, ...numbers, ...texts];
     const typographyFlags = ['homogeneous', 'antiriver', 'pareto'];
     const pdfFields = ['pdfProfile', 'pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
-    const formFields = [...settingsFields, ...pdfFields];
+    const runningBands = ['header', 'footer'], runningSlots = ['Left', 'Center', 'Right'];
+    const runningFlags = ['headerRule', 'footerRule', 'skipFirstPage'];
+    const runningFields = [...runningBands.flatMap(band =>
+      [...runningSlots, 'Rule', 'Image', 'ImagePosition', 'ImageHeight'].map(suffix => band + suffix)), 'skipFirstPage'];
+    const formFields = [...settingsFields, ...pdfFields, ...runningFields];
     const geometryFields = ['width', 'height', 'top', 'right', 'bottom', 'left'];
     const paperDimensions = {
       letter: [612, 792],
@@ -560,7 +585,8 @@
       legal: [612, 1008],
       tabloid: [792, 1224],
     };
-    const raw = name => flags.includes(name) || typographyFlags.includes(name) ? field(name).checked : field(name).value;
+    const raw = name => flags.includes(name) || typographyFlags.includes(name) || runningFlags.includes(name)
+      ? field(name).checked : field(name).value;
     let opened = null, initial = null, applying = null, panelRevision = 0;
     const asynchronous = native.settingsMode === 'worker';
     const submit = form.querySelector('button[type="submit"]');
@@ -629,6 +655,19 @@
         : opened.microtypeProtrusion ? 'protrusion' : opened.microtype ?? 'disabled';
       field('baselineGridPt').value = opened.baselineGridPt > 0 ? opened.baselineGridPt : '';
       field('fitToPages').value = opened.fitToPages ?? '';
+      for (const name of runningBands) {
+        const band = opened.running?.[name];
+        for (const suffix of runningSlots) field(name + suffix).value = band?.[suffix.toLowerCase()] ?? '';
+        field(name + 'Rule').checked = band?.rule === true;
+        field(name + 'Image').value = band?.image?.dest ?? '';
+        field(name + 'ImagePosition').value = band?.image?.position ?? 'left';
+        field(name + 'ImageHeight').value = band?.image?.heightPt ?? '';
+      }
+      field('skipFirstPage').checked = opened.running?.skipFirstPage === true;
+      const imageList = form.querySelector('#fmd-running-images');
+      imageList.replaceChildren(...(native.imageAssets ?? []).map(image => {
+        const option = document.createElement('option'); option.value = image.destination; return option;
+      }));
       initial = Object.fromEntries(formFields.map(name => [name, raw(name)]));
       const geometry = opened.pageGeometry ?? [612, 792, 72, 72, 72, 72];
       geometryFields.forEach((name, i) => { field(name).value = geometry[i]; });
@@ -716,6 +755,35 @@
         }
         if (raw('baselineGridPt') !== '' && raw('fitToPages') !== '') {
           throw Error('A fixed baseline grid and a page-count target cannot be combined. Clear one value before applying settings.');
+        }
+        if (runningFields.some(name => raw(name) !== initial[name])) {
+          const running = {...opened.running};
+          for (const name of runningBands) {
+            const names = [...runningSlots, 'Rule', 'Image', 'ImagePosition', 'ImageHeight'].map(suffix => name + suffix);
+            if (!names.some(key => raw(key) !== initial[key])) continue;
+            const band = {...opened.running?.[name]};
+            for (const suffix of runningSlots) if (raw(name + suffix) !== initial[name + suffix])
+              band[suffix.toLowerCase()] = raw(name + suffix);
+            if (raw(name + 'Rule') !== initial[name + 'Rule']) band.rule = raw(name + 'Rule');
+            if (['Image', 'ImagePosition', 'ImageHeight'].some(suffix => raw(name + suffix) !== initial[name + suffix])) {
+              const dest = raw(name + 'Image');
+              if (!dest.trim()) {
+                // Clearing the reference removes the image as one setting.
+                // Position/height drafts alone cannot create an empty image.
+                if (dest === initial[name + 'Image']) throw Error('Choose an image reference before setting its position or height');
+                delete band.image;
+              } else {
+                const image = {...band.image, dest};
+                if (raw(name + 'ImagePosition') !== initial[name + 'ImagePosition']) image.position = raw(name + 'ImagePosition');
+                if (raw(name + 'ImageHeight') !== initial[name + 'ImageHeight'])
+                  image.heightPt = raw(name + 'ImageHeight') === '' ? undefined : field(name + 'ImageHeight').valueAsNumber;
+                band.image = image;
+              }
+            }
+            running[name] = band;
+          }
+          if (raw('skipFirstPage') !== initial.skipFirstPage) running.skipFirstPage = raw('skipFirstPage');
+          patch.running = running;
         }
         const geometry = field('paper').value === 'default' ? undefined : geometryFields.map(name => field(name).valueAsNumber);
         if (JSON.stringify(geometry) !== JSON.stringify(opened.pageGeometry)) patch.pageGeometry = geometry;

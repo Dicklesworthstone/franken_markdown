@@ -177,7 +177,7 @@ test('descriptor validation rejects accessors and sparse arrays without invoking
 
 test('objects, arrays and options cannot hide extra fields or symbols', () => {
   for (const input of [payload({x: 1}), payload({options: {customCss: 'script'}}),
-    payload({options: {allowRawHtml: true}}), payload({options: {running: {}}}),
+    payload({options: {allowRawHtml: true}}), payload({options: {running: {unknown: true}}}),
     payload({fonts: [{slot: 'body-bold', bytes: 'AA==', href: 'x'}]})]) fails(() => codec.encode(input));
   const images = []; images.extra = true; fails(() => codec.encode(payload({images})));
   const options = {}; options[Symbol('hidden')] = true; fails(() => codec.encode(payload({options})));

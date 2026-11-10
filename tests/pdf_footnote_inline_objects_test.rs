@@ -233,14 +233,13 @@ impl Pdf {
         let key = format!("/Type /StructElem /S /{tag} ");
         self.objects
             .iter()
-            .filter_map(|(&id, object)| {
-                object.dictionary.contains(&key).then(|| {
-                    (
-                        id,
-                        number(&object.dictionary, "/Pg"),
-                        rect(&object.dictionary, "/BBox ["),
-                    )
-                })
+            .filter(|(_, object)| object.dictionary.contains(&key))
+            .map(|(&id, object)| {
+                (
+                    id,
+                    number(&object.dictionary, "/Pg"),
+                    rect(&object.dictionary, "/BBox ["),
+                )
             })
             .collect()
     }

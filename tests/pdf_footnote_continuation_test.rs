@@ -1013,7 +1013,10 @@ fn first_block_code_note_continues_with_numbering_panels_and_return_navigation()
     let pages = painted_pages(&bytes);
     assert_markers(&pages, "CODE", 48);
     assert_markers(&pages, "BODY", 8);
-    assert_eq!(locate(&pages, "CODE000").0, locate(&pages, "CODECITATION").0);
+    assert_eq!(
+        locate(&pages, "CODE000").0,
+        locate(&pages, "CODECITATION").0
+    );
     assert!(locate(&pages, "CODE047").0 > locate(&pages, "CODE000").0);
     assert!(!text(&pages).contains("Notes"));
     for index in 0..48 {
@@ -1021,18 +1024,13 @@ fn first_block_code_note_continues_with_numbering_panels_and_return_navigation()
         let number = (index + 1 + index / 8).to_string();
         assert!(
             pages[page].runs.iter().any(|run| {
-                !run.artifact
-                    && run.text.trim() == number
-                    && (run.y - row.y).abs() < PRECISION
+                !run.artifact && run.text.trim() == number && (run.y - row.y).abs() < PRECISION
             }),
             "source code row {index} retains its original line number",
         );
         assert!(
             artifact_fills(&pages[page]).iter().any(|bounds| {
-                bounds[0] <= row.x
-                    && row.x <= bounds[2]
-                    && bounds[1] < row.y
-                    && row.y < bounds[3]
+                bounds[0] <= row.x && row.x <= bounds[2] && bounds[1] < row.y && row.y < bounds[3]
             }),
             "source code row {index} retains its painted panel",
         );
@@ -1088,7 +1086,10 @@ fn nested_lists_and_alert_note_keep_source_labels_containers_and_panel_bounds() 
         let pages = painted_pages(&bytes);
         assert_markers(&pages, "NOTE_LIST", 12);
         assert_markers(&pages, "NOTE_NEST", 12);
-        assert_eq!(locate(&pages, "QUOTEINTRO").0, locate(&pages, "LISTCITATION").0);
+        assert_eq!(
+            locate(&pages, "QUOTEINTRO").0,
+            locate(&pages, "LISTCITATION").0
+        );
         assert_eq!(locate(&pages, "Note").0, locate(&pages, "QUOTEINTRO").0);
         assert!(locate(&pages, "NOTE_NEST011").0 > locate(&pages, "QUOTEINTRO").0);
         assert!(!text(&pages).contains("Notes"));
@@ -1097,9 +1098,7 @@ fn nested_lists_and_alert_note_keep_source_labels_containers_and_panel_bounds() 
             let label = format!("{}.", index + 1);
             assert!(
                 pages[page].runs.iter().any(|run| {
-                    !run.artifact
-                        && run.text.trim() == label
-                        && (run.y - row.y).abs() < PRECISION
+                    !run.artifact && run.text.trim() == label && (run.y - row.y).abs() < PRECISION
                 }),
                 "ordered item {index} retains its source marker on the same row",
             );
@@ -1121,7 +1120,9 @@ fn first_block_list_marker_and_alert_title_stay_with_the_first_source_row() {
         "NESTEDCITATION.[^rich]\n\n[^rich]:\n    - > [!WARNING]\n      > FIRSTSOURCE retained warning.\n      >\n",
     );
     for index in 0..36 {
-        source.push_str(&format!("      > NOTE_QUOTE{index:03} preserved source row.  \n"));
+        source.push_str(&format!(
+            "      > NOTE_QUOTE{index:03} preserved source row.  \n"
+        ));
     }
     let mut options = options();
     options.theme.page.size.height_pt = 192.0;

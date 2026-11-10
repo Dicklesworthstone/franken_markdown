@@ -62,9 +62,10 @@ line belongs to the same logical note across its fragments, and the citation
 still links to the first fragment. `--pdf-footnote-backlinks` can be combined
 with this mode.
 
-Continuation supports paragraphs with styled text, inline code and ordinary
-links, ordinary fenced or indented code, ordered/unordered/task lists, and
-blockquotes (including alerts).
+Continuation supports paragraphs with styled text, inline code, inline
+mathematics, images mixed with prose, and ordinary links, as well as ordinary
+fenced or indented code, ordered/unordered/task lists, and blockquotes
+(including alerts).
 Lists and quotations can nest, and code blocks can appear inside them. Fragments
 retain syntax highlighting, source line numbers, list labels, indentation,
 quotation bars, code backgrounds, links and logical note ownership. Code and
@@ -72,7 +73,15 @@ quotation decorations reserve their own space at fragment boundaries. Generated
 note labels, list markers on their own row, and alert titles stay with the first
 content row they introduce.
 
-Notes containing tables, figures, mathematics, diagrams, headings, definition
+Inline formulas and images stay indivisible within their measured text rows.
+Continuation retains their fitted dimensions, formula source, image alternative
+text, links, and Formula/Figure tags inside the same logical note. Actual object
+ascent and descent contribute to fragment boundaries, keeping the first and
+last row inside the note region. Missing images and unsupported inline math
+retain their ordinary visible fallback and diagnostics. A row too tall for a
+note-only page keeps the complete note in the endnote fallback.
+
+Notes containing tables, standalone figures, display-math blocks, diagrams, headings, definition
 lists, generated contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
 fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
 or a required label-and-content group that cannot fit on a note-only page also
@@ -168,6 +177,11 @@ moves to a page foot or to the trailing Notes section.
 geometry, links and page objects to check text-note continuation, source-line
 conservation, tail pages, book note scope, running folios, shared browser-core
 output, emitter parity, and incompatible-policy refusals.
+
+`tests/pdf_footnote_inline_objects_test.rs` decodes emitted glyph maps, vector
+paths, image transforms, annotation rectangles and structure ancestry to check
+inline formulas and linked images across continuation boundaries. It also
+preserves the existing indivisible-figure, table and unreferenced-note behavior.
 
 
 `tests/pdf_page_footnotes_test.rs` pins placement (every note on its

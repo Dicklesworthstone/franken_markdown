@@ -485,14 +485,17 @@ See [document workers](DOCUMENT_WORKER.md) for limits and cancellation behavior.
 ## Long PDF footnote continuation
 
 Pass `splitFootnotes: true` to PDF exports to continue long notes containing
-paragraphs, code, lists or quotations across page feet. This is available on document, book, worker, Flow, and saved
-offline-workspace PDF paths. Retained books also accept `split-footnotes` in the
+paragraphs, code, lists or quotations across page feet. Prose can include inline
+formulas and images; each object stays whole, with its painted bounds reserved
+at continuation boundaries. This is available on document, book, worker, Flow,
+and saved offline-workspace PDF paths. Retained books also accept `split-footnotes` in the
 `typography` token string. Omission or `false` preserves existing behavior.
 
 This mode requires greedy pagination without a baseline grid. The core rejects
 combinations with `optimalPagination`, `strictPagination`, or a positive
-`baselineGridPt`. Notes containing tables, figures, math or headings, and
-unreferenced notes, retain the full-fidelity endnote fallback. Use a matching
+`baselineGridPt`. Tables, standalone figures, display mathematics and headings
+retain their existing indivisible-note/endnote handling. Unreferenced notes
+remain in the trailing Notes section. Use a matching
 rebuilt JavaScript/WASM package: older native token parsers reject the request,
 and the adapters do not retry after dropping it.
 See [PDF footnotes](../docs/PDF_FOOTNOTES.md) for the scope and navigation rules.

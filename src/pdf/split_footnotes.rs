@@ -22,20 +22,25 @@ pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
 }
 
 /// Text-bearing containers already retain independently paintable rows and
-/// source-owned list/quote/code identities. Tables, figures, formulas, explicit
+/// source-owned list/quote/code identities. Inline formulas and images remain
+/// atomic parts of those rows. Tables, standalone figures/formulas, explicit
 /// breaks and generated TOCs need their own split rules and keep the complete
 /// ordinary-note/endnote fallback.
 pub(super) fn eligible(blocks: &[Block]) -> bool {
     fn text(inlines: &[Inline]) -> bool {
         let mut pending = vec![inlines];
+        let mut has_image = false;
+        let mut has_content = false;
         while let Some(inlines) = pending.pop() {
             for inline in inlines {
                 match inline {
-                    Inline::Text(_)
-                    | Inline::Code(_)
-                    | Inline::SoftBreak
-                    | Inline::HardBreak
-                    | Inline::FootnoteRef { .. } => {}
+                    Inline::Text(text) => has_content |= !text.trim().is_empty(),
+                    Inline::Code(_)
+                    | Inline::Math(_)
+                    | Inline::DisplayMath(_)
+                    | Inline::FootnoteRef { .. } => has_content = true,
+                    Inline::Image { .. } => has_image = true,
+                    Inline::SoftBreak | Inline::HardBreak => {}
                     Inline::Emphasis(inner)
                     | Inline::Strong(inner)
                     | Inline::Strikethrough(inner)
@@ -44,7 +49,10 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
                 }
             }
         }
-        true
+        // Image-only paragraphs can become full-size figures or galleries.
+        // Preserve their ordinary page-note/endnote admission, including for
+        // styled/linked images and assets whose availability changes later.
+        !has_image || has_content
     }
 
     if blocks.is_empty() {
@@ -88,8 +96,23 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
             return false;
         }
         for seg in &line.segs {
-            if is_inline_object(seg.slot) {
-                return false;
+            if is_inline_math(seg.slot) {
+                let Some(formula) =
+                    inline_math_fit::placement(&seg.text, line.size, seg.slot == F_DISPLAY_MATH)
+                else {
+                    return false;
+                };
+                line.text_ink.0 = line.text_ink.0.max(formula.ascent);
+                line.text_ink.1 = line.text_ink.1.max(formula.descent);
+                continue;
+            }
+            if seg.slot == F_IMAGE {
+                let Some(image) = inline_image::image_box(&seg.text, line.size) else {
+                    return false;
+                };
+                line.text_ink.0 = line.text_ink.0.max(image.height - image.descent);
+                line.text_ink.1 = line.text_ink.1.max(image.descent);
+                continue;
             }
             let face = faces.face(seg.slot);
             let scale = line.size / f32::from(face.font.units_per_em.max(1));
@@ -220,7 +243,11 @@ fn fragment_height(lines: &[Line]) -> f32 {
 fn note_label_only(line: &Line) -> bool {
     let mut labelled = false;
     for seg in &line.segs {
-        for (offset, _) in seg.text.char_indices().filter(|(_, ch)| !ch.is_whitespace()) {
+        for (offset, _) in seg
+            .text
+            .char_indices()
+            .filter(|(_, ch)| !ch.is_whitespace())
+        {
             if !matches!(
                 seg.note_spans.at(offset),
                 Some(note_tags::Mark::Label(number)) if number == line.flow.note_owner

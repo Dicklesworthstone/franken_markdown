@@ -716,6 +716,14 @@ The constructor accepts finite values from `1` through `144` points and rounds
 once to the nearest milli-point. Browser PDF options expose `baselineGridPt`
 through direct, worker, Flow export and book APIs; see [the browser guide](wasm/README.md#pdf-baseline-grids).
 
+### Authored PDF line breaks
+
+Use a soft hyphen (`&shy;`, U+00AD) to offer a hyphenated break, or a zero-width
+space (`&#x200B;`, U+200B) to offer a break without a hyphen. PDF prose and table
+cells hide unused hints and measure the visible hyphen when a break is selected.
+Code retains its literal source characters. See [authored line breaks](docs/AUTHORED_LINE_BREAKS.md)
+for examples, shaping behavior and renderer scope.
+
 PDF render warnings are also reported on stderr. They are intentionally
 structured and stable enough for agents to notice lossy fallbacks such as
 unsupported SVG constructs while keeping stdout reserved for document bytes.

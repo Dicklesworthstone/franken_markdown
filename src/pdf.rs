@@ -44,6 +44,7 @@ use std::fmt::Write as _;
 
 mod baseline_grid;
 mod data_uri;
+mod discretionary;
 mod fenced_code;
 mod figure_fit;
 mod financial_tables;
@@ -2356,7 +2357,9 @@ struct LineTok {
 
 #[inline]
 fn token_visible_text(tok: &Tok) -> &str {
-    if tok.space {
+    if discretionary::hint(tok).is_some() {
+        ""
+    } else if tok.space {
         if tok.hard_break { "" } else { " " }
     } else {
         tok.text.as_str()
@@ -3080,7 +3083,9 @@ fn collect_token_text(mut toks: Vec<Tok>, out: &mut Vec<(u8, String)>, faces: &F
     // An inline formula's glyphs are fmd-math's own outlines, not font text.
     out.extend(
         toks.into_iter()
-            .filter(|tok| !tok.space && !is_inline_object(tok.slot))
+            .filter(|tok| {
+                !tok.space && !is_inline_object(tok.slot) && discretionary::hint(tok).is_none()
+            })
             .map(|tok| (tok.slot, tok.text)),
     );
 }
@@ -17759,6 +17764,19 @@ fn table_cell_measure(
     let mut pending_space: Option<f32> = None;
 
     for tok in toks {
+        if let Some(hint) = discretionary::hint(tok) {
+            if hint == discretionary::Hint::Hyphen
+                && let Some(&width) = line.words.last()
+            {
+                // A chosen authored break paints a hyphen. Its no-break
+                // advance remains zero; only the minimum column measure
+                // reserves the optional glyph.
+                line.min_content = line
+                    .min_content
+                    .max(width + text_width_cached("-", size, tok.slot, faces, width_cache));
+            }
+            continue;
+        }
         if tok.hard_break {
             finish_table_measure_line(&mut cell, &mut line);
             pending_space = None;
@@ -17839,6 +17857,9 @@ fn build_cell_line_owned(
 ) -> CellWrapLine {
     let mut runs: Vec<CellRun> = Vec::new();
     for t in toks {
+        if discretionary::hint(&t).is_some() {
+            continue;
+        }
         let text = token_visible_text(&t);
         let merge = runs.last().is_some_and(|r| {
             r.slot == t.slot
@@ -17881,6 +17902,12 @@ fn wrap_cell_styled(
     faces: &Faces,
     width_cache: &RefCell<WidthCache>,
 ) -> Vec<CellWrapLine> {
+    if toks.iter().any(|tok| discretionary::hint(tok).is_some()) {
+        return discretionary::wrapped_tokens(toks, max_width, size, faces, width_cache)
+            .into_iter()
+            .map(|line| build_cell_line_owned(line, size, faces, width_cache))
+            .collect();
+    }
     let mut lines = Vec::new();
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0;
@@ -19610,7 +19637,8 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
 fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: &mut Vec<Tok>) {
     let mut word_start = 0usize;
     for (idx, c) in text.char_indices() {
-        if is_breakable_whitespace(c) {
+        let hint = slot != F_MONO && discretionary::is_hint(c);
+        if is_breakable_whitespace(c) || hint {
             if word_start < idx {
                 out.push(Tok {
                     text: text[word_start..idx].to_string(),
@@ -19625,9 +19653,9 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
                 });
             }
             out.push(Tok {
-                text: String::new(),
+                text: if hint { c.to_string() } else { String::new() },
                 slot,
-                space: true,
+                space: !hint,
                 hard_break: false,
                 literal: false,
                 list_label: false,
@@ -19729,6 +19757,7 @@ fn subscript_phonetic_fallback(c: char) -> Option<char> {
 /// word with per-slot shaping.
 fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
     inline_image::resolve_tokens(toks, faces);
+    discretionary::normalize_tokens(toks);
     if toks
         .iter()
         .any(|tok| !tok.text.is_ascii() && tok.text.chars().any(text_composition::is_mark))
@@ -19749,6 +19778,8 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
                 && tok.strike == last.strike
                 && tok.literal == last.literal
                 && tok.list_label == last.list_label
+                && discretionary::hint(&tok).is_none()
+                && discretionary::hint(last).is_none()
             {
                 last.note_spans.append(&tok.note_spans, last.text.len());
                 last.text.push_str(&tok.text);
@@ -19765,7 +19796,11 @@ fn apply_symbol_fallback(toks: &mut Vec<Tok>, faces: &Faces) {
         // face carries no ASCII repertoire, so `fallback_slot` is the identity
         // for them. This keeps the common path allocation-free. An inline
         // formula draws its own glyphs; its source is never re-slotted.
-        if tok.space || is_inline_object(tok.slot) || tok.text.is_ascii() {
+        if tok.space
+            || is_inline_object(tok.slot)
+            || tok.text.is_ascii()
+            || discretionary::hint(tok).is_some()
+        {
             i += 1;
             continue;
         }
@@ -20014,6 +20049,20 @@ fn build_paragraph<'a>(
         width_cache,
         image_measure,
     };
+    if toks.iter().any(|tok| discretionary::hint(tok).is_some())
+        && let Some(visible) = discretionary::fitting_unbroken_tokens(toks, word_cx)
+    {
+        return build_paragraph(
+            &visible,
+            fs,
+            faces,
+            policy,
+            doc_lang,
+            hyphen_cache,
+            width_cache,
+            image_measure,
+        );
+    }
 
     for tok in toks {
         if tok.space {
@@ -20310,6 +20359,10 @@ fn fit_pdf_word_break_points(
 
 fn flush_pdf_word(built: &mut BuiltParagraph, word: &mut Vec<Tok>, cx: PdfWordContext<'_>) {
     if word.is_empty() {
+        return;
+    }
+    if word.iter().any(|tok| discretionary::hint(tok).is_some()) {
+        discretionary::flush_word(built, word, cx);
         return;
     }
 
@@ -21412,6 +21465,16 @@ fn layout_inlines_greedy(
         );
     }
     let mut lines: Vec<Vec<Tok>> = Vec::new();
+    if toks.iter().any(|tok| discretionary::hint(tok).is_some()) {
+        lines = discretionary::wrapped_tokens(
+            &toks,
+            max,
+            size,
+            faces,
+            &RefCell::new(WidthCache::default()),
+        );
+        toks.clear();
+    }
     let mut cur: Vec<Tok> = Vec::new();
     let mut cur_w = 0.0_f32;
     for tok in toks {

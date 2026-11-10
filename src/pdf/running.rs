@@ -13,9 +13,9 @@ use super::{
     EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, HeadingSource, ImageLine, Line,
     LinkAnnotation, PageBreakPlan, PageGeom, PageNotes, Palette, PdfImageData, Seg, ShapedRunCache,
     SvgPageResources, append_oriented_image_xobject_do, append_rgb_stroke_line_operator,
-    append_svg_text_viewport_clip, civil_from_unix_days, draw_seg, draw_svg_image, fallback_slot_runs,
-    font_size_of, next_placed_page, parse_pdf_image_asset, seg_text_hash, text_composition,
-    text_positioning,
+    append_svg_text_viewport_clip, civil_from_unix_days, draw_seg, draw_svg_image,
+    fallback_slot_runs, font_size_of, next_placed_page, parse_pdf_image_asset, seg_text_hash,
+    text_composition, text_positioning,
 };
 use crate::ast::{Block, Document};
 use crate::{PdfOptions, PdfRunningBand, PdfRunningImage, PdfRunningImagePosition, RenderError};
@@ -764,11 +764,7 @@ impl RunningSpec {
     /// Static title/author/date tokens have already been resolved. A sample
     /// folio keeps adjacent literal text in its actual source context without
     /// requiring a second pagination pass merely to report render warnings.
-    pub(super) fn visit_positioning_sources(
-        &self,
-        faces: &Faces,
-        mut visit: impl FnMut(u8, &str),
-    ) {
+    pub(super) fn visit_positioning_sources(&self, faces: &Faces, mut visit: impl FnMut(u8, &str)) {
         for slot in self.bands.iter().flat_map(|band| &band.slots) {
             let section = slot.iter().any(|piece| matches!(piece, Piece::Section));
             let chapter = slot.iter().any(|piece| matches!(piece, Piece::Chapter));
@@ -1268,10 +1264,7 @@ mod tests {
     #[test]
     fn heading_tokens_expand_once_and_are_blank_without_source_context() {
         let pieces = parse_template("{chapter} | {section} | {page}/{pages}", &values());
-        assert_eq!(
-            expand(&pieces, 3, 8, &PageContext::default()),
-            " |  | 3/8"
-        );
+        assert_eq!(expand(&pieces, 3, 8, &PageContext::default()), " |  | 3/8");
         let context = PageContext {
             chapter: Rc::from("Guide {page}"),
             section: Rc::from("Use {chapter} & {pages}"),
@@ -1350,14 +1343,25 @@ mod tests {
 
         opts.running.header.center = Some("{chapter}".into());
         assert!(
-            resolve(&crate::parse_markdown("## Section only"), &opts, &faces, page)
-                .unwrap()
-                .is_none()
+            resolve(
+                &crate::parse_markdown("## Section only"),
+                &opts,
+                &faces,
+                page
+            )
+            .unwrap()
+            .is_none()
         );
 
         opts.running.header.center = Some("{section}".into());
         assert!(
-            resolve(&crate::parse_markdown("## Section only"), &opts, &faces, page).is_err(),
+            resolve(
+                &crate::parse_markdown("## Section only"),
+                &opts,
+                &faces,
+                page
+            )
+            .is_err(),
             "real section text still requires space inside the header margin"
         );
     }

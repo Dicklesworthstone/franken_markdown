@@ -80,7 +80,10 @@ impl<'a> Objects<'a> {
 
     fn stream(&self, id: usize) -> String {
         let body = self.body(id);
-        let start = body.windows(8).position(|part| part == b"\nstream\n").unwrap();
+        let start = body
+            .windows(8)
+            .position(|part| part == b"\nstream\n")
+            .unwrap();
         let dictionary = self.dictionary(id);
         let length = integer(dictionary, "/Length ");
         let bytes = &body[start + 8..start + 8 + length];
@@ -128,7 +131,10 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
                 .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
-            assert!(map.insert(cid, String::from_utf16(&units).unwrap()).is_none());
+            assert!(
+                map.insert(cid, String::from_utf16(&units).unwrap())
+                    .is_none()
+            );
         }
     }
     assert!(!map.is_empty());
@@ -208,8 +214,7 @@ fn pages(pdf: &[u8]) -> Vec<Page> {
                         let footer = marks.iter().any(|mark| mark.contains(&"/Footer"));
                         if header || footer {
                             assert!(marks.iter().any(|mark| {
-                                mark.first() == Some(&"/Artifact")
-                                    && mark.contains(&"/Pagination")
+                                mark.first() == Some(&"/Artifact") && mark.contains(&"/Pagination")
                             }));
                             if header {
                                 result.header.push_str(&text);
@@ -288,7 +293,8 @@ fn heading_free_pages_do_not_invent_context_from_document_metadata() {
 #[test]
 fn wrapped_heading_uses_complete_plain_source_without_recursive_tokens() {
     let title = "Curious {pages} café chapter with a deliberately wrapped heading";
-    let source = "# *Curious* `{pages}` café chapter with a deliberately wrapped heading\n\nBody.\n";
+    let source =
+        "# *Curious* `{pages}` café chapter with a deliberately wrapped heading\n\nBody.\n";
     let pages = pages(&render_pdf(source, &options()).unwrap());
     assert_eq!(pages.len(), 1);
     assert!(
@@ -377,7 +383,10 @@ fn natural_pagination_and_both_emitters_use_the_final_heading_pages() {
     let chunked = render(PdfPageEmission::Chunked);
     assert_eq!(chunked, render(PdfPageEmission::Monolithic));
     let pages = pages(&chunked);
-    assert!(pages.len() >= 3, "fixture must span natural page boundaries");
+    assert!(
+        pages.len() >= 3,
+        "fixture must span natural page boundaries"
+    );
     let section_page = pages
         .iter()
         .position(|page| page.body.contains("BETASECTION"))

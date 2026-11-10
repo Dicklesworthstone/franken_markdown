@@ -200,6 +200,7 @@ if (!isMainThread) {
       { typography: ["pareto"] }, { typography: "pareto,misspelled" }, { typography: " ".repeat(257) },
       { optimalPagination: "false" }, { strictPagination: "true" }, { strictPagination: null }, { microtype: "unknown" }, { microtypeProtrusion: 1 },
       { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 },
+      { splitFootnotes: "true" }, { splitFootnotes: null }, { splitFootnotes: 1 },
       { baseFontSize: 5.999999999 }, { headingScale: 2.000000001 }, { tableFontSize: NaN },
       { tocDepth: 1.5 }, { fitToPages: 0 }, { fitToPages: 0x100000000 },
       { metadataEpochSeconds: -1 }, { metadataEpochSeconds: Number.MAX_SAFE_INTEGER + 1 },
@@ -373,26 +374,48 @@ if (!isMainThread) {
     } finally { session.dispose(); }
   });
 
-  test("retained backlinks are canonical and old token parsers refuse the request without leaking a book", async () => {
-    const flagged = prepareBookInput(FILES, { footnoteBacklinks: true });
-    assert.deepEqual(flagged, prepareBookInput(FILES, { typography: " footnote-backlinks " }));
-    assert.equal(Object.hasOwn(flagged.options, "footnoteBacklinks"), false);
-    assert.equal(flagged.options.typography, "footnote-backlinks");
-    assert.deepEqual(prepareBookInput(FILES, { footnoteBacklinks: false }), prepareBookInput(FILES, {}));
-    assert.equal(prepareBookInput(FILES, { typography: "footnote-backlinks", footnoteBacklinks: false })
-      .options.typography, "footnote-backlinks", "false cannot erase an explicitly requested token");
+  for (const [key, token] of [["footnoteBacklinks", "footnote-backlinks"], ["splitFootnotes", "split-footnotes"]])
+    test(`retained ${key} is canonical and old token parsers refuse without leaking a book`, async () => {
+    const flagged = prepareBookInput(FILES, { [key]: true });
+    assert.deepEqual(flagged, prepareBookInput(FILES, { typography: ` ${token} ` }));
+    assert.equal(Object.hasOwn(flagged.options, key), false);
+    assert.equal(flagged.options.typography, token);
+    assert.deepEqual(prepareBookInput(FILES, { [key]: false }), prepareBookInput(FILES, {}));
+    assert.equal(prepareBookInput(FILES, { typography: token, [key]: false })
+      .options.typography, token, "false cannot erase an explicitly requested token");
     class OldTokens extends RecordingBook {
       setPdfOptions(...args) {
-        if (args[0]?.includes("footnote-backlinks")) throw "unknown typography option 'footnote-backlinks'";
+        if (args[0]?.includes(token)) throw `unknown typography option '${token}'`;
         super.setPdfOptions(...args);
       }
     }
     const old = createBookBindings(async () => OldTokens);
     const created = state.created, freed = state.freed;
-    await assert.rejects(old.createBook(FILES, { footnoteBacklinks: true }), /unknown typography option 'footnote-backlinks'/);
+    await assert.rejects(old.createBook(FILES, { [key]: true }), new RegExp(`unknown typography option '${token}'`));
     assert.equal(state.created, created + 1); assert.equal(state.freed, freed + 1);
-    const ordinary = await old.createBook(FILES, { footnoteBacklinks: false });
+    const ordinary = await old.createBook(FILES, { [key]: false });
     assert.equal(decoded(ordinary.renderPdf()).pdf, undefined); ordinary.dispose();
+  });
+
+  test("retained books and book workers own continuation settings before asynchronous loading", async () => {
+    const client = createBookWorkerClient({ workerFactory: () => workerEndpoint(), timeoutMs: 10000 });
+    try {
+      for (const value of [undefined, true, false]) {
+        let ready;
+        const delayed = createBookBindings(() => new Promise(resolve => { ready = resolve; }));
+        const options = value === undefined ? {} : { splitFootnotes: value };
+        const pending = delayed.createBook(FILES, options);
+        options.splitFootnotes = !value;
+        ready(RecordingBook);
+        const book = await pending;
+        try { assert.equal(decoded(book.renderPdf()).pdf?.[0], value ? "split-footnotes" : undefined); }
+        finally { book.dispose(); }
+        const workerOptions = value === undefined ? {} : { splitFootnotes: value };
+        const rendering = client.render(FILES, "pdf", workerOptions);
+        workerOptions.splitFootnotes = !value;
+        assert.equal(decoded(await rendering).pdf?.[0], value ? "split-footnotes" : undefined);
+      }
+    } finally { client.dispose(); }
   });
 
   test("typed retained-book refusal crosses a real worker without poisoning its next request", async () => {
@@ -435,6 +458,7 @@ if (!isMainThread) {
       { tocDepth: 2 }, { tocDepth: 3 }, { typography: "pareto" }, { typography: "antiriver" },
       { strictPagination: true }, { strictPagination: false },
       { footnoteBacklinks: true }, { footnoteBacklinks: false },
+      { splitFootnotes: true }, { splitFootnotes: false },
       { baseFontSize: 12 }, { headingScale: 1.3 }, { tableFontSize: 9 }, { fitToPages: 3 },
       { codeLineNumbers: true }, { metadataEpochSeconds: 0 },
       { baselineGridPt: 13.125 }, { baselineGridPt: 14 },

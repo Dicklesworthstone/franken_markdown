@@ -7,7 +7,7 @@ const MiB = 1024 * 1024;
 const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
 const fields = ['font', 'darkMode', 'title', 'lang', 'fontScale', 'toc', 'tocDepth',
   'author', 'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'pdfImages', 'fontAssets',
-  'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'baselineGridPt',
+  'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
   'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
 
 // Count without allocating an encoded copy. Reject unpaired surrogates rather
@@ -79,7 +79,7 @@ function capture(markdown, runtime, input) {
   // saved documents, just like the standalone native workspace exporter.
   if (captured.pdfA !== undefined) options.pdfA = captured.pdfA;
   if (captured.pdfAStrict !== undefined) options.pdfAStrict = captured.pdfAStrict;
-  for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'microtypeProtrusion']) {
+  for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'microtypeProtrusion']) {
     if (captured[key] !== undefined) {
       if (typeof captured[key] !== 'boolean') throw new TypeError(key + ' must be boolean');
       options[key] = captured[key];

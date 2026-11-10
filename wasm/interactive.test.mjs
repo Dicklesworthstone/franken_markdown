@@ -73,18 +73,22 @@ test('PDF typesetting and archival policy are owned before init and reopen separ
   assert.equal(f.calls[0].args[35],'homogeneous,pareto,optimal-pagination,strict-pagination,footnote-backlinks,expansion');
 });
 
-test('offline backlink policy preserves omission and explicit false across save and reopen',async()=>{
-  for(const options of [{},{footnoteBacklinks:false},{footnoteBacklinks:true}]) {
+for(const [key,token] of [['footnoteBacklinks','footnote-backlinks'],['splitFootnotes','split-footnotes']])
+test(`offline ${key} is captured before init and preserves omission and false across save and reopen`,async()=>{
+  for(const value of [undefined,false,true]) {
     reset();
-    const p=payload(await renderOfflineWorkspace('Source',runtime(),options)),f=pdfBindings(null);
+    const options=value===undefined?{}:{[key]:value};
+    const pending=renderOfflineWorkspace('Source',runtime(),options);
+    options[key]=!value;
+    const p=payload(await pending),f=pdfBindings(null);
     const renderer=createNativeWorkspaceRenderer(f.bindings,p);
-    assert.equal(Object.hasOwn(p.options,'footnoteBacklinks'),Object.hasOwn(options,'footnoteBacklinks'));
-    assert.equal(p.options.footnoteBacklinks,options.footnoteBacklinks);
+    assert.equal(Object.hasOwn(p.options,key),value!==undefined);
+    assert.equal(p.options[key],value);
     const reopened=payload(await renderOfflineWorkspace('Source',runtime(),renderer.settings));
     assert.deepEqual(reopened,p);
     createNativeWorkspaceRenderer(f.bindings,reopened).pdf('Source');
-    assert.equal(f.calls[0].args.length,options.footnoteBacklinks?28:27);
-    assert.equal(f.calls[0].args[27],options.footnoteBacklinks?'footnote-backlinks':undefined);
+    assert.equal(f.calls[0].args.length,value?28:27);
+    assert.equal(f.calls[0].args[27],value?token:undefined);
   }
 });
 
@@ -134,6 +138,7 @@ test('saved archival workspaces refuse missing or too-old native bindings withou
 test('invalid or incompatible PDF typesetting is refused before runtime initialization',async()=>{
   for(const options of [{baselineGridPt:12,fitToPages:2},{baselineGridPt:145},
     {strictPagination:'true'},{footnoteBacklinks:'true'},{footnoteBacklinks:null},{footnoteBacklinks:1},
+    {splitFootnotes:'true'},{splitFootnotes:null},{splitFootnotes:1},
     {typography:{pareto:1}},{microtype:'unknown'},{fitToPages:0}]) {
     reset();await assert.rejects(renderOfflineWorkspace('x',runtime(),options));assert.equal(state.calls.length,0);
   }

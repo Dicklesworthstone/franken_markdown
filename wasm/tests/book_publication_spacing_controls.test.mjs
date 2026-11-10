@@ -14,6 +14,29 @@ const tokens = h => (h.book.options.typography ?? "").split(",").filter(Boolean)
 const publication = book => Object.fromEntries(BOOK_PUBLICATION_FIELDS
   .filter(key => book.options[key] !== undefined).map(key => [key, book.options[key]]));
 
+test("footnote continuation checkbox applies atomically and survives source-project reopening", async t => {
+  const h = setup(t, { typography: "homogeneous,split-footnotes,footnote-backlinks" });
+  const revision = h.book.revision;
+  assert.equal(h.el("type-split-footnotes").checked, true);
+  h.input("type-split-footnotes", false);
+  assert.equal(h.book.revision, revision);
+  h.ui.apply();
+  assert.equal(h.book.options.typography, "homogeneous,footnote-backlinks");
+  h.input("type-split-footnotes", true); h.ui.discard();
+  assert.equal(h.el("type-split-footnotes").checked, false);
+  h.input("type-split-footnotes", true); h.ui.apply();
+  const before = h.book.project(), output = h.book.projectDownload();
+  h.book.replaceProject(await readBookProject(new File([output.blob], output.filename)));
+  assert.deepEqual(h.book.project(), before);
+  assert.equal(h.el("type-split-footnotes").checked, true);
+  const captured = prepareBookInput(h.book.snapshot().files, h.book.options);
+  assert(captured.options.typography.split(",").includes("split-footnotes"));
+  h.busy(true); assert.equal(h.el("type-split-footnotes").disabled, true); h.busy(false);
+  h.ui.defaults(); assert.equal(h.el("type-split-footnotes").checked, false);
+  h.ui.discard(); assert.equal(h.el("type-split-footnotes").checked, true);
+  assert.equal(h.captures, 0);
+});
+
 test("spacing and return-navigation controls expose the applied native values", t => {
   const h = setup(t, { typography: retained }), revision = h.book.revision;
   assert.equal(createBookPublicationPanel(h.root), h.el("settings"));

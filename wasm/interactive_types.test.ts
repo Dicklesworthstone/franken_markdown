@@ -12,6 +12,8 @@ const blob: Blob = output.blob();
 const filename: string = output.filename('document');
 void [data,blob,filename];
 void renderOfflineWorkspace('source',runtime,{pdfA:'off',pdfAStrict:false,footnoteBacklinks:false});
+void renderOfflineWorkspace('source',runtime,{splitFootnotes:true});
+void renderOfflineWorkspace('source',runtime,{splitFootnotes:false});
 // @ts-expect-error Explicit bytes, not an ambient runtime URL.
 renderOfflineWorkspace('source',{bindings:'x',wasm:new URL('https://example.invalid/runtime.wasm')});
 // @ts-expect-error Safe-only API does not admit raw HTML.
@@ -26,6 +28,10 @@ renderOfflineWorkspace('source',runtime,{pdfA:'3b'});
 renderOfflineWorkspace('source',runtime,{pdfA:'2b',pdfAStrict:'true'});
 // @ts-expect-error Backlinks are a boolean rather than a form-control string.
 renderOfflineWorkspace('source',runtime,{footnoteBacklinks:'true'});
+// @ts-expect-error Continuation requires a boolean rather than a form-control string.
+renderOfflineWorkspace('source',runtime,{splitFootnotes:'true'});
+// @ts-expect-error The lightweight HTML-only API cannot retain PDF continuation.
+renderInteractiveHtml('source',{splitFootnotes:true});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF backlinks.
 renderInteractiveHtml('source',{footnoteBacklinks:true});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF archival policy.

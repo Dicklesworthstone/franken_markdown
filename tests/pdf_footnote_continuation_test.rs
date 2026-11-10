@@ -436,13 +436,12 @@ fn separator_count(page: &PaintedPage, content_width: f64) -> usize {
                 }
             }
             "S" => {
-                if let (Some((x0, y0)), Some((x1, y1))) = (start.take(), end.take()) {
-                    if marks.last() == Some(&true)
-                        && (y1 - y0).abs() < PRECISION
-                        && (x1 - x0 - content_width * 0.3).abs() < PRECISION
-                    {
-                        count += 1;
-                    }
+                if let (Some((x0, y0)), Some((x1, y1))) = (start.take(), end.take())
+                    && marks.last() == Some(&true)
+                    && (y1 - y0).abs() < PRECISION
+                    && (x1 - x0 - content_width * 0.3).abs() < PRECISION
+                {
+                    count += 1;
                 }
             }
             _ => {}

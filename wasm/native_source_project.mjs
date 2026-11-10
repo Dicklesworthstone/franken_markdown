@@ -9,7 +9,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
   const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
-    'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'baselineGridPt',
+    'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
     'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict'];
   const fail = (code, message) => { throw Object.assign(new Error(message), {code}); };
   const invalid = message => fail('INVALID_SOURCE_PROJECT', message);
@@ -73,7 +73,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
     if (value.pdfA !== undefined && !['off', '2b'].includes(value.pdfA)) invalid('pdfA must be off or 2b');
     if (value.pdfAStrict !== undefined && typeof value.pdfAStrict !== 'boolean') invalid('pdfAStrict must be boolean');
     if (value.pdfAStrict && value.pdfA !== '2b') invalid('pdfAStrict requires pdfA: 2b');
-    for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'microtypeProtrusion']) {
+    for (const key of ['optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'microtypeProtrusion']) {
       if (value[key] !== undefined && typeof value[key] !== 'boolean') invalid(key + ' must be boolean');
     }
     if (value.typography !== undefined) {

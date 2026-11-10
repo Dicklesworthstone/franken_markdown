@@ -39,7 +39,7 @@ const PDF = [
   "typography",
   "optimalPagination",
   "strictPagination",
-  "footnoteBacklinks",
+  "footnoteBacklinks", "splitFootnotes",
   "baselineGridPt",
   "page",
   "running",
@@ -163,7 +163,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       fail("INVALID_OPTIONS", "lang must be a nonempty ASCII language tag");
     result.lang = lang;
   }
-  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination", "footnoteBacklinks"] : [])]) {
+  for (const key of ["toc", ...(format === "pdf" ? ["pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes"] : [])]) {
     if (options[key] === undefined) continue;
     if (typeof options[key] !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     result[key] = options[key];

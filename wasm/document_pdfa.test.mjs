@@ -11,11 +11,12 @@ import { createWorkerFlowSessionWith, installFlowWorker } from "./flow_worker_se
 const utf8 = value => new TextEncoder().encode(value);
 const decode = output => JSON.parse(new TextDecoder().decode(output.bytes));
 const mime = { pdf: "application/pdf", html: "text/html; charset=utf-8", epub: "application/epub+zip" };
+const footnoteOptions = [["footnoteBacklinks", "footnote-backlinks"], ["splitFootnotes", "split-footnotes"]];
 
 function nativeRendererDouble(mode) {
   return format => async (source, options) => {
-    if (options.footnoteBacklinks && mode === "old-footnote-tokens")
-      throw new Error("unknown typography option 'footnote-backlinks'");
+    for (const [key, token] of footnoteOptions)
+      if (options[key] && mode === "old-footnote-tokens") throw new Error(`unknown typography option '${token}'`);
     if (options.pdfA === "2b" && mode === "unsupported")
       throw Object.assign(new Error("archival binding unavailable"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (options.pdfA === "2b" && mode === "refuse") throw new Error("pdf_a_file_uri: strict refusal");
@@ -135,24 +136,35 @@ if (!isMainThread) {
     assert.deepEqual(edition.outputs.map(output => decode(output).options.footnoteBacklinks), [undefined, true, undefined]);
   });
 
-  for (const kind of ["document", "flow"]) test(`${kind} workers capture backlink true, false and omission for ordinary PDFs`, async t => {
+  for (const [key] of footnoteOptions) for (const kind of ["document", "flow"])
+    test(`${kind} workers capture ${key} true, false and omission for ordinary PDFs`, async t => {
     const api = kind === "flow" ? await flow(t) : document(t);
     for (const value of [undefined, true, false]) {
-      const options = value === undefined ? {} : { footnoteBacklinks: value };
+      const options = value === undefined ? {} : { [key]: value };
       const pending = kind === "flow" ? api.exportDocument("pdf", options, api.token) : api.renderPdf("note", options);
-      options.footnoteBacklinks = !value;
+      options[key] = !value;
       const captured = decode(await pending).options;
-      assert.equal(Object.hasOwn(captured, "footnoteBacklinks"), value !== undefined);
-      assert.equal(captured.footnoteBacklinks, value);
+      assert.equal(Object.hasOwn(captured, key), value !== undefined);
+      assert.equal(captured[key], value);
     }
     assert.equal(api.pendingBytes, 0);
   });
 
-  for (const kind of ["document", "flow"]) test(`${kind} workers propagate an old native backlink-token refusal`, async t => {
+  for (const [key, token] of footnoteOptions) for (const kind of ["document", "flow"])
+    test(`${kind} workers propagate an old native ${key} token refusal`, async t => {
     const api = kind === "flow" ? await flow(t, { mode: "old-footnote-tokens" }) : document(t, { mode: "old-footnote-tokens" });
-    const options = { footnoteBacklinks: true };
+    const options = { [key]: true };
     await assert.rejects(kind === "flow" ? api.exportDocument("pdf", options, api.token) : api.renderPdf("note", options),
-      { code: kind === "flow" ? "EXPORT_FAILED" : "RENDER_FAILED", message: /unknown typography option 'footnote-backlinks'/ });
+      { code: kind === "flow" ? "EXPORT_FAILED" : "RENDER_FAILED", message: new RegExp(`unknown typography option '${token}'`) });
+    assert.equal(api.pendingBytes, 0);
+  });
+
+  for (const kind of ["document", "flow"]) test(`${kind} publications retain continuation only on their PDF target`, async t => {
+    const api = kind === "flow" ? await flow(t) : document(t), options = { splitFootnotes: true };
+    const pending = kind === "flow" ? flowPublication(api, options) : publication(api, options);
+    options.splitFootnotes = false;
+    const edition = await pending, outputs = kind === "flow" ? edition : edition.outputs;
+    assert.deepEqual(outputs.map(output => decode(output).options.splitFootnotes), [undefined, true, undefined]);
     assert.equal(api.pendingBytes, 0);
   });
 
@@ -184,11 +196,13 @@ if (!isMainThread) {
     const asset = { destination: "image", get bytes() { getters++; return new Uint8Array([1]); } };
     for (const options of [{ pdfA: "3b" }, { pdfAStrict: true }, { pdfA: "off", pdfAStrict: true },
       { pdfA: "2b", pdfAStrict: "true" }, { pdfA: "2b", baselineGridPt: 12, fitToPages: 2 },
-      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 }])
+      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 },
+      { splitFootnotes: "true" }, { splitFootnotes: null }, { splitFootnotes: 1 }])
       await assert.rejects(api.renderPdf("x", { ...options, pdfImages: [asset] }), { code: "INVALID_OPTIONS" });
     for (const format of ["html", "epub", "svg", "interactive-html"]) {
       await assert.rejects(api.render(format, "x", { pdfA: "2b" }), { code: "INVALID_OPTIONS" });
       await assert.rejects(api.render(format, "x", { footnoteBacklinks: true }), { code: "INVALID_OPTIONS" });
+      await assert.rejects(api.render(format, "x", { splitFootnotes: true }), { code: "INVALID_OPTIONS" });
     }
     await assert.rejects(api.renderPdf("x", { get pdfA() { getters++; return "2b"; } }), { code: "INVALID_OPTIONS" });
     assert.equal(factories, 0); assert.equal(getters, 0); api.dispose();
@@ -242,11 +256,13 @@ if (!isMainThread) {
     for (const format of ["html", "epub", "svg"]) {
       assert.throws(() => normalizeFlowExport(format, { pdfA: "off" }, token), { code: "INVALID_OPTIONS" });
       assert.throws(() => normalizeFlowExport(format, { footnoteBacklinks: true }, token), { code: "INVALID_OPTIONS" });
+      assert.throws(() => normalizeFlowExport(format, { splitFootnotes: true }, token), { code: "INVALID_OPTIONS" });
     }
     let reads = 0;
     const asset = { destination: "image", get bytes() { reads++; return new Uint8Array([1]); } };
     for (const options of [{ pdfA: "3b" }, { pdfAStrict: true }, { pdfA: "2b", pdfAStrict: 1 },
-      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 }])
+      { footnoteBacklinks: "true" }, { footnoteBacklinks: null }, { footnoteBacklinks: 1 },
+      { splitFootnotes: "true" }, { splitFootnotes: null }, { splitFootnotes: 1 }])
       assert.throws(() => normalizeFlowExport("pdf", { ...options, pdfImages: [asset] }, token), { code: "INVALID_OPTIONS" });
     assert.equal(reads, 0);
   });

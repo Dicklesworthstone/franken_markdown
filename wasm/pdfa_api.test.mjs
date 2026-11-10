@@ -18,7 +18,8 @@ async function fixture({ archival = 39, hold, failure, shortTypography = false, 
   const render = name => (...args) => {
     calls.push({ name, args });
     if (name === "archival" && failure) throw failure;
-    if (oldTokens && args.includes("footnote-backlinks")) throw "unknown typography option 'footnote-backlinks'";
+    for (const token of ["footnote-backlinks", "split-footnotes"])
+      if (oldTokens && args.includes(token)) throw `unknown typography option '${token}'`;
     return { format: "pdf", mimeType: "application/pdf", extension: "pdf",
       sourceLength: utf8(args[0]).length, bytes: utf8(`native-double:${name}`),
       diagnosticsJson: () => "[]", free() { frees++; } };
@@ -89,7 +90,8 @@ for (const options of [{}, { pdfA: "off" }, { pdfAStrict: false }, { pdfA: "off"
     assert.equal(Object.hasOwn(output, "pdfAStrict"), false);
   });
 
-const backlinkRoutes = [
+const footnoteOptions = [["footnoteBacklinks", "footnote-backlinks"], ["splitFootnotes", "split-footnotes"]];
+const footnoteRoutes = [
   ["ordinary", {}, 28, 27],
   ["page", { page: { size: "a4" } }, 29, 28],
   ["running", { running: { footer: { center: "{page}" } } }, 33, 32],
@@ -98,41 +100,44 @@ const backlinkRoutes = [
   ["archival", { pdfA: "2b" }, 38, 35],
   ["archival", { pdfA: "2b", baselineGridPt: 12 }, 39, 35],
 ];
-test("footnote backlinks reach every PDF ABI while false and omission preserve existing calls", async () => {
+for (const [key, token] of footnoteOptions) test(`${key} is captured before init for every PDF ABI while false preserves existing calls`, async () => {
   const f = await fixture();
-  for (const [name, options, count, index] of backlinkRoutes) {
-    await f.api.renderPdf("note[^1]\n\n[^1]: first", { ...options, footnoteBacklinks: true });
+  for (const [name, options, count, index] of footnoteRoutes) {
+    const request = { ...options, [key]: true };
+    const pending = f.api.renderPdf("note[^1]\n\n[^1]: first", request);
+    request[key] = false;
+    await pending;
     const requested = f.calls.at(-1);
     assert.equal(requested.name, name); assert.equal(requested.args.length, count);
-    assert.equal(requested.args[index], "footnote-backlinks", name);
+    assert.equal(requested.args[index], token, name);
     await f.api.renderPdf("note", options);
     const omitted = f.calls.at(-1);
-    await f.api.renderPdf("note", { ...options, footnoteBacklinks: false });
+    await f.api.renderPdf("note", { ...options, [key]: false });
     assert.deepEqual(f.calls.at(-1), omitted, `${name}: false must preserve the default ABI`);
     assert.equal(omitted.args[index], undefined);
   }
 });
 
-test("footnote backlinks reject invalid booleans and old ABIs before assets or initialization", async () => {
+for (const [key] of footnoteOptions) test(`${key} rejects invalid booleans and old ABIs before assets or initialization`, async () => {
   const f = await fixture(), old = await fixture({ shortTypography: true, archival: 37 });
   let reads = 0;
-  for (const [, options] of backlinkRoutes) {
-    for (const footnoteBacklinks of [null, 1, "true"]) {
-      await assert.rejects(f.api.renderPdf("source", { ...options, footnoteBacklinks,
-        get pdfImages() { reads++; throw Error("assets must not be read"); } }), /footnoteBacklinks must be a boolean/);
+  for (const [, options] of footnoteRoutes) {
+    for (const value of [null, 1, "true"]) {
+      await assert.rejects(f.api.renderPdf("source", { ...options, [key]: value,
+        get pdfImages() { reads++; throw Error("assets must not be read"); } }), new RegExp(`${key} must be a boolean`));
     }
-    await assert.rejects(old.api.renderPdf("source", { ...options, footnoteBacklinks: true,
+    await assert.rejects(old.api.renderPdf("source", { ...options, [key]: true,
       get pdfImages() { reads++; throw Error("assets must not be read"); } }), { code: "UNSUPPORTED_WASM_PACKAGE" });
   }
   assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(old.inits, 0);
   assert.equal(f.calls.length, 0); assert.equal(old.calls.length, 0);
 });
 
-test("older native token parsers refuse backlinks without retrying an unlinked PDF", async () => {
+for (const [key, token] of footnoteOptions) test(`older native token parsers refuse ${key} without retrying a default PDF`, async () => {
   const f = await fixture({ oldTokens: true });
-  for (const [name, options] of backlinkRoutes) {
+  for (const [name, options] of footnoteRoutes) {
     const before = f.calls.length;
-    await assert.rejects(f.api.renderPdf("note", { ...options, footnoteBacklinks: true }), /unknown typography option 'footnote-backlinks'/);
+    await assert.rejects(f.api.renderPdf("note", { ...options, [key]: true }), new RegExp(`unknown typography option '${token}'`));
     assert.equal(f.calls.length, before + 1); assert.equal(f.calls.at(-1).name, name);
   }
 });

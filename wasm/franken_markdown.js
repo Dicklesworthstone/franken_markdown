@@ -413,6 +413,10 @@ function typographyOption(options) {
   if (backlinks !== undefined && typeof backlinks !== "boolean")
     throw new TypeError("footnoteBacklinks must be a boolean");
   if (backlinks) tokens.push("footnote-backlinks");
+  const split = options.splitFootnotes;
+  if (split !== undefined && typeof split !== "boolean")
+    throw new TypeError("splitFootnotes must be a boolean");
+  if (split) tokens.push("split-footnotes");
   if (options.microtype === "expansion") tokens.push("expansion");
   else if (options.microtype !== undefined && !["disabled", "protrusion"].includes(options.microtype)) {
     throw new RangeError(`microtype must be "disabled", "protrusion" or "expansion"`);
@@ -1126,9 +1130,10 @@ export async function renderBookPdf(files, options = {}) {
     error.code = "UNSUPPORTED_WASM_PACKAGE";
     throw error;
   }
-  if (prepared.strictPagination || prepared.footnoteBacklinks) {
+  if (prepared.strictPagination || prepared.footnoteBacklinks || prepared.splitFootnotes) {
     requireBindingArguments(render, prepared.profile !== undefined ? 39 : prepared.grid > 0 ? 38 : 37,
-      prepared.footnoteBacklinks ? "PDF footnote backlinks" : "Strict PDF pagination");
+      prepared.splitFootnotes ? "PDF footnote continuation"
+        : prepared.footnoteBacklinks ? "PDF footnote backlinks" : "Strict PDF pagination");
   }
   await init();
   try {
@@ -1161,7 +1166,7 @@ function bookPdfArguments(files, options) {
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
     baseFontSize, headingScale, tableFontSize, pageNumbers,
     fontScale, typeSize, lang, toc = true, tocDepth,
-    microtype, microtypeProtrusion, typography, optimalPagination, strictPagination, footnoteBacklinks, running,
+    microtype, microtypeProtrusion, typography, optimalPagination, strictPagination, footnoteBacklinks, splitFootnotes, running,
   } = options;
   if (optimalPagination !== undefined && typeof optimalPagination !== "boolean")
     throw new TypeError("optimalPagination must be a boolean");
@@ -1170,6 +1175,7 @@ function bookPdfArguments(files, options) {
     optimalPagination,
     strictPagination,
     footnoteBacklinks,
+    splitFootnotes,
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
   // The profiled path already admitted its complete 39-argument binding above;
@@ -1244,7 +1250,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete, grid, strictPagination, footnoteBacklinks, profile,
+    advanced, complete, grid, strictPagination, footnoteBacklinks, splitFootnotes, profile,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),

@@ -252,6 +252,7 @@ const PUBLICATION_QUALITY_FLAGS = [
 const PUBLICATION_FLAGS = [...PUBLICATION_QUALITY_FLAGS,
   ["theme-spacing", "Use theme line spacing and table padding in PDF"],
   ["footnote-backlinks", "Link PDF footnote numbers back to their first citation"],
+  ["split-footnotes", "Continue long prose footnotes across pages (greedy pagination; no baseline grid)"],
 ];
 const PUBLICATION_SPACING = [
   ["line-height", "PDF body line height (1–4 × font size)"],
@@ -344,6 +345,7 @@ export function createBookPublicationPanel(root) {
   make("p", "grid-help", "A positive baseline spacing aligns PDF body text to a shared grid. Clear the page-count target before enabling a grid. Spacing is rounded once by the renderer to 0.001 pt; blank or 0 uses ordinary line spacing.", layout);
   check(layout, "codeLineNumbers", "PDF code line numbers");
   check(layout, "type-footnote-backlinks", PUBLICATION_FLAGS.find(([key]) => key === "footnote-backlinks")[1]);
+  check(layout, "type-split-footnotes", PUBLICATION_FLAGS.find(([key]) => key === "split-footnotes")[1]);
   select(layout, "htmlFontFormat", "HTML-site font container (EPUB uses the source font format)",
     [["", "Native default"], ["ttf", "Raw font (.ttf/.otf)"], ["woff1", "WOFF"], ["woff2", "WOFF2"]]);
   select(layout, "fontEmbedding", "HTML/EPUB font embedding",

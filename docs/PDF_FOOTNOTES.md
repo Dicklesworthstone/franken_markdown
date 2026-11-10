@@ -76,9 +76,11 @@ the requested pagination contract.
 The option is off by default. `fmd config set pdf_split_footnotes true` supplies
 a persistent default, and `--pdf-split-footnotes=false` overrides it for one
 render, watch, batch or book invocation. Rust callers set
-`PdfOptions::split_footnotes` or `WasmRenderOptions::split_footnotes`. The MCP
-PDF routes use `splitFootnotes: true`. The native browser core also accepts the
-typography token `split-footnotes` through its configured PDF interfaces.
+`PdfOptions::split_footnotes` or `WasmRenderOptions::split_footnotes`. Browser
+PDF options and the MCP PDF routes use `splitFootnotes: true`; retained browser
+books also accept the typography token `split-footnotes`. Browser and saved
+offline exports require a matching rebuilt WASM package. An older token parser
+must reject the request instead of silently omitting continuation.
 
 ## Return to a citation
 

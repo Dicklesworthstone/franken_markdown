@@ -177,6 +177,7 @@ function bookRenderOptions(options) {
   const optimal = options.optimalPagination;
   const strict = options.strictPagination;
   const backlinks = options.footnoteBacklinks;
+  const split = options.splitFootnotes;
   const microtype = options.microtype;
   const protrusion = options.microtypeProtrusion;
   const tokens = [];
@@ -190,6 +191,7 @@ function bookRenderOptions(options) {
   if (boolean(optimal, "optimalPagination")) tokens.push("optimal-pagination");
   if (boolean(strict, "strictPagination")) tokens.push("strict-pagination");
   if (boolean(backlinks, "footnoteBacklinks")) tokens.push("footnote-backlinks");
+  if (boolean(split, "splitFootnotes")) tokens.push("split-footnotes");
   if (microtype !== undefined) {
     if (!["off", "protrusion", "expansion", "all"].includes(microtype)) {
       throw new TypeError("microtype must be off, protrusion, expansion, or all");

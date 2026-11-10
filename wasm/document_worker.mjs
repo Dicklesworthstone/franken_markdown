@@ -20,7 +20,7 @@ const FORMATS = Object.freeze({
 const SHARED = ["font", "darkMode", "fontScale", "typeSize"];
 const SETTINGS = {
   html: [...SHARED, "profile", "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat", "fontEmbedding"],
-  pdf: [...SHARED, "profile", "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "footnoteBacklinks", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
+  pdf: [...SHARED, "profile", "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
   svg: [...SHARED, "profile", "maxWidthPt", "pdfImages", "fontAssets", "toc", "tocDepth"],
   epub: [...SHARED, "profile", "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
   "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
@@ -146,7 +146,7 @@ function normalize(format, source, options, knownSourceLength) {
         baselineGridPt: normalizeBaselineGridPt }[key];
       try { out[key] = normalize(value); }
       catch (error) { fail(error.code, error.message); }
-    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination", "strictPagination", "footnoteBacklinks", "pdfAStrict"].includes(key)) {
+    } else if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion", "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes", "pdfAStrict"].includes(key)) {
       if (typeof value !== "boolean") fail("INVALID_OPTIONS", `${key} must be boolean`);
     } else if (["fontScale", "typeSize"].includes(key)) {
       if (typeof value === "string") text(value, 64, key);

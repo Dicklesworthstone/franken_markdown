@@ -188,13 +188,15 @@ test("strict pagination token prevents cached non-strict bytes from satisfying a
   assert.equal(h.stats.exports.length, 3, "returning to non-strict policy rebuilds the retained book");
   h.cached.clear();
 });
-test("backlink settings invalidate cached PDF bytes and equivalent explicit tokens reuse the capture", async () => {
+for (const [key, token] of [["footnoteBacklinks", "footnote-backlinks"], ["splitFootnotes", "split-footnotes"]])
+test(`${key} invalidates cached PDF bytes and equivalent explicit tokens reuse the capture`, async () => {
   const h = fixture(), input = capture();
+  input.options.typography = "homogeneous";
   const ordinary = prepareBookInput(input.files, input.options);
-  const linked = prepareBookInput(input.files, { ...input.options, footnoteBacklinks: true });
-  const explicit = prepareBookInput(input.files, { ...input.options, typography: "optimal-pagination,footnote-backlinks" });
+  const linked = prepareBookInput(input.files, { ...input.options, [key]: true });
+  const explicit = prepareBookInput(input.files, { ...input.options, typography: `homogeneous,${token}` });
   assert.deepEqual(linked, explicit);
-  assert.deepEqual(prepareBookInput(input.files, { ...input.options, footnoteBacklinks: false }), ordinary);
+  assert.deepEqual(prepareBookInput(input.files, { ...input.options, [key]: false }), ordinary);
   try {
     const before = await h.render(ordinary), after = await h.render(linked);
     assert.notDeepEqual(after.bytes, before.bytes);

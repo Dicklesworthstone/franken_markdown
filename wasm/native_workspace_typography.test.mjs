@@ -129,6 +129,7 @@ test('unsupported grid/token bindings refuse before assets are decoded or a docu
     [{baselineGridPt: 12}, 'renderPdfConfiguredGrid', 36],
     [{strictPagination: true}, 'renderPdfConfiguredMulti', 27],
     [{footnoteBacklinks: true}, 'renderPdfConfiguredMulti', 27],
+    [{splitFootnotes: true}, 'renderPdfConfiguredMulti', 27],
     [{typography: {pareto: true}, pageGeometry: geometry}, 'renderPdfConfiguredPage', 28],
     [{microtype: 'expansion'}, 'renderPdfConfiguredMulti', 27],
   ]) {
@@ -159,6 +160,7 @@ test('invalid typography and fixed-grid/fitting conflicts cannot mutate settings
   const invalid = [{typography: getter}, {typography: {unknown: true}}, {typography: []},
     {typography: {pareto: 1}}, {strictPagination: 1}, {optimalPagination: 'yes'}, {microtypeProtrusion: 0},
     {footnoteBacklinks: 'true'}, {footnoteBacklinks: null}, {footnoteBacklinks: 1},
+    {splitFootnotes: 'true'}, {splitFootnotes: null}, {splitFootnotes: 1},
     {microtype: 'unknown'}, {baselineGridPt: 0.5}, {baselineGridPt: 145}, {baselineGridPt: NaN},
     {fitToPages: 0}, {fitToPages: 1.5}, {fitToPages: 0x100000000}, {fitToPages: 2, baselineGridPt: 12}];
   const before = renderer.settings;
@@ -169,30 +171,33 @@ test('invalid typography and fixed-grid/fitting conflicts cannot mutate settings
   assert.equal(renderer.settings, before); assert.equal(f.calls.length, 0); assert.equal(reads, 0);
 });
 
-test('backlink-only settings toggle and round trip without changing omitted or explicitly disabled documents', () => {
+for (const [key, token] of [['footnoteBacklinks', 'footnote-backlinks'], ['splitFootnotes', 'split-footnotes']])
+test(`${key} settings toggle and round trip without changing omitted or explicitly disabled documents`, () => {
   const f = fixture(), renderer = createNativeWorkspaceRenderer(f.bindings, payload());
-  renderer.stageSettings({footnoteBacklinks: true}).commit();
-  renderer.pdf(source); assert.equal(f.calls.at(-1)[1][27], 'footnote-backlinks');
-  renderer.stageSettings({footnoteBacklinks: false}).commit();
+  const patch = {[key]: true}, transaction = renderer.stageSettings(patch);
+  patch[key] = false; transaction.commit();
+  renderer.pdf(source); assert.equal(f.calls.at(-1)[1][27], token);
+  renderer.stageSettings({[key]: false}).commit();
   renderer.pdf(source); assert.equal(f.calls.at(-1)[1].length, 27);
-  for (const options of [{}, {footnoteBacklinks: false}, {footnoteBacklinks: true}]) {
+  for (const options of [{}, {[key]: false}, {[key]: true}]) {
     const project = createNativeSourceProject(source, options);
     const restored = readNativeSourceProject(project.bytes);
-    assert.equal(Object.hasOwn(restored.options, 'footnoteBacklinks'), Object.hasOwn(options, 'footnoteBacklinks'));
-    assert.equal(restored.options.footnoteBacklinks, options.footnoteBacklinks);
+    assert.equal(Object.hasOwn(restored.options, key), Object.hasOwn(options, key));
+    assert.equal(restored.options[key], options[key]);
     assert.deepEqual(createNativeSourceProject(restored.source, restored.options).bytes, project.bytes);
   }
 });
 
-test('saved backlink requests propagate old token-parser failures without retrying default output', () => {
+for (const [key, token] of [['footnoteBacklinks', 'footnote-backlinks'], ['splitFootnotes', 'split-footnotes']])
+test(`saved ${key} requests propagate old token-parser failures without retrying default output`, () => {
   const f = fixture(); let renders = 0;
   const old = (...args) => {
-    renders++; assert.equal(args[27], 'footnote-backlinks');
-    throw "unknown typography option 'footnote-backlinks'";
+    renders++; assert.equal(args[27], token);
+    throw `unknown typography option '${token}'`;
   };
   Object.defineProperty(old, 'length', {value: 28}); f.bindings.renderPdfConfiguredMulti = old;
-  const renderer = createNativeWorkspaceRenderer(f.bindings, payload({footnoteBacklinks: true}));
-  assert.throws(() => renderer.pdf(source), /unknown typography option 'footnote-backlinks'/);
+  const renderer = createNativeWorkspaceRenderer(f.bindings, payload({[key]: true}));
+  assert.throws(() => renderer.pdf(source), new RegExp(`unknown typography option '${token}'`));
   assert.equal(renders, 1);
 });
 
@@ -211,6 +216,7 @@ test('saved codec independently refuses malformed typesetting and never executes
   const getter = {}; Object.defineProperty(getter, 'antiriver', {enumerable: true, get() {reads++; return true;}});
   for (const options of [{typography: getter}, {strictPagination: 'true'}, {microtype: 'invalid'},
     {footnoteBacklinks: 'true'}, {footnoteBacklinks: null}, {footnoteBacklinks: 1},
+    {splitFootnotes: 'true'}, {splitFootnotes: null}, {splitFootnotes: 1},
     {baselineGridPt: -1}, {fitToPages: 0}, {baselineGridPt: 12, fitToPages: 1}]) {
     const p = payload(options); assert.throws(() => codec.encode({source, options: p.options, images: p.images, fonts: p.fonts}),
       {code: 'INVALID_SOURCE_PROJECT'});

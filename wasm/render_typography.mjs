@@ -55,7 +55,7 @@ export function pdfTypographyTokens(value) {
 /** Retained books accept the same bounded token grammar as the native core. */
 export function normalizePdfTypographyToken(token) {
   if (["homogeneous", "antiriver", "pareto", "optimal-pagination", "strict-pagination",
-    "footnote-backlinks", "theme-spacing", "protrusion", "expansion"].includes(token)) return token;
+    "footnote-backlinks", "split-footnotes", "theme-spacing", "protrusion", "expansion"].includes(token)) return token;
   const match = /^(line-height|table-padding-x|table-padding-y)=([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/.exec(token);
   if (match) {
     const value = Number(match[2]), [min, max] = match[1] === "line-height" ? [1, 4] : [0, 8];

@@ -78,7 +78,7 @@ export interface BookOptions {
    * Independent of publication strictLinks. Failures never downgrade to PDF. */
   pdfAStrict?: boolean;
   /** Comma-separated homogeneous, antiriver, pareto, optimal-pagination,
-   * strict-pagination, footnote-backlinks, theme-spacing, protrusion or expansion.
+   * strict-pagination, footnote-backlinks, split-footnotes, theme-spacing, protrusion or expansion.
    * line-height=1..4 and table-padding-x/table-padding-y=0..8 set literal PDF
    * spacing and imply theme-spacing. Unknown/invalid tokens fail before WASM initialization.
    * Requires FmdBook.setPdfOptions; old packages fail explicitly.
@@ -91,6 +91,10 @@ export interface BookOptions {
   strictPagination?: boolean;
   /** Link PDF note numbers back to their first citation. Default false. */
   footnoteBacklinks?: boolean;
+  /** Continue long paragraph-only notes across page feet. Default false.
+   * Requires greedy pagination without a baseline grid and a matching WASM
+   * package; unsupported policies and older token parsers fail explicitly. */
+  splitFootnotes?: boolean;
   /** An explicit mode overrides microtype tokens in typography. */
   microtype?: "off" | "protrusion" | "expansion" | "all";
   /** Compatibility shortcut, applied after microtype. */

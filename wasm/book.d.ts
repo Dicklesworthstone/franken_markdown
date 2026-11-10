@@ -44,8 +44,8 @@ export interface BookRunningContent {
 }
 
 export interface BookOptions {
-  /** Authoring dialect for PDF, EPUB, site and previews. Omitted preserves the
-   * extension-enabled default. Selected before includes and source parsing;
+  /** Authoring dialect for publication, previews, links and parser diagnostics.
+   * Omitted preserves the extension-enabled default. Selected before includes and source parsing;
    * explicit values require matching FmdBook source-profile constructors. */
   profile?: FmdAuthoringProfile;
   /** Expand includes in Rust (default true). False preserves literal source. */
@@ -318,8 +318,8 @@ export interface BookSourceDiagnosticsOutput {
   blob(): Blob;
   filename(baseName?: string): string;
 }
-/** Source-only parsing check with guaranteed session disposal. Includes are
- * captured; image/font/presentation properties are not read. Reports contain
+/** Source-only parsing check with guaranteed session disposal. Authoring profile
+ * and include policy are captured; image/font/presentation properties are not read. Reports contain
  * complete diagnostics for at most 4096 chapters/diagnostics in 4 MiB, plus a
  * separate 2 MiB original-source metadata allowance (6 MiB total). */
 export function checkBookSourceDiagnostics(
@@ -379,7 +379,7 @@ export interface BookLinksOutput {
   blob(): Blob;
   filename(baseName?: string): string;
 }
-/** Expand and check with guaranteed disposal. Only includeSources and
+/** Expand and check with guaranteed disposal. Only profile, includeSources and
  * expandIncludes are used; fonts, images and presentation settings are ignored.
  * Use the worker "links" route for cancellation of synchronous Rust work. */
 export function checkBookLinks(

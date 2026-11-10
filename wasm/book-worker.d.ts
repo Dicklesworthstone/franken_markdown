@@ -102,16 +102,16 @@ export interface BookWorker {
     options?: BookOptions,
     request?: { signal?: AbortSignal },
   ): Promise<BookInspectionOutput>;
-  /** Expanded local HTML navigation checks. Includes are captured; images,
-   * fonts and presentation settings are ignored and never transferred. */
+  /** Expanded local HTML navigation checks. Authoring profile and include policy
+   * are captured; images, fonts and presentation settings are never transferred. */
   render(
     files: readonly BookFile[],
     format: "links",
     options?: BookOptions,
     request?: { signal?: AbortSignal },
   ): Promise<Omit<BookLinksOutput, "filename">>;
-  /** Parser diagnostics for expanded chapters. No image/font/presentation
-   * authority is read or transferred; capped at 4 MiB. One-shot only. */
+  /** Parser diagnostics use the captured authoring profile and include policy.
+   * No image/font/presentation authority is read or transferred. One-shot only. */
   render(
     files: readonly BookFile[],
     format: "diagnostics",

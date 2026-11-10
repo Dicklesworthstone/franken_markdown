@@ -431,11 +431,16 @@ export function prepareBookInput(files, options = {}) {
   };
 }
 
-/** Navigation checks need source/expansion policy only. Do not even read
+/** Source checks need the authoring dialect and expansion policy only. Do not even read
  * image/font/CSS getters on this path, much less clone or transfer their bytes. */
 export function bookLinkOptions(options = {}) {
   record(options, "options");
-  return { includeSources: options.includeSources, expandIncludes: options.expandIncludes };
+  const profile = normalizeAuthoringProfile(options.profile);
+  return {
+    ...(profile === undefined ? {} : { profile }),
+    includeSources: options.includeSources,
+    expandIncludes: options.expandIncludes,
+  };
 }
 
 function output(bytes, kind, sourceLength, archive = {}) {

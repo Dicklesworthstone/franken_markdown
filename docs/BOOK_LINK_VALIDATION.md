@@ -79,9 +79,16 @@ always disposes its owned book. A retained `createBook(...)` session offers
 contains JSON bytes, MIME type, source length, a Blob helper, and (on the direct
 facade) a filename helper. Worker results omit the filename helper.
 
-The one-shot and worker check paths use only `includeSources` and
-`expandIncludes`. They do not read image, font, CSS or presentation-option getters
-or transfer those bytes. Expansion follows the existing Rust rules. Setting
+The one-shot and worker check paths capture `profile`, `includeSources` and
+`expandIncludes`. An explicit `profile: "commonmark-gfm"` or `"gfm-plus"` selects
+the authoring dialect before Rust expands includes or parses chapter links, just
+as it does for publication and retained-session checks. Omission preserves the
+extension-enabled default; invalid profiles and older native packages without
+profile-aware source constructors fail explicitly. The workbench uses the
+project's saved profile for both link checks and parser diagnostics.
+
+These paths do not read image, font, CSS or presentation-option getters or
+transfer those bytes. Expansion follows the existing Rust rules. Setting
 `expandIncludes: false` intentionally checks literal/already-expanded chapters;
 nonempty include sources then remain invalid, as on other book routes.
 

@@ -723,7 +723,11 @@ function createBookCheckControls({ root, controls, collection, worker, urls = UR
       el["links-status"].textContent = parser
         ? "Expanding selected sources and collecting parser diagnostics in a separate worker. No images, fonts or URLs are loaded."
         : "Expanding selected sources and checking local chapter navigation in a separate worker. No images, fonts or URLs are loaded.";
-      const result = await worker.render(files, parser ? "diagnostics" : "links", { includeSources });
+      const profile = project.options?.profile;
+      const result = await worker.render(files, parser ? "diagnostics" : "links", {
+        ...(profile === undefined ? {} : { profile }),
+        includeSources,
+      });
       if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint()) {
         throw fail(parser ? "STALE_SOURCE_DIAGNOSTICS" : "STALE_LINK_CHECK", "The book changed while it was being checked.");
       }

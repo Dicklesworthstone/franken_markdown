@@ -53,9 +53,12 @@ and unchecked totals when assessing coverage.
 
 Full input admission and copying of supplied asset byte views happen once before
 verification, so later caller edits cannot change either phase. The checker gets
-only copied chapter/include containers sharing immutable strings and the include
-expansion policy. It receives no image/font buffers or presentation settings and
-does not decode or load publication assets. A separate source-only worker is
+only copied chapter/include containers sharing immutable strings, the authoring
+profile, and the include expansion policy. The selected dialect is applied before
+Rust expands or parses sources, so preflight and the final retained navigation
+check inspect the same grammar as every exported format. Later edits to the
+caller's profile do not change either check. It receives no image/font buffers or
+presentation settings and does not decode or load publication assets. A separate source-only worker is
 released before the retained rendering worker is created. This uses an additional
 native parse/startup in exchange for refusing broken books before expensive
 publication. Subsequent formats still reuse one retained book with empty source

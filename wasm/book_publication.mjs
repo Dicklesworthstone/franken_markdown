@@ -199,6 +199,7 @@ export function createBookPublicationClient({
               // asset/settings authority held for the subsequent publication.
               const sources = files => files.map(({ path, source }) => ({ path, source }));
               const checked = await checkLinks(sources(input.files), {
+                ...(profile === undefined ? {} : { profile }),
                 includeSources: sources(input.options.includeSources ?? []),
                 expandIncludes: input.options.expandIncludes,
               }, { signal: abort.signal });

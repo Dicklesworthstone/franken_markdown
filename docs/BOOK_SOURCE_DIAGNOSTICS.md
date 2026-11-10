@@ -37,6 +37,16 @@ The browser binding exposes `FmdBook.sourceDiagnostics()` as the same JSON
 string. The native facade method only reads the current capture; it does not
 start an export or grant access to any resource.
 
+The browser `checkBookSourceDiagnostics(files, options)` helper and worker
+`"diagnostics"` route capture `profile`, `includeSources` and `expandIncludes`
+before initialization. The selected `"commonmark-gfm"` or `"gfm-plus"` dialect
+applies before native include expansion and parsing, so diagnostics describe
+the same grammar as publication and retained-session checks. The workbench uses
+the project's saved profile. Omission preserves the extension-enabled default;
+invalid profiles and native packages without profile-aware source constructors
+fail explicitly. Source-only checks never read or transfer image, font, CSS or
+other presentation options.
+
 ## Coordinate contract
 
 The report schema is `fmd-book-source-diagnostics-v1`:

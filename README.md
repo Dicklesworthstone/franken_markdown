@@ -119,6 +119,13 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
 | Releases | GitHub v0.7.0 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars; npm latest is `0.5.0`; crates.io lists `franken_markdown` 0.7.0 with `fmd-font` 0.4.0 and `fmd-math` 0.3.0. Each artifact and platform needs its own execution evidence |
 
+Bare HTTP(S), `www`, email, `mailto:` and `xmpp:` addresses use the shared GFM
+autolink parser. Trailing punctuation and entity-shaped suffixes remain outside
+the destination, so `https://example.com/&copy;` links to `https://example.com/`
+and leaves the copyright symbol as prose. Literal code and explicit link labels
+keep their source ownership. Each output retains its URL policy; for example,
+PDF renders XMPP addresses as text without creating an XMPP annotation.
+
 ### Reusable font mechanics
 
 The `fmd-font` crate provides strict typed subsets, name-keyed and CID-keyed

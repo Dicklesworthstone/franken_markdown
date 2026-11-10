@@ -4295,6 +4295,15 @@ fn parse_list_split(
 }
 
 fn split_task_marker(text: &str) -> (Option<bool>, &str) {
+    // A checkbox-shaped token inside the item's first indented code block is
+    // literal code. Stripping it here would turn that block into live prose
+    // (or even a reference definition) before either parser sees it.
+    // Do not remeasure an unexpanded tab from column zero: its width depends
+    // on the enclosing marker's original column. Four literal spaces are an
+    // unambiguous code prefix, including the expanded immediate-tab path.
+    if text.starts_with("    ") {
+        return (None, text);
+    }
     let trimmed = trim_start_space_tab(text);
     // GFM requires the checkbox to be followed by at least one whitespace
     // character (or to be the item's entire content). Without this, `[x]foo`
@@ -5209,7 +5218,10 @@ fn parse_inlines_chars_with_refs_profiled(
                     && maybe_bare_email
                     && inline_char_maybe_bare_email_start(c)
                 {
-                    bare_autolink = parse_bare_email_autolink(bytes, i, &mut profiler.inline_work);
+                    bare_autolink =
+                        parse_bare_protocol_autolink(bytes, i, &mut profiler.inline_work).or_else(
+                            || parse_bare_email_autolink(bytes, i, &mut profiler.inline_work),
+                        );
                 }
                 if let Some((label, dest, next)) = bare_autolink {
                     if let Some(tracker) = &mut profiler.destinations {
@@ -6525,6 +6537,71 @@ fn parse_bare_email_autolink(
     if work.exhausted || !bare_url_left_boundary(chars, i) {
         return None;
     }
+    let end = scan_bare_email_end(chars, i, work)?;
+    if bare_autolink_is_angle_attempt(chars, i, end, work)? {
+        return None;
+    }
+
+    let label: String = chars[i..end].iter().collect();
+    let dest = format!("mailto:{label}");
+    Some((label, dest, end))
+}
+
+/// GFM protocol autolinks keep the authored scheme in both the label and target.
+/// XMPP additionally admits one slash-delimited resource made of ASCII letters,
+/// digits, dots and at-signs. This is Markdown recognition, not a network action
+/// or a change to any renderer's URL policy.
+fn parse_bare_protocol_autolink(
+    chars: &[char],
+    i: usize,
+    work: &mut InlineWorkBudget,
+) -> Option<(String, String, usize)> {
+    if work.exhausted || !bare_url_left_boundary(chars, i) {
+        return None;
+    }
+    let (address_start, xmpp) = match chars.get(i) {
+        Some('m' | 'M') if starts_with_ascii_chars_ignore_case(chars, i, b"mailto:") => {
+            (i + 7, false)
+        }
+        Some('x' | 'X') if starts_with_ascii_chars_ignore_case(chars, i, b"xmpp:") => (i + 5, true),
+        _ => return None,
+    };
+    if !work.charge(address_start - i) {
+        return None;
+    }
+    let mut end = scan_bare_email_end(chars, address_start, work)?;
+    if xmpp && chars.get(end) == Some(&'/') {
+        let resource_start = end + 1;
+        let mut next = resource_start;
+        while chars
+            .get(next)
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '@'))
+        {
+            next += 1;
+        }
+        // Include unsuccessful resource scans and the trailing-dot pass in the
+        // same speculative budget as the address, before exposing a link.
+        if !work.charge(next.saturating_sub(end).saturating_mul(2)) {
+            return None;
+        }
+        while next > resource_start && chars[next - 1] == '.' {
+            next -= 1;
+        }
+        if next > resource_start {
+            end = next;
+        }
+    }
+    if bare_autolink_is_angle_attempt(chars, i, end, work)? {
+        return None;
+    }
+    let label: String = chars[i..end].iter().collect();
+    Some((label.clone(), label, end))
+}
+
+/// Shared address grammar for bare email, mailto and XMPP. The caller owns the
+/// left boundary and any scheme/resource; every accepted or rejected scan is
+/// charged here before returning its end index.
+fn scan_bare_email_end(chars: &[char], i: usize, work: &mut InlineWorkBudget) -> Option<usize> {
     let mut j = i;
     while chars
         .get(j)
@@ -6576,13 +6653,7 @@ fn parse_bare_email_autolink(
         return None;
     }
 
-    if bare_autolink_is_angle_attempt(chars, i, end, work)? {
-        return None;
-    }
-
-    let label: String = chars[i..end].iter().collect();
-    let dest = format!("mailto:{label}");
-    Some((label, dest, end))
+    Some(end)
 }
 
 /// Unescaped `< ... >` belongs to the angle-autolink grammar, even when that
@@ -6659,34 +6730,51 @@ fn bare_url_left_boundary(chars: &[char], i: usize) -> bool {
 }
 
 const fn bare_url_trailing_punctuation(ch: char) -> bool {
-    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | '*' | '_' | '~')
+    matches!(
+        ch,
+        '.' | ',' | ':' | '!' | '?' | '*' | '_' | '~' | '\'' | '"'
+    )
 }
 
 /// GFM autolinks preserve punctuation in the interior, including Markdown
-/// delimiters, while excluding sentence/formatting suffixes and unmatched ')'.
-/// Count parentheses once, then trim in one backward pass: alternating ')~'
-/// suffixes must not re-scan the whole URL for every removed character.
+/// delimiters, while excluding sentence/formatting suffixes, unmatched ')' and
+/// terminal entity-shaped `&name;` text. An entity suffix returns to the prose
+/// tokenizer, so real entities decode and unknown names retain their spelling.
+/// Count parentheses at most once and scan each suffix only once: alternating
+/// punctuation/entity suffixes must not repeatedly scan the complete URL.
 fn trim_bare_url_suffix(chars: &[char], start: usize, mut end: usize) -> usize {
-    while end > start && bare_url_trailing_punctuation(chars[end - 1]) {
-        end -= 1;
-    }
-    if end <= start || chars[end - 1] != ')' {
-        return end;
-    }
-    let (opens, closes) = chars[start..end]
-        .iter()
-        .fold((0usize, 0usize), |counts, ch| match ch {
-            '(' => (counts.0 + 1, counts.1),
-            ')' => (counts.0, counts.1 + 1),
-            _ => counts,
-        });
-    let mut excess = closes.saturating_sub(opens);
+    let mut excess_closes = None;
     while end > start {
         if bare_url_trailing_punctuation(chars[end - 1]) {
             end -= 1;
-        } else if chars[end - 1] == ')' && excess > 0 {
+        } else if chars[end - 1] == ';' {
+            let name_end = end - 1;
+            let mut name_start = name_end;
+            while name_start > start && chars[name_start - 1].is_ascii_alphanumeric() {
+                name_start -= 1;
+            }
+            end = if name_start < name_end && name_start > start && chars[name_start - 1] == '&' {
+                name_start - 1
+            } else {
+                name_end
+            };
+        } else if chars[end - 1] == ')' {
+            let excess = excess_closes.get_or_insert_with(|| {
+                let (opens, closes) =
+                    chars[start..end]
+                        .iter()
+                        .fold((0usize, 0usize), |counts, ch| match ch {
+                            '(' => (counts.0 + 1, counts.1),
+                            ')' => (counts.0, counts.1 + 1),
+                            _ => counts,
+                        });
+                closes.saturating_sub(opens)
+            });
+            if *excess == 0 {
+                break;
+            }
             end -= 1;
-            excess -= 1;
+            *excess -= 1;
         } else {
             break;
         }

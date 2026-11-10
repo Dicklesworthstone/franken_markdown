@@ -131,7 +131,7 @@ struct StatsArgs {
     #[arg(value_name = "INPUT", default_value = "-")]
     input: PathBuf,
     /// Raw Markdown text to analyze (alternative to input file).
-    #[arg(long, value_name = "TEXT")]
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     text: Option<String>,
     /// Emit machine-readable JSON stats to stdout.
     #[arg(long)]
@@ -295,7 +295,7 @@ struct RenderArgs {
     /// `--text` or stdin.
     input: Option<String>,
     /// Raw Markdown text to render directly.
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     text: Option<String>,
     /// Which output(s) to produce.
     #[arg(long, value_enum, default_value_t = Target::Html)]
@@ -4328,8 +4328,6 @@ fn normalized_args() -> Vec<String> {
         return args;
     }
 
-    normalize_agent_typos(&mut args);
-
     let known = [
         "render",
         "capabilities",
@@ -4352,28 +4350,85 @@ fn normalized_args() -> Vec<String> {
 
     let mut i = 1;
     while i < args.len() {
-        let arg = args[i].as_str();
+        // Recognize global aliases while choosing the implicit command, but
+        // defer rewriting until the option/value boundaries are known.
+        let arg = agent_flag_alias(&args[i]).unwrap_or(&args[i]);
         if root_flags.contains(&arg) || known.contains(&arg) {
-            return args;
+            break;
         }
         if global_no_value.contains(&arg) {
             i += 1;
             continue;
         }
         args.insert(i, "render".to_string());
-        return args;
+        break;
     }
+    normalize_agent_typos(&mut args);
     args
 }
 
+fn agent_flag_alias(arg: &str) -> Option<&'static str> {
+    match arg {
+        "--jsno" | "--jsoon" | "--jason" | "--json=true" => Some("--json"),
+        "--no-colour" | "--colour=never" | "--color=never" => Some("--no-color"),
+        _ => None,
+    }
+}
+
 fn normalize_agent_typos(args: &mut [String]) {
+    if !args
+        .iter()
+        .skip(1)
+        .any(|arg| agent_flag_alias(arg).is_some())
+    {
+        return;
+    }
+    // The CLI's own metadata decides which tokens are values. In particular,
+    // raw Markdown, titles, paths and configuration values must never be
+    // rewritten merely because their bytes happen to resemble a flag alias.
+    let mut schema = Cli::command();
+    schema.build();
+    let mut command = &schema;
+    let mut values_left = 0;
     for arg in args.iter_mut().skip(1) {
-        match arg.as_str() {
-            "--jsno" | "--jsoon" | "--jason" | "--json=true" => *arg = "--json".to_string(),
-            "--no-colour" | "--colour=never" | "--color=never" => {
-                *arg = "--no-color".to_string();
+        if values_left > 0 {
+            values_left -= 1;
+            continue;
+        }
+        if arg == "--" {
+            break;
+        }
+        if let Some(alias) = agent_flag_alias(arg) {
+            *arg = alias.to_string();
+        }
+        if let Some(subcommand) = command.get_subcommands().find(|sub| {
+            sub.get_name() == arg.as_str()
+                || sub.get_all_aliases().any(|alias| alias == arg.as_str())
+        }) {
+            command = subcommand;
+            continue;
+        }
+        let option = if let Some(long) = arg.strip_prefix("--") {
+            // An attached value already has an unambiguous owner. Do not
+            // inspect or normalize its contents, or consume the next token.
+            if long.contains('=') {
+                continue;
             }
-            _ => {}
+            command.get_arguments().find(|option| {
+                option.get_long() == Some(long)
+                    || option
+                        .get_all_aliases()
+                        .is_some_and(|aliases| aliases.contains(&long))
+            })
+        } else if let Some(short) = arg.strip_prefix('-').filter(|short| short.len() == 1) {
+            command
+                .get_arguments()
+                .find(|option| option.get_short().is_some_and(|key| short.starts_with(key)))
+        } else {
+            None
+        };
+        if let Some(option) = option.filter(|option| !option.is_require_equals_set()) {
+            values_left = option.get_num_args().map_or(0, |range| range.min_values());
         }
     }
 }

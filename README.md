@@ -601,6 +601,12 @@ fmd <input.md|->            # render is inferred
 fmd --text '<markdown>' --out out.html
 ```
 
+The value after `--text` is one literal argument, including list-first Markdown,
+frontmatter, or text such as `--help` and `--jason`. For example,
+`fmd --text '- [x] Done' --out -` works without using `--text=...`.
+The `stats --text` input follows the same rule. Flag typo correction applies to
+options, never to their text values; `--` protects option-shaped input filenames.
+
 | Flag | Meaning |
 |---|---|
 | `<input>` (positional) | Input `.md` path, or `-` to read Markdown from stdin |

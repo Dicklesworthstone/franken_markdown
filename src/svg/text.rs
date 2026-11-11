@@ -15,6 +15,9 @@ use wrapping::place_shaped;
 mod paragraph;
 use paragraph::Paragraph;
 
+#[path = "discretionary.rs"]
+mod discretionary;
+
 impl Poster {
     /// Optimize each hard-break-delimited paragraph using its prepared widths.
     /// Style boundaries do not introduce spaces or break opportunities. The
@@ -82,6 +85,10 @@ impl Poster {
             return;
         }
         let mut word = std::mem::take(&mut flow.word);
+        let authored = discretionary::normalize(&mut word);
+        if word.is_empty() {
+            return;
+        }
         // Shape after equal-style pieces have coalesced. Retain that exact
         // result so sizing and painting cannot disagree or repeat mark work.
         for run in &mut word {
@@ -92,7 +99,7 @@ impl Poster {
             }
         }
         let gap = std::mem::take(&mut flow.gap);
-        paragraph.push(self, flow, shaper, word, gap, size, width);
+        paragraph.push(self, flow, shaper, word, authored, gap, size, width);
     }
 
     /// Consume already-prepared runs. Both planned lines and emergency fallback
@@ -192,7 +199,9 @@ fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
     if text.is_empty() {
         return;
     }
-    flow.trailing_break = false;
+    if style.mono || text.chars().any(|ch| !discretionary::is_hint(ch)) {
+        flow.trailing_break = false;
+    }
     if let Some(last) = flow.word.last_mut().filter(|run| {
         run.style == style && run.formula.is_none() && run.image.is_none() && run.warning.is_none()
     }) {
@@ -232,6 +241,9 @@ impl TextFlow {
     }
 }
 
+#[cfg(test)]
+#[path = "discretionary_tests.rs"]
+mod discretionary_tests;
 #[cfg(test)]
 #[path = "paragraph_tests.rs"]
 mod paragraph_tests;

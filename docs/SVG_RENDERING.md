@@ -77,14 +77,50 @@ wraps with measured advances, preserves spaces, and expands tabs to four-column
 source stops. Its panel height includes every wrapped line. Raw HTML is drawn
 as inert source text, never executed or silently discarded.
 
+### Authored optional breaks
+
+Prose supports a soft hyphen (`U+00AD`, including `&shy;`) and zero-width space
+(`U+200B`, including `&#x200B;`) as optional line-break instructions. An unused
+instruction draws no glyph and consumes no advance. Text on both sides shapes
+together, retaining the same ligatures, kerning and combining-mark placement as
+the visible word without the instruction. A selected soft-hyphen break paints
+one measured hyphen in the instruction's own style and link; a selected
+zero-width-space break adds no glyph. Heading, list, quotation, table-cell and
+endnote prose use the same policy.
+
+Leading, trailing and consecutive instructions do not create empty words,
+extra spaces or blank lines. A consecutive mixture keeps the first soft hyphen
+and its style. An instruction before a supported combining mark cannot split
+that mark from its base. Inline/fenced code, raw-HTML source, TeX and image
+payloads remain literal or opaque; the prose policy does not edit those sources.
+
+The planner uses bounded fragment and penalty candidates, then reshapes the
+actual selected physical fragments before accepting their geometry. Unchosen
+instructions within a fragment remain absent from font lookup. If isolated
+fragment estimates propose more lines than a fitting joined-word plan, the
+joined plan wins. Invalid or infeasible candidates fall back to measured
+authored opportunities and the existing cluster-safe emergency wrapper; an
+optional hyphen is never stranded on a line by itself. This does not claim
+global optimality over all possible contextual-shaping alternatives.
+
+At most 2,048 internal instructions are retained per source word, and the
+optional paragraph graph admits at most 2,048 word/fragment candidates. Greedy
+repair separately limits examined source/run work to 1 Mi units. Exhausted
+instruction retention or repair reports `svg_discretionary_limit` and preserves
+all remaining visible text through the ordinary emergency path. The paragraph's
+existing source-byte, run, glyph and output limits remain in force. No new
+setting or feature flag is needed, and words without these instructions retain
+their previous layout and output.
+
 ### Whole-paragraph line breaking
 
 All SVG entry points now use the shared Knuth–Plass breaker for bounded ragged
 paragraphs, including headings, table cells and nested block content. Equal-style
 pieces first coalesce and are shaped once. Each source word becomes one measured
-box containing its complete styled, math and image runs. Only real source spaces
-become breakable glue. No font scaling, interword stretch, shrink, ligature
-splitting or new dictionary hyphenation is introduced by the planner.
+box containing its complete styled, math and image runs. Real source spaces
+become breakable glue; authored optional breaks use the separate penalty and
+geometry-validation policy above. No font scaling, interword stretch, shrink
+or new dictionary hyphenation is introduced by the planner.
 
 The objective is the sum of `(badness + 1)^2` over chosen lines. For non-final
 lines, badness is the shared fixed-point cubic of natural shortfall divided by
@@ -100,8 +136,9 @@ unrounded width of every planned line. A rejected plan never drops source or
 partially installs a new layout. Explicit hard breaks delimit independent
 paragraphs and preserve consecutive blank lines and a final empty line.
 
-An overwide source word, including attached mixed styles, returns the paragraph
-to the existing cluster-safe greedy wrapper. Fenced code retains its existing
+An overwide source word without usable authored opportunities, including
+attached mixed styles, returns the paragraph to the existing cluster-safe
+greedy wrapper. Fenced code retains its existing
 whitespace-preserving wrapper. The optimizer admits at most 2,048 words, 8,192
 runs and 256 KiB of prepared text per hard-break-delimited paragraph. Crossing
 one of these limits streams the complete paragraph through the old wrapper and
@@ -218,6 +255,12 @@ rounding, source-word atomicity and fallback. `src/svg/paragraph_tests.rs` exerc
 actual prepared fonts, glyph painting, math, resource warnings, hard breaks,
 long-token fallback, budget reset and complete SVG output. Run these with
 `cargo test paragraph` and the existing SVG integration suites.
+
+`src/svg/discretionary_tests.rs` checks selected and unused authored breaks with
+real fonts, including a known ligature/kerning fixture at exact fitting widths,
+combining marks, instruction styling/link identity, literal code, opaque
+resources, bounded fallback and complete emitted-SVG equivalence for unused
+instructions. Run it with `cargo test --lib svg::text::discretionary_tests`.
 
 The paragraph implementation checked an independent executable scoring model
 against exhaustive enumeration on 5,000 cases. That model is not a Rust build,

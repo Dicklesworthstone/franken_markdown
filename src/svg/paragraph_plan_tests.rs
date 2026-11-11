@@ -21,6 +21,7 @@ fn group(width: f64, gap: f64) -> Group {
             shaped: None,
         }],
         gap,
+        hints: Vec::new(),
     }
 }
 
@@ -174,7 +175,8 @@ fn invalid_geometry_and_excess_candidates_are_not_cast_or_partially_planned() {
         plan(
             &[Group {
                 runs: Vec::new(),
-                gap: 0.0
+                gap: 0.0,
+                hints: Vec::new(),
             }],
             100.0
         )

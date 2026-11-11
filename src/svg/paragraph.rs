@@ -5,7 +5,7 @@
 //! create glue. Final lines, code spans and nonbreaking spaces retain their
 //! existing semantics; the painter never has to honor fictitious shrink.
 
-use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word};
+use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word, discretionary};
 use franken_markdown::layout::{
     FORCED_BREAK_PENALTY, Glue, LayoutUnit, ParagraphItem, ParagraphLayoutScratch, Penalty,
     TextBox, break_paragraph_into,
@@ -16,9 +16,10 @@ const MAX_WORDS: usize = 2048;
 const MAX_RUNS: usize = 8192;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 
-struct Group {
-    runs: Vec<Word>,
-    gap: f64,
+pub(super) struct Group {
+    pub(super) runs: Vec<Word>,
+    pub(super) gap: f64,
+    pub(super) hints: Vec<discretionary::Hint>,
 }
 
 #[derive(Default)]
@@ -37,16 +38,19 @@ impl Paragraph {
         flow: &mut TextFlow,
         shaper: &Shaper<'_>,
         word: Vec<Word>,
+        authored: discretionary::Authored,
         gap: f64,
         size: f64,
         width: f64,
     ) {
-        let mut group = Group { runs: word, gap };
+        let mut group = Group {
+            runs: word,
+            gap,
+            hints: authored.hints,
+        };
         if !self.greedy {
             self.runs = self.runs.saturating_add(group.runs.len());
-            for run in &group.runs {
-                self.text_bytes = self.text_bytes.saturating_add(run.text.len());
-            }
+            self.text_bytes = self.text_bytes.saturating_add(authored.source_bytes);
             if self.groups.len() == MAX_WORDS
                 || self.runs > MAX_RUNS
                 || self.text_bytes > MAX_TEXT_BYTES
@@ -56,12 +60,12 @@ impl Paragraph {
                 self.greedy = true;
                 limit_warning(&mut group);
                 for prior in self.groups.drain(..) {
-                    poster.place_prepared(flow, shaper, prior.runs, prior.gap, size, width);
+                    discretionary::place(poster, flow, shaper, prior, size, width);
                 }
             }
         }
         if self.greedy {
-            poster.place_prepared(flow, shaper, group.runs, group.gap, size, width);
+            discretionary::place(poster, flow, shaper, group, size, width);
         } else {
             self.groups.push(group);
         }
@@ -75,7 +79,27 @@ impl Paragraph {
         size: f64,
         width: f64,
     ) {
-        let plan = if self.greedy {
+        let has_hints = self.groups.iter().any(|group| !group.hints.is_empty());
+        if !self.greedy
+            && has_hints
+            && let Some(lines) = discretionary::planned_lines(&self.groups, shaper, size, width)
+        {
+            for (index, line) in lines.into_iter().enumerate() {
+                if index != 0 {
+                    flow.new_line();
+                }
+                for run in line {
+                    flow.line_width += run.gap + run.w;
+                    flow.line.push(run);
+                }
+            }
+            self.groups.clear();
+            self.runs = 0;
+            self.text_bytes = 0;
+            self.greedy = false;
+            return;
+        }
+        let plan = if self.greedy || has_hints {
             None
         } else {
             plan(&self.groups, width)
@@ -86,7 +110,7 @@ impl Paragraph {
                 flow.new_line();
                 boundaries.next();
             }
-            poster.place_prepared(flow, shaper, group.runs, group.gap, size, width);
+            discretionary::place(poster, flow, shaper, group, size, width);
         }
         self.runs = 0;
         self.text_bytes = 0;
@@ -97,7 +121,7 @@ impl Paragraph {
 /// None means the existing cluster-safe wrapper must handle the paragraph.
 /// In particular, an overwide indivisible word must not enter a DP that can
 /// only break at source whitespace. Its prepared data is reused by fallback.
-fn plan(groups: &[Group], width: f64) -> Option<Vec<Range<usize>>> {
+pub(super) fn plan(groups: &[Group], width: f64) -> Option<Vec<Range<usize>>> {
     if groups.is_empty() {
         return Some(Vec::new());
     }
@@ -192,7 +216,7 @@ fn plan(groups: &[Group], width: f64) -> Option<Vec<Range<usize>>> {
 /// Round OUTWARD: fitting must not borrow a fraction of a point that painting
 /// will spend. The page measure is rounded inward. Original f64 geometry stays
 /// on the prepared runs and is never replaced with these decision units.
-fn upper_units(value: f64) -> Option<LayoutUnit> {
+pub(super) fn upper_units(value: f64) -> Option<LayoutUnit> {
     if !value.is_finite() || value < 0.0 {
         return None;
     }

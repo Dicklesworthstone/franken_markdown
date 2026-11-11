@@ -7,10 +7,11 @@ mod pdf_content;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use franken_markdown::ast::{DefinitionItem, List, ListItem};
 use franken_markdown::book::{BookInput, BookRenderer};
 use franken_markdown::{
-    BaselineGrid, PageMargins, PdfEmitOptions, PdfOptions, parse_markdown, render_pdf,
-    render_pdf_document_emitted,
+    BaselineGrid, Block, Document, Inline, PageMargins, PdfEmitOptions, PdfOptions, Profile,
+    parse_markdown, parse_markdown_with_profile, render_pdf, render_pdf_document_emitted,
 };
 
 const PRECISION: f64 = 0.015;
@@ -1866,4 +1867,256 @@ fn nested_quotation_headings_do_not_capture_outdented_section_titles() {
         }
     }
     assert!(panels > 0, "fixture must paint the nested quotation panels");
+}
+
+fn definition_text(text: impl Into<String>) -> Vec<Inline> {
+    vec![Inline::Text(text.into())]
+}
+
+fn definition_note(blocks: Vec<Block>) -> Document {
+    Document {
+        blocks: vec![
+            Block::Paragraph(vec![
+                Inline::Text("BODYCITE.".into()),
+                Inline::FootnoteRef { id: "terms".into() },
+            ]),
+            Block::FootnoteDefinition {
+                id: "terms".into(),
+                blocks,
+            },
+        ],
+    }
+}
+
+fn definition_options() -> PdfOptions {
+    let mut options = options();
+    options.profile = Some(Profile::GfmPlus);
+    options.footnote_backlinks = true;
+    options
+}
+
+#[test]
+fn gfm_plus_definition_note_keeps_all_terms_with_its_first_description() {
+    let mut source = String::from("BODYCITE.[^terms]\n\n[^terms]:\n");
+    for index in 0..20 {
+        source.push_str(&format!(
+            "    TERM{index:03}\n    ALIAS{index:03}\n    : DESC{index:03} first definition.\n    : MORE{index:03} another definition.\n\n",
+        ));
+    }
+    let document = parse_markdown_with_profile(&source, Some(Profile::GfmPlus));
+    let Block::FootnoteDefinition { blocks, .. } = &document.blocks[1] else {
+        panic!("fixture must retain its source footnote");
+    };
+    let items: Vec<_> = blocks
+        .iter()
+        .flat_map(|block| match block {
+            Block::DefinitionList(items) => items.as_slice(),
+            _ => &[],
+        })
+        .collect();
+    assert_eq!(items.len(), 20, "exercise parsed definition lists, not prose");
+    assert!(
+        items
+            .iter()
+            .all(|item| item.terms.len() == 2 && item.definitions.len() == 2),
+    );
+    let options = definition_options();
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    for prefix in ["TERM", "ALIAS", "DESC", "MORE"] {
+        assert_markers(&pages, prefix, 20);
+    }
+    for index in 0..20 {
+        let (term_page, term) = locate(&pages, &format!("TERM{index:03}"));
+        let (alias_page, _) = locate(&pages, &format!("ALIAS{index:03}"));
+        let (description_page, description) = locate(&pages, &format!("DESC{index:03}"));
+        assert_eq!(term_page, alias_page);
+        assert_eq!(term_page, description_page, "definition item {index}");
+        assert!(description.x > term.x, "retain the definition's indentation");
+    }
+    assert_eq!(locate(&pages, "TERM000").0, locate(&pages, "BODYCITE").0);
+    assert!(locate(&pages, "TERM019").0 > locate(&pages, "TERM000").0);
+    assert!(!text(&pages).contains("Notes"));
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+    assert_section_note_geometry(&pages, &options);
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap(),
+    );
+    assert_eq!(bytes, render_pdf(&source, &options).unwrap());
+}
+
+#[test]
+fn wrapped_definition_terms_stay_whole_while_a_long_description_continues() {
+    let mut description = Vec::new();
+    for index in 0..64 {
+        if index > 0 {
+            description.push(Inline::HardBreak);
+        }
+        description.push(Inline::Text(format!("DESC{index:03} retained source row.")));
+    }
+    let document = definition_note(vec![Block::DefinitionList(vec![DefinitionItem {
+        terms: vec![
+            definition_text(
+                "TERMSTART several explanatory words several explanatory words several explanatory words TERMEND",
+            ),
+            definition_text(
+                "ALIASSTART another expanded term with several measured words and more words ALIASEND",
+            ),
+        ],
+        definitions: vec![description, definition_text("OTHERDEF retained second definition.")],
+    }])]);
+    let options = definition_options();
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    let citation_page = locate(&pages, "BODYCITE").0;
+    for marker in ["TERMSTART", "TERMEND", "ALIASSTART", "ALIASEND", "DESC000"] {
+        assert_eq!(locate(&pages, marker).0, citation_page, "{marker}");
+        assert_eq!(text(&pages).matches(marker).count(), 1);
+    }
+    assert!(locate(&pages, "TERMSTART").1.y > locate(&pages, "TERMEND").1.y);
+    assert!(locate(&pages, "ALIASSTART").1.y > locate(&pages, "ALIASEND").1.y);
+    assert_markers(&pages, "DESC", 64);
+    assert_eq!(text(&pages).matches("OTHERDEF").count(), 1);
+    assert!(locate(&pages, "DESC063").0 > citation_page);
+    assert!(!text(&pages).contains("Notes"));
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+    assert_section_note_geometry(&pages, &options);
+}
+
+#[test]
+fn nested_definition_notes_preserve_quote_and_list_ownership() {
+    let items = (0..24)
+        .map(|index| DefinitionItem {
+            terms: vec![definition_text(format!("TERM{index:03}"))],
+            definitions: vec![definition_text(format!("DESC{index:03} retained description."))],
+        })
+        .collect();
+    let document = definition_note(vec![Block::BlockQuote(vec![Block::List(List {
+        ordered: false,
+        start: 1,
+        tight: false,
+        items: vec![ListItem {
+            task: None,
+            blocks: vec![Block::DefinitionList(items)],
+        }],
+    })])]);
+    let options = definition_options();
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "TERM", 24);
+    assert_markers(&pages, "DESC", 24);
+    assert!(!text(&pages).contains("Notes"));
+    for index in 0..24 {
+        assert_eq!(
+            locate(&pages, &format!("TERM{index:03}")).0,
+            locate(&pages, &format!("DESC{index:03}")).0,
+        );
+    }
+    assert_eq!(locate(&pages, "TERM000").0, locate(&pages, "BODYCITE").0);
+    assert!(locate(&pages, "TERM023").0 > locate(&pages, "TERM000").0);
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "BlockQuote"), 1);
+    assert_eq!(structure_count(&bytes, "L"), 1);
+    assert_eq!(structure_count(&bytes, "LI"), 1);
+    assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+    assert_section_note_geometry(&pages, &options);
+    // Every term/description uses ordinary note type in this fixture.
+    assert_panel_bounds(&pages, &options);
+}
+
+#[test]
+fn empty_definition_items_keep_their_prefix_without_capturing_adjacent_items() {
+    for termless in [false, true] {
+        let first = if termless {
+            DefinitionItem {
+                terms: vec![Vec::new()],
+                definitions: vec![definition_text("FIRSTSOURCE description without a term.")],
+            }
+        } else {
+            DefinitionItem {
+                terms: vec![definition_text("FIRSTSOURCE term without a description.")],
+                definitions: vec![Vec::new()],
+            }
+        };
+        let mut items = vec![first];
+        for index in 0..24 {
+            items.push(DefinitionItem {
+                terms: Vec::new(),
+                definitions: Vec::new(),
+            });
+            items.push(DefinitionItem {
+                terms: vec![definition_text(format!("EMPTY{index:03} terminal term."))],
+                definitions: Vec::new(),
+            });
+        }
+        let document = definition_note(vec![Block::DefinitionList(items)]);
+        for height in [144.0, 160.0, 180.0, 192.0] {
+            let mut options = definition_options();
+            options.theme.page.size.height_pt = height;
+            let bytes =
+                render_pdf_document_emitted(&document, &options, PdfEmitOptions::default())
+                    .unwrap();
+            let pages = painted_pages(&bytes);
+            assert!(!text(&pages).contains("Notes"));
+            assert_eq!(locate(&pages, "FIRSTSOURCE").0, locate(&pages, "BODYCITE").0);
+            assert_markers(&pages, "EMPTY", 24);
+            assert!(locate(&pages, "EMPTY023").0 > locate(&pages, "FIRSTSOURCE").0);
+            assert_eq!(structure_count(&bytes, "Note"), 1);
+            assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+            assert_section_note_geometry(&pages, &options);
+        }
+    }
+}
+
+#[test]
+fn definition_term_authority_does_not_leak_into_ordinary_bold_paragraphs() {
+    let mut blocks = vec![Block::DefinitionList(vec![DefinitionItem {
+        terms: vec![definition_text("TERMINTRO")],
+        definitions: vec![definition_text("DESCINTRO retained description.")],
+    }])];
+    for index in 0..32 {
+        blocks.push(Block::Paragraph(vec![Inline::Strong(definition_text(
+            format!("BOLD{index:03} independent ordinary paragraph."),
+        ))]));
+    }
+    let document = definition_note(blocks);
+    let options = definition_options();
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(!text(&pages).contains("Notes"));
+    assert_markers(&pages, "BOLD", 32);
+    assert_eq!(locate(&pages, "TERMINTRO").0, locate(&pages, "DESCINTRO").0);
+    assert!(locate(&pages, "BOLD031").0 > locate(&pages, "BOLD000").0);
+    assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+    assert_section_note_geometry(&pages, &options);
+}
+
+#[test]
+fn oversized_definition_term_group_preserves_the_complete_ordinary_endnote() {
+    let document = definition_note(vec![Block::DefinitionList(vec![DefinitionItem {
+        terms: (0..32)
+            .map(|index| definition_text(format!("TERM{index:03}")))
+            .collect(),
+        definitions: vec![definition_text("LASTDESC belongs to every source term.")],
+    }])]);
+    let options = definition_options();
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(text(&pages).contains("Notes"));
+    assert_markers(&pages, "TERM", 32);
+    assert_eq!(text(&pages).matches("LASTDESC").count(), 1);
+    let mut ordinary = options.clone();
+    ordinary.split_footnotes = false;
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &ordinary, PdfEmitOptions::default()).unwrap(),
+    );
 }

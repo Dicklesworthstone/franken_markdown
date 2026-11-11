@@ -1652,6 +1652,10 @@ struct FlowMark {
     note_owner: u32,
     /// This text note may continue at measured row boundaries on later pages.
     split_note: bool,
+    /// Source-owned definition-list introduction, consumed by continued notes.
+    /// Some(true) keeps the next row; Some(false) retains note-label ownership
+    /// without capturing unrelated content. None marks ordinary source rows.
+    note_definition_keep_next: Option<bool>,
     /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
     /// its source block. Language strings are shared once per render.
     language_scope: u32,
@@ -1673,6 +1677,7 @@ impl Default for FlowMark {
             note_destination: 0,
             note_owner: 0,
             split_note: false,
+            note_definition_keep_next: None,
             language_scope: language::UNASSIGNED,
             document_language: false,
         }
@@ -3738,6 +3743,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     note_destination: 0,
                     note_owner: 0,
                     split_note: false,
+                    note_definition_keep_next: None,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -5403,6 +5409,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     note_destination: 0,
                     note_owner: 0,
                     split_note: false,
+                    note_definition_keep_next: None,
                 },
                 list_path: Vec::new(),
                 table_cols: Vec::new(),
@@ -5473,6 +5480,7 @@ fn layout_definition_list(
 ) {
     let def_indent = indent + 14.0;
     for item in items {
+        let term_start = out.len();
         for term in &item.terms {
             let mut toks = Vec::new();
             tokenize(term, true, false, false, None, &mut cx.links, &mut toks);
@@ -5491,6 +5499,7 @@ fn layout_definition_list(
                 },
             );
         }
+        let term_end = out.len();
         for (def_idx, def) in item.definitions.iter().enumerate() {
             let mut toks = Vec::new();
             tokenize(def, false, false, false, None, &mut cx.links, &mut toks);
@@ -5510,6 +5519,18 @@ fn layout_definition_list(
                     kind: FlowKind::Paragraph,
                 },
             );
+        }
+        // Preserve source ownership after all rows have been measured. A
+        // caller-built item may have empty terms or no painted description.
+        // Its first content still owns the note label, but its final term
+        // must not bind the next unrelated item when no description exists.
+        let has_description = term_end < out.len();
+        let term_count = term_end - term_start;
+        for (index, line) in out[term_start..term_end].iter_mut().enumerate() {
+            line.flow.note_definition_keep_next = Some(index + 1 < term_count || has_description);
+        }
+        if term_count == 0 && has_description {
+            out[term_end].flow.note_definition_keep_next = Some(false);
         }
     }
 }
@@ -5609,6 +5630,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
             note_destination: 0,
             note_owner: 0,
             split_note: false,
+            note_definition_keep_next: None,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -5709,6 +5731,7 @@ fn push_figure_line(
             note_destination: 0,
             note_owner: 0,
             split_note: false,
+            note_definition_keep_next: None,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -17591,6 +17614,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
             note_destination: 0,
             note_owner: 0,
             split_note: false,
+            note_definition_keep_next: None,
         };
     }
 }
@@ -19138,6 +19162,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                     note_destination: 0,
                     note_owner: 0,
                     split_note: false,
+                    note_definition_keep_next: None,
                 },
                 list_path: Vec::new(),
                 table_cols: cols,
@@ -19189,6 +19214,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
             note_destination: 0,
             note_owner: 0,
             split_note: false,
+            note_definition_keep_next: None,
         },
         list_path: Vec::new(),
         table_cols: Vec::new(),
@@ -32250,6 +32276,7 @@ mod keep_with_next_tests {
                 note_destination: 0,
                 note_owner: 0,
                 split_note: false,
+                note_definition_keep_next: None,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -32523,6 +32550,7 @@ mod void_budget_tests {
                 note_destination: 0,
                 note_owner: 0,
                 split_note: false,
+                note_definition_keep_next: None,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),
@@ -38484,6 +38512,7 @@ mod pdf_writer_tests {
                     note_destination: 0,
                     note_owner: 0,
                     split_note: false,
+                    note_definition_keep_next: None,
                 },
                 list_path: lists
                     .iter()
@@ -45808,6 +45837,7 @@ mod plass_pagination_tests {
                 note_destination: 0,
                 note_owner: 0,
                 split_note: false,
+                note_definition_keep_next: None,
             },
             list_path: Vec::new(),
             table_cols: Vec::new(),

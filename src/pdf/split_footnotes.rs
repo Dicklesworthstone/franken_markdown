@@ -65,6 +65,13 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
                 Block::Paragraph(inlines)
                     if toc_marker_depth(inlines).is_none() && text(inlines, false) => {}
                 Block::Heading { inlines, .. } if text(inlines, true) => {}
+                Block::DefinitionList(items)
+                    if items.iter().all(|item| {
+                        item.terms
+                            .iter()
+                            .chain(&item.definitions)
+                            .all(|inlines| text(inlines, true))
+                    }) => {}
                 Block::CodeBlock { lang, code }
                     if !crate::diagrams::is_diagram_code(code, lang.as_deref().unwrap_or("")) => {}
                 Block::Table(table)
@@ -321,6 +328,11 @@ fn marker_only(line: &Line) -> bool {
 }
 
 fn keeps_next(before: &Line, after: &Line) -> bool {
+    // Definition introductions carry source-owned keeps from layout. Bold
+    // prose and indented paragraphs never acquire definition authority.
+    if before.flow.note_definition_keep_next == Some(true) {
+        return true;
+    }
     if before.flow.group == after.flow.group {
         // Keep wrapped logical rows intact. The header plus separator belongs
         // with the first complete data row; the closing rule belongs with the
@@ -356,6 +368,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     // Ordinary paragraph-only notes keep their historical row boundaries.
     (after.bg != 0
         || after.flow.kind == FlowKind::Heading
+        || after.flow.note_definition_keep_next.is_some()
         || matches!(after.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
         || !after.quote_bars.is_empty()
         || !after.list_path.is_empty()

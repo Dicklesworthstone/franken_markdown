@@ -64,8 +64,8 @@ with this mode.
 
 Continuation supports paragraphs with styled text, inline code, inline
 mathematics, images mixed with prose, and ordinary links, as well as ordinary
-fenced or indented code, tables, headings, ordered/unordered/task lists, and
-blockquotes (including alerts).
+fenced or indented code, tables, headings, definition lists,
+ordered/unordered/task lists, and blockquotes (including alerts).
 Lists and quotations can nest, and code blocks can appear inside them. Fragments
 retain syntax highlighting, source line numbers, list labels, indentation,
 quotation bars, code backgrounds, links and logical note ownership. Code and
@@ -83,6 +83,19 @@ introduce nested content in its own scope. The generated note label stays with
 a first heading and its subject, so the first fragment begins on the citation's
 page. If this mandatory group cannot fit, the complete note keeps its existing
 endnote fallback.
+
+Definition lists retain all of an item's terms, including wrapped terms and
+aliases, with the first measured line of their first description. The rest of
+a long description and later definitions can continue on following pages.
+Terms keep their bold styling and descriptions keep their indentation inside
+ordinary notes, quotations and list items. These keeps follow explicit source
+metadata; ordinary bold or indented prose does not become a definition term.
+The first painted definition content owns a generated note label even when a
+caller-built AST omits terms or descriptions. An empty item does not capture
+an adjacent item. If the required term-and-description group cannot fit, the
+complete note retains its ordinary endnote fallback. Markdown definition lists
+use the extended grammar (`--profile gfm-plus`); an explicit CommonMark/GFM
+profile retains its existing literal-prose behavior.
 
 Inline formulas and images stay indivisible within their measured text rows.
 Continuation retains their fitted dimensions, formula source, image alternative
@@ -107,8 +120,8 @@ endnote fallback. The same fallback applies when the first header, row and
 note label cannot fit with the citing body line. No rows are clipped, shrunk
 to satisfy a page, or partially moved into a separate note.
 
-Notes containing standalone figures, display-math blocks, diagrams, definition
-lists, generated contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
+Notes containing standalone figures, display-math blocks, diagrams, generated
+contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
 fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
 or a required label-and-content group that cannot fit on a note-only page also
 sends its complete note to that fallback.
@@ -210,7 +223,12 @@ wrapped headings and underline paint, first-subject keeps, source-level tags
 under the logical Note, late-heading link destinations, sibling-item boundaries,
 and complete endnote fallback for an impossible kept group. Their geometry
 checks identify body text by fixture content rather than font size, because
-note headings can be larger than ordinary body prose.
+note headings can be larger than ordinary body prose. Definition-list fixtures
+assert the parsed GFM-plus structure, multiple/wrapped-term keeps, continuing
+descriptions, nested quote/list ownership, tight-page prefixes with missing
+terms or descriptions, empty-item boundaries, and complete impossible-group
+fallback. A bold-prose negative control checks that source term authority does
+not leak into ordinary paragraphs.
 
 `tests/pdf_footnote_inline_objects_test.rs` decodes emitted glyph maps, vector
 paths, image transforms, annotation rectangles and structure ancestry to check

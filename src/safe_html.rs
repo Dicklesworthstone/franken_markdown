@@ -34,8 +34,19 @@ use crate::ast::{Align, Block, DefinitionItem, Document, Inline, List, ListItem,
 /// `<b>` tags cannot become an AST deep enough to exhaust a renderer's stack.
 const MAX_HTML_NESTING: usize = 32;
 
+/// Match the Markdown parser's bound on synthetic empty table cells. A small
+/// raw HTML table can otherwise request a quadratic grid by combining one
+/// wide row with many short rows. Only generated padding consumes this budget;
+/// complete tables remain proportional to their original cell count.
+const MAX_TABLE_PADDING_CELLS: usize = 512 * 1024;
+
 /// Lower every raw HTML node in `doc` the pass understands. Documents without
 /// raw HTML are returned borrowed.
+///
+/// A raw HTML table that would synthesize more than 512K empty cells keeps all
+/// its source rows as paragraphs, with visible cell separators and a strong
+/// first row. Inline content and row order are retained without expanding the
+/// sparse grid. Tables within the limit keep their ordinary native structure.
 #[must_use]
 pub fn lower(doc: &Document) -> Cow<'_, Document> {
     if !blocks_have_html(&doc.blocks) {
@@ -1354,8 +1365,8 @@ impl BlockBuilder {
                     rows.push(row);
                 }
                 rows.retain(|row| !row.is_empty());
-                if let Some(table) = table_from_rows(rows) {
-                    self.push_block(Block::Table(table));
+                for block in table_blocks_from_rows(rows) {
+                    self.push_block(block);
                 }
             }
         }
@@ -1389,21 +1400,68 @@ fn merge_texts(inlines: Vec<Inline>) -> Vec<Inline> {
     out
 }
 
-fn table_from_rows(mut rows: Vec<Vec<Vec<Inline>>>) -> Option<Table> {
-    let columns = rows.iter().map(Vec::len).max()?;
-    if columns == 0 {
-        return None;
+fn table_blocks_from_rows(mut rows: Vec<Vec<Vec<Inline>>>) -> Vec<Block> {
+    let Some(columns) = rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .filter(|&columns| columns > 0)
+    else {
+        return Vec::new();
+    };
+    // Preflight the complete table before resizing any row. In particular,
+    // a late wide row must not retroactively expand every preceding row.
+    // Subtracting from the fixed budget also avoids an overflowing sum on
+    // both native and wasm32 hosts.
+    let admitted = rows
+        .iter()
+        .try_fold(MAX_TABLE_PADDING_CELLS, |remaining, row| {
+            remaining.checked_sub(columns - row.len())
+        })
+        .is_some();
+    if !admitted {
+        return rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let inlines = table_row_inlines(row);
+                // The ordinary native table treats its first row as a header.
+                // Retain that distinction without synthesizing another grid.
+                Block::Paragraph(if index == 0 {
+                    vec![Inline::Strong(inlines)]
+                } else {
+                    inlines
+                })
+            })
+            .collect();
     }
     for row in &mut rows {
         row.resize_with(columns, Vec::new);
     }
     let mut rows = rows.into_iter();
-    let head = rows.next()?;
-    Some(Table {
+    let Some(head) = rows.next() else {
+        return Vec::new();
+    };
+    vec![Block::Table(Table {
         align: vec![Align::None; columns],
         head,
         rows: rows.collect(),
-    })
+    })]
+}
+
+/// Flatten only the cells present in the source. Empty authored cells retain
+/// separators; absent cells never create new text or allocations. Reuse this
+/// for nested tables so both bounded representations preserve the same inline
+/// styles, links, images, code and hard breaks.
+fn table_row_inlines(row: Vec<Vec<Inline>>) -> Vec<Inline> {
+    let mut inlines = Vec::new();
+    for (index, cell) in row.into_iter().enumerate() {
+        if index != 0 {
+            inlines.push(Inline::Text(" | ".to_string()));
+        }
+        inlines.extend(cell);
+    }
+    merge_texts(inlines)
 }
 
 /// A table cell has an inline-only AST, but supported HTML may place complete
@@ -1452,14 +1510,7 @@ fn append_cell_block(block: Block, out: &mut Vec<Inline>) {
         }
         Block::Table(table) => {
             for row in std::iter::once(table.head).chain(table.rows) {
-                let mut inlines = Vec::new();
-                for (index, cell) in row.into_iter().enumerate() {
-                    if index != 0 {
-                        inlines.push(Inline::Text(" | ".to_string()));
-                    }
-                    inlines.extend(cell);
-                }
-                append_cell_inlines(inlines, out);
+                append_cell_inlines(table_row_inlines(row), out);
             }
         }
         Block::DefinitionList(items) => {

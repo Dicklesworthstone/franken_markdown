@@ -90,10 +90,12 @@ site artifacts keep their own layout settings.
 
 The PDF routes, including verification and book output, accept
 `splitFootnotes: true` to continue long notes containing paragraphs, code,
-lists or quotations across page feet.
+tables, lists or quotations across page feet.
 The first fragment stays with the citation, and the remaining fragments retain
 the note's numbering, links and logical ownership. Omission or `false` retains
-the existing indivisible-note layout. Notes containing tables, figures, math
+the existing indivisible-note layout. Tables keep complete logical rows together
+and repeat their measured headers; oversized header/row groups retain the
+complete endnote fallback. Notes containing standalone figures, display math
 or headings, and unreferenced notes, retain their lossless endnote fallback.
 
 Continuation cannot be combined with `optimalPagination: true`,

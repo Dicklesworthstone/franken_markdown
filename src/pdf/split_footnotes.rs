@@ -4,7 +4,7 @@
 //! region. Every consumer creates its own cursor, so counts, running bands,
 //! navigation, verification and both PDF writers see the same physical pages.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
 
 use super::*;
@@ -23,11 +23,11 @@ pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
 
 /// Text-bearing containers already retain independently paintable rows and
 /// source-owned list/quote/code identities. Inline formulas and images remain
-/// atomic parts of those rows. Tables, standalone figures/formulas, explicit
-/// breaks and generated TOCs need their own split rules and keep the complete
-/// ordinary-note/endnote fallback.
+/// atomic parts of those rows. Tables split only between complete logical rows
+/// and repeat their measured headers. Standalone figures/formulas, explicit
+/// breaks and generated TOCs keep the complete ordinary-note/endnote fallback.
 pub(super) fn eligible(blocks: &[Block]) -> bool {
-    fn text(inlines: &[Inline]) -> bool {
+    fn text(inlines: &[Inline], cell: bool) -> bool {
         let mut pending = vec![inlines];
         let mut has_image = false;
         let mut has_content = false;
@@ -52,7 +52,7 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
         // Image-only paragraphs can become full-size figures or galleries.
         // Preserve their ordinary page-note/endnote admission, including for
         // styled/linked images and assets whose availability changes later.
-        !has_image || has_content
+        cell || !has_image || has_content
     }
 
     if blocks.is_empty() {
@@ -63,9 +63,15 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
         for block in blocks {
             match block {
                 Block::Paragraph(inlines)
-                    if toc_marker_depth(inlines).is_none() && text(inlines) => {}
+                    if toc_marker_depth(inlines).is_none() && text(inlines, false) => {}
                 Block::CodeBlock { lang, code }
                     if !crate::diagrams::is_diagram_code(code, lang.as_deref().unwrap_or("")) => {}
+                Block::Table(table)
+                    if table
+                        .head
+                        .iter()
+                        .chain(table.rows.iter().flatten())
+                        .all(|cell| text(cell, true)) => {}
                 Block::BlockQuote(inner) => pending.push(inner),
                 Block::List(list) => {
                     pending.extend(list.items.iter().map(|item| item.blocks.as_slice()));
@@ -84,11 +90,16 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
     let mut scratch = ShapeScratch::default();
     for line in lines.iter_mut() {
         if line.image.is_some()
-            || line.rule
+            || (line.rule && line.flow.kind != FlowKind::TableRule)
             || line.grid.is_some()
             || !matches!(
                 line.flow.kind,
-                FlowKind::Paragraph | FlowKind::Heading | FlowKind::Code
+                FlowKind::Paragraph
+                    | FlowKind::Heading
+                    | FlowKind::Code
+                    | FlowKind::TableHeader
+                    | FlowKind::TableRow
+                    | FlowKind::TableRule
             )
             || !line.gap_after.is_finite()
             || line.gap_after < 0.0
@@ -158,10 +169,11 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
         let extra = container_clearance(&lines[index - 1], &lines[index]);
         lines[index - 1].gap_after += extra;
     }
+    let headers = TableHeaders::scan(lines);
     let mut start = 0;
     while start < lines.len() {
         let end = unit_end(lines, start, lines.len());
-        let height = fragment_height(&lines[start..end]);
+        let height = headers.fragment_height(lines, start..end);
         if !height.is_finite() || height <= 0.0 || height > capacity {
             return false;
         }
@@ -175,6 +187,19 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
 fn paint_ink(line: &Line, code_edge: bool, quote_edge: bool) -> (f32, f32) {
     let mut above = line.text_ink.0;
     let mut below = line.text_ink.1.max(line.size * INLINE_MATH_DESCENT_ROOM);
+    if matches!(line.flow.kind, FlowKind::TableHeader | FlowKind::TableRow) {
+        // A shaded cell can paint beyond the glyphs. Include literal theme
+        // padding and financial footing strokes at fragment boundaries too.
+        let (table_above, table_below) = spacing::table_bounds(line);
+        above = above.max(table_above);
+        below = below.max(table_below);
+        for stroke in &line.table_footing {
+            below = below.max(stroke.below + 0.35);
+        }
+    } else if line.rule {
+        above = above.max(line.size * 0.5 + 0.35);
+        below = below.max((0.35 - line.size * 0.5).max(0.0));
+    }
     if code_edge && line.bg != 0 {
         above = above.max((line.size * PANEL_ASCENT_FRAC).max(line.text_ink.0) + PANEL_PAD_V);
         below = below.max((line.size * PANEL_DESCENT_FRAC).max(line.text_ink.1) + PANEL_PAD_V);
@@ -221,7 +246,13 @@ fn container_clearance(before: &Line, after: &Line) -> f32 {
         .quote_bars
         .iter()
         .any(|(id, _)| !before.quote_bars.iter().any(|(previous, _)| previous == id));
-    if !code_edge && !closes_quote && !opens_quote {
+    let table_edge = [before, after].iter().any(|line| {
+        matches!(
+            line.flow.kind,
+            FlowKind::TableHeader | FlowKind::TableRow | FlowKind::TableRule
+        )
+    });
+    if !code_edge && !closes_quote && !opens_quote && !table_edge {
         return 0.0;
     }
     let below = paint_ink(before, code_edge, closes_quote).1;
@@ -269,6 +300,21 @@ fn marker_only(line: &Line) -> bool {
 }
 
 fn keeps_next(before: &Line, after: &Line) -> bool {
+    if before.flow.group == after.flow.group {
+        // Keep wrapped logical rows intact. The header plus separator belongs
+        // with the first complete data row; the closing rule belongs with the
+        // last row, so no header-only or rule-only continuation page is made.
+        if (matches!(before.flow.kind, FlowKind::TableHeader | FlowKind::TableRow)
+            && before.flow.index + 1 < before.flow.count)
+            || (matches!(
+                before.flow.kind,
+                FlowKind::TableHeader | FlowKind::TableRule
+            ) && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow))
+            || (before.flow.kind == FlowKind::TableRow && after.flow.kind == FlowKind::TableRule)
+        {
+            return true;
+        }
+    }
     if before.flow.kind == FlowKind::Heading
         && (before.flow.group == after.flow.group
             || before
@@ -292,14 +338,15 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     // source row too, using semantic provenance rather than superscript text.
     // Ordinary paragraph-only notes keep their historical row boundaries.
     (after.bg != 0
+        || matches!(after.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
         || !after.quote_bars.is_empty()
         || !after.list_path.is_empty()
         || (before.flow.group == after.flow.group && note_label_only(after)))
         && note_label_only(before)
 }
 
-/// The smallest consecutive unit that may end a fragment. Heading and label
-/// chains are bounded by the immutable note range, including empty containers.
+/// The smallest consecutive unit that may end a fragment. Heading, label and
+/// table-row chains are bounded by the immutable note range.
 fn unit_end(lines: &[Line], start: usize, end: usize) -> usize {
     let mut next = start + 1;
     while next < end && keeps_next(&lines[next - 1], &lines[next]) {
@@ -318,9 +365,93 @@ pub(super) fn minimum_reserve(lines: &[Line]) -> f32 {
     }
 }
 
+struct TableHeader {
+    range: Range<usize>,
+    /// Measured leading and gaps, including the first painted row's top guard.
+    height: f32,
+}
+
+/// Retain only ranges into the measured source, never cloned header content.
+/// One linear scan per note admission or physical page walk avoids repeatedly
+/// searching back through every preceding row of a large table.
+#[derive(Default)]
+struct TableHeaders(BTreeMap<u32, TableHeader>);
+
+impl TableHeaders {
+    fn scan(lines: &[Line]) -> Self {
+        let mut headers = BTreeMap::new();
+        let mut start = 0;
+        while start < lines.len() {
+            let first = &lines[start];
+            if first.flow.kind != FlowKind::TableHeader {
+                start += 1;
+                continue;
+            }
+            let group = first.flow.group;
+            let mut end = start + 1;
+            while end < lines.len()
+                && lines[end].flow.group == group
+                && matches!(
+                    lines[end].flow.kind,
+                    FlowKind::TableHeader | FlowKind::TableRule
+                )
+            {
+                end += 1;
+            }
+            if lines.get(end).is_some_and(|line| {
+                line.flow.group == group && line.flow.kind == FlowKind::TableRow
+            }) {
+                let height = lines[start..end]
+                    .iter()
+                    .map(|line| line_leading(line) + line.gap_after)
+                    .sum::<f32>()
+                    + top_guard(first);
+                headers.insert(
+                    group,
+                    TableHeader {
+                        range: start..end,
+                        height,
+                    },
+                );
+            }
+            start = end;
+        }
+        Self(headers)
+    }
+
+    fn at(&self, lines: &[Line], start: usize) -> Option<&TableHeader> {
+        let first = lines.get(start)?;
+        if first.flow.kind != FlowKind::TableRow {
+            return None;
+        }
+        self.0
+            .get(&first.flow.group)
+            .filter(|header| header.range.end <= start)
+    }
+
+    /// Added height relative to a bare source fragment. Its top guard is
+    /// replaced by the header's, and the actual new seam retains ink clearance.
+    fn extra_height(&self, lines: &[Line], start: usize) -> f32 {
+        self.at(lines, start).map_or(0.0, |header| {
+            header.height - top_guard(&lines[start])
+                + container_clearance(&lines[header.range.end - 1], &lines[start])
+        })
+    }
+
+    fn fragment_height(&self, lines: &[Line], fragment: Range<usize>) -> f32 {
+        if fragment.is_empty() {
+            0.0
+        } else {
+            fragment_height(&lines[fragment.clone()]) + self.extra_height(lines, fragment.start)
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Cursor {
     pending: VecDeque<Range<usize>>,
+    headers: TableHeaders,
+    initialized: bool,
 }
 
 struct Allocation {
@@ -347,12 +478,18 @@ impl Cursor {
 
 /// Extend an admitted prefix without separating a heading or label from its
 /// first content row. Each source row is measured once per extension probe.
-fn extend(lines: &[Line], fragment: &mut Range<usize>, end: usize, budget: f32) {
-    let mut height = fragment_height(&lines[fragment.clone()]);
+fn extend(
+    lines: &[Line],
+    headers: &TableHeaders,
+    fragment: &mut Range<usize>,
+    end: usize,
+    budget: f32,
+) {
+    let mut height = headers.fragment_height(lines, fragment.clone());
     while fragment.end < end {
         let next_end = unit_end(lines, fragment.end, end);
         let mut candidate = if fragment.start >= fragment.end {
-            height + top_guard(&lines[fragment.end])
+            height + top_guard(&lines[fragment.end]) + headers.extra_height(lines, fragment.end)
         } else {
             height - bottom_guard(&lines[fragment.end - 1])
         };
@@ -380,6 +517,7 @@ fn allocate(
     end: usize,
     budget: f32,
 ) -> Allocation {
+    let headers = &cursor.headers;
     let introduced = notes.notes_in(start, end);
     let mut fresh = Vec::with_capacity(introduced.len());
     let mut used = 0.0;
@@ -389,7 +527,7 @@ fn allocate(
         } else {
             range.clone()
         };
-        used += fragment_height(&lines[fragment.clone()]);
+        used += headers.fragment_height(lines, fragment.clone());
         fresh.push(fragment);
     }
     let separator = &lines[notes.separator];
@@ -401,11 +539,17 @@ fn allocate(
     let mut fragments = Vec::new();
     for range in &cursor.pending {
         let mut fragment = range.start..range.start;
-        extend(lines, &mut fragment, range.end, (available - used).max(0.0));
+        extend(
+            lines,
+            headers,
+            &mut fragment,
+            range.end,
+            (available - used).max(0.0),
+        );
         if fragment.start >= fragment.end {
             break;
         }
-        used += fragment_height(&lines[fragment.clone()]);
+        used += headers.fragment_height(lines, fragment.clone());
         let next = fragment.end;
         fragments.push(fragment);
         consumed_pending += 1;
@@ -415,14 +559,15 @@ fn allocate(
         }
     }
     for (fragment, (_, whole)) in fresh.iter_mut().zip(introduced) {
-        let before = fragment_height(&lines[fragment.clone()]);
+        let before = headers.fragment_height(lines, fragment.clone());
         extend(
             lines,
+            headers,
             fragment,
             whole.end,
             before + (available - used).max(0.0),
         );
-        used += fragment_height(&lines[fragment.clone()]) - before;
+        used += headers.fragment_height(lines, fragment.clone()) - before;
         if fragment.end < whole.end {
             new_pending.push(fragment.end..whole.end);
         }
@@ -467,6 +612,7 @@ fn body_height(
 fn place<'a>(
     placed: &mut Vec<Placed<'a>>,
     lines: &'a [Line],
+    headers: &TableHeaders,
     notes: &PageNotes,
     allocation: &Allocation,
     page: PageGeom,
@@ -483,7 +629,18 @@ fn place<'a>(
     });
     y -= separator.gap_after;
     for fragment in &allocation.fragments {
-        if let Some(first) = lines[fragment.clone()].first() {
+        if let Some(header) = headers.at(lines, fragment.start) {
+            y -= top_guard(&lines[header.range.start]);
+            for line in &lines[header.range.clone()] {
+                y -= line_leading(line);
+                placed.push(Placed {
+                    line,
+                    y: placed_line_baseline(y, line),
+                });
+                y -= line.gap_after;
+            }
+            y -= container_clearance(&lines[header.range.end - 1], &lines[fragment.start]);
+        } else if let Some(first) = lines[fragment.clone()].first() {
             y -= top_guard(first);
         }
         for line in &lines[fragment.clone()] {
@@ -508,6 +665,10 @@ pub(super) fn next_page<'a>(
     page: PageGeom,
     emitted_any: &mut bool,
 ) -> Option<Vec<Placed<'a>>> {
+    if !cursor.initialized {
+        cursor.headers = TableHeaders::scan(lines);
+        cursor.initialized = true;
+    }
     let body = &lines[..notes.body_end];
     let capacity = (page.top_y() - page.bottom).max(0.0);
     if *start >= body.len() {
@@ -519,7 +680,14 @@ pub(super) fn next_page<'a>(
         let allocation = allocate(lines, notes, cursor, *start, *start, capacity);
         debug_assert!(!allocation.fragments.is_empty());
         let mut placed = Vec::new();
-        place(&mut placed, lines, notes, &allocation, page);
+        place(
+            &mut placed,
+            lines,
+            &cursor.headers,
+            notes,
+            &allocation,
+            page,
+        );
         cursor.commit(allocation);
         *emitted_any = true;
         return Some(placed);
@@ -561,7 +729,14 @@ pub(super) fn next_page<'a>(
         (end, None, geometry, allocation)
     });
     let mut placed = place_lines_shrunk(body, *start, end, geometry, shrink);
-    place(&mut placed, lines, notes, &allocation, page);
+    place(
+        &mut placed,
+        lines,
+        &cursor.headers,
+        notes,
+        &allocation,
+        page,
+    );
     cursor.commit(allocation);
     *start = end;
     *emitted_any = true;

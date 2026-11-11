@@ -550,12 +550,15 @@ fn linked_inline_images_continue_with_note_ownership_and_full_annotation_bounds(
 }
 
 #[test]
-fn indivisible_figures_tables_and_unreferenced_notes_keep_existing_fallback() {
+fn indivisible_figures_oversized_table_rows_and_unreferenced_notes_keep_existing_fallback() {
     for block in [
-        "![figure](badge.svg)",
-        "**[![figure](badge.svg)](https://example.org/figure)**",
-        "![first](badge.svg) ![second](badge.svg)",
-        "| Column |\n    | --- |\n    | Retained cell |",
+        "![figure](badge.svg)".to_owned(),
+        "**[![figure](badge.svg)](https://example.org/figure)**".to_owned(),
+        "![first](badge.svg) ![second](badge.svg)".to_owned(),
+        format!(
+            "| Column |\n    | --- |\n    | {} |",
+            "Retained cell ".repeat(180)
+        ),
     ] {
         let source = format!(
             "CITATION.[^objects]\n\n[^objects]: {block}\n\n[^orphan]: Orphan $x^2$ keeps its source.\n"
@@ -566,4 +569,84 @@ fn indivisible_figures_tables_and_unreferenced_notes_keep_existing_fallback() {
         original.split_footnotes = false;
         pdf_content::assert_same_paint(&bytes, &render_pdf(&source, &original).unwrap());
     }
+}
+
+#[test]
+fn continued_table_cells_preserve_inline_objects_links_and_note_ancestry() {
+    let rows = 24;
+    let mut source = String::from(
+        "CITATION.[^table]\n\n[^table]:\n    | Key | Formula | Image |\n    | --- | --- | --- |\n",
+    );
+    for index in 0..rows {
+        source.push_str(&format!(
+            "    | CELL{index:03} | $\\frac{{x^2}}{{y_3}}$ | [![badge](badge.svg)](https://example.org/icon) |\n",
+        ));
+    }
+    let options = options();
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pdf = Pdf::new(&bytes);
+    let runs: Vec<_> = pdf.pages.iter().map(|&page| pdf.runs(page)).collect();
+    let text: String = runs.iter().flatten().map(|run| run.text.as_str()).collect();
+    assert!(!text.contains("Notes"));
+    let mut row_pages = BTreeSet::new();
+    for index in 0..rows {
+        let marker = format!("CELL{index:03}");
+        assert_eq!(text.matches(&marker).count(), 1);
+        let (page, row) = runs
+            .iter()
+            .enumerate()
+            .find_map(|(page, runs)| {
+                runs.iter()
+                    .find(|run| run.text.contains(&marker))
+                    .map(|run| (page, run))
+            })
+            .unwrap();
+        assert!(row.size < 10.0);
+        assert!(row.y >= 36.0 && row.y < 264.0);
+        if index == 0 {
+            assert_eq!(page, 0, "first table row stays with its citation");
+        }
+        row_pages.insert(page);
+    }
+    assert!(row_pages.len() >= 3);
+    for tag in ["Formula", "Figure"] {
+        let elements = pdf.elements(tag);
+        assert_eq!(elements.len(), rows);
+        for (id, page, bounds) in elements {
+            assert!(pdf.ancestry(id).contains(&"Note"));
+            assert!(pdf.ancestry(id).contains(&"TD"));
+            inside(bounds, [36.0, 36.0, 324.0, 264.0]);
+            let body_bottom = pdf
+                .runs(page)
+                .iter()
+                .filter(|run| run.text.contains("CITATION"))
+                .map(|run| run.y - run.size * 0.3)
+                .fold(f64::INFINITY, f64::min);
+            assert!(bounds[3] < body_bottom);
+        }
+    }
+    let links = pdf
+        .objects
+        .values()
+        .filter(|object| {
+            object
+                .dictionary
+                .contains("/URI (https://example.org/icon)")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(links.len(), rows);
+    for (figure, link) in pdf.elements("Figure").into_iter().zip(links) {
+        let link = rect(&link.dictionary, "/Rect [");
+        inside(figure.2, link);
+        inside(link, figure.2);
+    }
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(
+            &parse_markdown(&source),
+            &options,
+            PdfEmitOptions::monolithic()
+        )
+        .unwrap()
+    );
 }

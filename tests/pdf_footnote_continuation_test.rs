@@ -523,7 +523,7 @@ fn assert_geometry(pages: &[PaintedPage], options: &PdfOptions) {
         let footer: String = page
             .runs
             .iter()
-            .filter(|run| run.artifact)
+            .filter(|run| run.artifact && run.text.starts_with("FOLIO "))
             .map(|run| run.text.as_str())
             .collect();
         assert_eq!(footer, format!("FOLIO {}/{}", index + 1, pages.len()));
@@ -885,7 +885,7 @@ fn inline_styles_and_late_backlink_survive_the_split() {
 }
 
 #[test]
-fn rich_and_unreferenced_notes_keep_the_complete_existing_fallback() {
+fn table_and_code_note_continues_while_unreferenced_notes_keep_their_fallback() {
     let mut source = String::from("CITATION.[^rich]\n\n[^rich]: RICHSTART\n\n    ```text\n");
     for index in 0..40 {
         source.push_str(&format!("    CODE{index:03} retained code row.\n"));
@@ -894,8 +894,6 @@ fn rich_and_unreferenced_notes_keep_the_complete_existing_fallback() {
         "    ```\n\n    | Column |\n    | --- |\n    | TABLECELL |\n\n[^orphan]: ORPHAN remains an endnote.\n",
     );
     let split = options();
-    let mut original = split.clone();
-    original.split_footnotes = false;
     let bytes = render_pdf(&source, &split).unwrap();
     let pages = painted_pages(&bytes);
     assert_markers(&pages, "CODE", 40);
@@ -903,7 +901,10 @@ fn rich_and_unreferenced_notes_keep_the_complete_existing_fallback() {
     assert_eq!(text(&pages).matches("RICHSTART").count(), 1);
     assert_eq!(text(&pages).matches("TABLECELL").count(), 1);
     assert_eq!(text(&pages).matches("ORPHAN").count(), 1);
-    pdf_content::assert_same_paint(&bytes, &render_pdf(&source, &original).unwrap());
+    assert_eq!(locate(&pages, "RICHSTART").0, locate(&pages, "CITATION").0);
+    assert!(locate(&pages, "CODE039").0 > locate(&pages, "RICHSTART").0);
+    assert!(locate(&pages, "TABLECELL").1.size < 10.0);
+    assert!(locate(&pages, "ORPHAN").1.size >= 10.9);
     assert_destinations(&bytes, &pages, &["RICHSTART"]);
 }
 
@@ -1143,4 +1144,392 @@ fn first_block_list_marker_and_alert_title_stay_with_the_first_source_row() {
     assert_first_note_navigation(&bytes, &pages, "NESTEDCITATION");
     assert_geometry(&pages, &options);
     assert_panel_bounds(&pages, &options);
+}
+
+fn table_note_source(rows: usize, prefix: &str) -> String {
+    let mut source = String::from("TABLECITATION.[^data]\n\n");
+    for index in 0..8 {
+        source.push_str(&format!("BODY{index:03} ordinary body paragraph.\n\n"));
+    }
+    source.push_str("[^data]:\n");
+    source.push_str(&format!(
+        "{prefix}| KEYHEADER | VALUEHEADER |\n{prefix}| --- | --- |\n"
+    ));
+    for index in 0..rows {
+        source.push_str(&format!(
+            "{prefix}| ROW{index:03} | START{index:03} complete measured content with enough words to wrap across physical text lines while retaining the whole source row END{index:03} |\n"
+        ));
+    }
+    source
+}
+
+fn assert_table_continuation(pages: &[PaintedPage], rows: usize) {
+    assert_markers(pages, "ROW", rows);
+    assert_markers(pages, "START", rows);
+    assert_markers(pages, "END", rows);
+    assert!(
+        !text(pages).contains("Notes"),
+        "table stays in the page-foot flow"
+    );
+    let first_page = locate(pages, "ROW000").0;
+    assert_eq!(first_page, locate(pages, "TABLECITATION").0);
+    let mut table_pages = BTreeSet::new();
+    for index in 0..rows {
+        let (key_page, key) = locate(pages, &format!("ROW{index:03}"));
+        let (start_page, start) = locate(pages, &format!("START{index:03}"));
+        let (end_page, end) = locate(pages, &format!("END{index:03}"));
+        assert_eq!(
+            key_page, start_page,
+            "source row {index} starts with its key"
+        );
+        assert_eq!(start_page, end_page, "source row {index} must stay atomic");
+        assert!(
+            start.y > end.y + 1.0,
+            "fixture row {index} must actually wrap"
+        );
+        assert!(key.size < 10.0, "continued rows keep footnote type size");
+        table_pages.insert(key_page);
+    }
+    assert!(
+        table_pages.len() >= 3,
+        "fixture must exercise multiple table fragments"
+    );
+    for page_index in table_pages {
+        let page = &pages[page_index];
+        for label in ["KEYHEADER", "VALUEHEADER"] {
+            let headers: Vec<_> = page
+                .runs
+                .iter()
+                .filter(|run| run.text.contains(label))
+                .collect();
+            assert_eq!(
+                headers.len(),
+                1,
+                "page {} has one complete header",
+                page_index + 1
+            );
+            assert_eq!(headers[0].artifact, page_index != first_page);
+            assert!(
+                page.runs
+                    .iter()
+                    .filter(|run| run.text.contains("ROW"))
+                    .all(|run| run.y < headers[0].y),
+                "the header precedes every source row on page {}",
+                page_index + 1,
+            );
+            assert!(headers[0].y < page.height - 36.0 && headers[0].y > 36.0);
+        }
+        let repeated: String = page
+            .runs
+            .iter()
+            .filter(|run| run.artifact && !run.text.starts_with("FOLIO "))
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(
+            repeated,
+            if page_index == first_page {
+                ""
+            } else {
+                "KEYHEADERVALUEHEADER"
+            }
+        );
+    }
+    assert_eq!(
+        text(pages).matches("KEYHEADER").count(),
+        1,
+        "one accessible source header"
+    );
+    assert_eq!(
+        text(pages).matches("VALUEHEADER").count(),
+        1,
+        "one accessible source header"
+    );
+}
+
+fn assert_table_note_structure(pdf: &[u8], rows: usize) {
+    assert_eq!(structure_count(pdf, "Note"), 1);
+    assert_eq!(structure_count(pdf, "Table"), 1);
+    assert_eq!(structure_count(pdf, "TR"), rows + 1);
+    assert_eq!(structure_count(pdf, "TH"), 2);
+    assert_eq!(structure_count(pdf, "TD"), rows * 2);
+    let objects = Objects::new(pdf);
+    let mut checked = 0;
+    for id in 1..objects.offsets.len() {
+        if !objects
+            .dictionary(id)
+            .contains("/Type /StructElem /S /Table ")
+        {
+            continue;
+        }
+        let mut parent = reference_after(objects.dictionary(id), "/P ");
+        let mut found_note = false;
+        for _ in 0..16 {
+            let dictionary = objects.dictionary(parent);
+            if dictionary.contains("/S /Note ") {
+                found_note = true;
+                break;
+            }
+            if !dictionary.contains("/Type /StructElem ") {
+                break;
+            }
+            parent = reference_after(dictionary, "/P ");
+        }
+        assert!(
+            found_note,
+            "the logical table remains inside its source Note"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 1);
+}
+
+#[test]
+fn tables_continue_at_complete_rows_with_repeated_headers_and_source_owned_tags() {
+    let rows = 18;
+    let source = table_note_source(rows, "    ");
+    let mut options = options();
+    options.footnote_backlinks = true;
+    let document = parse_markdown(&source);
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_table_continuation(&pages, rows);
+    assert_table_note_structure(&bytes, rows);
+    assert_geometry(&pages, &options);
+    assert_first_note_navigation(&bytes, &pages, "TABLECITATION");
+    let verified = franken_markdown::verify::verify_pdf(&document, &options).unwrap();
+    assert_eq!(verified.page_count, pages.len());
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap(),
+        "both PDF writers retain the same table headers, rows and page counts",
+    );
+    assert_eq!(bytes, render_pdf(&source, &options).unwrap());
+    let browser = franken_markdown::wasm::render_pdf(
+        &source,
+        &franken_markdown::wasm::WasmRenderOptions {
+            theme: options.theme.clone(),
+            running: options.running.clone(),
+            split_footnotes: true,
+            footnote_backlinks: true,
+            metadata_epoch_seconds: options.metadata_epoch_seconds,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(bytes, browser.bytes);
+}
+
+#[test]
+fn nested_table_notes_retain_quote_geometry_and_literal_cell_padding() {
+    let rows = 12;
+    let source = table_note_source(rows, "      > ").replacen(
+        "      > | KEYHEADER",
+        "    - > | KEYHEADER",
+        1,
+    );
+    let mut options = options();
+    options.use_theme_spacing = true;
+    options.theme.spacing.table_cell_padding_y_em = 0.6;
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_table_continuation(&pages, rows);
+    assert_table_note_structure(&bytes, rows);
+    assert_eq!(structure_count(&bytes, "BlockQuote"), 1);
+    assert_eq!(structure_count(&bytes, "L"), 1);
+    assert_eq!(structure_count(&bytes, "LI"), 1);
+    assert_geometry(&pages, &options);
+    assert_panel_bounds(&pages, &options);
+    assert_first_note_navigation(&bytes, &pages, "TABLECITATION");
+}
+
+#[test]
+fn oversized_table_rows_and_headers_preserve_the_complete_endnote_fallback() {
+    let long = (0..140)
+        .map(|index| format!("SOURCE{index:03} "))
+        .collect::<String>();
+    for (header, row) in [
+        ("Column".to_string(), long.clone()),
+        (long.clone(), "LASTROW".to_string()),
+    ] {
+        let source = format!(
+            "CITATION.[^oversized]\n\n[^oversized]:\n    | {header} |\n    | --- |\n    | {row} |\n"
+        );
+        let options = options();
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pages = painted_pages(&bytes);
+        assert!(
+            text(&pages).contains("Notes"),
+            "indivisible table unit cannot fit"
+        );
+        assert_markers(&pages, "SOURCE", 140);
+        let mut original = options.clone();
+        original.split_footnotes = false;
+        pdf_content::assert_same_paint(&bytes, &render_pdf(&source, &original).unwrap());
+    }
+}
+
+#[test]
+fn simultaneous_table_notes_reserve_both_first_rows_and_keep_their_own_headers() {
+    let rows = 16;
+    let mut source = String::from("MIXEDCITATION.[^alpha][^beta]\n\n");
+    for (id, header, prefix) in [
+        ("alpha", "AHEADER", "ALPHAROW"),
+        ("beta", "BHEADER", "BETAROW"),
+    ] {
+        source.push_str(&format!("[^{id}]:\n    | {header} |\n    | --- |\n"));
+        for index in 0..rows {
+            source.push_str(&format!("    | {prefix}{index:03} preserved cell |\n"));
+        }
+        source.push('\n');
+    }
+    let mut options = options();
+    options.theme.page.size.height_pt = 240.0;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(!text(&pages).contains("Notes"));
+    for (header, prefix) in [("AHEADER", "ALPHAROW"), ("BHEADER", "BETAROW")] {
+        assert_markers(&pages, prefix, rows);
+        assert_eq!(locate(&pages, &format!("{prefix}000")).0, 0);
+        let mut seen_pages = BTreeSet::new();
+        for index in 0..rows {
+            let (page, row) = locate(&pages, &format!("{prefix}{index:03}"));
+            let headers: Vec<_> = pages[page]
+                .runs
+                .iter()
+                .filter(|run| run.text.contains(header))
+                .collect();
+            assert_eq!(headers.len(), 1);
+            assert!(headers[0].y > row.y);
+            assert_eq!(headers[0].artifact, page != 0);
+            seen_pages.insert(page);
+        }
+        assert!(seen_pages.len() >= 2);
+        assert_eq!(text(&pages).matches(header).count(), 1);
+    }
+    assert_eq!(structure_count(&bytes, "Note"), 2);
+    assert_eq!(structure_count(&bytes, "Table"), 2);
+    assert_eq!(structure_count(&bytes, "TH"), 2);
+    assert_eq!(structure_count(&bytes, "TD"), rows * 2);
+    assert_geometry(&pages, &options);
+}
+
+#[test]
+fn financial_table_note_footings_stay_with_their_rows_and_never_repeat() {
+    let rows = 20;
+    let mut source = String::from(
+        "CITATION.[^statement]\n\n[^statement]:\n    | Item | Amount |\n    | --- | ---. |\n",
+    );
+    for index in 0..rows {
+        source.push_str(&format!(
+            "    | ENTRY{index:03} | {index}.125 |\n    | | === |\n",
+        ));
+    }
+    let options = options();
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "ENTRY", rows);
+    assert!(!text(&pages).contains("Notes") && !text(&pages).contains("==="));
+    let rules: Vec<Vec<[f64; 4]>> = pages
+        .iter()
+        .map(|page| {
+            page.content
+                .split("/Artifact BMC\n")
+                .skip(1)
+                .filter_map(|block| {
+                    let artifact = block.split_once("\nEMC\n").unwrap().0;
+                    let coordinates = artifact.split_once(" w ")?.1;
+                    let fields: Vec<_> = coordinates.split_whitespace().collect();
+                    if fields.len() != 7 || fields[2] != "m" || fields[5..] != ["l", "S"] {
+                        return None;
+                    }
+                    let rule = [0, 1, 3, 4].map(|index| fields[index].parse::<f64>().unwrap());
+                    (rule[0] > 36.01).then_some(rule)
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(rules.iter().map(Vec::len).sum::<usize>(), rows * 2);
+    for index in 0..rows {
+        let (page, row) = locate(&pages, &format!("ENTRY{index:03}"));
+        let attached: Vec<_> = rules[page]
+            .iter()
+            .filter(|rule| row.y > rule[1] && row.y - rule[1] < 9.0)
+            .collect();
+        assert_eq!(
+            attached.len(),
+            2,
+            "both footing strokes stay with source row {index}"
+        );
+        assert!((attached[0][1] - attached[1][1] - 2.0).abs() < 0.015);
+        for rule in attached {
+            assert_eq!(rule[1], rule[3]);
+            assert!(rule[1] - 0.35 >= 35.99 && rule[2] <= 324.01);
+        }
+    }
+    assert_eq!(structure_count(&bytes, "TR"), rows + 1);
+    assert_eq!(structure_count(&bytes, "TD"), rows * 2);
+    assert_geometry(&pages, &options);
+    assert_panel_bounds(&pages, &options);
+}
+
+#[test]
+fn header_only_table_note_keeps_its_label_without_empty_continuation_pages() {
+    let source = "EMPTYCITATION.[^empty]\n\n[^empty]:\n    | EMPTYHEADER |\n    | --- |\n";
+    let mut options = options();
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_eq!(pages.len(), 1);
+    assert!(!text(&pages).contains("Notes"));
+    assert_eq!(text(&pages).matches("EMPTYHEADER").count(), 1);
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "Table"), 1);
+    assert_eq!(structure_count(&bytes, "TH"), 1);
+    assert_eq!(structure_count(&bytes, "TD"), 0);
+    assert_first_note_navigation(&bytes, &pages, "EMPTYCITATION");
+    assert_geometry(&pages, &options);
+}
+
+#[test]
+fn sequential_tables_in_one_note_repeat_only_their_own_headers() {
+    let rows = 10;
+    let mut source = String::from("CITATION.[^tables]\n\n[^tables]:\n");
+    for (header, prefix) in [("FIRSTHEADER", "FIRSTCELL"), ("LASTHEADER", "LASTCELL")] {
+        source.push_str(&format!("    | {header} |\n    | --- |\n"));
+        for index in 0..rows {
+            source.push_str(&format!("    | {prefix}{index:03} preserved source |\n"));
+        }
+        source.push('\n');
+    }
+    let mut options = options();
+    options.theme.page.size.height_pt = 240.0;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(!text(&pages).contains("Notes"));
+    for (header, prefix) in [("FIRSTHEADER", "FIRSTCELL"), ("LASTHEADER", "LASTCELL")] {
+        assert_markers(&pages, prefix, rows);
+        let original = locate(&pages, header).0;
+        let mut table_pages = BTreeSet::new();
+        for index in 0..rows {
+            let (page, row) = locate(&pages, &format!("{prefix}{index:03}"));
+            let headers: Vec<_> = pages[page]
+                .runs
+                .iter()
+                .filter(|run| run.text.contains(header))
+                .collect();
+            assert_eq!(headers.len(), 1);
+            assert!(headers[0].y > row.y);
+            assert_eq!(headers[0].artifact, page != original);
+            table_pages.insert(page);
+        }
+        assert!(table_pages.len() >= 2);
+        assert_eq!(text(&pages).matches(header).count(), 1);
+    }
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "Table"), 2);
+    assert_eq!(structure_count(&bytes, "TH"), 2);
+    assert_eq!(structure_count(&bytes, "TD"), rows * 2);
+    assert_geometry(&pages, &options);
 }

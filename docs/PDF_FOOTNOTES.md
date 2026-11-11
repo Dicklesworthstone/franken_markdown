@@ -64,7 +64,7 @@ with this mode.
 
 Continuation supports paragraphs with styled text, inline code, inline
 mathematics, images mixed with prose, and ordinary links, as well as ordinary
-fenced or indented code, ordered/unordered/task lists, and blockquotes
+fenced or indented code, tables, ordered/unordered/task lists, and blockquotes
 (including alerts).
 Lists and quotations can nest, and code blocks can appear inside them. Fragments
 retain syntax highlighting, source line numbers, list labels, indentation,
@@ -81,7 +81,22 @@ last row inside the note region. Missing images and unsupported inline math
 retain their ordinary visible fallback and diagnostics. A row too tall for a
 note-only page keeps the complete note in the endnote fallback.
 
-Notes containing tables, standalone figures, display-math blocks, diagrams, headings, definition
+Tables continue between complete logical rows. A wrapped cell stays with the
+other cells in its row, and each table fragment repeats the original measured
+header and separator above its first data row. The initial header stays with
+the first complete row; the closing rule stays with the last row. Repeated
+header paint is a pagination artifact, so the logical note contains one table
+with one set of source-owned header and data cells. Table padding, alternating
+row shading, financial footing rules, inline formulas, images and links retain
+their measured geometry, including inside lists and quotations.
+
+Admission includes the full repeated header and an atomic data row. If that
+unit cannot fit on a note-only page, the complete note retains its ordinary
+endnote fallback. The same fallback applies when the first header, row and
+note label cannot fit with the citing body line. No rows are clipped, shrunk
+to satisfy a page, or partially moved into a separate note.
+
+Notes containing standalone figures, display-math blocks, diagrams, headings, definition
 lists, generated contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
 fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
 or a required label-and-content group that cannot fit on a note-only page also
@@ -176,12 +191,16 @@ moves to a page foot or to the trailing Notes section.
 `tests/pdf_footnote_continuation_test.rs` independently reads emitted text,
 geometry, links and page objects to check text-note continuation, source-line
 conservation, tail pages, book note scope, running folios, shared browser-core
-output, emitter parity, and incompatible-policy refusals.
+output, emitter parity, and incompatible-policy refusals. Its table fixtures
+check wrapped-row atomicity, repeated header artifacts, complete logical cell
+ownership, quoted tables with literal padding, and the unchanged full-note
+fallback for oversized rows and headers.
 
 `tests/pdf_footnote_inline_objects_test.rs` decodes emitted glyph maps, vector
 paths, image transforms, annotation rectangles and structure ancestry to check
-inline formulas and linked images across continuation boundaries. It also
-preserves the existing indivisible-figure, table and unreferenced-note behavior.
+inline formulas and linked images across continuation boundaries, including
+complete table cells. It also preserves the existing indivisible-figure,
+oversized-row and unreferenced-note behavior.
 
 
 `tests/pdf_page_footnotes_test.rs` pins placement (every note on its

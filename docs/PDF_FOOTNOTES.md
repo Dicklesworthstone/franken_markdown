@@ -64,14 +64,25 @@ with this mode.
 
 Continuation supports paragraphs with styled text, inline code, inline
 mathematics, images mixed with prose, and ordinary links, as well as ordinary
-fenced or indented code, tables, ordered/unordered/task lists, and blockquotes
-(including alerts).
+fenced or indented code, tables, headings, ordered/unordered/task lists, and
+blockquotes (including alerts).
 Lists and quotations can nest, and code blocks can appear inside them. Fragments
 retain syntax highlighting, source line numbers, list labels, indentation,
 quotation bars, code backgrounds, links and logical note ownership. Code and
 quotation decorations reserve their own space at fragment boundaries. Generated
 note labels, list markers on their own row, and alert titles stay with the first
 content row they introduce.
+
+Section headings retain their source level, links and logical note ownership.
+A wrapped title and its H1/H2 underline stay together with the first following
+content row, including a table's complete header and first logical data row.
+The association follows source quotation and list-item ownership: a heading at
+the end of one item does not capture its sibling, and a heading at the end of a
+nested quotation does not capture text outside that quotation. A heading can
+introduce nested content in its own scope. The generated note label stays with
+a first heading and its subject, so the first fragment begins on the citation's
+page. If this mandatory group cannot fit, the complete note keeps its existing
+endnote fallback.
 
 Inline formulas and images stay indivisible within their measured text rows.
 Continuation retains their fitted dimensions, formula source, image alternative
@@ -96,7 +107,7 @@ endnote fallback. The same fallback applies when the first header, row and
 note label cannot fit with the citing body line. No rows are clipped, shrunk
 to satisfy a page, or partially moved into a separate note.
 
-Notes containing standalone figures, display-math blocks, diagrams, headings, definition
+Notes containing standalone figures, display-math blocks, diagrams, definition
 lists, generated contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
 fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
 or a required label-and-content group that cannot fit on a note-only page also
@@ -194,7 +205,12 @@ conservation, tail pages, book note scope, running folios, shared browser-core
 output, emitter parity, and incompatible-policy refusals. Its table fixtures
 check wrapped-row atomicity, repeated header artifacts, complete logical cell
 ownership, quoted tables with literal padding, and the unchanged full-note
-fallback for oversized rows and headers.
+fallback for oversized rows and headers. Sectioned-note fixtures inspect
+wrapped headings and underline paint, first-subject keeps, source-level tags
+under the logical Note, late-heading link destinations, sibling-item boundaries,
+and complete endnote fallback for an impossible kept group. Their geometry
+checks identify body text by fixture content rather than font size, because
+note headings can be larger than ordinary body prose.
 
 `tests/pdf_footnote_inline_objects_test.rs` decodes emitted glyph maps, vector
 paths, image transforms, annotation rectangles and structure ancestry to check

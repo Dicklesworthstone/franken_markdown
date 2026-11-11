@@ -64,6 +64,7 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
             match block {
                 Block::Paragraph(inlines)
                     if toc_marker_depth(inlines).is_none() && text(inlines, false) => {}
+                Block::Heading { inlines, .. } if text(inlines, true) => {}
                 Block::CodeBlock { lang, code }
                     if !crate::diagrams::is_diagram_code(code, lang.as_deref().unwrap_or("")) => {}
                 Block::Table(table)
@@ -88,9 +89,29 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
 /// seams, and prove each mandatory unit fits a note-only page.
 pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool {
     let mut scratch = ShapeScratch::default();
+    let mut heading_scope = None;
     for line in lines.iter_mut() {
+        if line.flow.kind == FlowKind::Heading {
+            if line.rule {
+                // List layout stamps visible rows, so an underline normally
+                // has no list ancestry. Carry its own heading's provenance
+                // before deciding whether the next row is still in scope.
+                let Some((group, list_path)) = &heading_scope else {
+                    return false;
+                };
+                if *group != line.flow.group {
+                    return false;
+                }
+                line.list_path.clone_from(list_path);
+            } else {
+                heading_scope = Some((line.flow.group, line.list_path.clone()));
+            }
+        } else {
+            heading_scope = None;
+        }
         if line.image.is_some()
-            || (line.rule && line.flow.kind != FlowKind::TableRule)
+            || (line.rule
+                && !matches!(line.flow.kind, FlowKind::TableRule | FlowKind::Heading))
             || line.grid.is_some()
             || !matches!(
                 line.flow.kind,
@@ -316,11 +337,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
         }
     }
     if before.flow.kind == FlowKind::Heading
-        && (before.flow.group == after.flow.group
-            || before
-                .quote_bars
-                .first()
-                .is_some_and(|(id, _)| after.quote_bars.iter().any(|(next, _)| next == id)))
+        && (before.flow.group == after.flow.group || same_heading_scope(before, after))
     {
         return true;
     }
@@ -338,11 +355,24 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     // source row too, using semantic provenance rather than superscript text.
     // Ordinary paragraph-only notes keep their historical row boundaries.
     (after.bg != 0
+        || after.flow.kind == FlowKind::Heading
         || matches!(after.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
         || !after.quote_bars.is_empty()
         || !after.list_path.is_empty()
         || (before.flow.group == after.flow.group && note_label_only(after)))
         && note_label_only(before)
+}
+
+/// A heading can introduce nested content in its own quotation and list item,
+/// but cannot capture a sibling item or content outside an enclosing quote.
+/// Quotes are stamped inside-out, so membership rather than vector order
+/// establishes whether all of the heading's source ancestors still apply.
+fn same_heading_scope(before: &Line, after: &Line) -> bool {
+    before
+        .quote_bars
+        .iter()
+        .all(|(id, _)| after.quote_bars.iter().any(|(next, _)| id == next))
+        && after.list_path.starts_with(&before.list_path)
 }
 
 /// The smallest consecutive unit that may end a fragment. Heading, label and

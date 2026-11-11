@@ -837,9 +837,11 @@ pub struct PdfOptions {
     ///
     /// The first fragment stays with its citation; remaining fragments can
     /// continue onto later pages, including note-only pages after the body.
-    /// Supports paragraphs, ordinary code, lists and quotations, including
-    /// inline formulas and images in prose. Each inline object remains whole
-    /// and must fit a note-only page with its measured painted bounds.
+    /// Supports paragraphs, ordinary code, headings, tables, lists and
+    /// quotations, including inline formulas and images in prose. Tables keep
+    /// complete rows with repeated headers; headings keep their wrapped text,
+    /// underline and first subject within their source container. Each atomic
+    /// group must fit a note-only page with its measured painted bounds.
     /// Other blocks and unreferenced notes retain existing indivisible-note
     /// and full-fidelity endnote handling.
     /// Default false preserves indivisible page notes and existing output.

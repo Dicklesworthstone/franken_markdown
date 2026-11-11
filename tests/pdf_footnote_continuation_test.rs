@@ -1533,3 +1533,337 @@ fn sequential_tables_in_one_note_repeat_only_their_own_headers() {
     assert_eq!(structure_count(&bytes, "TD"), rows * 2);
     assert_geometry(&pages, &options);
 }
+
+// Sectioned notes need a content-based geometry oracle: a note's H1/H2 can be
+// larger than body prose, so font size cannot identify which region owns it.
+fn assert_section_note_geometry(pages: &[PaintedPage], options: &PdfOptions) {
+    let margins = options.theme.page.margins;
+    for (index, page) in pages.iter().enumerate() {
+        let body_bottom = page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && run.text.contains("BODY"))
+            .map(|run| run.y + run.descent * run.size)
+            .fold(f64::INFINITY, f64::min);
+        let mut rows = BTreeMap::<i64, (f64, f64)>::new();
+        let mut has_note = false;
+        for run in page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && run.text.chars().any(|c| c.is_ascii_alphabetic()))
+        {
+            let top = run.y + run.cap_height * run.size;
+            let bottom = run.y + run.descent * run.size;
+            assert!(
+                top <= page.height - f64::from(margins.top_pt) + 0.025
+                    && bottom >= f64::from(margins.bottom_pt) - 0.025,
+                "page {} paints outside the body: {run:?}",
+                index + 1,
+            );
+            assert!(
+                run.x >= f64::from(margins.left_pt) - 0.025
+                    && run.x < page.width - f64::from(margins.right_pt),
+                "page {} has an out-of-bounds text origin: {run:?}",
+                index + 1,
+            );
+            rows.entry((run.y * 1000.0).round() as i64)
+                .and_modify(|bounds| {
+                    bounds.0 = bounds.0.min(bottom);
+                    bounds.1 = bounds.1.max(top);
+                })
+                .or_insert((bottom, top));
+            if !run.text.contains("BODY") {
+                has_note = true;
+                assert!(
+                    top < body_bottom,
+                    "page {} paints a sectioned note into body text: {run:?}",
+                    index + 1,
+                );
+            }
+        }
+        let rows: Vec<_> = rows.into_values().collect();
+        for adjacent in rows.windows(2) {
+            assert!(
+                adjacent[0].1 <= adjacent[1].0 + 0.025,
+                "page {} overlaps distinct text rows: {adjacent:?}",
+                index + 1,
+            );
+        }
+        if has_note {
+            let width = page.width - f64::from(margins.left_pt + margins.right_pt);
+            assert_eq!(separator_count(page, width), 1, "page {}", index + 1);
+        }
+        let folio: String = page
+            .runs
+            .iter()
+            .filter(|run| run.artifact && run.text.starts_with("FOLIO "))
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(folio, format!("FOLIO {}/{}", index + 1, pages.len()));
+    }
+}
+
+fn assert_note_heading_ownership(pdf: &[u8], level: u8, count: usize) {
+    let objects = Objects::new(pdf);
+    let tag = format!("/S /H{level} ");
+    let headings: Vec<_> = (1..objects.offsets.len())
+        .filter(|&id| {
+            let dictionary = objects.dictionary(id);
+            dictionary.contains("/Type /StructElem ") && dictionary.contains(&tag)
+        })
+        .collect();
+    assert_eq!(headings.len(), count, "one logical heading per source heading");
+    assert_eq!(structure_count(pdf, "Note"), 1);
+    for heading in headings {
+        let mut owner = reference_after(objects.dictionary(heading), "/P ");
+        let mut visited = BTreeSet::new();
+        loop {
+            assert!(visited.insert(owner), "structure parent chain must be acyclic");
+            let dictionary = objects.dictionary(owner);
+            assert!(
+                dictionary.contains("/Type /StructElem "),
+                "heading escaped its logical note",
+            );
+            if dictionary.contains("/S /Note ") {
+                break;
+            }
+            owner = reference_after(dictionary, "/P ");
+        }
+    }
+}
+
+fn heading_rule_y(page: &PaintedPage, width: f64) -> Vec<f64> {
+    let mut artifacts = Vec::new();
+    let mut start = None;
+    let mut end = None;
+    let mut rules = Vec::new();
+    for operation in pdf_content::operations(&page.content) {
+        match operation.operator {
+            "BDC" | "BMC" => artifacts.push(
+                operation.operands[0] == "/Artifact" || artifacts.last().copied().unwrap_or(false),
+            ),
+            "EMC" => {
+                artifacts.pop().expect("balanced artifact scopes");
+            }
+            "m" | "l" if artifacts.last() == Some(&true) => {
+                let point = (
+                    operation.operands[0].parse::<f64>().unwrap(),
+                    operation.operands[1].parse::<f64>().unwrap(),
+                );
+                if operation.operator == "m" {
+                    start = Some(point);
+                    end = None;
+                } else {
+                    end = Some(point);
+                }
+            }
+            "S" => {
+                if let (Some((x0, y0)), Some((x1, y1))) = (start.take(), end.take())
+                    && artifacts.last() == Some(&true)
+                    && (y1 - y0).abs() < PRECISION
+                    && (x1 - x0 - width).abs() < PRECISION
+                {
+                    rules.push(y0);
+                }
+            }
+            _ => {}
+        }
+    }
+    rules
+}
+
+#[test]
+fn sectioned_note_keeps_wrapped_heading_rule_subject_and_navigation_on_its_first_page() {
+    for level in 1..=6 {
+        let mut source = format!(
+            "BODYCITE.[^section]\n\n[^section]:\n    {} BEGINHEAD detailed evidence with several measured words ending in ENDHEAD\n\n    FIRSTSUBJECT follows the complete heading.\n\n",
+            "#".repeat(level),
+        );
+        for index in 0..48 {
+            source.push_str(&format!("    NOTE{index:03} retained source row.  \n"));
+        }
+        let mut options = options();
+        options.footnote_backlinks = true;
+        let document = parse_markdown(&source);
+        let bytes =
+            render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+        let pages = painted_pages(&bytes);
+        let first_page = locate(&pages, "BODYCITE").0;
+        let (_, begin) = locate(&pages, "BEGINHEAD");
+        let (_, end) = locate(&pages, "ENDHEAD");
+        let (_, subject) = locate(&pages, "FIRSTSUBJECT");
+        for marker in ["BEGINHEAD", "ENDHEAD", "FIRSTSUBJECT"] {
+            assert_eq!(locate(&pages, marker).0, first_page, "{marker}");
+            assert_eq!(text(&pages).matches(marker).count(), 1, "{marker}");
+        }
+        assert!(pages.len() > 1, "fixture must continue onto later pages");
+        assert_markers(&pages, "NOTE", 48);
+        assert!(!text(&pages).contains("Notes"));
+        if level <= 2 {
+            assert!(begin.y > end.y, "fixture must wrap its large heading");
+            let rules = heading_rule_y(&pages[first_page], 288.0);
+            assert_eq!(rules.len(), 1, "the complete H1/H2 has one underline");
+            assert!(end.y > rules[0] && rules[0] > subject.y);
+        }
+        assert_note_heading_ownership(&bytes, level as u8, 1);
+        assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+        assert_section_note_geometry(&pages, &options);
+        assert_eq!(
+            bytes,
+            render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap(),
+        );
+        assert_eq!(
+            franken_markdown::verify::verify_pdf(&document, &options)
+                .unwrap()
+                .page_count,
+            pages.len(),
+        );
+    }
+}
+
+#[test]
+fn late_note_heading_moves_with_its_subject_and_retains_its_real_link_destination() {
+    let mut source = String::from(
+        "BODYCITE.[^section] [BODYJUMP](#latehead)\n\n[^section]: INTRO retained introduction.\n\n",
+    );
+    for index in 0..30 {
+        source.push_str(&format!("    BEFORE{index:03} preserved source row.  \n"));
+    }
+    source.push_str("\n    ## LATEHEAD\n\n    LATETEXT follows its section title.\n\n");
+    for index in 0..30 {
+        source.push_str(&format!("    AFTER{index:03} preserved source row.  \n"));
+    }
+    let mut options = options();
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    let (heading_page, heading) = locate(&pages, "LATEHEAD");
+    assert!(heading_page > locate(&pages, "BODYCITE").0);
+    assert_eq!(heading_page, locate(&pages, "LATETEXT").0);
+    assert_markers(&pages, "BEFORE", 30);
+    assert_markers(&pages, "AFTER", 30);
+    assert!(!text(&pages).contains("Notes"));
+    let targets = destinations(&bytes, &pages);
+    assert_eq!(targets.len(), 3, "citation, return label, and authored heading link");
+    assert!(targets.iter().any(|&(page, y)| {
+        page == heading_page && (y - heading.y - heading.size * 0.9).abs() < 0.025
+    }));
+    assert_note_heading_ownership(&bytes, 2, 1);
+    assert_section_note_geometry(&pages, &options);
+}
+
+#[test]
+fn section_heading_keeps_table_header_and_complete_first_row_in_its_note_fragment() {
+    let mut source = String::from(
+        "BODYCITE.[^section]\n\n[^section]:\n    ### TABLETITLE\n\n    | Column |\n    | --- |\n",
+    );
+    for index in 0..24 {
+        source.push_str(&format!(
+            "    | ROW{index:03} repeated measured words repeated measured words repeated measured words END{index:03} |\n",
+        ));
+    }
+    let options = options();
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    let first_page = locate(&pages, "BODYCITE").0;
+    for marker in ["TABLETITLE", "Column", "ROW000", "END000"] {
+        assert_eq!(locate(&pages, marker).0, first_page, "{marker}");
+    }
+    assert!(locate(&pages, "ROW023").0 > first_page);
+    assert_markers(&pages, "ROW", 24);
+    assert_markers(&pages, "END", 24);
+    assert!(!text(&pages).contains("Notes"));
+    assert_note_heading_ownership(&bytes, 3, 1);
+    assert_eq!(structure_count(&bytes, "Table"), 1);
+    assert_eq!(structure_count(&bytes, "TH"), 1);
+    assert_eq!(structure_count(&bytes, "TD"), 24);
+    assert_section_note_geometry(&pages, &options);
+}
+
+#[test]
+fn heading_underlines_do_not_bind_distinct_list_items_into_one_oversized_note_unit() {
+    for level in [2, 3] {
+        let mut source = String::from("BODYCITE.[^section]\n\n[^section]:\n");
+        for index in 0..18 {
+            source.push_str(&format!("    - {} HEAD{index:03}\n", "#".repeat(level)));
+        }
+        let mut options = options();
+        options.theme.page.size.height_pt = 240.0;
+        options.footnote_backlinks = true;
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pages = painted_pages(&bytes);
+        assert_markers(&pages, "HEAD", 18);
+        assert!(!text(&pages).contains("Notes"));
+        assert_eq!(locate(&pages, "HEAD000").0, locate(&pages, "BODYCITE").0);
+        assert!(locate(&pages, "HEAD017").0 > locate(&pages, "HEAD000").0);
+        assert_note_heading_ownership(&bytes, level as u8, 18);
+        assert_eq!(structure_count(&bytes, "LI"), 18);
+        assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+        assert_section_note_geometry(&pages, &options);
+    }
+}
+
+#[test]
+fn impossible_heading_keep_preserves_complete_unchanged_endnote_fallback() {
+    let mut source = String::from("BODYCITE.[^section]\n\n[^section]:\n");
+    for index in 0..24 {
+        source.push_str(&format!("    ## BIG{index:03}\n\n"));
+    }
+    source.push_str("    LASTSUBJECT retains its whole source.\n");
+    let options = options();
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(text(&pages).contains("Notes"));
+    assert_markers(&pages, "BIG", 24);
+    assert_eq!(text(&pages).matches("LASTSUBJECT").count(), 1);
+    let mut ordinary = options.clone();
+    ordinary.split_footnotes = false;
+    assert_eq!(bytes, render_pdf(&source, &ordinary).unwrap());
+}
+
+#[test]
+fn nested_quotation_headings_do_not_capture_outdented_section_titles() {
+    let mut source = String::from("BODYCITE.[^section]\n\n[^section]:\n");
+    for index in 0..12 {
+        source.push_str(&format!(
+            "    > > ## INNER{index:03}\n    >\n    > ### OUTER{index:03}\n    >\n",
+        ));
+    }
+    let mut options = options();
+    options.theme.page.size.height_pt = 300.0;
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "INNER", 12);
+    assert_markers(&pages, "OUTER", 12);
+    assert!(!text(&pages).contains("Notes"));
+    assert_eq!(locate(&pages, "INNER000").0, locate(&pages, "BODYCITE").0);
+    assert!(locate(&pages, "OUTER011").0 > locate(&pages, "INNER000").0);
+    assert_note_heading_ownership(&bytes, 2, 12);
+    assert_note_heading_ownership(&bytes, 3, 12);
+    assert_eq!(structure_count(&bytes, "BlockQuote"), 13);
+    assert_first_note_navigation(&bytes, &pages, "BODYCITE");
+    assert_section_note_geometry(&pages, &options);
+    let margins = options.theme.page.margins;
+    let mut panels = 0;
+    for page in &pages {
+        let body_bottom = page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && run.text.contains("BODY"))
+            .map(|run| run.y + run.descent * run.size)
+            .fold(f64::INFINITY, f64::min);
+        for [left, bottom, right, top] in artifact_fills(page) {
+            panels += 1;
+            assert!(
+                left >= f64::from(margins.left_pt) - 0.025
+                    && right <= page.width - f64::from(margins.right_pt) + 0.025
+                    && bottom >= f64::from(margins.bottom_pt) - 0.025
+                    && top <= page.height - f64::from(margins.top_pt) + 0.025,
+                "a continued quote panel leaves the content box",
+            );
+            assert!(top < body_bottom, "a note panel overlaps body text");
+        }
+    }
+    assert!(panels > 0, "fixture must paint the nested quotation panels");
+}

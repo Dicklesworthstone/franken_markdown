@@ -792,11 +792,36 @@ export async function renderInteractiveHtml(markdown, options = {}) {
   if (typeof wasmBindings.renderInteractiveHtmlConfiguredAdvanced !== "function")
     requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
   const prepared = interactiveHtmlArguments(markdown, options);
-  const render = requireBrowserBinding(prepared.advanced
+  let render = requireBrowserBinding(prepared.advanced
     ? "renderInteractiveHtmlConfiguredAdvanced" : "renderInteractiveHtmlConfigured", "wasm-workspace");
   if (prepared.advanced) requireBindingArguments(render, 20, "Configured interactive HTML");
   await init();
-  return normalizeResult(render(...prepared.args));
+  const args = prepared.args;
+  applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, prepared.inheritToc);
+  // Inherited metadata must obey the same bounds as explicit workspace settings.
+  for (const [index, maximum, label] of [[3, 65536, "title"], [16, 1024, "lang"]])
+    if (args[index] !== undefined) interactiveTextBytes(args[index], maximum, label);
+  if (!prepared.advanced && (args[17] || args[18] !== undefined)) {
+    render = requireBrowserBinding("renderInteractiveHtmlConfiguredAdvanced", "configured interactive HTML");
+    requireBindingArguments(render, 20, "Configured interactive HTML");
+    prepared.advanced = true;
+  }
+  // A narrow legacy binding can still carry title/language defaults, but must
+  // never silently discard inherited navigation. Keep its original ABI shape.
+  return normalizeResult(render(...(prepared.advanced
+    ? args : [args[0], args[1], args[2], args[3], args[16], args[6]])));
+}
+
+function interactiveTextBytes(value, maximum, label) {
+  if (typeof value !== "string" || value.length > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
+  let size = 0;
+  for (const ch of value) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError(`Interactive ${label} contains an unpaired surrogate`);
+    size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+    if (size > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
+  }
+  return size;
 }
 
 function interactiveHtmlArguments(markdown, input) {
@@ -814,21 +839,10 @@ function interactiveHtmlArguments(markdown, input) {
     }
     return result;
   }
-  function text(value, maximum, label) {
-    if (typeof value !== "string" || value.length > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
-    let size = 0;
-    for (const ch of value) {
-      const cp = ch.codePointAt(0);
-      if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError(`Interactive ${label} contains an unpaired surrogate`);
-      size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
-      if (size > maximum) throw new RangeError(`Interactive ${label} exceeds its UTF-8 limit`);
-    }
-    return size;
-  }
   const options = data(input, fields, "interactive HTML option"), source = String(markdown);
-  text(source, 32 * 1024 * 1024, "source");
+  interactiveTextBytes(source, 32 * 1024 * 1024, "source");
   for (const [key, limit] of [["title", 65536], ["lang", 1024], ["customCss", 1024 * 1024]])
-    if (options[key] !== undefined && options[key] !== null) text(options[key], limit, key);
+    if (options[key] !== undefined && options[key] !== null) interactiveTextBytes(options[key], limit, key);
   for (const key of ["font", "darkMode", "htmlFontFormat"])
     if (options[key] !== undefined && options[key] !== null && typeof options[key] !== "string")
       throw new TypeError(key + " must be a string");
@@ -859,7 +873,15 @@ function interactiveHtmlArguments(markdown, input) {
   const advanced = font === "serif" || dark === "disabled" || (scale !== undefined && scale !== 1)
     || css !== undefined || Boolean(options.toc) || depth !== undefined || format !== undefined
     || rawImages.length > 0 || rawFonts.length > 0;
-  if (!advanced) return {advanced, args: [source, font, dark, title, lang, scale]};
+  const inheritToc = options.toc === undefined;
+  // Keep one argument layout while resolving metadata; collapse only at the
+  // final legacy call. These empty resources have no caller-owned backing.
+  if (!advanced) return {advanced, inheritToc, args: [
+    source, font, dark, title, undefined, false, scale,
+    new Uint8Array(), new Uint8Array(), new Uint8Array(), new Uint8Array(), new Uint8Array(),
+    new Uint32Array(5), [], new Uint8Array(), new Uint32Array(),
+    lang, false, undefined, undefined,
+  ]};
   const binding = requireBrowserBinding("renderInteractiveHtmlConfiguredAdvanced", "wasm-workspace with configured HTML");
   requireBindingArguments(binding, 20, "Configured interactive HTML");
   // Read the built-in byte-view slots, never caller-overridden .buffer or
@@ -884,14 +906,14 @@ function interactiveHtmlArguments(markdown, input) {
     } else length = bufferLength.call(value);
     return new Uint8Array(buffer, offset, length);
   }
-  for (const asset of rawImages) text(asset.destination, 8192, "image destination");
-  for (const asset of rawFonts) text(asset.slot, 64, "font slot");
+  for (const asset of rawImages) interactiveTextBytes(asset.destination, 8192, "image destination");
+  for (const asset of rawFonts) interactiveTextBytes(asset.slot, 64, "font slot");
   const images = pdfImagesOption(rawImages.map(asset => ({...asset, bytes: bytes(asset.bytes)})));
   const fonts = fontAssetsOption(rawFonts.map(asset => ({...asset, bytes: bytes(asset.bytes)})));
   let total = 0, destinationBytes = 0;
   const destinations = new Set();
   for (const image of images) {
-    destinationBytes += text(image.destination, 8192, "image destination");
+    destinationBytes += interactiveTextBytes(image.destination, 8192, "image destination");
     if (destinations.has(image.destination) || /[\u0000-\u001f\u007f-\u009f]/u.test(image.destination)) throw new TypeError("Interactive image destinations must be unique and control-free");
     destinations.add(image.destination);
   }
@@ -906,7 +928,7 @@ function interactiveHtmlArguments(markdown, input) {
   let offset = 0;
   for (const image of images) {flat.set(image.bytes, offset); offset += image.bytes.byteLength;}
   const ownedFonts = fonts.map(asset => ({...asset, bytes: new Uint8Array(asset.bytes)}));
-  return {advanced, args: [source, font, dark, title, css, false, scale,
+  return {advanced, inheritToc, args: [source, font, dark, title, css, false, scale,
     ...["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"].map(slot => fontBytesForSlot(ownedFonts, slot)),
     fontWeightsForSlots(ownedFonts), images.map(image => image.destination), flat, lengths,
     lang, Boolean(options.toc), depth, format]};

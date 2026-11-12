@@ -579,3 +579,54 @@ test("rejected asynchronous host observers are consumed without becoming preview
   await next();
   assert(f.sessions.every(session => session.disposed));
 });
+
+test("idle waits after disposal settle before a retired startup callback", async () => {
+  const f = fixture(), c = f.controller, gate = deferred();
+  f.createGate = gate;
+  c.update(input("retained source"));
+  await next();
+  const before = c.whenIdle();
+  c.dispose();
+  let afterState = null;
+  const after = c.whenIdle().then(state => { afterState = state; });
+  try {
+    assert.equal((await before).status, "disposed");
+    await next();
+    assert.equal(afterState?.status, "disposed", "retired physical startup must not strand new idle waiters");
+    assert.equal(afterState, c.state);
+    assert.equal(f.paints.length, 0);
+  } finally { gate.resolve(); }
+  await after;
+  await next();
+  assert.equal(f.sessions[0].disposed, true);
+  assert.equal(c.state.status, "disposed");
+  assert.equal(f.paints.length, 0);
+});
+
+test("idle waits after disposal settle while a retired painter ignores abort", async () => {
+  const gate = deferred();
+  let paints = 0, disposedPaints = 0;
+  const f = fixture({ painter: {
+    async render(session) { paints++; await gate.promise; return { ...session.token }; },
+    clear() {},
+    dispose() { disposedPaints++; },
+  } }), c = f.controller;
+  c.update(input("retained source"));
+  await next();
+  assert.equal(paints, 1);
+  c.dispose();
+  let settledState = null;
+  const idle = c.whenIdle().then(state => { settledState = state; });
+  try {
+    await next();
+    assert.equal(settledState?.status, "disposed", "retired physical paint must not strand idle waiters");
+    assert.equal(disposedPaints, 1);
+    assert.equal(f.sessions[0].disposed, true);
+  } finally { gate.resolve(); }
+  await idle;
+  await next();
+  assert.equal(c.state.status, "disposed");
+  assert.equal(c.state.frame, null);
+  assert.equal(paints, 1);
+  assert.equal(f.events.some(state => state.status === "ready"), false);
+});

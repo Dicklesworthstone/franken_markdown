@@ -581,7 +581,9 @@ export function createPreviewController({
     whenIdle() {
       // Includes reading for the latest ready frame, but not independent image
       // I/O. Observe ready + readingPending for first-Canvas-frame readiness.
-      if (!running && !queued && (state.status !== "ready" || !state.readingPending))
+      // Disposal settles the public lifecycle even when a retired host callback
+      // still owns physical startup/paint work.
+      if (disposed || (!running && !queued && (state.status !== "ready" || !state.readingPending)))
         return Promise.resolve(state);
       return new Promise((resolve) => waiters.push(resolve));
     },

@@ -58,7 +58,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
   const renderReceipt = bookRenderDiagnosticsReceipt(value, format);
   // Own exactly this view before another export or disposal can recycle its
   // backing storage. The aggregate limit is an output limit, not a heap bound.
-  const owned = bytes.slice(), [mimeType, extension] = TYPES[format];
+  const owned = new Uint8Array(bytes), [mimeType, extension] = TYPES[format];
   return {
     revision,
     output: Object.freeze({

@@ -617,7 +617,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
       );
     },
     fontBytes(fontId) {
-      return call((b) => bytes(b.fontBytes(identity(fontId, "fontId")), 32 * 1024 * 1024).slice());
+      return call((b) => new Uint8Array(bytes(b.fontBytes(identity(fontId, "fontId")), 32 * 1024 * 1024)));
     },
     assetBytes(requestId, expectedRevision) {
       const data = call((b) =>
@@ -626,7 +626,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           identity(expectedRevision, "expectedRevision"),
         ),
       );
-      return data === undefined || data === null ? null : bytes(data).slice();
+      return data === undefined || data === null ? null : new Uint8Array(bytes(data));
     },
     dispose() {
       if (backend === null) return;

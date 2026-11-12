@@ -484,9 +484,12 @@ export function createBookCollection() {
       const assets = imageList([...images, ...batch.images]);
       // Validate everything before installing either half. Previously authorized
       // images are immutable; take ownership of only newly admitted input bytes.
+      // A caller's slice can alias storage (including Node Buffer.slice). The
+      // typed-array constructor copies the exact view without invoking slice
+      // or species, keeping authorized bytes stable between resource revisions.
       const added = assets
         .slice(images.length)
-        .map((image) => ({ ...image, bytes: image.bytes.slice() }));
+        .map((image) => ({ ...image, bytes: new Uint8Array(image.bytes) }));
       files = [...files, ...next.slice(files.length).map(remember)];
       images = [...images, ...added];
       changed(false, added.length === 0);

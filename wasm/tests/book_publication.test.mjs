@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Buffer } from "node:buffer";
 import { createBookPublicationClient } from "../book_publication.mjs";
 import { createRetainedBook } from "../book_retained.mjs";
 
@@ -417,3 +418,60 @@ test("immediately fulfilled endpoint promises cannot bypass the shared deadline"
   assert.equal(f.calls.length, 2);
   assert.equal(f.clients[0].disposed, 1);
 });
+
+
+for (const [label, makeStorage] of [
+  ["aliasing typed arrays", () => {
+    class AliasingBytes extends Uint8Array {
+      slice(start, end) { return this.subarray(start, end); }
+    }
+    const storage = new AliasingBytes([91, 1, 2, 3, 92]);
+    return { storage, view: new AliasingBytes(storage.buffer, 1, 3) };
+  }],
+  ["Node Buffer views", () => {
+    const storage = Buffer.from([91, 1, 2, 3, 92]);
+    return { storage, view: Buffer.from(storage.buffer, storage.byteOffset + 1, 3) };
+  }],
+  ["typed arrays with copy hooks", () => {
+    class PrivateBytes extends Uint8Array {
+      slice() { throw new Error("publication must not call a provider's slice"); }
+      static get [Symbol.species]() {
+        throw new Error("publication must not call a provider's species");
+      }
+      [Symbol.iterator]() {
+        throw new Error("publication must not call a provider's iterator");
+      }
+    }
+    const storage = new PrivateBytes([91, 1, 2, 3, 92]);
+    return { storage, view: new PrivateBytes(storage.buffer, 1, 3) };
+  }],
+]) {
+  test("publication owns exact output bytes from " + label, async () => {
+    const { storage, view } = makeStorage();
+    const f = fixture({
+      handler(kind, args) {
+        const revision = kind === "render" ? 1 : args[2].expectedRevision + 1;
+        storage.set([revision, revision + 10, revision + 20], 1);
+        return { ...receipt(args[1], revision), bytes: view };
+      },
+      dispose() { storage.fill(0); },
+    });
+    const result = await f.publisher.render(files());
+    assert.equal(f.clients[0].disposed, 1);
+    assert.equal(result.byteLength, 9);
+    assert.equal(result.outputs.length, 3);
+    for (let index = 0; index < result.outputs.length; index++) {
+      const bytes = result.outputs[index].bytes;
+      assert.deepEqual([...bytes], [index + 1, index + 11, index + 21]);
+      assert.equal(Object.getPrototypeOf(bytes), Uint8Array.prototype);
+      assert.equal(bytes.byteOffset, 0);
+      assert.equal(bytes.buffer.byteLength, 3);
+      assert.notEqual(bytes.buffer, storage.buffer);
+    }
+    result.outputs[0].bytes.fill(99);
+    assert.deepEqual([...result.outputs[1].bytes], [2, 12, 22]);
+    assert.deepEqual([...result.outputs[2].bytes], [3, 13, 23]);
+    assert.equal(f.publisher.busy, false);
+    f.publisher.dispose();
+  });
+}

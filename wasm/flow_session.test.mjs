@@ -382,3 +382,67 @@ test("public entrypoint rejects mismatched old artifacts with an actionable code
     (e) => e.name === "FlowError" && e.code === "UNSUPPORTED_WASM_PACKAGE",
   );
 });
+
+
+for (const method of ["fontBytes", "assetBytes"]) {
+  const read = (api) =>
+    method === "fontBytes" ? api.fontBytes("1") : api.assetBytes("1", "1");
+
+  test(method + " copies the exact Buffer view without retaining pooled storage", () => {
+    const raw = transport();
+    const storage = Buffer.from([91, 11, 22, 33, 92]);
+    raw.payload = storage.subarray(1, 4);
+    const api = createFlowAdapter(raw);
+    const first = read(api);
+
+    assert.deepEqual([...first], [11, 22, 33]);
+    first[0] = 99;
+    assert.deepEqual([...storage], [91, 11, 22, 33, 92]);
+    storage[2] = 77;
+    assert.deepEqual([...first], [99, 22, 33]);
+
+    const second = read(api);
+    assert.deepEqual([...second], [11, 77, 33]);
+    assert.equal(Object.getPrototypeOf(second), Uint8Array.prototype);
+    assert.equal(second.byteOffset, 0);
+    assert.equal(second.buffer.byteLength, 3);
+    assert.notEqual(second.buffer, first.buffer);
+    api.dispose();
+  });
+
+  test(method + " owns subclass bytes without invoking caller copy hooks", () => {
+    let slices = 0;
+    class AliasingView extends Uint8Array {
+      slice() {
+        slices++;
+        return new Uint8Array(this.buffer, this.byteOffset, this.byteLength);
+      }
+      static get [Symbol.species]() {
+        throw new Error("byte ownership must not use subclass species");
+      }
+      [Symbol.iterator]() {
+        throw new Error("byte ownership must not use a caller iterator");
+      }
+    }
+    const raw = transport();
+    const storage = new Uint8Array([91, 11, 22, 33, 92]);
+    raw.payload = new AliasingView(storage.buffer, 1, 3);
+    const api = createFlowAdapter(raw);
+    const first = read(api);
+
+    assert.deepEqual([...first], [11, 22, 33]);
+    first[0] = 99;
+    assert.deepEqual([...storage], [91, 11, 22, 33, 92]);
+    storage[2] = 77;
+    assert.deepEqual([...first], [99, 22, 33]);
+
+    const second = read(api);
+    assert.deepEqual([...second], [11, 77, 33]);
+    assert.equal(slices, 0);
+    assert.equal(Object.getPrototypeOf(second), Uint8Array.prototype);
+    assert.equal(second.byteOffset, 0);
+    assert.equal(second.buffer.byteLength, 3);
+    assert.notEqual(second.buffer, first.buffer);
+    api.dispose();
+  });
+}

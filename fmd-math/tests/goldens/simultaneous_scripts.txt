@@ -1,4 +1,4 @@
-layout w 3.119894 h 0.864003 d 0.247217
+layout w 3.120150 h 0.864003 d 0.247217
 glyph face 7 gid 121 ch U+0078 x 0.000000 y 0.000000 size 1.000000 span 0..1
 glyph face 14 gid 51 ch U+0032 x 0.571528 y 0.412892 size 0.700000 span 4..5
 glyph face 10 gid 106 ch U+0069 x 0.571528 y -0.247217 size 0.700000 span 2..3

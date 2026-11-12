@@ -250,6 +250,10 @@ struct Parser<'s> {
     /// Only the standalone display entry point admits one top-level label.
     display_tags: bool,
     display_tag: Option<Node>,
+    /// Boxed text (`\text`, `\underline`, cancel) refuses display
+    /// environments. `$$` still opens a display island, which is how
+    /// canonical math inside `\text` selects display style.
+    restricted_text: bool,
     /// Token indices of the delimiters closing the physics arguments being
     /// parsed. xparse consumes them, so `\argclose` follows the argument
     /// instead and amsmath's dots see no closing delimiter.
@@ -278,6 +282,7 @@ impl<'s> Parser<'s> {
             physics: false,
             display_tags: false,
             display_tag: None,
+            restricted_text: false,
             argument_closes: Vec::new(),
             unclosed_arguments,
             close_table: std::cell::OnceCell::new(),
@@ -1171,7 +1176,7 @@ impl<'s> Parser<'s> {
                 at: self.here(),
             });
         }
-        let (mut body, argument_span) = self.text_island_argument("tag")?;
+        let (mut body, argument_span) = self.text_island_argument("tag", false)?;
         if !starred {
             let paren = |ch: char| {
                 Node::new(
@@ -1199,6 +1204,7 @@ impl<'s> Parser<'s> {
             Cmd::Classed(class) => self.classed(name, span, class),
             // An argument's dots see no list after them.
             Cmd::Dots(kind) => Ok(plain_dots(kind, span)),
+            Cmd::TextEllipsis => Ok(Node::new(NodeKind::TextEllipsis, span)),
             Cmd::AmsSym {
                 ch,
                 class,
@@ -1269,11 +1275,11 @@ impl<'s> Parser<'s> {
             }
             Cmd::Radical => self.radical(span),
             Cmd::Text => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(NodeKind::Text { body }, span.union(body_span)))
             }
             Cmd::TextStyled(style) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::TextStyled { style, body },
                     span.union(body_span),
@@ -1471,7 +1477,11 @@ impl<'s> Parser<'s> {
 
     /// The braced argument of `\text`-class commands: text mode. A single
     /// character is tolerated (`\text x`).
-    fn text_island_argument(&mut self, name: &str) -> Result<(Vec<Node>, Span), MathError> {
+    fn text_island_argument(
+        &mut self,
+        name: &str,
+        boxed: bool,
+    ) -> Result<(Vec<Node>, Span), MathError> {
         self.skip_spaces();
         let Some(tok) = self.peek().cloned() else {
             return Err(MathError::Malformed {
@@ -1484,8 +1494,11 @@ impl<'s> Parser<'s> {
                 self.pos += 1;
                 // `\text{…}` and its kin are boxes: horizontal mode from the
                 // first token, so a leading space is glue (`n\text{ terms}`).
-                let (items, reason) =
-                    self.descend(tok.span.start, |p| p.text_list(false, true, false))?;
+                let outer_restricted = self.restricted_text;
+                self.restricted_text |= boxed;
+                let parsed = self.descend(tok.span.start, |p| p.text_list(false, true, false));
+                self.restricted_text = outer_restricted;
+                let (items, reason) = parsed?;
                 match reason {
                     Reason::EndGroup(close) => Ok((items, tok.span.union(close))),
                     Reason::EndOfInput => Err(MathError::Malformed {
@@ -2113,16 +2126,22 @@ impl<'s> Parser<'s> {
 
     /// A `^`/`_`/`'` script cluster attaching to the preceding atom (or to
     /// an empty base, as TeX does when a script opens a list). A
-    /// `\mathchoice` is not an atom when TeX reads the script, and neither is
-    /// `\cancel` (a `\mathpalette`, so a choice too): the script takes an
-    /// empty base after it, as TeX's does.
+    /// `\mathchoice` is not an atom when TeX reads the script. Neither are
+    /// `\cancel` and amsmath's over-arrows, which expand through mathpalette:
+    /// scripts take an empty base after them. An explicit enclosing group
+    /// remains a script-bearing atom.
     fn script_cluster(&mut self, items: &mut Vec<Node>) -> Result<(), MathError> {
         let base = match items.last() {
             Some(last)
                 if intrinsic_class(last).is_some()
                     && !matches!(
                         last.kind,
-                        NodeKind::MathChoice { .. } | NodeKind::Cancel { .. }
+                        NodeKind::MathChoice { .. }
+                            | NodeKind::Cancel { .. }
+                            | NodeKind::Accent {
+                                accent: AccentKind::OverRightArrow | AccentKind::OverLeftArrow,
+                                ..
+                            }
                     ) =>
             {
                 items.pop().map(Box::new)
@@ -2267,13 +2286,16 @@ impl<'s> Parser<'s> {
                 }
                 TokKind::MathShift => {
                     self.pos += 1;
-                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     // An immediately adjacent second '$' opens display
                     // mathematics ($$…$$).
+                    // Canonical `\text{$$...$$}` is a display island. Restricted
+                    // mode still refuses display environments below.
                     let display = matches!(self.peek().map(|t| t.kind), Some(TokKind::MathShift));
                     if display {
+                        unskip(&mut items, &mut run, &mut run_spans);
                         self.pos += 1;
                     }
+                    flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     let (body, reason) =
                         self.descend(tok.span.start, |p| p.math_list(Stops::default()))?;
                     let close_end = match reason {
@@ -2447,6 +2469,10 @@ impl<'s> Parser<'s> {
                     self.toks[self.pos].kind = TokKind::Par;
                 }
                 TokKind::ControlWord(name) => {
+                    if name == "dotso" {
+                        self.text_other_dots(tok.span, &mut items, &mut run, &mut run_spans);
+                        continue;
+                    }
                     flush_run(&mut items, &mut run, &mut run_spans, self.ligatures);
                     if env && name == "end" {
                         self.pos += 1;
@@ -2457,6 +2483,9 @@ impl<'s> Parser<'s> {
                         };
                     }
                     let node = self.text_control_word(name, tok.span)?;
+                    if node.is_text_display() {
+                        unskip(&mut items, &mut run, &mut run_spans);
+                    }
                     items.push(node);
                 }
             }
@@ -2478,12 +2507,18 @@ impl<'s> Parser<'s> {
         };
         self.pos += 1;
         match cmd {
+            Cmd::TextEllipsis | Cmd::Dots(Dots::Auto) => {
+                Ok(Node::new(NodeKind::TextEllipsis, span))
+            }
+            Cmd::Sym { ch: '…', .. } if name == "ldots" => {
+                Ok(Node::new(NodeKind::TextEllipsis, span))
+            }
             Cmd::UnsupportedT2 => Err(MathError::UnsupportedCommand {
                 name: format!("\\{name}"),
                 span,
             }),
             Cmd::TextStyled(style) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, false)?;
                 Ok(Node::new(
                     NodeKind::TextStyled { style, body },
                     span.union(body_span),
@@ -2492,7 +2527,7 @@ impl<'s> Parser<'s> {
             // `\underline` in text mode is a styling island, not the math
             // accent.
             Cmd::Accent(AccentKind::UnderLine) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::TextStyled {
                         style: TextStyle::Underline,
@@ -2502,12 +2537,12 @@ impl<'s> Parser<'s> {
                 ))
             }
             Cmd::Text => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(NodeKind::List(body), span.union(body_span)))
             }
             // In text mode cancel.sty strikes `\hbox{…}`: a text body.
             Cmd::Cancel(kind) => {
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, true)?;
                 Ok(Node::new(
                     NodeKind::Cancel {
                         kind,
@@ -2536,7 +2571,7 @@ impl<'s> Parser<'s> {
             }
             Cmd::TextColor => {
                 let (color, color_span) = self.color_arguments(name, span)?;
-                let (body, body_span) = self.text_island_argument(name)?;
+                let (body, body_span) = self.text_island_argument(name, false)?;
                 let mut items = vec![Node::new(NodeKind::ColorChange(color), color_span)];
                 items.extend(body);
                 Ok(Node::new(
@@ -2544,7 +2579,22 @@ impl<'s> Parser<'s> {
                     color_span.union(body_span),
                 ))
             }
-            Cmd::Begin => self.environment(span, true),
+            Cmd::Begin => {
+                let node = self.environment(span, true)?;
+                if self.restricted_text
+                    && let NodeKind::Environment { name, .. } = &node.kind
+                    && node.is_text_display()
+                {
+                    return Err(MathError::Malformed {
+                        what: format!(
+                            "env:{name} is a display environment; \
+                             it cannot appear inside boxed text"
+                        ),
+                        at: span.start,
+                    });
+                }
+                Ok(node)
+            }
             Cmd::End => {
                 let (env_name, _) = self.raw_group("environment name after \\end")?;
                 Err(MathError::Malformed {
@@ -2577,6 +2627,49 @@ impl<'s> Parser<'s> {
                     island_span,
                 ))
             }
+        }
+    }
+
+    /// amsmath's text `\dotso` is `\tdots@`, not `\textellipsis`:
+    /// remove preceding glue, add a text space, and set low math dots
+    /// with thin space. Punctuation gets another thin space; other
+    /// successors get a text space, dropped at the paragraph end.
+    fn text_other_dots(
+        &mut self,
+        span: Span,
+        items: &mut Vec<Node>,
+        run: &mut String,
+        run_spans: &mut Vec<Span>,
+    ) {
+        self.pos += 1;
+        let punctuation = matches!(
+            self.peek().map(|t| t.kind),
+            Some(TokKind::Char(',' | '.' | ';' | ':' | '?' | '!'))
+        );
+        let paragraph_end = matches!(
+            self.peek().map(|t| t.kind),
+            None | Some(TokKind::Par | TokKind::ControlWord("end" | "par"))
+                | Some(TokKind::ControlSymbol('\\'))
+        );
+        unskip(items, run, run_spans);
+        flush_run(items, run, run_spans, self.ligatures);
+        items.push(Node::new(NodeKind::Space(SpaceKind::ControlSpace), span));
+        let mut body = vec![
+            plain_dots(Dots::Other, span),
+            Node::new(NodeKind::Space(SpaceKind::Thin), span),
+        ];
+        if punctuation {
+            body.push(Node::new(NodeKind::Space(SpaceKind::Thin), span));
+        }
+        items.push(Node::new(
+            NodeKind::MathIsland {
+                body,
+                display: false,
+            },
+            span,
+        ));
+        if !punctuation && (self.restricted_text || !paragraph_end) {
+            items.push(Node::new(NodeKind::Space(SpaceKind::ControlSpace), span));
         }
     }
 }
@@ -2756,23 +2849,33 @@ fn dots_next(kind: Option<TokKind<'_>>) -> DotsNext {
 /// `\color{…}`, `\centering` …) set nothing, so a space after one at a line
 /// start is still dropped, as is a space after `\\`.
 fn line_begun(items: &[Node], started: bool) -> bool {
-    let breaks = |node: &Node| matches!(node.kind, NodeKind::Linebreak);
-    let sets_material = |node: &Node| {
-        !matches!(
-            node.kind,
+    // The last material or break determines the state. A forward fold
+    // rescans every preceding atom at each space after inline mathematics.
+    for node in items.iter().rev() {
+        if node.is_text_display() {
+            return false;
+        }
+        match &node.kind {
+            NodeKind::Linebreak => return false,
+            // An ordinary group counts as material, even `{}`: the
+            // corpus deliberately uses it to retain a leading space.
+            // Only a group containing a display can end this text line.
+            NodeKind::List(body) | NodeKind::TextStyled { body, .. }
+                if body.iter().any(Node::contains_text_display) =>
+            {
+                // A display inside this group resets any incoming state,
+                // so only the material following its last display matters.
+                return line_begun(body, false);
+            }
             NodeKind::StyleChange(_)
-                | NodeKind::SizeChange(_)
-                | NodeKind::ColorChange(_)
-                | NodeKind::AlignChange(_)
-                | NodeKind::LineSpacing(_)
-        )
-    };
-    items
-        .iter()
-        .rev()
-        .take_while(|node| !breaks(node))
-        .any(sets_material)
-        || (started && !items.iter().any(breaks))
+            | NodeKind::SizeChange(_)
+            | NodeKind::ColorChange(_)
+            | NodeKind::AlignChange(_)
+            | NodeKind::LineSpacing(_) => {}
+            _ => return true,
+        }
+    }
+    started
 }
 
 /// TeX's `\unskip` at the end of a line: the last glue goes, whether a

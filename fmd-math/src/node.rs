@@ -64,6 +64,23 @@ impl Node {
     pub const fn new(kind: NodeKind, span: Span) -> Self {
         Self { kind, span }
     }
+
+    /// A true text-mode display boundary, independently of its math style.
+    pub(crate) fn is_text_display(&self) -> bool {
+        matches!(self.kind, NodeKind::MathIsland { display: true, .. })
+            || matches!(&self.kind, NodeKind::Environment { name, .. }
+                if matches!(name.as_str(), "align*" | "gather*" | "equation*"))
+    }
+
+    pub(crate) fn contains_text_display(&self) -> bool {
+        self.is_text_display()
+            || match &self.kind {
+                NodeKind::List(body) | NodeKind::TextStyled { body, .. } => {
+                    body.iter().any(Self::contains_text_display)
+                }
+                _ => false,
+            }
+    }
 }
 
 /// A delimiter as named after `\left`, `\right`, or a `\big`-class command.
@@ -555,6 +572,10 @@ pub enum NodeKind {
         /// One span per `char` of `text`, in order.
         char_spans: Vec<Span>,
     },
+    /// Three periods, each followed by the active text font's interword
+    /// stretch. Text `\dots`/`\ldots` and `\textellipsis` use this;
+    /// explicit `\textellipsis` in math keeps the math period glyphs.
+    TextEllipsis,
     /// A `\textbf`/`\emph`/`\underline` styling island (text mode, or the
     /// LaTeX text-in-math form).
     TextStyled {

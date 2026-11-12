@@ -112,6 +112,8 @@ pub(crate) enum Cmd {
     Mod,
     /// One of amsmath's dots, which read the token after them.
     Dots(Dots),
+    /// LaTeX's text-mode ellipsis.
+    TextEllipsis,
     /// TeX's `\mathord` … `\mathinner`: the argument as one atom of a class.
     Classed(AtomClass),
     /// An accent command.
@@ -351,6 +353,7 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
         // `\vdots` is a plain Ord box. LaTeX's `\hdots` is `\ldots`.
         // amsmath's own dots read the token after them (`Parser::dots`).
         "ldots" | "hdots" => sym('…', Inner),
+        "textellipsis" => Cmd::TextEllipsis,
         // TeX's class primitives (`\mathop` is a big operator, not here).
         "mathord" => Cmd::Classed(Ord),
         "mathbin" => Cmd::Classed(Bin),
@@ -1108,13 +1111,16 @@ pub(crate) fn lookup(name: &str) -> Option<Cmd> {
 }
 
 /// The implemented slice of the pifont `\ding` table (fm-j5t.4). The
-/// G0-4 corpus uses only code 51 — the checkmark, whose glyph resolves
+/// G0-4 corpus used code 51 — the checkmark, whose glyph resolves
 /// through the symbol faces as U+2713 (the `\checkmark` codepoint, which
-/// those faces carry). Any other code fails precisely, by name.
+/// those faces carry). Code 55 is the ballot cross, sharing FrankenManim's
+/// reviewed drawn `Exmark` construction (fm-j4tni). Every other code still
+/// fails precisely, by name.
 #[inline(always)]
 pub(crate) fn ding_char(code: u32) -> Option<char> {
     match code {
         51 => Some('✓'),
+        55 => Some('✗'),
         _ => None,
     }
 }

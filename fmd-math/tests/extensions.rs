@@ -14,6 +14,195 @@ fn engine() -> Engine {
     Engine::bundled().expect("bundled faces")
 }
 
+#[test]
+fn basic_and_empty_packs_use_the_reference_standalone_paragraph_width() {
+    let e = engine();
+    let source = std::iter::repeat_n("a", 100).collect::<Vec<_>>().join(" ");
+    for name in ["basic", "empty"] {
+        let pack = MacroSet::pack(name).unwrap();
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        let mut baselines: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.y).collect();
+        baselines.sort_by(f64::total_cmp);
+        baselines.dedup();
+        // Independent pinned-template standalone/10pt showbox: 345pt
+        // linewidth and three lines for these one hundred ordinary words.
+        assert_eq!(baselines, vec![-2.4, -1.2, 0.0], "{name}: {layout:?}");
+        assert_eq!(layout.glyphs.len(), 100, "{name}: no lost text");
+        assert!(layout.width <= 34.5, "{name}: overfull native paragraph");
+    }
+    // Generic fmd callers without a document pack retain explicit unbounded
+    // layout; setting a pack's document width must not change this path.
+    let bare = e
+        .typeset_text_with_macros(&source, &MacroSet::new())
+        .unwrap();
+    assert!(bare.glyphs.iter().all(|glyph| glyph.y == 0.0));
+    assert!(bare.width > 34.5);
+}
+
+#[test]
+fn text_underlining_keeps_glyph_faces_positions_and_explicit_overrides() {
+    let e = engine();
+    for (plain, underlined) in [
+        (r"\textbf{Ab}", r"\textbf{\underline{Ab}}"),
+        (r"\textit{Ab}", r"\textit{\underline{Ab}}"),
+        (r"\texttt{Ab}", r"\texttt{\underline{Ab}}"),
+        (r"\textsf{Ab}", r"\textsf{\underline{Ab}}"),
+        (
+            r"\textbf{A\textrm{B}C}D",
+            r"\textbf{\underline{A\textrm{B}C}}D",
+        ),
+        (r"\textit{A$\pi$B}C", r"\textit{\underline{A$\pi$B}}C"),
+    ] {
+        let plain = e.typeset_text(plain).unwrap();
+        let decorated = e.typeset_text(underlined).unwrap();
+        assert_eq!(decorated.glyphs.len(), plain.glyphs.len(), "{underlined}");
+        for (actual, expected) in decorated.glyphs.iter().zip(&plain.glyphs) {
+            assert_eq!(
+                (
+                    actual.ch,
+                    actual.face,
+                    actual.gid,
+                    actual.x,
+                    actual.y,
+                    actual.size
+                ),
+                (
+                    expected.ch,
+                    expected.face,
+                    expected.gid,
+                    expected.x,
+                    expected.y,
+                    expected.size
+                ),
+                "{underlined}: underline may add a rule, not change its glyphs"
+            );
+        }
+        assert_eq!(decorated.rules.len(), plain.rules.len() + 1, "{underlined}");
+    }
+}
+
+#[test]
+fn pifont_cross_matches_reference_text_boxes_in_scripts_and_declared_sizes() {
+    // Independent ruled-template TeX: pzdr character 55, not the digit 7
+    // bare \ding{55} accidentally emits in the Reference's math mode.
+    // Measurements are points at a 10 pt base; tolerance is 1e-5 em.
+    let cases = [
+        (r"\text{\ding{55}}", [5.70999, 6.59999, 0.68]),
+        (r"a^{\text{\ding{55}}}", [9.78288, 8.74892, 0.0]),
+        (r"a_{\text{\ding{55}}}", [9.78288, 4.30554, 1.97598]),
+        (r"\small\text{\ding{55}}", [5.13899, 5.93999, 0.61198]),
+        (r"\small a^{\text{\ding{55}}}", [8.82631, 8.28328, 0.0]),
+        (r"\small a_{\text{\ding{55}}}", [8.82631, 3.87498, 1.40797]),
+        (r"\large\text{\ding{55}}", [6.85199, 7.92, 0.816]),
+        (r"\large a^{\text{\ding{55}}}", [11.23598, 10.2347, 0.0]),
+        (r"\large a_{\text{\ding{55}}}", [11.23598, 5.16667, 2.34398]),
+    ];
+    let e = engine();
+    for (source, expected) in cases {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        for (name, actual, wanted) in [
+            ("width", layout.width, expected[0] / 10.0),
+            ("height", layout.height, expected[1] / 10.0),
+            ("depth", layout.depth, expected[2] / 10.0),
+        ] {
+            assert!(
+                (actual - wanted).abs() < 1e-5,
+                "{source}: {name} {actual}, TeX {wanted}"
+            );
+        }
+        assert_eq!(layout.paths.len(), 1, "{source}");
+        assert!(
+            layout
+                .glyphs
+                .iter()
+                .all(|glyph| glyph.ch != '×' && glyph.ch != '7')
+        );
+    }
+}
+
+#[test]
+fn pifont_cross_is_a_closed_mark_in_math_and_text_at_every_style() {
+    use fmd_math::{PathSeg, Span};
+    let e = engine();
+    for (style, scale) in [
+        (Style::Display, 1.0),
+        (Style::Text, 1.0),
+        (Style::Script, 0.7),
+        (Style::ScriptScript, 0.5),
+    ] {
+        let layout = e.typeset(r"\ding{55}", style).unwrap();
+        assert_eq!(layout.paths.len(), 1);
+        assert!(layout.glyphs.is_empty() && layout.rules.is_empty());
+        assert_eq!(layout.paths[0].span, Span::new(0, 9));
+        let contour = &layout.paths[0].contours[0];
+        assert_eq!(contour.segments.len(), 12);
+        let mut points = vec![contour.start];
+        for segment in &contour.segments {
+            let PathSeg::Line { to } = segment else {
+                panic!("drawn cross corner")
+            };
+            points.push(*to);
+        }
+        assert_eq!(points.first(), points.last());
+        let signed_area: f64 = points
+            .windows(2)
+            .map(|pair| pair[0].0 * pair[1].1 - pair[1].0 * pair[0].1)
+            .sum();
+        assert!(
+            signed_area.abs() > 0.05 * scale * scale,
+            "visible filled ink"
+        );
+        assert!(points.iter().all(|&(x, y)| x >= 0.0
+            && x <= layout.width
+            && y >= -layout.depth
+            && y <= layout.height));
+        assert!((layout.width - 0.571 * scale).abs() < 1e-5);
+    }
+    let text = e.typeset_text(r"\ding{55}").unwrap();
+    let math = e.typeset(r"\ding{55}", Style::Text).unwrap();
+    assert_eq!(text.width, math.width);
+    assert_eq!(text.paths[0].contours, math.paths[0].contours);
+}
+
+#[test]
+fn paired_pifont_marks_keep_existing_checkmark_and_cross_source_color() {
+    use fmd_math::{Color, find_occurrences};
+    let e = engine();
+    let existing = e.typeset(r"\text{\ding{51}}", Style::Text).unwrap();
+    let paired = e
+        .typeset(r"\text{\ding{51}\ding{55}}", Style::Text)
+        .unwrap();
+    assert_eq!(paired.glyphs.len(), existing.glyphs.len());
+    for (before, after) in existing.glyphs.iter().zip(&paired.glyphs) {
+        assert_eq!(
+            (before.face, before.gid, before.x, before.y, before.size),
+            (after.face, after.gid, after.x, after.y, after.size)
+        );
+    }
+    assert!((paired.width - existing.width - 0.571).abs() < 1e-5);
+    let source = r"\textcolor{red}{\text{\ding{55}}}x+\text{\ding{55}}";
+    let layout = e.typeset(source, Style::Text).unwrap();
+    let spans = find_occurrences(source, r"\ding{55}");
+    assert_eq!(spans.len(), 2);
+    for (index, span) in spans.into_iter().enumerate() {
+        assert_eq!(span.end - span.start, 9);
+        let selection = layout.select(span);
+        assert!(selection.glyphs.is_empty() && selection.rules.is_empty());
+        assert_eq!(selection.paths, vec![index]);
+        assert_eq!(layout.paths[index].span, span);
+    }
+    assert_eq!(
+        layout.paths[0].color,
+        Some(Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0
+        })
+    );
+    assert_eq!(layout.paths[1].color, None);
+    assert!(layout.glyphs.iter().all(|glyph| glyph.color.is_none()));
+}
+
 // ---------------------------------------------------------------------------
 // Delimiters: the three-stage mechanism, at many sizes, no size can fail
 // ---------------------------------------------------------------------------

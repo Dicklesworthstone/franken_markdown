@@ -243,6 +243,12 @@ fn emit_node(w: &mut Writer, node: &Node, style: Style) {
             w.text(text);
             w.close("mtext");
         }
+        NodeKind::TextEllipsis => {
+            let variant = w.text_variant;
+            open_mtext(w, variant);
+            w.text("...");
+            w.close("mtext");
+        }
         NodeKind::TextStyled { style: ts, body } => emit_text(w, body, Some(*ts), style),
         NodeKind::MathIsland { body, display } => {
             emit_math_island(w, body, *display, style);
@@ -774,6 +780,7 @@ fn emit_left_right(w: &mut Writer, left: &Delim, right: &Delim, body: &[Node], s
 fn plain_text_only(body: &[Node]) -> bool {
     body.iter().all(|node| match &node.kind {
         NodeKind::TextRun { .. }
+        | NodeKind::TextEllipsis
         | NodeKind::Symbol { .. }
         | NodeKind::AmsSymbol { .. }
         | NodeKind::Logo(_)
@@ -788,6 +795,7 @@ fn collect_plain_text(w: &mut Writer, body: &[Node]) {
     for n in body {
         match &n.kind {
             NodeKind::TextRun { text, .. } => w.text(text),
+            NodeKind::TextEllipsis => w.text("..."),
             NodeKind::Symbol { ch, .. } | NodeKind::AmsSymbol { ch, .. } => w.char_text(*ch),
             NodeKind::List(items) | NodeKind::Text { body: items } => {
                 collect_plain_text(w, items);
@@ -821,8 +829,15 @@ fn open_mtext(w: &mut Writer, variant: Option<&str>) {
 /// resumes ordinary mathematical alphabets, matching the layout engine.
 /// Plain text keeps its compact, byte-compatible single `mtext` spelling.
 fn emit_text(w: &mut Writer, body: &[Node], style: Option<TextStyle>, math_style: Style) {
-    let variant = style.map(text_variant).or(w.text_variant);
     let underline = style == Some(TextStyle::Underline);
+    // Underline is an accent, not a new face. Keep the surrounding text
+    // face (the arrow branch's inherited-underline fix) and draw the line
+    // with the canonical munder accent.
+    let variant = if underline {
+        Some(w.text_variant.unwrap_or("normal"))
+    } else {
+        style.map(text_variant).or(w.text_variant)
+    };
     if !underline && plain_text_only(body) {
         open_mtext(w, variant);
         collect_plain_text(w, body);

@@ -53,6 +53,10 @@ const FORMULAS: &[&str] = &[
     r"a_{ij} = b^{k}_{l}",
     r"\checkmark \circlearrowleft \circlearrowright \hbar \nmid \mathbb{Z}",
     r"1 \minus 2 + e^{\minus t}",
+    r"\text{a $\pi$ b}",
+    r"\textbf{a $\frac{1}{2}+x^2$ b}",
+    r"x_{\textbf{a $\pi$ b}}",
+    r"\text{\underline{a $\pi$ b}}",
 ];
 
 /// Strings at the edge of the grammar. Both paths must agree on each:
@@ -89,15 +93,17 @@ fn mathml_atoms(xml: &str) -> Vec<char> {
         let name_end = rest.find([' ', '>']).unwrap_or(rest.len());
         let name = &rest[..name_end];
         let Some(close) = rest.find('>') else { break };
+        let tag = &rest[..close];
         rest = &rest[close + 1..];
         if matches!(name, "mi" | "mn" | "mo" | "mtext") {
             let text_end = rest.find('<').unwrap_or(rest.len());
-            atoms.extend(
-                unescape(&rest[..text_end])
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .map(fold),
-            );
+            let text = unescape(&rest[..text_end]);
+            // Canonical underline is `<mo stretchy="true">_</mo>` under
+            // `munder`. Layout draws that rule and has no glyph for it.
+            if name == "mo" && tag.contains("stretchy=\"true\"") && text.trim() == "_" {
+                continue;
+            }
+            atoms.extend(text.chars().filter(|c| !c.is_whitespace()).map(fold));
         }
     }
     atoms

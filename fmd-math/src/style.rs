@@ -3,14 +3,15 @@
 //! Style propagation is exact TeX (The TeXbook, chapter 17 / appendix G):
 //! scripts go D,T → S → SS with subscripts cramped; fraction interiors go
 //! D → T → S → SS with denominators cramped; radicands and accent bases are
-//! cramped at the current style; radical indices are set in scriptscript
+//! cramped at the current style (amsmath over-arrows restart uncramped);
+//! radical indices are set in scriptscript
 //! style unconditionally. Glyph sizes follow CM's 10/7/5 pt family:
 //! 1.0 / 0.7 / 0.5.
 //!
 //! [`style_walk`] is the *normative* propagation definition: the layout
 //! stages consume the same walk, and the style-propagation fixtures lock it.
 
-use crate::node::{Node, NodeKind, StackKind};
+use crate::node::{AccentKind, Node, NodeKind, StackKind};
 
 /// The four math styles (cramped variants ride [`StyleCtx`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -179,7 +180,8 @@ impl StyleCtx {
 ///   context;
 /// - radicals: radicand cramped at the current style, index in scriptscript
 ///   style (rule 11);
-/// - accents: base cramped;
+/// - accents: base cramped, except amsmath over-arrows whose alignment
+///   restarts the current style uncramped;
 /// - `\stackrel`/`\overset` annotations at `sup`, `\underset` at `sub`;
 /// - `\displaystyle`-class markers restyle the remainder of their enclosing
 ///   list, starting the declared style's uncramped variant;
@@ -230,7 +232,17 @@ where
             }
             style_walk(radicand, ctx.cramp(), visit);
         }
-        NodeKind::Accent { base, .. } => style_walk(base, ctx.cramp(), visit),
+        NodeKind::Accent { accent, base } => {
+            let base_ctx = if matches!(
+                accent,
+                AccentKind::OverRightArrow | AccentKind::OverLeftArrow
+            ) {
+                StyleCtx::new(ctx.style)
+            } else {
+                ctx.cramp()
+            };
+            style_walk(base, base_ctx, visit);
+        }
         NodeKind::LeftRight { body, .. } => walk_list(body, ctx, visit),
         NodeKind::Text { body } | NodeKind::TextStyled { body, .. } => {
             walk_list(body, ctx, visit);
@@ -309,6 +321,7 @@ where
         | NodeKind::OpName { .. }
         | NodeKind::SizedDelim { .. }
         | NodeKind::TextRun { .. }
+        | NodeKind::TextEllipsis
         | NodeKind::StyleChange(_)
         | NodeKind::SizeChange(_)
         | NodeKind::AlignChange(_)

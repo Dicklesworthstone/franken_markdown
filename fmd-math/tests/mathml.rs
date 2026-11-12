@@ -289,6 +289,126 @@ fn xml_escapes_lt_gt_amp() {
     assert_contains("gt", ">", &["&gt;"]);
 }
 
+#[test]
+fn text_ellipsis_keeps_all_three_periods_in_text_and_styled_mathml() {
+    for source in [r"\dots", r"\text{\textellipsis}", r"\textbf{\ldots}"] {
+        let node = parse_text(source).unwrap();
+        let xml = to_mathml(&node, false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        assert!(xml.contains("..."), "{source}: {xml}");
+        assert!(!xml.contains('…'), "{source}: {xml}");
+    }
+}
+
+#[test]
+fn styled_text_preserves_inline_math_and_inner_text_faces() {
+    for source in [
+        r"\textbf{a $\pi$ b}",
+        r"\textbf{A \textit{B} C $\pi$}",
+        r"\text{a $\frac{1}{2}+x^2$ b}",
+        r"\underline{a $\pi$ b}",
+    ] {
+        let node = parse_text(source).unwrap();
+        let xml = to_mathml(&node, false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        if source.contains(r"\pi") {
+            assert!(xml.contains("<mi>π</mi>"), "{source}: {xml}");
+        }
+        if source.contains(r"\textit") {
+            assert!(
+                xml.contains(r#"<mtext mathvariant="italic">B</mtext>"#),
+                "{xml}"
+            );
+        }
+        if source.contains(r"\frac") {
+            assert!(xml.contains("<mfrac>") && xml.contains("<msup>"), "{xml}");
+        }
+        if source.contains(r"\underline") {
+            assert!(xml.contains(r#"<munder accentunder="true">"#), "{xml}");
+            assert!(xml.contains(r#"<mo stretchy="true">_</mo>"#), "{xml}");
+        }
+        // MathML structure is a sibling of text tokens, never a child of mtext.
+        let mut rest = xml.as_str();
+        while let Some(start) = rest.find("<mtext") {
+            let inner = &rest[start..];
+            let body = &inner[inner.find('>').unwrap() + 1..];
+            let end = body.find("</mtext>").unwrap();
+            assert!(
+                !body[..end].contains('<'),
+                "nested structure in mtext: {xml}"
+            );
+            rest = &body[end + "</mtext>".len()..];
+        }
+    }
+}
+
+#[test]
+fn mixed_text_restores_math_mode_and_preserves_scoped_declarations() {
+    let source = r"\textbf{a $\mathbf{x}$ \textit{b} \color{red}c}z";
+    let node = parse(source).unwrap();
+    let xml = to_mathml(&node, false);
+    assert!(mathml_well_formed(&xml).is_ok(), "{xml}");
+    assert!(xml.contains(r#"<mstyle mathvariant="bold">"#), "{xml}");
+    assert!(
+        xml.contains(r#"<mtext mathvariant="italic">b</mtext>"#),
+        "{xml}"
+    );
+    assert!(xml.contains(r#"mathcolor="red""#), "{xml}");
+    assert!(
+        xml.ends_with("<mi>z</mi></math>"),
+        "text context leaked: {xml}"
+    );
+}
+
+#[test]
+fn text_underlining_preserves_inherited_faces_and_restores_the_outer_scope() {
+    for (command, face) in [
+        ("textbf", "bold"),
+        ("textit", "italic"),
+        ("texttt", "monospace"),
+        ("textsf", "sans-serif"),
+    ] {
+        let source = format!(r"\{command}{{A\underline{{B}}C}}D");
+        let xml = to_mathml(&parse_text(&source).unwrap(), false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        assert!(
+            xml.contains(r#"<munder accentunder="true">"#)
+                && xml.contains(&format!(r#"<mtext mathvariant="{face}">B</mtext>"#))
+                && xml.contains(r#"<mo stretchy="true">_</mo>"#),
+            "{source}: underlining changed the face: {xml}"
+        );
+        assert!(
+            xml.ends_with("<mtext>D</mtext></math>"),
+            "{source}: text face leaked outside its group: {xml}"
+        );
+    }
+    let source = r"\textbf{\underline{A\textrm{B}C}}D";
+    let xml = to_mathml(&parse_text(source).unwrap(), false);
+    assert!(
+        xml.contains(r#"<mtext mathvariant="normal">B</mtext>"#),
+        "explicit roman must still override inherited bold: {xml}"
+    );
+}
+
+#[test]
+fn mixed_text_keeps_faces_on_logos_and_nonbreaking_spaces() {
+    for (source, face) in [
+        (r"\textbf{\TeX~$\pi$}", "bold"),
+        (r"\textit{\TeX~$\pi$}", "italic"),
+        (r"\texttt{\TeX~$\pi$}", "monospace"),
+    ] {
+        let xml = to_mathml(&parse_text(source).unwrap(), false);
+        assert!(mathml_well_formed(&xml).is_ok(), "{source}: {xml}");
+        for text in ["TeX", "\u{00A0}"] {
+            assert!(
+                xml.contains(&format!(r#"<mtext mathvariant="{face}">{text}</mtext>"#)),
+                "{source}: text face lost: {xml}"
+            );
+        }
+        assert!(xml.contains("<mi>π</mi>"), "{source}: {xml}");
+    }
+}
+
 struct Lcg(u64);
 
 impl Lcg {

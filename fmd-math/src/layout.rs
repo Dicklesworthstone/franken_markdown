@@ -29,6 +29,8 @@
 //! row stacking (`\jot`-opened for `align`), `\vcenter` axis centering,
 //! and the rule-19 delimiter wrap for the delimited matrices.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
 use crate::atom::{AtomClass, classify_list, spacing_in_style};
@@ -243,17 +245,21 @@ impl Engine {
             NodeKind::List(items) => items.as_slice(),
             _ => std::slice::from_ref(root),
         };
+        let wide_accent_widths = RefCell::new(HashMap::new());
         let ctx = LayCtx {
             style: ctx,
             alphabet: None,
+            text_alphabet: None,
             text_mode: !align_rows,
             text_kerns,
             decl_size: 1.0,
+            display_glue: DisplayGlue::Normal,
             line_stretch: 1.0,
             align_rows,
             in_display: align_rows,
             color: None,
             line_width,
+            wide_accent_widths: &wide_accent_widths,
         };
         let rows = items
             .iter()
@@ -320,9 +326,12 @@ impl Engine {
 
 /// The full layout context threaded through the recursion.
 #[derive(Clone, Copy)]
-struct LayCtx {
+struct LayCtx<'a> {
     style: StyleCtx,
     alphabet: Option<MathFont>,
+    /// The surrounding text face survives an inline math island. Text
+    /// commands in math still read that font's spacing parameters.
+    text_alphabet: Option<MathFont>,
     /// Laying text (islands, `\text` bodies): letters stay upright.
     text_mode: bool,
     /// The active font control permits text pair kerns. Math kerns are
@@ -332,6 +341,9 @@ struct LayCtx {
     /// the style's own factor, exactly like LaTeX's current size setting
     /// the design size every fontdimen is read from.
     decl_size: f64,
+    /// Normal/small/footnote size declarations reset the display skip
+    /// registers; other sizes retain their current values (size10.clo).
+    display_glue: DisplayGlue,
     /// \baselinestretch for subsequent stacked lines (\doublespacing).
     line_stretch: f64,
     /// Whether stacked `\\` lines are the Tex surface's align* rows, which
@@ -349,6 +361,41 @@ struct LayCtx {
     /// The TexText paragraphs' line width, ems (`\linewidth`): the
     /// mainland and the alignment environments break lines wider than it.
     line_width: Option<f64>,
+    /// Per-call text-style measurements used by amsfonts' wide accents.
+    /// Memoizing them prevents nested accents from relaying out their
+    /// complete nuclei exponentially. No cache survives this input tree.
+    wide_accent_widths: &'a WideAccentWidths,
+}
+
+type WideAccentWidths = RefCell<HashMap<WideAccentWidthKey, Vec<WideAccentWidth>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum DisplayGlue {
+    Normal,
+    Small,
+    Footnote,
+}
+
+struct WideAccentWidth {
+    node: Node,
+    width: f64,
+}
+
+/// Geometry-affecting context of a text-style measurement. The stored
+/// node is also compared on a hit: macro expansions can share spans.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct WideAccentWidthKey {
+    span: Span,
+    alphabet: Option<u8>,
+    text_alphabet: Option<u8>,
+    text_mode: bool,
+    text_kerns: bool,
+    decl_size: u64,
+    display_glue: DisplayGlue,
+    line_stretch: u64,
+    align_rows: bool,
+    in_display: bool,
+    line_width: Option<u64>,
 }
 
 /// A paragraph's line: its width, ems, and alignment
@@ -359,7 +406,7 @@ struct Paragraph {
     align: LineAlign,
 }
 
-impl LayCtx {
+impl LayCtx<'_> {
     fn size(&self) -> f64 {
         crate::metrics::math_size(self.style.style, self.decl_size)
     }
@@ -396,6 +443,25 @@ enum LineItem {
     Glue(GlueSpec),
 }
 
+/// A paragraph row keeps the first and last baseline separately: a
+/// multi-row display is not an inline vcenter with one baseline.
+struct TextRow<'a> {
+    boxx: MBox,
+    ctx: LayCtx<'a>,
+    display: bool,
+    display_indent: f64,
+    baseline_span: f64,
+    above: f64,
+    below: f64,
+}
+
+struct TextFlow<'a> {
+    pending: Vec<LineItem>,
+    space_factor: u16,
+    rows: Vec<TextRow<'a>>,
+    after_display: bool,
+}
+
 impl Engine {
     /// Lay out a horizontal list: split at `\\` into stacked lines; within
     /// a line, walk atoms with their effective classes, inserting the
@@ -415,6 +481,9 @@ impl Engine {
         ctx: LayCtx,
         paragraph: Option<Paragraph>,
     ) -> Result<MBox, MathError> {
+        if ctx.text_mode && items.iter().any(Node::contains_text_display) {
+            return self.display_paragraph(&[items], ctx, paragraph);
+        }
         let mut lines: Vec<(MBox, LayCtx)> = Vec::new();
         let mut ctx = ctx;
         let mut sources: Vec<&[Node]> = items
@@ -442,6 +511,259 @@ impl Engine {
         };
         let align = paragraph.map_or(LineAlign::Left, |p| p.align);
         self.stack_lines(lines, align, jot)
+    }
+
+    /// Text displays interrupt the paragraph, including through scoped
+    /// groups. Ordinary paragraphs still use the unchanged inline path.
+    fn display_paragraph(
+        &self,
+        sources: &[&[Node]],
+        ctx: LayCtx,
+        paragraph: Option<Paragraph>,
+    ) -> Result<MBox, MathError> {
+        let mut flow = TextFlow {
+            pending: Vec::new(),
+            space_factor: 1000,
+            rows: Vec::new(),
+            after_display: false,
+        };
+        let mut ctx = ctx;
+        for (index, source) in sources.iter().enumerate() {
+            if index != 0 {
+                self.end_text_line(&mut flow, ctx, paragraph, false);
+            }
+            ctx = self.text_flow(source, ctx, paragraph, &mut flow)?;
+        }
+        if !flow.pending.is_empty() || !flow.after_display {
+            self.end_text_line(&mut flow, ctx, paragraph, true);
+        }
+        let align = paragraph.map_or(LineAlign::Left, |p| p.align);
+        let mut width = flow
+            .rows
+            .iter()
+            .map(|row| row.boxx.width)
+            .fold(0.0, f64::max);
+        let line_width = paragraph.map_or(ctx.line_width.unwrap_or(width), |p| p.width);
+        if matches!(align, LineAlign::Left) {
+            for row in &flow.rows {
+                if row.display {
+                    let ink_width = row.boxx.width - row.display_indent;
+                    width = width.max((line_width - ink_width).max(0.0) / 2.0 + ink_width);
+                }
+            }
+        }
+        let origin = match align {
+            LineAlign::Left => 0.0,
+            LineAlign::Center => (line_width - width).max(0.0) / 2.0,
+            LineAlign::Right => (line_width - width).max(0.0),
+        };
+        let mut children = Vec::new();
+        let mut baseline = 0.0_f64;
+        let mut previous: Option<(f64, f64, f64)> = None;
+        let mut height = 0.0_f64;
+        let mut depth = 0.0_f64;
+        for row in flow.rows {
+            if let Some((last_depth, span, below)) = previous {
+                let natural = self.baseline_skip_at(&row.ctx) * row.ctx.line_stretch;
+                // lineskiplimit is zero: use lineskip only when the
+                // natural interline glue is negative, not merely small.
+                let occupied = last_depth + row.boxx.height;
+                let pitch = if natural < occupied {
+                    occupied + self.consts.line_skip * row.ctx.size()
+                } else {
+                    natural
+                };
+                baseline -= span + pitch + below + row.above;
+            } else {
+                height = row.boxx.height;
+            }
+            let dx = if row.display {
+                (line_width - (row.boxx.width - row.display_indent)).max(0.0) / 2.0
+                    - row.display_indent
+                    - origin
+            } else {
+                match align {
+                    LineAlign::Left => 0.0,
+                    LineAlign::Center => (line_width - row.boxx.width).max(0.0) / 2.0 - origin,
+                    LineAlign::Right => (line_width - row.boxx.width).max(0.0) - origin,
+                }
+            };
+            depth = -baseline + row.boxx.depth;
+            previous = Some((
+                row.boxx.depth - row.baseline_span,
+                row.baseline_span,
+                row.below,
+            ));
+            children.push(Positioned {
+                dx,
+                dy: baseline,
+                node: MNode::Box(row.boxx),
+            });
+        }
+        Ok(MBox {
+            kind: BoxKind::Vertical,
+            width,
+            height,
+            depth,
+            children,
+        })
+    }
+
+    fn end_text_line<'a>(
+        &self,
+        flow: &mut TextFlow<'a>,
+        ctx: LayCtx<'a>,
+        paragraph: Option<Paragraph>,
+        force: bool,
+    ) {
+        if flow.after_display && flow.pending.is_empty() && !force {
+            return;
+        }
+        while matches!(flow.pending.last(), Some(LineItem::Glue(glue)) if glue.breakable) {
+            flow.pending.pop();
+        }
+        let boxx = self.assemble_line(std::mem::take(&mut flow.pending), ctx);
+        let mut lines = Vec::new();
+        paragraph_lines(boxx, ctx, paragraph, &mut lines);
+        flow.rows
+            .extend(lines.into_iter().map(|(boxx, ctx)| TextRow {
+                boxx,
+                ctx,
+                display: false,
+                display_indent: 0.0,
+                baseline_span: 0.0,
+                above: 0.0,
+                below: 0.0,
+            }));
+        flow.space_factor = 1000;
+        flow.after_display = false;
+    }
+
+    fn text_flow<'a>(
+        &self,
+        items: &[Node],
+        mut ctx: LayCtx<'a>,
+        paragraph: Option<Paragraph>,
+        flow: &mut TextFlow<'a>,
+    ) -> Result<LayCtx<'a>, MathError> {
+        let mut start = 0;
+        for (index, node) in items.iter().enumerate() {
+            if !node.contains_text_display() && !matches!(node.kind, NodeKind::Linebreak) {
+                continue;
+            }
+            ctx = self.line_items(
+                &items[start..index],
+                ctx,
+                &mut flow.pending,
+                &mut flow.space_factor,
+            )?;
+            if node.is_text_display() {
+                let consecutive = flow.after_display && flow.pending.is_empty();
+                if !consecutive {
+                    self.end_text_line(flow, ctx, paragraph, true);
+                }
+                let (boxx, baseline_span, display_indent) = self.text_display(node, ctx)?;
+                let line_width =
+                    paragraph.map_or(ctx.line_width.unwrap_or(LINE_WIDTH), |p| p.width);
+                let display_left = (line_width - (boxx.width - display_indent)).max(0.0) / 2.0;
+                let short = (consecutive
+                    || (paragraph.is_none_or(|p| matches!(p.align, LineAlign::Left))
+                        && flow.rows.last().is_some_and(|last| {
+                            last.boxx.width
+                                + 2.0 * self.interword_font(ctx).param(6) * ctx.text_size()
+                                <= display_left
+                        })))
+                    && !matches!(&node.kind, NodeKind::Environment { name, .. } if name != "equation*");
+                let (above, below) = self.display_skips(ctx, short);
+                flow.rows.push(TextRow {
+                    boxx,
+                    ctx,
+                    display: true,
+                    display_indent,
+                    baseline_span,
+                    above,
+                    below,
+                });
+                flow.after_display = true;
+                flow.space_factor = 1000;
+            } else {
+                match &node.kind {
+                    NodeKind::Linebreak => self.end_text_line(flow, ctx, paragraph, false),
+                    NodeKind::List(body) => {
+                        self.text_flow(body, ctx, paragraph, flow)?;
+                    }
+                    NodeKind::TextStyled { style, body } => {
+                        self.text_flow(body, text_style_ctx(*style, ctx), paragraph, flow)?;
+                        // This scoped flow bypasses atom_items, so preserve
+                        // the same closing \check@icr it applies to ordinary
+                        // slanted text, including \nocorrlist punctuation.
+                        if let Some(correction) =
+                            slanted_text_correction(node, items.get(index + 1), ctx)
+                        {
+                            flow.pending.push(LineItem::Glue(GlueSpec {
+                                natural: correction,
+                                stretch: 0.0,
+                                shrink: 0.0,
+                                breakable: false,
+                            }));
+                        }
+                    }
+                    _ => unreachable!("display containment only traverses text groups"),
+                }
+            }
+            start = index + 1;
+        }
+        self.line_items(
+            &items[start..],
+            ctx,
+            &mut flow.pending,
+            &mut flow.space_factor,
+        )
+    }
+
+    /// Natural (unstretched) size10.clo display glue, in base ems.
+    fn display_skips(&self, ctx: LayCtx, short: bool) -> (f64, f64) {
+        let (long, short_below) = match ctx.display_glue {
+            DisplayGlue::Small => (0.85, 0.4),
+            DisplayGlue::Footnote => (0.6, 0.3),
+            DisplayGlue::Normal => (1.0, 0.6),
+        };
+        if short {
+            (0.0, short_below * ctx.line_stretch)
+        } else {
+            (long * ctx.line_stretch, long * ctx.line_stretch)
+        }
+    }
+
+    fn text_display(&self, node: &Node, ctx: LayCtx) -> Result<(MBox, f64, f64), MathError> {
+        if let NodeKind::Environment { name, spec, rows } = &node.kind {
+            let mut plan = self.environment_plan(name, spec.as_deref(), ctx, node.span)?;
+            plan.grid.first_baseline = true;
+            plan.grid.text_display = true;
+            let mut boxx = self.grid(rows, plan.cells, &plan.grid, node.span)?;
+            let span = boxx
+                .children
+                .iter()
+                .map(|child| -child.dy)
+                .fold(0.0, f64::max);
+            // A display halign's initial centring kern contributes to its
+            // natural advance; trailing fill is glue. Keep that advance
+            // separate from the formula's ink width when centring rows.
+            let indent = (ctx.line_width.unwrap_or(LINE_WIDTH) - boxx.width).max(0.0) / 2.0;
+            // Bare typeset_text has no declared paragraph measure: keep
+            // its standalone formula advance (including amsmath kerns).
+            if name != "equation*" && ctx.line_width.is_some() {
+                for child in &mut boxx.children {
+                    child.dx += indent;
+                }
+                boxx.width += indent;
+                Ok((boxx, span, indent))
+            } else {
+                Ok((boxx, span, 0.0))
+            }
+        } else {
+            Ok((self.lay_node(node, ctx)?.boxx, 0.0, 0.0))
+        }
     }
 
     /// Stack laid lines, each with the context it ended in: baseline to
@@ -510,11 +832,14 @@ impl Engine {
     fn baseline_skip_at(&self, ctx: &LayCtx) -> f64 {
         let declared = [
             (0.5, 0.6),
+            (0.7, 0.8),
             (0.8, 0.95),
             (0.9, 1.1),
             (1.2, 1.4),
             (1.44, 1.8),
+            (1.728, 2.2),
             (2.074, 2.5),
+            (2.488, 3.0),
         ]
         .iter()
         .find(|(size, _)| (ctx.decl_size - size).abs() < 1e-9)
@@ -529,21 +854,39 @@ impl Engine {
     /// the declarations and the recursion; the glue arithmetic, the text
     /// runs and the assembly pass are methods of their own (see
     /// [`Self::lay_node`]).
-    fn line(&self, items: &[Node], outer: LayCtx) -> Result<(MBox, LayCtx), MathError> {
+    fn line<'a>(&self, items: &[Node], outer: LayCtx<'a>) -> Result<(MBox, LayCtx<'a>), MathError> {
+        let mut laid_items = Vec::new();
+        let mut space_factor = 1000;
+        let ctx = self.line_items(items, outer, &mut laid_items, &mut space_factor)?;
+        Ok((self.assemble_line(laid_items, ctx), ctx))
+    }
+
+    fn line_items<'a>(
+        &self,
+        items: &[Node],
+        outer: LayCtx<'a>,
+        laid_items: &mut Vec<LineItem>,
+        space_factor: &mut u16,
+    ) -> Result<LayCtx<'a>, MathError> {
         let classes = classify_list(items);
         let mut ctx = outer;
-        let mut laid_items: Vec<LineItem> = Vec::new();
         // TeX's \spacefactor: the characters before a space size it.
-        let mut space_factor = 1000_u16;
         for (index, (node, class)) in items.iter().zip(classes).enumerate() {
-            let factor_before = space_factor;
-            space_factor = space_factor_through(std::slice::from_ref(node), space_factor);
+            let factor_before = *space_factor;
+            *space_factor = space_factor_through(std::slice::from_ref(node), *space_factor);
             match &node.kind {
                 NodeKind::StyleChange(style) => {
                     ctx = ctx.map(|_| StyleCtx::new(*style));
                 }
                 NodeKind::SizeChange(factor) => {
                     ctx.decl_size = *factor;
+                    if (*factor - 1.0).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Normal;
+                    } else if (*factor - 0.9).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Small;
+                    } else if (*factor - 0.8).abs() < 1e-9 {
+                        ctx.display_glue = DisplayGlue::Footnote;
+                    }
                 }
                 NodeKind::LineSpacing(stretch) => {
                     ctx.line_stretch = *stretch;
@@ -602,13 +945,13 @@ impl Engine {
                         class.unwrap_or(AtomClass::Ord),
                         factor_before,
                         ctx,
-                        &mut laid_items,
+                        laid_items,
                     )?;
                 }
-                _ => self.atom_items(node, items.get(index + 1), class, ctx, &mut laid_items)?,
+                _ => self.atom_items(node, items.get(index + 1), class, ctx, laid_items)?,
             }
         }
-        Ok((self.assemble_line(laid_items, ctx), ctx))
+        Ok(ctx)
     }
 
     /// An explicit space's glue.
@@ -878,6 +1221,7 @@ impl Engine {
             NodeKind::TextRun { text, char_spans } => {
                 self.word_box(text, node.span, Some(char_spans), ctx, text_face(ctx), true)
             }
+            NodeKind::TextEllipsis => self.text_ellipsis(node.span, ctx),
             NodeKind::Text { body } => self.text_body(body, ctx),
             NodeKind::TextStyled { style, body } => self.text_styled(*style, body, node.span, ctx),
             NodeKind::MathIsland { body, display } => self.math_island(body, *display, ctx),
@@ -944,6 +1288,55 @@ impl Engine {
     }
 
     // ── lay_node's arms ─────────────────────────────────────────────────
+
+    /// LaTeX's default text ellipsis ends with a kern too. Periods keep
+    /// the current mode's face and size; the kern reads the surrounding
+    /// text font, even when the command occurs inside mathematics.
+    fn text_ellipsis(&self, span: Span, ctx: LayCtx) -> Result<Laid, MathError> {
+        let dot = self.char_atom('.', span, ctx)?.boxx;
+        let text = LayCtx {
+            style: if ctx.text_mode {
+                ctx.style
+            } else {
+                StyleCtx::new(Style::Text)
+            },
+            alphabet: if ctx.text_mode {
+                ctx.alphabet
+            } else {
+                ctx.text_alphabet
+            },
+            text_mode: true,
+            ..ctx
+        };
+        let face = text_face(text);
+        let stretch = if let Some(font) = self.faces.text_font(face, 10.0 * text.text_size()) {
+            font.param(3) * text.text_size()
+        } else if face == FACE_TYPEWRITER {
+            0.0
+        } else {
+            // Proportional fallback faces use the CM half-space
+            // convention when their own EC fontdimens are unavailable.
+            self.char_atom(' ', span, text)?.boxx.width / 2.0
+        };
+        let advance = dot.width + stretch;
+        Ok(Laid {
+            boxx: MBox {
+                kind: BoxKind::Horizontal,
+                width: 3.0 * advance,
+                height: dot.height,
+                depth: dot.depth,
+                children: [0.0, advance, 2.0 * advance]
+                    .map(|dx| Positioned {
+                        dx,
+                        dy: 0.0,
+                        node: MNode::Box(dot.clone()),
+                    })
+                    .into(),
+            },
+            italic: 0.0,
+            char_glyph: None,
+        })
+    }
 
     /// A list as one box.
     fn lay_list(&self, items: &[Node], ctx: LayCtx) -> Result<Laid, MathError> {
@@ -1095,17 +1488,7 @@ impl Engine {
         span: Span,
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
-        let styled = LayCtx {
-            text_mode: true,
-            alphabet: Some(match style {
-                TextStyle::Bold => MathFont::Bold,
-                TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
-                TextStyle::Underline | TextStyle::Roman => MathFont::Roman,
-                TextStyle::Typewriter => MathFont::Typewriter,
-                TextStyle::SansSerif => MathFont::SansSerif,
-            }),
-            ..ctx
-        };
+        let styled = text_style_ctx(style, ctx);
         let inner = self.hlist(body, styled)?;
         if matches!(style, TextStyle::Underline) {
             Ok(Laid {
@@ -1301,6 +1684,20 @@ impl Engine {
         ctx: LayCtx,
     ) -> Result<Laid, MathError> {
         let paragraph = ctx.line_width.map(|width| Paragraph { width, align });
+        if ctx.text_mode && lines.iter().any(Node::contains_text_display) {
+            let sources: Vec<_> = lines
+                .iter()
+                .map(|line| match &line.kind {
+                    NodeKind::List(items) => items.as_slice(),
+                    _ => std::slice::from_ref(line),
+                })
+                .collect();
+            return Ok(Laid {
+                boxx: self.display_paragraph(&sources, ctx, paragraph)?,
+                italic: 0.0,
+                char_glyph: None,
+            });
+        }
         let mut laid = Vec::new();
         let mut line_ctx = ctx;
         for line in lines {
@@ -2367,6 +2764,20 @@ impl Engine {
                 char_glyph: None,
             },
         };
+        // Rule 12 moves a character accent's scripts onto its nucleus
+        // before packing the accent (tex.web §§738–742). In particular,
+        // rule 18 must see the character, not the taller accent box, and
+        // a subscript suppresses the character's italic correction as
+        // usual. Keep the accent's existing position over the character.
+        if let Some(nucleus) = base.and_then(character_accent_nucleus) {
+            if self.lay_node(nucleus, ctx)?.char_glyph.is_some() {
+                let mut scripted = self.scripts(Some(nucleus), sub, sup, primes, ctx)?;
+                scripted.boxx.height = scripted.boxx.height.max(base_laid.boxx.height);
+                scripted.boxx.depth = scripted.boxx.depth.max(base_laid.boxx.depth);
+                scripted.boxx.children[0].node = MNode::Box(base_laid.boxx);
+                return Ok(scripted);
+            }
+        }
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
         let delta = base_laid.italic;
         // Rule 18a: baseline drops from the base's extremes (zero for
@@ -2575,8 +2986,15 @@ impl Engine {
         let upm = f64::from(font.units_per_em.max(1));
         let bbox = font.glyph_bbox(gid).unwrap_or([0, 0, 0, 0]);
         let [gl, _, gr, gt] = bbox.map(|v| f64::from(v) / upm);
-        let (advance, [tl, _, tr, tt]) = tex_prime_metrics(ctx.style.style);
         let size = ctx.size();
+        let symbols = tex_small_font(2, 10.0 * size);
+        let metrics = symbols.char(0x30).ok_or(unmapped)?;
+        let ink_style = match symbols.name {
+            "cmsy5" => Style::ScriptScript,
+            "cmsy7" => Style::Script,
+            _ => Style::Text,
+        };
+        let [tl, _, tr, tt] = tex_prime_ink(ink_style);
         let glyph_size = if gr > gl {
             size * (tr - tl) / (gr - gl)
         } else {
@@ -2584,9 +3002,11 @@ impl Engine {
         };
         Ok(MBox {
             kind: BoxKind::Horizontal,
-            width: advance * size,
-            height: tt * size,
-            depth: 0.0,
+            // TFM boxes and the authored ink bounds are distinct: cmsy's
+            // prime ink extends above its 0.555557 em TFM height.
+            width: metrics.width * size,
+            height: metrics.height * size,
+            depth: metrics.depth * size,
             children: vec![Positioned {
                 dx: (tl + tr) / 2.0 * size - (gl + gr) / 2.0 * glyph_size,
                 dy: tt * size - gt * glyph_size,
@@ -3224,13 +3644,13 @@ impl Engine {
 
     /// How an environment lays out: its cells' context, the grid rules, and
     /// the delimiters around the grid.
-    fn environment_plan(
+    fn environment_plan<'a>(
         &self,
         name: &str,
         spec: Option<&str>,
-        ctx: LayCtx,
+        ctx: LayCtx<'a>,
         span: Span,
-    ) -> Result<EnvPlan, MathError> {
+    ) -> Result<EnvPlan<'a>, MathError> {
         // These grids are mathematics even when their enclosing document
         // is TexText. A surrounding text face must not leak into cells.
         let ctx = LayCtx {
@@ -3417,10 +3837,15 @@ impl Engine {
         }
         // An array row is at least as tall and deep as its \@arstrut, which
         // follows the text size in force, not the math style.
-        let (strut_h, strut_d) = grid.array_stretch.map_or((0.0, 0.0), |stretch| {
-            let skip = c.baseline_skip * stretch * cell_ctx.decl_size;
+        let (strut_h, strut_d) = if grid.text_display {
+            let skip = self.baseline_skip_at(&cell_ctx) * cell_ctx.line_stretch;
             (0.7 * skip, 0.3 * skip)
-        });
+        } else {
+            grid.array_stretch.map_or((0.0, 0.0), |stretch| {
+                let skip = c.baseline_skip * stretch * cell_ctx.decl_size;
+                (0.7 * skip, 0.3 * skip)
+            })
+        };
         let row_h: Vec<f64> = cells
             .iter()
             .map(|r| r.iter().map(|b| b.height).fold(strut_h, f64::max))
@@ -3464,10 +3889,22 @@ impl Engine {
             let pitch = if grid.array_stretch.is_some() {
                 row_d[i - 1] + row_h[i]
             } else {
-                let natural = (c.baseline_skip + grid.jot) * grid.row_factor * size;
+                let natural = if grid.text_display {
+                    self.baseline_skip_at(&cell_ctx) * cell_ctx.line_stretch + grid.jot * size
+                } else {
+                    (c.baseline_skip + grid.jot) * grid.row_factor * size
+                };
                 // \openup\jot raises the \lineskip floor too.
                 let min_gap = row_d[i - 1] + row_h[i] + (c.line_skip + grid.jot) * size;
-                natural.max(min_gap)
+                if grid.text_display {
+                    if natural < row_d[i - 1] + row_h[i] {
+                        min_gap
+                    } else {
+                        natural
+                    }
+                } else {
+                    natural.max(min_gap)
+                }
             };
             baselines[i] = baselines[i - 1] - pitch;
         }
@@ -3739,9 +4176,9 @@ impl Engine {
 
     /// The stretchy over-constructions (`\widehat`, `\widetilde`,
     /// `\overrightarrow`, `\overleftarrow`): a drawn band spanning the
-    /// base's width, placed with a small rule-thickness clearance (hats
-    /// and tildes ride close, the way the authored accents do; arrows take
-    /// a little more air). Any width draws — the constructions are total.
+    /// base's width. Hats and tildes use accent placement; the amsmath
+    /// arrows use a centered alignment with a font-derived minimum width
+    /// and arrow-row height. Any width draws — the constructions are total.
     fn stretchy_accent(
         &self,
         kind: AccentKind,
@@ -3750,36 +4187,90 @@ impl Engine {
         span: Span,
     ) -> Result<Laid, MathError> {
         let size = ctx.size();
-        let theta = self.consts_at(&ctx).rule_thickness * size;
-        // Over-accents cramp their base (rule 12 / overline's rule 9). The
-        // wide accents clean their base and the arrows are amsmath
-        // alignments whose body is its own formula; either way a lone
-        // character keeps its italic correction in the width.
-        let inner = self.clean_box(base, ctx.map(StyleCtx::cramp))?.boxx;
+        let is_arrow = matches!(kind, AccentKind::OverRightArrow | AccentKind::OverLeftArrow);
+        // Primitive accents cramp their base (rule 12); amsmath's
+        // overarrow@ alignment starts a fresh $style nucleus$ formula,
+        // even inside an already cramped radicand or denominator. As in
+        // cancel's fresh formula, an enclosing math alphabet does not leak
+        // in; an alphabet explicitly inside the nucleus still applies.
+        // Both constructions retain a lone character's italic correction.
+        let base_ctx = if is_arrow {
+            LayCtx {
+                style: StyleCtx::new(ctx.style.style),
+                alphabet: None,
+                align_rows: false,
+                ..ctx
+            }
+        } else {
+            ctx.map(StyleCtx::cramp)
+        };
+        let inner = self.clean_box(base, base_ctx)?.boxx;
         let stretch_kind = match kind {
             AccentKind::WideHat => crate::drawn::Stretch::Hat,
             AccentKind::WideTilde => crate::drawn::Stretch::Tilde,
             AccentKind::OverRightArrow => crate::drawn::Stretch::RightArrow,
             _ => crate::drawn::Stretch::LeftArrow,
         };
-        let width = inner.width.max(0.25 * size);
-        let band = crate::drawn::stretch(stretch_kind, width, size);
-        let gap = match kind {
-            AccentKind::WideHat | AccentKind::WideTilde => theta,
-            _ => 2.0 * theta,
+        let arrow_metrics = if is_arrow {
+            Some(
+                over_arrow_metrics(kind, ctx).ok_or(MathError::UnmappedChar {
+                    ch: if kind == AccentKind::OverRightArrow {
+                        '→'
+                    } else {
+                        '←'
+                    },
+                    span,
+                })?,
+            )
+        } else {
+            None
         };
-        let band_dy = inner.height + gap;
-        let (height, depth) = (inner.height + gap + band.height, inner.depth);
+        let width = inner
+            .width
+            .max(arrow_metrics.map_or(0.25 * size, |(minimum, _)| minimum));
+        let band = crate::drawn::stretch(stretch_kind, width, size);
+        let height = if let Some((_, row_height)) = arrow_metrics {
+            inner.height + row_height
+        } else {
+            let text_width = self.wide_accent_text_width(base, ctx)?;
+            let text_em = self.interword_font(ctx).param(6) * ctx.text_size();
+            let (accent_height, x_height) =
+                wide_accent_metrics(kind, inner.width, text_width > 2.0 * text_em, ctx).ok_or(
+                    MathError::UnmappedChar {
+                        ch: if kind == AccentKind::WideHat {
+                            '\u{0302}'
+                        } else {
+                            '\u{0303}'
+                        },
+                        span,
+                    },
+                )?;
+            inner
+                .height
+                .max(inner.height + accent_height - inner.height.min(x_height))
+        };
+        let band_dy = height - band.height;
+        let depth = inner.depth;
         let inner_width = inner.width;
         Ok(Laid {
             boxx: MBox {
                 kind: BoxKind::Horizontal,
-                width: inner_width.max(width),
+                // Primitive accents have zero advance, even over an empty
+                // nucleus; arrows keep their alignment's minimum width.
+                width: if !is_arrow {
+                    inner_width
+                } else {
+                    inner_width.max(width)
+                },
                 height,
                 depth,
                 children: vec![
                     Positioned {
-                        dx: 0.0,
+                        dx: if !is_arrow {
+                            (inner_width - width) / 2.0
+                        } else {
+                            0.0
+                        },
                         dy: band_dy,
                         node: MNode::Path {
                             contours: band.contours,
@@ -3787,7 +4278,11 @@ impl Engine {
                         },
                     },
                     Positioned {
-                        dx: 0.0,
+                        dx: if is_arrow {
+                            (width - inner_width) / 2.0
+                        } else {
+                            0.0
+                        },
                         dy: 0.0,
                         node: MNode::Box(inner),
                     },
@@ -3798,6 +4293,54 @@ impl Engine {
         })
     }
 
+    fn wide_accent_text_width(&self, base: &Node, ctx: LayCtx) -> Result<f64, MathError> {
+        let key = WideAccentWidthKey {
+            span: base.span,
+            alphabet: ctx.alphabet.map(|font| font as u8),
+            text_alphabet: ctx.text_alphabet.map(|font| font as u8),
+            text_mode: ctx.text_mode,
+            text_kerns: ctx.text_kerns,
+            decl_size: ctx.decl_size.to_bits(),
+            display_glue: ctx.display_glue,
+            line_stretch: ctx.line_stretch.to_bits(),
+            align_rows: ctx.align_rows,
+            in_display: ctx.in_display,
+            line_width: ctx.line_width.map(f64::to_bits),
+        };
+        let cached = ctx
+            .wide_accent_widths
+            .borrow()
+            .get(&key)
+            .and_then(|values| values.iter().find(|entry| &entry.node == base))
+            .map(|entry| entry.width);
+        if let Some(width) = cached {
+            return Ok(width);
+        }
+        // Drop the cache borrow before recursively measuring another accent.
+        // amsfonts' mathmeasure starts a fresh text-style formula: an
+        // enclosing math alphabet does not leak into it, while an alphabet
+        // explicitly inside the nucleus still applies.
+        let width = self
+            .clean_box(
+                base,
+                LayCtx {
+                    alphabet: None,
+                    ..ctx.map(|_| StyleCtx::new(Style::Text))
+                },
+            )?
+            .boxx
+            .width;
+        ctx.wide_accent_widths
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .push(WideAccentWidth {
+                node: base.clone(),
+                width,
+            });
+        Ok(width)
+    }
+
     fn underline_box(&self, inner: MBox, ctx: LayCtx, span: Span) -> MBox {
         let theta = self.consts_at(&ctx).rule_thickness * ctx.size();
         let rule_y = -(inner.depth + 3.0 * theta) - theta;
@@ -3806,7 +4349,8 @@ impl Engine {
             kind: BoxKind::Horizontal,
             width,
             height: inner.height,
-            depth: -rule_y + 2.0 * theta,
+            // TeX's make_under leaves one theta below the rule (tex.web §735).
+            depth: -rule_y + theta,
             // TeX's emission order: the base, then the rule under it.
             children: vec![
                 Positioned {
@@ -4661,6 +5205,38 @@ fn text_face(ctx: LayCtx) -> FaceId {
     }
 }
 
+/// A primitive accent survives singleton groups (tex.web §1186), and
+/// rule 12 transfers its scripts only when its nucleus is a character.
+/// Constructed over/under accents and compound nuclei keep rule 18.
+fn character_accent_nucleus(mut node: &Node) -> Option<&Node> {
+    while let NodeKind::List(items) = &node.kind {
+        let [only] = items.as_slice() else {
+            return None;
+        };
+        node = only;
+    }
+    match &node.kind {
+        NodeKind::Accent {
+            accent:
+                AccentKind::Hat
+                | AccentKind::Check
+                | AccentKind::Tilde
+                | AccentKind::Acute
+                | AccentKind::Grave
+                | AccentKind::Dot
+                | AccentKind::Ddot
+                | AccentKind::Breve
+                | AccentKind::Bar
+                | AccentKind::Vec
+                | AccentKind::Ring
+                | AccentKind::WideHat
+                | AccentKind::WideTilde,
+            base,
+        } => Some(base),
+        _ => None,
+    }
+}
+
 /// The accent character plain TeX's `\mathaccent` sets for `kind`: its
 /// code in cmr (or cmmi, for the vector), and its ink's left, bottom, right
 /// and top in ems from cmr10's (cmmi10's) AFM metrics.
@@ -4712,6 +5288,69 @@ fn tex_small_font(family: u8, points: f64) -> &'static crate::tfm::TfmFont {
     }
 }
 
+/// amsmath's arrowfill@ has one smashed relbar and one arrow, with two
+/// -7mu kerns and a zero-natural-width leader between them. The arrow
+/// supplies the row's height/depth; no interline glue separates that row
+/// from the nucleus. Use the actual optical symbol font for both mu and
+/// character metrics, including script and declared font sizes.
+fn over_arrow_metrics(kind: AccentKind, ctx: LayCtx) -> Option<(f64, f64)> {
+    let size = ctx.size();
+    let font = tex_small_font(2, 10.0 * size);
+    let arrow = font.char(match kind {
+        AccentKind::OverRightArrow => 0x21,
+        AccentKind::OverLeftArrow => 0x20,
+        _ => return None,
+    })?;
+    let bar = font.char(0x00)?;
+    Some((
+        (bar.width + arrow.width - 14.0 * font.param(6) / 18.0) * size,
+        (arrow.height.max(0.0) + arrow.depth.max(0.0)) * size,
+    ))
+}
+
+/// TeX's wide-hat/tilde successor chains, including amsfonts' branch to MSBM
+/// above two text-style ems. Drawing remains ADR-0005's calibrated band;
+/// its top follows make_math_accent's height and x-height overlap.
+fn wide_accent_metrics(
+    kind: AccentKind,
+    width: f64,
+    use_ams: bool,
+    ctx: LayCtx,
+) -> Option<(f64, f64)> {
+    let (cmex_start, ams_start) = match kind {
+        AccentKind::WideHat => (0x62, 0x5B),
+        AccentKind::WideTilde => (0x65, 0x5D),
+        _ => return None,
+    };
+    let size = ctx.size();
+    let points = 10.0 * size;
+    let (font, accent) = if use_ams {
+        let font = match points {
+            p if p < 6.0 => &crate::tfm::MSBM5,
+            p if p < 8.0 => &crate::tfm::MSBM7,
+            _ => &crate::tfm::MSBM10,
+        };
+        let mut accent = font.char(ams_start)?;
+        let larger = font.char(ams_start + 1)?;
+        if larger.width * size <= width {
+            accent = larger;
+        }
+        (font, accent)
+    } else {
+        let font = crate::metrics::size_fonts(points).1;
+        let mut accent = font.char(cmex_start)?;
+        for code in [cmex_start + 1, cmex_start + 2] {
+            let larger = font.char(code)?;
+            if larger.width * size > width {
+                break;
+            }
+            accent = larger;
+        }
+        (font, accent)
+    };
+    Some((accent.height * size, font.param(5) * size))
+}
+
 /// The accent's TFM box at the actual point size: TeX's char_box,
 /// whose width is the character's width plus
 /// its italic correction (tex.web §709, 0.5 + 0.1538 em for cmmi10's
@@ -4722,15 +5361,14 @@ fn tex_accent_box(math_italic: bool, code: u8, points: f64) -> (f64, f64) {
         .map_or((0.5, 0.694_445), |c| (c.width + c.italic, c.height))
 }
 
-/// cmsy's prime character from its AFM metrics, in ems of that size's
-/// design: cmsy10 in the display and text styles, cmsy7 in script and
-/// cmsy5 in scriptscript, the sizes TeX sets. The advance, then the ink's
-/// left, bottom, right and top; the top is also the character's height.
-const fn tex_prime_metrics(style: Style) -> (f64, [f64; 4]) {
+/// Authored prime ink calibration, separate from its exact TFM box.
+/// The caller selects the optical cut actually used, including declared
+/// sizes that differ from the nominal math style.
+const fn tex_prime_ink(style: Style) -> [f64; 4] {
     match style {
-        Style::Display | Style::Text => (0.275, [0.029, 0.045, 0.262, 0.559]),
-        Style::Script => (0.329, [0.048, 0.041, 0.299, 0.559]),
-        Style::ScriptScript => (0.440, [0.093, 0.038, 0.370, 0.559]),
+        Style::Display | Style::Text => [0.029, 0.045, 0.262, 0.559],
+        Style::Script => [0.048, 0.041, 0.299, 0.559],
+        Style::ScriptScript => [0.093, 0.038, 0.370, 0.559],
     }
 }
 
@@ -4770,6 +5408,9 @@ struct Grid {
     /// Keep the first row's baseline (the Tex surface's align* rows)
     /// instead of `\vcenter`ing the grid on the axis.
     first_baseline: bool,
+    /// A paragraph-level amsmath display uses text struts and the
+    /// declared size's baseline skip, rather than an inline vcenter.
+    text_display: bool,
     /// LaTeX's `array` rows: every row carries `\@arstrut` (height
     /// 0.7\baselineskip, depth 0.3\baselineskip, both times this
     /// `\arraystretch`), and rows stack depth to height with no
@@ -4781,12 +5422,12 @@ struct Grid {
 }
 
 /// An environment's layout plan ([`Engine::environment`]).
-struct EnvPlan {
+struct EnvPlan<'a> {
     /// The environment's own context (a display sets amsmath's
     /// `\if@display`); its delimiters are sized in it.
-    ctx: LayCtx,
+    ctx: LayCtx<'a>,
     /// The cells' context.
-    cells: LayCtx,
+    cells: LayCtx<'a>,
     /// The grid rules.
     grid: Grid,
     /// The delimiters around the grid, if any (`None` inside is TeX's
@@ -4803,6 +5444,7 @@ impl Grid {
     fn centered(col_sep: f64) -> Self {
         Self {
             first_baseline: false,
+            text_display: false,
             array_stretch: None,
             display_width: None,
             align: AlignRule::AllCenter,
@@ -5018,6 +5660,7 @@ fn space_factor_after(factor: u16, ch: char) -> u16 {
 /// ties leave it; anything else (math, a box) makes it 1000.
 fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
     nodes.iter().fold(factor, |factor, node| match &node.kind {
+        NodeKind::TextEllipsis => (0..3).fold(factor, |f, _| space_factor_after(f, '.')),
         NodeKind::TextRun { text, .. } => text
             .chars()
             .filter(|ch| *ch != ' ')
@@ -5039,14 +5682,40 @@ fn space_factor_through(nodes: &[Node], factor: u16) -> u16 {
     })
 }
 
+/// The group-scoped text face, shared by inline and paragraph layout.
+fn text_style_ctx(style: TextStyle, ctx: LayCtx<'_>) -> LayCtx<'_> {
+    let alphabet = Some(match style {
+        // Underlining decorates the current text without selecting a font.
+        // Keep both contexts: nested math islands can use a different
+        // alphabet from the surrounding text.
+        TextStyle::Underline => {
+            return LayCtx {
+                text_mode: true,
+                ..ctx
+            };
+        }
+        TextStyle::Bold => MathFont::Bold,
+        TextStyle::Emph | TextStyle::Italic => MathFont::Italic,
+        TextStyle::Roman => MathFont::Roman,
+        TextStyle::Typewriter => MathFont::Typewriter,
+        TextStyle::SansSerif => MathFont::SansSerif,
+    });
+    LayCtx {
+        text_mode: true,
+        alphabet,
+        text_alphabet: alphabet,
+        ..ctx
+    }
+}
+
 /// A laid paragraph line, broken when a [`Paragraph`] is given and the
 /// line is wider than it; each resulting line keeps `ctx`, the context its
 /// material ended in.
-fn paragraph_lines(
+fn paragraph_lines<'a>(
     line: MBox,
-    ctx: LayCtx,
+    ctx: LayCtx<'a>,
     paragraph: Option<Paragraph>,
-    out: &mut Vec<(MBox, LayCtx)>,
+    out: &mut Vec<(MBox, LayCtx<'a>)>,
 ) {
     match paragraph {
         Some(paragraph) if line.width > paragraph.width => {

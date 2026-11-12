@@ -37,6 +37,91 @@ fn glyph_size(layout: &Layout, ch: char) -> f64 {
 const EPS: f64 = 1e-9;
 
 #[test]
+fn text_ellipsis_uses_text_font_stretch_and_sentence_spacing() {
+    let e = engine();
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent default-template T1 showboxes: every text period is
+    // followed by fontdimen3, including the last one. The explicit space
+    // after an empty group retains the periods' sentence spacefactor.
+    for (source, width) in [
+        (r"\dots", 1.333_008),
+        (r"\ldots", 1.333_008),
+        (r"\textellipsis", 1.333_008),
+        (r"a\dots b", 2.388_306),
+        (r"a\dots{} b", 2.832_642),
+    ] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        assert!(
+            (layout.width - width).abs() < 1e-4,
+            "{source}: native {}, independent TeX {width}",
+            layout.width
+        );
+        let dots: Vec<_> = layout.glyphs.iter().filter(|g| g.ch == '.').collect();
+        assert_eq!(dots.len(), 3, "{source}");
+        for pair in dots.windows(2) {
+            assert!(
+                (pair[1].x - pair[0].x - 0.444_336).abs() < 1e-5,
+                "{source}: period positions {dots:?}"
+            );
+        }
+        assert!(dots.iter().all(|g| {
+            matches!(
+                &source[g.span.start..g.span.end],
+                r"\dots" | r"\ldots" | r"\textellipsis"
+            )
+        }));
+    }
+    // Math dots keep their math spacing, rather than becoming text dots.
+    for (source, width) in [(r"$\dots$", 1.333_324), (r"$a\ldots b$", 2.457_741)] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        assert!(
+            (layout.width - width).abs() < 1e-4,
+            "{source}: {}",
+            layout.width
+        );
+    }
+    let mono = e
+        .typeset_text_with_macros(r"\texttt{\dots}", &pack)
+        .unwrap();
+    let period = e.typeset_text_with_macros(r"\texttt{.}", &pack).unwrap();
+    assert!((mono.width - 1.574_615).abs() < 1e-4, "{mono:?}");
+    assert!((mono.width - 3.0 * period.width).abs() < EPS);
+    assert!(mono.glyphs.iter().all(|g| g.face == period.glyphs[0].face));
+    let explicit_math = e
+        .typeset_text_with_macros(r"$\textellipsis$", &pack)
+        .unwrap();
+    assert!((explicit_math.width - 1.333_214).abs() < 1e-4);
+}
+
+#[test]
+fn text_dotso_keeps_amsmath_spacing_and_group_boundaries() {
+    let e = engine();
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent T1 showboxes with amsmath: unlike textellipsis,
+    // dotso uses low math dots, leading text glue and thin math glue.
+    // A brace/color boundary preserves its generated trailing space.
+    for (source, expected) in [
+        (r"\dotso", [1.666_576, 0.105_554, 0.0]),
+        (r"a\dotso b", [3.055_125, 0.688_720, 0.0]),
+        (r"{\dotso}", [1.999_828, 0.105_554, 0.0]),
+        (r"{{\dotso}}", [1.999_828, 0.105_554, 0.0]),
+        (r"\textcolor{red}{\dotso}", [1.999_828, 0.105_554, 0.0]),
+        (r"\dotso,", [2.110_948, 0.105_554, 0.194_397]),
+        (r"a \dotso, b", [3.499_498, 0.688_720, 0.194_397]),
+        (r"{\dotso}b", [2.555_247, 0.688_720, 0.0]),
+    ] {
+        let layout = e.typeset_text_with_macros(source, &pack).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: native {actual:?}, independent TeX {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_pair_kerns_follow_the_active_font_control() {
     // Independent T1 showbox captures without the Reference's font
     // control, and with it. Basic/bare callers keep natural text kerns.
@@ -2119,20 +2204,498 @@ fn accents_take_tex_accent_geometry() {
 }
 
 #[test]
+fn character_accents_attach_scripts_before_packing_the_accent() {
+    // Independent 10 pt TeX boxes with the ruled Reference preamble
+    // (fm-sup-accented-nucleus-r12-a529). Rule 12 transfers the scripts
+    // to the character; the accent's full height must not raise them.
+    let e = engine();
+    for (source, expected) in [
+        (r"{\bar{\phi}}^{y}", [1.076_509, 0.831_667, 0.194_444]),
+        (r"{\hat{x}}^{2}", [1.020_140, 0.864_003, 0.0]),
+        (r"{\bar{A}}_{1}^{2}", [1.198_615, 0.864_003, 0.247_217]),
+        (r"\bar{\phi}^{y}", [1.076_509, 0.831_667, 0.194_444]),
+        (r"\hat{x}^{2}", [1.020_140, 0.864_003, 0.0]),
+        (r"\bar{A}_{1}^{2}", [1.198_615, 0.864_003, 0.247_217]),
+        (r"\phi^{y}", [1.076_509, 0.714_280, 0.194_444]),
+        (r"{\phi}^{y}", [1.076_509, 0.714_280, 0.194_444]),
+        (r"{\bar{f}}_1", [0.938_199, 0.831_667, 0.194_444]),
+        (r"{\bar{f}}^2", [1.045_839, 0.864_003, 0.194_444]),
+        (r"{\bar{f}}_1^2", [1.045_839, 0.864_003, 0.247_217]),
+        (r"{\hat{f}}_1", [0.938_199, 0.958_334, 0.194_444]),
+        (r"{\hat{xy}}^2", [1.546_300, 0.898_335, 0.194_444]),
+        (r"{\bar{xy}}_1^2", [1.546_300, 0.864_003, 0.247_217]),
+        (r"{\overline{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"{{\hat{x}}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"\scriptstyle{\hat{x}}^2", [0.843_756, 0.624_000, 0.0]),
+        (
+            r"\scriptscriptstyle{\hat{x}}^2",
+            [0.786_119, 0.523_997, 0.0],
+        ),
+        (r"{\bar{\frac{a}{b}}}^2", [1.217_201, 1.448_175, 0.685_951]),
+        (r"{\vec{A}}_1^2", [1.198_615, 0.967_221, 0.247_217]),
+        (r"{\dot{\phi}}^y", [1.076_509, 0.931_749, 0.194_444]),
+        (r"{\widehat{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"{\widetilde{x}}^2", [1.020_140, 0.864_003, 0.0]),
+        (r"x_{{\hat{x}}^2}", [1.465_283, 0.430_554, 0.177_777]),
+        (r"x^{{\bar{A}}_1^2}", [1.613_202, 1.036_893, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn wide_hats_match_independent_tex_boxes() {
+    // Ruled Reference preamble at 10pt, independently captured before
+    // evaluating this candidate (fm-widehat-height-r12-v3jj). The last
+    // thirteen cases exercise amsfonts' TEXT-style, two-text-em branch,
+    // including all three optical sizes and its strict boundary. The
+    // supported \hspace boundary inputs were independently measured to
+    // have the same TeX boxes as the original, unsupported \kern inputs;
+    // those original inputs retain their precise-error checks below.
+    let e = engine();
+    for (source, expected) in [
+        (r"\widehat{P}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widehat{8}", [0.500_002, 0.936_113, 0.0]),
+        (r"\widehat{x}", [0.571_527, 0.722_223, 0.0]),
+        (r"\widehat{y}", [0.526_160, 0.722_223, 0.194_444]),
+        (r"\widehat{f}", [0.597_226, 0.986_113, 0.194_444]),
+        (r"\widehat{M}", [1.079_166, 1.002_777, 0.0]),
+        (r"\widehat{xy}", [1.097_687, 0.750_000, 0.194_444]),
+        (r"\widehat{AB}", [1.558_682, 1.002_777, 0.0]),
+        (r"\widehat{xyz}", [1.606_717, 0.750_000, 0.194_444]),
+        (r"\widehat{ABC}", [2.344_931, 1.045_372, 0.0]),
+        (r"\widehat{wxyz}", [2.349_542, 0.825_005, 0.194_444]),
+        (r"\widehat{ABCD}", [3.200_626, 1.045_372, 0.0]),
+        (r"\widehat{}", [0.0, 0.722_223, 0.0]),
+        (r"\widehat{\frac{a}{b}}", [0.768_588, 1.398_730, 0.685_951]),
+        (r"\widehat{\widehat{x}}", [0.571_527, 1.013_892, 0.0]),
+        (r"\scriptstyle\widehat{P}", [0.616_771, 0.682_500, 0.0]),
+        (r"\scriptstyle\widehat{8}", [0.398_613, 0.655_276, 0.0]),
+        (
+            r"\scriptstyle\widehat{xy}",
+            [0.884_148, 0.525_000, 0.136_110],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{P}",
+            [0.524_484, 0.487_500, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{8}",
+            [0.340_283, 0.468_054, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{xy}",
+            [0.779_056, 0.375_000, 0.097_221],
+        ),
+        (r"\widehat{\text{P}}", [0.680_390, 0.980_390, 0.0]),
+        (r"\widehat{{P}}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widehat{P}^2", [1.229_517, 0.975_000, 0.0]),
+        (r"\widehat{y}_1", [0.938_895, 0.722_223, 0.194_444]),
+        (r"\scriptstyle\widehat{ABC}", [1.862_290, 0.731_573, 0.0]),
+        (r"\scriptstyle\widehat{ABCD}", [2.537_666, 0.731_573, 0.0]),
+        (
+            r"\scriptscriptstyle\widehat{ABC}",
+            [1.591_930, 0.524_794, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{ABCD}",
+            [2.164_229, 0.524_794, 0.0],
+        ),
+        (r"\widehat{\hspace{1.9999em}}", [1.999_405, 0.750_000, 0.0]),
+        (r"\widehat{\hspace{2em}}", [1.999_512, 0.750_000, 0.0]),
+        (r"\widehat{\hspace{2.0001em}}", [1.999_617, 0.825_005, 0.0]),
+        (
+            r"\scriptstyle\widehat{\hspace{1.9999em}}",
+            [1.999_405, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widehat{\hspace{2em}}",
+            [1.999_512, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widehat{\hspace{2.0001em}}",
+            [1.999_617, 0.577_310, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{1.9999em}}",
+            [1.999_405, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{2em}}",
+            [1.999_512, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widehat{\hspace{2.0001em}}",
+            [1.999_617, 0.414_603, 0.0],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+    for source in [
+        r"\widehat{\kern1.9999em}",
+        r"\widehat{\kern2em}",
+        r"\widehat{\kern2.0001em}",
+        r"\scriptstyle\widehat{\kern1.9999em}",
+        r"\scriptstyle\widehat{\kern2em}",
+        r"\scriptstyle\widehat{\kern2.0001em}",
+        r"\scriptscriptstyle\widehat{\kern1.9999em}",
+        r"\scriptscriptstyle\widehat{\kern2em}",
+        r"\scriptscriptstyle\widehat{\kern2.0001em}",
+    ] {
+        assert!(
+            matches!(
+                e.typeset(source, Style::Display),
+                Err(fmd_math::MathError::UnsupportedCommand { name, .. }) if name == r"\kern"
+            ),
+            "{source}: unsupported primitive must retain its precise error"
+        );
+    }
+}
+
+#[test]
+fn wide_tildes_match_independent_tex_boxes() {
+    // fm-ifgjb: the 10pt ruled-Reference table was captured before editing
+    // production. Cover the CMEX/MSBM successor chains, all three optical
+    // sizes, and amsfonts' strict two-TEXT-em boundary. Independent TeX
+    // captures prove the supported hspace forms have exactly the same
+    // boxes as the original kern forms, retained as named errors below.
+    let e = engine();
+    for (source, expected) in [
+        (r"\widetilde{P}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widetilde{8}", [0.500_002, 0.936_113, 0.0]),
+        (r"\widetilde{x}", [0.571_527, 0.722_223, 0.0]),
+        (r"\widetilde{y}", [0.526_160, 0.722_223, 0.194_444]),
+        (r"\widetilde{f}", [0.597_226, 0.986_113, 0.194_444]),
+        (r"\widetilde{M}", [1.079_166, 1.002_777, 0.0]),
+        (r"\widetilde{xy}", [1.097_687, 0.750_000, 0.194_444]),
+        (r"\widetilde{AB}", [1.558_682, 1.002_777, 0.0]),
+        (r"\widetilde{xyz}", [1.606_717, 0.750_000, 0.194_444]),
+        (r"\widetilde{ABC}", [2.344_931, 1.120_366, 0.0]),
+        (r"\widetilde{wxyz}", [2.349_542, 0.899_998, 0.194_444]),
+        (r"\widetilde{ABCD}", [3.200_626, 1.120_366, 0.0]),
+        (r"\widetilde{}", [0.0, 0.722_223, 0.0]),
+        (
+            r"\widetilde{\frac{a}{b}}",
+            [0.768_588, 1.398_730, 0.685_951],
+        ),
+        (r"\widetilde{\widetilde{x}}", [0.571_527, 1.013_892, 0.0]),
+        (r"\widetilde{\text{P}}", [0.680_390, 0.980_390, 0.0]),
+        (r"\widetilde{{P}}", [0.780_904, 0.975_000, 0.0]),
+        (r"\widetilde{P}^2", [1.229_517, 0.975_000, 0.0]),
+        (r"\widetilde{y}_1", [0.938_895, 0.722_223, 0.194_444]),
+        (r"\scriptstyle\widetilde{P}", [0.616_771, 0.682_500, 0.0]),
+        (
+            r"\scriptstyle\widetilde{xy}",
+            [0.884_148, 0.525_000, 0.136_110],
+        ),
+        (r"\scriptstyle\widetilde{ABC}", [1.862_290, 0.784_262, 0.0]),
+        (r"\scriptstyle\widetilde{ABCD}", [2.537_666, 0.784_262, 0.0]),
+        (
+            r"\scriptscriptstyle\widetilde{P}",
+            [0.524_484, 0.487_500, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{xy}",
+            [0.779_056, 0.375_000, 0.097_221],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{ABC}",
+            [1.591_930, 0.561_388, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{ABCD}",
+            [2.164_229, 0.561_388, 0.0],
+        ),
+        (
+            r"\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.750_000, 0.0],
+        ),
+        (r"\widetilde{\hspace{2em}}", [1.999_512, 0.750_000, 0.0]),
+        (
+            r"\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.825_005, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{2em}}",
+            [1.999_512, 0.525_000, 0.0],
+        ),
+        (
+            r"\scriptstyle\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.629_999, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{1.9999em}}",
+            [1.999_405, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{2em}}",
+            [1.999_512, 0.375_000, 0.0],
+        ),
+        (
+            r"\scriptscriptstyle\widetilde{\hspace{2.0001em}}",
+            [1.999_617, 0.451_196, 0.0],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                got.is_finite() && (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+    for source in [
+        r"\kern2em",
+        r"\widetilde{\kern1.9999em}",
+        r"\widetilde{\kern2em}",
+        r"\widetilde{\kern2.0001em}",
+        r"\scriptstyle\widetilde{\kern1.9999em}",
+        r"\scriptstyle\widetilde{\kern2em}",
+        r"\scriptstyle\widetilde{\kern2.0001em}",
+        r"\scriptscriptstyle\widetilde{\kern1.9999em}",
+        r"\scriptscriptstyle\widetilde{\kern2em}",
+        r"\scriptscriptstyle\widetilde{\kern2.0001em}",
+    ] {
+        assert!(
+            matches!(
+                e.typeset(source, Style::Display),
+                Err(fmd_math::MathError::UnsupportedCommand { name, .. }) if name == r"\kern"
+            ),
+            "{source}: unsupported primitive must retain its precise error"
+        );
+    }
+}
+
+#[test]
+fn wide_accent_measurements_start_fresh_math_alphabets() {
+    // amsfonts measures the nucleus in a fresh text-style formula before
+    // selecting CMEX/MSBM. An outer alphabet changes the actual nucleus,
+    // but must not change that measurement. An explicit inner alphabet does.
+    // Independent ruled-Reference boxes, captured before repairing this path.
+    let e = engine();
+    for (source, expected) in [
+        (
+            r"\mathrm{\widetilde{AP\hspace{0.48em}}}",
+            [1.910_437, 1.045_372, 0.0],
+        ),
+        (
+            r"\widetilde{\mathrm{AP\hspace{0.48em}}}",
+            [1.910_437, 1.002_777, 0.0],
+        ),
+        (
+            r"\mathrm{\widehat{AP\hspace{0.48em}}}",
+            [1.910_437, 1.045_372, 0.0],
+        ),
+        (
+            r"\widehat{\mathrm{AP\hspace{0.48em}}}",
+            [1.910_437, 1.002_777, 0.0],
+        ),
+        (
+            r"\widetilde{AP\hspace{0.48em}}",
+            [2.010_783, 1.045_372, 0.0],
+        ),
+        (r"\widehat{AP\hspace{0.48em}}", [2.010_783, 1.045_372, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                got.is_finite() && (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs independent TeX {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_wide_hats_reuse_text_style_measurements() {
+    let e = engine();
+    let mut source = String::from("x");
+    for _ in 0..24 {
+        source = format!("\\widehat{{{source}}}");
+    }
+    let layout = e.typeset(&source, Style::Display).unwrap();
+    assert_eq!(layout.paths.len(), 24);
+    assert_eq!(layout.glyphs.len(), 1);
+    // Published CMEX10 TFM heights and x-height, not the implementation's
+    // measured result. First hat replaces x's height; each later one
+    // adds the accent height minus the font's x-height overlap.
+    let expected_height =
+        0.722_223_281_860_351_6 + 23.0 * (0.722_223_281_860_351_6 - 0.430_555_343_627_929_7);
+    assert!((layout.height - expected_height).abs() < 1e-4);
+}
+
+#[test]
+fn wide_hat_measurements_preserve_distinct_macro_nuclei() {
+    let e = engine();
+    let mut macros = fmd_math::MacroSet::new();
+    macros
+        .define("hats", 0, r"\widehat{P}+\widehat{ABCD}")
+        .unwrap();
+    // Expanded tokens share their macro call's source span. They must
+    // still measure like the same expressions written out independently.
+    for style in [
+        Style::Display,
+        Style::Text,
+        Style::Script,
+        Style::ScriptScript,
+    ] {
+        let from_macro = e
+            .typeset_with_macros(r"\widehat{\hats}", style, &macros)
+            .unwrap();
+        let expanded = e
+            .typeset(r"\widehat{\widehat{P}+\widehat{ABCD}}", style)
+            .unwrap();
+        assert_eq!(
+            [from_macro.width, from_macro.height, from_macro.depth],
+            [expanded.width, expanded.height, expanded.depth],
+            "{style:?}"
+        );
+        assert_eq!(from_macro.glyphs.len(), expanded.glyphs.len());
+        assert_eq!(from_macro.paths.len(), expanded.paths.len());
+    }
+}
+
+#[test]
+fn underlines_match_independent_tex_boxes() {
+    // Fresh ruled-Reference TeX at10pt (fm-underline-depth-r12-gj19).
+    // All31 predeclared cases stay here, including plain/overline controls,
+    // text islands, deep nuclei, nested boxes and all four math styles.
+    // TeX's make_under adds5theta below the nucleus, not6theta.
+    let e = engine();
+    for (source, expected) in [
+        (r"\underline{B}", [0.808_680, 0.683_331, 0.199_990]),
+        (r"\underline{y}", [0.526_160, 0.430_554, 0.394_434]),
+        (r"\underline{\Delta}", [0.833_336, 0.683_331, 0.199_990]),
+        (r"\underline{\phi}", [0.595_834, 0.694_444, 0.394_434]),
+        (r"\underline{xy}", [1.097_687, 0.430_554, 0.394_434]),
+        (
+            r"\underline{\frac{B}{y}}",
+            [1.048_680, 1.359_839, 1.080_385],
+        ),
+        (r"\underline{\sqrt{y}}", [1.359_496, 0.751_869, 0.488_116]),
+        (
+            r"\underline{\underline{B}}",
+            [0.808_680, 0.683_331, 0.399_979],
+        ),
+        (
+            r"\underline{\underline{y}}",
+            [0.526_160, 0.430_554, 0.594_423],
+        ),
+        (
+            r"\overline{\underline{B}}",
+            [0.808_680, 0.883_320, 0.199_990],
+        ),
+        (
+            r"\underline{\overline{B}}",
+            [0.808_680, 0.883_320, 0.199_990],
+        ),
+        (r"\underline{B}_1^2", [1.257_294, 0.887_222, 0.249_988]),
+        (r"\underline{y}_1^2", [0.974_773, 0.864_003, 0.444_432]),
+        (
+            r"\frac{\underline{B}}{\underline{y}}",
+            [1.048_680, 1.359_839, 1.080_385],
+        ),
+        (r"\sqrt{\underline{y}}", [1.526_161, 0.751_881, 0.488_127]),
+        (
+            r"\sum_{\underline{y}}^{\underline{B}}",
+            [1.444_447, 1.909_442, 1.556_107],
+        ),
+        (r"\text{\underline{B}}", [0.708_160, 0.688_720, 0.199_990]),
+        (r"\text{\underline{y}}", [0.527_649, 0.430_450, 0.394_386]),
+        (r"\underline{\text{By}}", [1.235_810, 0.688_720, 0.394_386]),
+        ("B", [0.808_680, 0.683_331, 0.0]),
+        ("y", [0.526_160, 0.430_554, 0.194_444]),
+        (r"\overline{B}", [0.808_680, 0.883_320, 0.0]),
+        (r"\overline{y}", [0.526_160, 0.630_544, 0.194_444]),
+        // The existing layout golden was separately measured before its
+        // depth-only expectation was adjudicated; its ink is unchanged.
+        (
+            r"\overline{AB} + \underline{x}",
+            [3.352_423, 0.883_320, 0.199_990],
+        ),
+        (
+            r"\scriptstyle\underline{B}",
+            [0.638_300, 0.478_334, 0.169_990],
+        ),
+        (
+            r"\scriptstyle\underline{y}",
+            [0.430_675, 0.301_389, 0.306_100],
+        ),
+        (
+            r"\scriptscriptstyle\underline{B}",
+            [0.541_846, 0.341_667, 0.121_422],
+        ),
+        (
+            r"\scriptscriptstyle\underline{y}",
+            [0.383_220, 0.215_277, 0.218_643],
+        ),
+        (
+            r"\textstyle\underline{B}",
+            [0.808_680, 0.683_331, 0.199_990],
+        ),
+        (
+            r"\textstyle\underline{y}",
+            [0.526_160, 0.430_554, 0.394_434],
+        ),
+        (
+            r"\displaystyle\underline{B}",
+            [0.808_680, 0.683_331, 0.199_990],
+        ),
+        (
+            r"\displaystyle\underline{y}",
+            [0.526_160, 0.430_554, 0.394_434],
+        ),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn primes_are_cmsy_prime_characters() {
-    // Plain TeX's \prime is cmsy's prime: 0.275 em wide and 0.559 em high in
-    // text style, cmsy7's 0.329 x 0.559 (x 0.7) as a superscript. `'` is
-    // `^{\prime}`, so `x''` superscripts two of them.
+    // Exact independently transcribed system TFM fix_words /2^20, not
+    // the rounded AFM ink frame the former fixture asserted. Fresh TeX
+    // boxes confirm these metrics (fm-7ojgl); retain the strict EPS.
+    // `'` is `^{\prime}`, so `x''` superscripts two of them.
+    const TEXT_ADVANCE: f64 = 0.274_999_618_530_273_44;
+    const SCRIPT_ADVANCE: f64 = 0.329_365_730_285_644_53;
+    const PRIME_HEIGHT: f64 = 0.555_557_250_976_562_5;
     let e = engine();
     let text = e.typeset(r"\prime", Style::Display).unwrap();
-    assert!((text.width - 0.275).abs() < EPS, "{text:?}");
-    assert!((text.height - 0.559).abs() < EPS && text.depth.abs() < EPS);
-    let script_prime = 0.7 * 0.329;
+    assert!((text.width - TEXT_ADVANCE).abs() < EPS, "{text:?}");
+    assert!((text.height - PRIME_HEIGHT).abs() < EPS && text.depth.abs() < EPS);
+    let script_prime = 0.7 * SCRIPT_ADVANCE;
     for (src, n) in [("{}'", 1.0), ("{}''", 2.0)] {
         let l = e.typeset(src, Style::Display).unwrap();
         let w = n * script_prime + CM.script_space;
         assert!((l.width - w).abs() < EPS, "{src}: {} vs {w}", l.width);
-        let h = CM.sup1 + 0.7 * 0.559;
+        let h = CM.sup1 + 0.7 * PRIME_HEIGHT;
         assert!((l.height - h).abs() < EPS, "{src}: {} vs {h}", l.height);
     }
     let quote = e.typeset("f'(x)", Style::Display).unwrap();
@@ -2140,6 +2703,43 @@ fn primes_are_cmsy_prime_characters() {
     assert_eq!(quote.glyphs.len(), explicit.glyphs.len());
     for (a, b) in quote.glyphs.iter().zip(&explicit.glyphs) {
         assert!((a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && a.size == b.size);
+    }
+}
+
+#[test]
+fn prime_boxes_match_independent_tex_across_styles_and_sizes() {
+    // Real ruled-Reference TeX boxes at10pt (fm-7ojgl), including valid
+    // size declarations in text mode around a math island. The raw
+    // 21-case probe also retains three invalid in-math declarations.
+    let e = engine();
+    for (source, expected) in [
+        (r"\prime", [0.274_998, 0.555_557, 0.0]),
+        (r"\scriptstyle\prime", [0.230_556, 0.388_890, 0.0]),
+        (r"\scriptscriptstyle\prime", [0.220_488, 0.277_779, 0.0]),
+        ("{}'", [0.280_556, 0.801_782, 0.0]),
+        ("{}''", [0.511_111, 0.801_782, 0.0]),
+        ("x'", [0.852_083, 0.801_782, 0.0]),
+        ("f'", [0.877_782, 0.801_782, 0.194_444]),
+        ("x''", [1.082_639, 0.801_782, 0.0]),
+        ("x'''", [1.313_194, 0.801_782, 0.0]),
+        (r"f^{\prime}", [0.877_782, 0.801_782, 0.194_444]),
+        (r"{\hat{x}}'", [0.852_083, 0.801_782, 0.0]),
+        (r"{\bar{f}}'", [0.877_782, 0.831_667, 0.194_444]),
+        (r"x^{y'}", [1.322_690, 0.992_450, 0.0]),
+        (r"\scriptstyle x'", [0.723_961, 0.579_558, 0.0]),
+        (r"\scriptscriptstyle x'", [0.666_324, 0.479_555, 0.0]),
+        (r"\text{\tiny $\prime$}", [0.220_488, 0.277_779, 0.0]),
+        (r"\text{\small $\prime$}", [0.251_389, 0.500_002, 0.0]),
+        (r"\text{\Large $\prime$}", [0.395_999, 0.800_002, 0.0]),
+    ] {
+        let layout = e.typeset(source, Style::Display).unwrap();
+        let actual = [layout.width, layout.height, layout.depth];
+        for (got, want) in actual.into_iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{source}: {actual:?} vs {expected:?}"
+            );
+        }
     }
 }
 
@@ -3099,6 +3699,293 @@ fn text_lines(layout: &Layout) -> Vec<(f64, f64, f64, String)> {
     lines
 }
 
+#[test]
+fn text_displays_end_the_line_and_keep_tex_vertical_skips() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent article/10pt showbox: 12pt baselines plus 10pt above
+    // and below a centred display. An explicit break before it keeps an
+    // empty line; a break immediately after it does not add another one.
+    for (source, math_y, after_y) in [
+        (r"Before $$x$$ After", -2.2, -4.4),
+        (r"Before\\$$x$$ After", -3.4, -5.6),
+        (r"Before $$x$$\\After", -2.2, -4.4),
+        (r"{Before $$x$$ After}", -2.2, -4.4),
+        (r"\textbf{Before $$x$$ After}", -2.2, -4.4),
+        (r"\small Before $$x$$ After", -1.95, -3.9),
+    ] {
+        let input = format!(r"\begin{{center}}{source}\end{{center}}");
+        let layout = engine().typeset_text_with_macros(&input, &pack).unwrap();
+        assert!(
+            (glyph_y(&layout, 'x') - math_y).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'A') - after_y).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        // The bundled bold face has a small existing glyph depth of its
+        // own. Check the final line's bounds independently of that font
+        // metric; the baseline assertions above remain TeX's exact ones.
+        let ending = if source.starts_with(r"\textbf") {
+            r"\textbf{After}"
+        } else if source.starts_with(r"\small") {
+            r"\small After"
+        } else {
+            "After"
+        };
+        let ending_depth = engine()
+            .typeset_text_with_macros(ending, &pack)
+            .unwrap()
+            .depth;
+        assert!(
+            (layout.depth + after_y - ending_depth).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+    }
+    for source in [r"Before $x$ After", r"Before $\displaystyle x$ After"] {
+        let layout = engine().typeset_text_with_macros(source, &pack).unwrap();
+        assert_eq!(glyph_y(&layout, 'x'), 0.0, "{source}");
+        assert_eq!(glyph_y(&layout, 'A'), 0.0, "{source}");
+    }
+}
+
+#[test]
+fn scoped_displays_reset_line_state_through_trailing_declarations() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    let control = e
+        .typeset_text_with_macros(r"\begin{center}Before $$x$$After\end{center}", &pack)
+        .unwrap();
+    for body in [
+        r"Before {$$x$$} After",
+        r"Before {$$x$$\small} After",
+        r"Before {{$$x$$\small}\color{red}} After",
+        r"Before \textbf{$$x$$\small} After",
+    ] {
+        let source = format!(r"\begin{{center}}{body}\end{{center}}");
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        assert_eq!(
+            (layout.width, layout.height, layout.depth),
+            (control.width, control.height, control.depth),
+            "{body}"
+        );
+        let glyphs = |layout: &Layout| {
+            layout
+                .glyphs
+                .iter()
+                .map(|glyph| {
+                    (
+                        glyph.ch,
+                        glyph.x,
+                        glyph.y,
+                        glyph.size,
+                        glyph.face,
+                        glyph.color,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(glyphs(&layout), glyphs(&control), "{body}");
+    }
+}
+
+#[test]
+fn text_displays_use_short_skips_and_the_declared_line_width() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // A left-aligned short preceding line selects 0pt / 6pt skips.
+    // The display is centred on the declared 345pt line, not on the
+    // short text's natural width. Independent TeX showbox: x's advance
+    // is 5.71527pt, so its left edge is 169.64236pt.
+    let layout = engine()
+        .typeset_text_with_macros(r"Before $$x$$ After", &pack)
+        .unwrap();
+    let x = layout.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    assert!((x.x - 16.964236).abs() < 1e-5, "{x:?}");
+    assert!((x.y + 1.2).abs() < EPS, "{x:?}");
+    assert!((glyph_y(&layout, 'A') + 3.0).abs() < EPS);
+}
+
+#[test]
+fn paragraph_display_grids_keep_first_and_last_row_baselines() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    for environment in ["align*", "gather*"] {
+        let source = format!(
+            r"\begin{{center}}Before \begin{{{environment}}}x\\y\end{{{environment}}} After\end{{center}}"
+        );
+        let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+        assert!(
+            (glyph_y(&layout, 'x') + 2.2).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'y') + 3.7).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!(
+            (glyph_y(&layout, 'A') + 5.9).abs() < EPS,
+            "{source}: {layout:?}"
+        );
+        assert!((layout.depth - 5.9).abs() < EPS, "{source}: {layout:?}");
+    }
+    let layout = engine()
+        .typeset_text_with_macros(
+            r"\begin{center}Before $$\frac{a}{b}$$ After\end{center}",
+            &pack,
+        )
+        .unwrap();
+    assert!((layout.depth - 4.674673).abs() < 1e-5, "{layout:?}");
+}
+
+#[test]
+fn consecutive_displays_and_boxed_text_follow_tex_modes() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let layout = engine()
+        .typeset_text_with_macros(r"\begin{center}Before $$x$$ $$y$$ After\end{center}", &pack)
+        .unwrap();
+    // No intervening paragraph line: the second display selects the
+    // short skips even though surrounding ordinary lines are centred.
+    assert!((glyph_y(&layout, 'x') + 2.2).abs() < EPS);
+    assert!((glyph_y(&layout, 'y') + 4.4).abs() < EPS);
+    assert!((glyph_y(&layout, 'A') + 6.2).abs() < EPS);
+    for command in ["underline", "text", "cancel"] {
+        // Canonical `\text{$$x$$}` (and the same dollars inside underline
+        // and cancel) is a display island, so the x is mathematics and the
+        // box is not the plain-text showbox. Display environments inside
+        // the same boxes are still refused, by the test below.
+        let boxed = format!(r"\{command}{{Before $$x$$ After}}");
+        let plain = format!(r"\{command}{{Before x After}}");
+        let boxed = engine().typeset_text_with_macros(&boxed, &pack).unwrap();
+        let plain = engine().typeset_text_with_macros(&plain, &pack).unwrap();
+        assert!(
+            (boxed.width - plain.width).abs() > 1e-3,
+            "{command}: display island collapsed to text: {boxed:?} vs {plain:?}"
+        );
+        assert!(boxed.glyphs.iter().any(|g| g.ch == 'x'), "{command}");
+    }
+    let styled = engine()
+        .typeset(r"\textbf{Before $$x$$ After}", Style::Display)
+        .unwrap();
+    assert!(styled.glyphs.iter().any(|g| g.ch == 'x'), "{styled:?}");
+}
+
+#[test]
+fn boxed_text_rejects_display_environments() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    for environment in ["equation*", "gather*", "align*"] {
+        let display = format!(r"\begin{{{environment}}}x\end{{{environment}}}");
+        let check = |source: &str, result: Result<Layout, fmd_math::MathError>| {
+            let error = result.expect_err("a display cannot escape a restricted text box");
+            let expected_at = source.find(r"\begin").unwrap();
+            assert!(
+                matches!(&error, fmd_math::MathError::Malformed { what, at }
+                    if *at == expected_at
+                        && what.contains(&format!("env:{environment}"))
+                        && what.contains("boxed text")),
+                "{source}: {error:?}"
+            );
+        };
+        for command in ["underline", "text", "cancel"] {
+            let source = format!(r"Before \{command}{{inside {display} after}} After");
+            check(&source, e.typeset_text_with_macros(&source, &pack));
+        }
+        let nested = format!(r"Before \underline{{\textit{{inside {display} after}}}} After");
+        check(&nested, e.typeset_text_with_macros(&nested, &pack));
+        // Font switches entered from mathematics are restricted text too.
+        let math_text = format!(r"\textbf{{inside {display} after}}");
+        check(
+            &math_text,
+            e.typeset_with_macros(&math_text, Style::Display, &pack),
+        );
+        // The same unboxed font switch in a paragraph permits displays.
+        let unboxed = format!(r"Before \textbf{{inside {display} after}} After");
+        let layout = e.typeset_text_with_macros(&unboxed, &pack).unwrap();
+        assert!(glyph_y(&layout, 'x') < 0.0, "{unboxed}");
+        assert!(glyph_y(&layout, 'A') < glyph_y(&layout, 'x'), "{unboxed}");
+    }
+    // Ordinary inline mathematics, including an inline grid, stays legal.
+    for command in ["underline", "text", "cancel"] {
+        let source = format!(r"\{command}{{Before $\begin{{pmatrix}}x\end{{pmatrix}}$ After}}");
+        let layout = e.typeset_text_with_macros(&source, &pack).unwrap();
+        assert!(layout.width.is_finite() && layout.width > 0.0, "{source}");
+        assert!(
+            layout.glyphs.iter().any(|glyph| glyph.ch == 'x'),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn display_flow_keeps_slanted_text_corrections_and_punctuation_controls() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let e = engine();
+    let x_of = |l: &Layout, ch: char| l.glyphs.iter().find(|g| g.ch == ch).unwrap().x;
+    for command in ["textit", "emph"] {
+        let corrected = format!(r"\begin{{center}}\{command}{{B $$y$$ c}}ZZZZ\end{{center}}");
+        let period = format!(r"\begin{{center}}\{command}{{B $$y$$ c}}.ZZZZ\end{{center}}");
+        let corrected = e.typeset_text_with_macros(&corrected, &pack).unwrap();
+        let period = e.typeset_text_with_macros(&period, &pack).unwrap();
+        // Independent showboxes give widths 29.60246pt and 31.81444pt.
+        // Compare offsets within the final line: centering cannot hide
+        // the closing italic kern, and a period must suppress that kern.
+        let advance = x_of(&corrected, 'Z') - x_of(&corrected, 'c');
+        let uncorrected = x_of(&period, '.') - x_of(&period, 'c');
+        assert!(
+            (advance - uncorrected - 0.056_528).abs() < 1e-5,
+            "{command}"
+        );
+        assert!((corrected.width - 2.960_246).abs() < 1e-4, "{command}");
+        assert!((period.width - 3.181_444).abs() < 1e-4, "{command}");
+    }
+}
+
+#[test]
+fn display_flow_preserves_scoped_color_size_and_source_spans() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    let source = r"\begin{center}Before {\color{red}\small inner $$x$$ middle} After\end{center}";
+    let layout = engine().typeset_text_with_macros(source, &pack).unwrap();
+    let x = layout.glyphs.iter().find(|g| g.ch == 'x').unwrap();
+    let after = layout.glyphs.iter().find(|g| g.ch == 'A').unwrap();
+    assert_eq!(x.size, 0.9);
+    let color = x.color.unwrap();
+    assert_eq!((color.r, color.g, color.b), (1.0, 0.0, 0.0));
+    assert_eq!(after.size, 1.0);
+    assert!(after.color.is_none());
+    assert_eq!(&source[x.span.start..x.span.end], "x");
+    assert_eq!(&source[after.span.start..after.span.end], "A");
+    // The size in force at the display governs its above skip; after
+    // leaving the group, the resumed line uses the outer 12pt baseline.
+    assert!((x.y + 1.95).abs() < EPS);
+    assert!((after.y + 4.0).abs() < EPS);
+}
+
+#[test]
+fn display_skips_and_grid_struts_follow_setspace() {
+    let pack = fmd_math::MacroSet::pack("default").unwrap();
+    // Independent default-template showboxes: setspace's everydisplay
+    // stretches all four display skips, as well as the text baselines.
+    for (body, depth) in [
+        (r"\doublespacing Before $$x$$ After", 7.334833),
+        (
+            r"\doublespacing Before \begin{align*}x\\y\end{align*} After",
+            9.635242,
+        ),
+        (r"\doublespacing \small Before $$x$$ After", 6.501327),
+        (
+            r"\begin{flushleft}\doublespacing Before $$x$$ After\end{flushleft}",
+            5.001023,
+        ),
+    ] {
+        let source = format!(r"\begin{{center}}{body}\end{{center}}");
+        let layout = engine().typeset_text_with_macros(&source, &pack).unwrap();
+        assert!((layout.depth - depth).abs() < 1e-4, "{body}: {layout:?}");
+        assert!(
+            (glyph_y(&layout, 'A') + depth).abs() < 1e-4,
+            "{body}: {layout:?}"
+        );
+    }
+}
+
 /// TeX's lines of a `\centering` paragraph at 345 pt, as `(natural width
 /// in pt, characters)` from `\showbox` and each line's `\unhcopy` (T1 EC
 /// with the template's font control in `article`), against fmd-math's
@@ -3202,16 +4089,21 @@ fn a_tie_is_not_a_line_break() {
 }
 
 #[test]
-fn packs_without_a_line_width_never_break() {
+fn bare_macro_sets_never_break_and_document_packs_have_the_reference_width() {
     use fmd_math::MacroSet;
     let text = r"\begin{center}Every paragraph that is wider than its line breaks where the line breaker of TeX would break it.\end{center}";
-    for pack in ["empty", "basic"] {
+    let bare = MacroSet::new();
+    assert_eq!(bare.line_width(), None);
+    let layout = engine().typeset_text_with_macros(text, &bare).unwrap();
+    assert_eq!(text_lines(&layout).len(), 1);
+    // The pinned basic/empty standalone templates have the same 345pt
+    // document width as default; only a bare generic set is unbounded.
+    for pack in ["empty", "basic", "default"] {
         let pack = MacroSet::pack(pack).unwrap();
-        assert_eq!(pack.line_width(), None);
+        assert_eq!(pack.line_width(), Some(34.5));
         let layout = engine().typeset_text_with_macros(text, &pack).unwrap();
-        assert_eq!(text_lines(&layout).len(), 1);
+        assert_eq!(text_lines(&layout).len(), 2);
     }
-    assert_eq!(MacroSet::pack("default").unwrap().line_width(), Some(34.5));
 }
 
 #[test]
@@ -3392,6 +4284,232 @@ fn delimiters_walk_texs_size_chain() {
             h / 10.0,
             d / 10.0
         );
+    }
+}
+
+#[test]
+fn over_arrow_boxes_follow_amsmath_alignment() {
+    // Independent pre-edit ruled-Reference capture for fm-7xc7q: 36 cases,
+    // input SHA19908e2a, retained with all54 previous controls. amsmath's
+    // arrow fill contributes its own minimum width and row height; its
+    // nucleus is a fresh formula, not a cramped primitive-accent nucleus.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    let mut mismatches = Vec::new();
+    for (source, width, height, depth) in [
+        (r"\overrightarrow{P}", 1.000023, 1.050206, 0.0),
+        (r"\overrightarrow{}", 1.000023, 0.366875, 0.0),
+        (r"\overrightarrow{8}", 1.000023, 1.011319, 0.0),
+        (r"\overrightarrow{x}", 1.000023, 0.797429, 0.0),
+        (r"\overrightarrow{y}", 1.000023, 0.797429, 0.194444),
+        (r"\overrightarrow{f}", 1.000023, 1.061319, 0.194444),
+        (r"\overrightarrow{{P}}", 1.000023, 1.050206, 0.0),
+        (r"\overrightarrow{AB}", 1.558682, 1.050206, 0.0),
+        (r"\overrightarrow{ABCD}", 3.200626, 1.050206, 0.0),
+        (r"\overrightarrow{wxyz}", 2.349542, 0.797429, 0.194444),
+        (
+            r"\overrightarrow{\frac{1}{2}}",
+            1.000023,
+            1.687827,
+            0.685951,
+        ),
+        (
+            r"\overrightarrow{\frac{y}{\frac{1}{2}}}",
+            1.000023,
+            1.473936,
+            1.079677,
+        ),
+        (r"\overrightarrow{\sqrt{x}}", 1.404863, 1.215967, 0.190904),
+        (
+            r"\overrightarrow{\overrightarrow{P}}",
+            1.000023,
+            1.417080,
+            0.0,
+        ),
+        (r"\overrightarrow{P_2}", 1.090627, 1.050206, 0.149998),
+        (r"\overrightarrow{x^2}", 1.020140, 1.230878, 0.0),
+        (r"\overrightarrow{y}_{i}", 1.332951, 0.797429, 0.194444),
+        (r"\overrightarrow{P}^{2}", 1.448636, 1.050206, 0.0),
+        (r"\textstyle\overrightarrow{P}", 1.000023, 1.050206, 0.0),
+        (
+            r"\textstyle\overrightarrow{\frac{1}{2}}",
+            1.000023,
+            1.211717,
+            0.344841,
+        ),
+        (r"\scriptstyle\overrightarrow{P}", 0.784882, 0.747190, 0.0),
+        (r"\scriptstyle\overrightarrow{8}", 0.784882, 0.719966, 0.0),
+        (r"\scriptstyle\overrightarrow{}", 0.784882, 0.268855, 0.0),
+        (
+            r"\scriptstyle\overrightarrow{ABCD}",
+            2.537666,
+            0.747190,
+            0.0,
+        ),
+        (
+            r"\scriptstyle\overrightarrow{\frac{1}{2}}",
+            0.784882,
+            0.859808,
+            0.240950,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{P}",
+            0.649707,
+            0.539870,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{8}",
+            0.649707,
+            0.520424,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{}",
+            0.649707,
+            0.198203,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{ABCD}",
+            2.164229,
+            0.539870,
+            0.0,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{\frac{1}{2}}",
+            0.649707,
+            0.714156,
+            0.265953,
+        ),
+        (r"\overleftarrow{P}", 1.000023, 1.050206, 0.0),
+        (r"\overleftarrow{}", 1.000023, 0.366875, 0.0),
+        (r"\overleftarrow{y}", 1.000023, 0.797429, 0.194444),
+        (r"\overleftarrow{ABCD}", 3.200626, 1.050206, 0.0),
+        (r"\overleftarrow{\frac{1}{2}}", 1.000023, 1.687827, 0.685951),
+        (r"\scriptstyle\overleftarrow{P}", 0.784882, 0.747190, 0.0),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        if !((layout.width - width).abs() <= 1e-4
+            && (layout.height - height).abs() <= 1e-4
+            && (layout.depth - depth).abs() <= 1e-4)
+        {
+            mismatches.push(format!(
+                "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+                layout.width, layout.height, layout.depth
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
+fn over_arrow_outer_scripts_preserve_explicit_grouping() {
+    // Independent post-failure TeX showbox traces distinguish scripts on
+    // mathpalette's following empty noad from scripts on a grouped box.
+    // Keep the original36-case oracle and its tolerance unchanged.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for (source, width, height, depth) in [
+        (r"\overrightarrow{P}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"{\overrightarrow{P}}^{2}", 1.448_636, 1.254_097, 0.0),
+        (r"\overrightarrow{y}_{i}", 1.332_951, 0.797_429, 0.194_444),
+        (r"{\overrightarrow{y}}_{i}", 1.332_951, 0.797_429, 0.244_443),
+        (r"\overleftarrow{P}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"\overrightarrow{}^{2}", 1.448_636, 0.864_003, 0.0),
+        (r"\overrightarrow{P}{}^{2}", 1.448_636, 1.050_206, 0.0),
+        (r"\mathchoice{P}{P}{P}{P}^{2}", 1.229_517, 0.864_003, 0.0),
+        (r"{\mathchoice{P}{P}{P}{P}}^{2}", 1.229_517, 0.887_222, 0.0),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        assert!(
+            (layout.width - width).abs() <= 1e-4
+                && (layout.height - height).abs() <= 1e-4
+                && (layout.depth - depth).abs() <= 1e-4,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, {depth})",
+            layout.width,
+            layout.height,
+            layout.depth
+        );
+    }
+}
+
+#[test]
+fn over_arrow_nuclei_restart_the_math_alphabet() {
+    // Independent pre-fix Reference capture: outer math alphabets stop at
+    // amsmath's fresh $style nucleus$ formula. Explicit inner alphabets
+    // still apply. Primitive wide hats retain the surrounding alphabet.
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for (source, width, height) in [
+        (r"\mathrm{\overrightarrow{ABCD}}", 3.200_626, 1.050_206),
+        (r"\overrightarrow{\mathrm{ABCD}}", 2.944_450, 1.050_206),
+        (r"\mathrm{\overleftarrow{ABCD}}", 3.200_626, 1.050_206),
+        (r"\overleftarrow{\mathrm{ABCD}}", 2.944_450, 1.050_206),
+        (
+            r"\scriptstyle\mathrm{\overrightarrow{ABCD}}",
+            2.537_666,
+            0.747_190,
+        ),
+        (
+            r"\scriptstyle\overrightarrow{\mathrm{ABCD}}",
+            2.322_234,
+            0.747_190,
+        ),
+        (
+            r"\scriptscriptstyle\mathrm{\overrightarrow{ABCD}}",
+            2.164_229,
+            0.539_870,
+        ),
+        (
+            r"\scriptscriptstyle\overrightarrow{\mathrm{ABCD}}",
+            1.938_919,
+            0.538_083,
+        ),
+        (r"\mathrm{\widehat{ABCD}}", 2.944_450, 1.045_372),
+        (r"\mathrm{ABCD}", 2.944_450, 0.683_331),
+        (r"\overrightarrow{ABCD}", 3.200_626, 1.050_206),
+    ] {
+        let layout = e
+            .typeset_with_macros(source, Style::Display, &reference)
+            .unwrap();
+        assert!(
+            (layout.width - width).abs() <= 1e-4
+                && (layout.height - height).abs() <= 1e-4
+                && layout.depth.abs() <= 1e-4,
+            "{source}: ({}, {}, {}) vs ({width}, {height}, 0)",
+            layout.width,
+            layout.height,
+            layout.depth
+        );
+    }
+}
+
+#[test]
+fn over_arrow_nuclei_are_centered_without_changing_their_baseline() {
+    let e = engine();
+    let reference = fmd_math::MacroSet::pack("default").unwrap();
+    for style in [
+        Style::Display,
+        Style::Text,
+        Style::Script,
+        Style::ScriptScript,
+    ] {
+        let plain = e.typeset_with_macros("P", style, &reference).unwrap();
+        let plain_glyph = plain.glyphs.iter().find(|glyph| glyph.ch == 'P').unwrap();
+        for source in [r"\overrightarrow{P}", r"\overleftarrow{P}"] {
+            let arrow = e.typeset_with_macros(source, style, &reference).unwrap();
+            let nucleus = arrow.glyphs.iter().find(|glyph| glyph.ch == 'P').unwrap();
+            let centered_x = plain_glyph.x + (arrow.width - plain.width) / 2.0;
+            assert!((nucleus.x - centered_x).abs() <= EPS, "{source}: {style:?}");
+            assert_eq!(nucleus.y.to_bits(), plain_glyph.y.to_bits());
+            assert_eq!(nucleus.size.to_bits(), plain_glyph.size.to_bits());
+            assert_eq!(nucleus.face, plain_glyph.face);
+        }
     }
 }
 

@@ -130,6 +130,32 @@ fn radicands_and_accent_bases_are_cramped() {
 }
 
 #[test]
+fn amsmath_over_arrows_restart_their_nucleus_uncramped() {
+    // amsmath's overarrow@ uses mathpalette and a fresh $style nucleus$.
+    // The pre-edit arrow box capture independently exposes the resulting
+    // superscript height. Radicands, subscripts and denominators must not
+    // leak their cramped state into that fresh formula.
+    for command in [r"\overrightarrow{a^k}", r"\overleftarrow{a^k}"] {
+        for (source, style) in [
+            (command.to_owned(), Style::Display),
+            (format!("x_{{{command}}}"), Style::Script),
+            (format!(r"\sqrt{{{command}}}"), Style::Display),
+            (format!(r"\frac{{1}}{{{command}}}"), Style::Text),
+        ] {
+            let styles = styles_of(&source);
+            assert_eq!(find(&styles, "a"), (style, false), "{source}");
+            assert_eq!(find(&styles, "k"), (style.sup(), false), "{source}");
+        }
+    }
+    // Primitive wide accents keep the existing cramped-base contract.
+    for command in [r"\widehat{a^k}", r"\widetilde{a^k}"] {
+        let styles = styles_of(command);
+        assert_eq!(find(&styles, "a"), (Style::Display, true), "{command}");
+        assert_eq!(find(&styles, "k"), (Style::Script, true), "{command}");
+    }
+}
+
+#[test]
 fn style_markers_restyle_the_rest_of_their_list() {
     let styles = styles_of(r"a \scriptstyle b c");
     assert_eq!(find(&styles, "a"), (Style::Display, false));

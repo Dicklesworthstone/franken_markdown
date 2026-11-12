@@ -8,6 +8,7 @@ import { openDraftStore } from "./flow_draft_store.mjs";
 export function createDraftControls({
   sourceEditor,
   filename,
+  accessFields = [sourceEditor, filename],
   remember,
   refresh,
   restore,
@@ -29,7 +30,9 @@ export function createDraftControls({
   const composing = new Set();
   // Access changes retire replacement authority without inventing a source edit
   // or scheduling an autosave of otherwise unchanged, already acknowledged bytes.
-  const access = trackSourceAccess([sourceEditor, filename], () => render());
+  // Hosts can emit source intent through separate EventTargets while access
+  // remains tied to the actual editor fields that replacement will mutate.
+  const access = trackSourceAccess(accessFields, () => render());
   const replacementBlocked = () =>
     composing.size > 0 || access.blocked();
   const alive = () => {

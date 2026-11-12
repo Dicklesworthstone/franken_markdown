@@ -1,5 +1,5 @@
 import { createWorkerRenderer } from "../document_worker.mjs";
-import { documentName, markdownDownload, readMarkdownFile } from "./flow_document.mjs";
+import { documentName, markdownDownload, readMarkdownFile, trackSourceAccess } from "./flow_document.mjs";
 import { captureDocumentImageFiles } from "./local_image_sources.mjs";
 import { createDraftControls } from "./flow_draft_controls.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
@@ -66,6 +66,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   // Source intent has a separate channel: starting a file read or composition
   // fences recovery without pretending that the textarea has already changed.
   const sourceChanges = new EventTarget(), filenameChanges = new EventTarget();
+  const sourceAccess = trackSourceAccess([els.markdown], refreshSourceControls);
   const directorySupported = "webkitdirectory" in els.imageFolder;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
   const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
@@ -81,11 +82,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     target.addEventListener(event, handler);
     listeners.push([target, event, handler]);
   };
+  function refreshSourceControls() {
+    const blocked = !alive || suspended || composing;
+    // Read-only source remains downloadable; only replacement needs edit access.
+    els.downloadMarkdown.disabled = blocked;
+    els.openMarkdown.disabled = els.markdownFile.disabled = blocked || sourceAccess.blocked();
+  }
   function status(message) {
     els.render.textContent = jobs.html ? "Cancel render" : "Render";
     els.downloadPdf.textContent = jobs.pdf ? "Cancel PDF" : "Download PDF";
     els.render.disabled = els.downloadPdf.disabled = !alive || suspended || composing || imageJob !== null;
-    els.openMarkdown.disabled = els.markdownFile.disabled = els.downloadMarkdown.disabled = !alive || suspended || composing;
+    refreshSourceControls();
     els.status.textContent = jobs.html && jobs.pdf ? "rendering HTML and PDF in workers"
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
     refreshImageControls();
@@ -438,12 +445,13 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     }
   }
   function requireReplacement() {
-    if (!alive || suspended || composing)
-      throw Object.assign(new Error("Finish text composition and return to the active editor before restoring a draft."), { code: "SOURCE_BUSY" });
+    sourceAccess.synchronize();
+    if (!alive || suspended || composing || sourceAccess.blocked())
+      throw Object.assign(new Error("Finish text composition and unlock the active editor before replacing Markdown."), { code: "SOURCE_BUSY" });
   }
   function replaceSource(next, action) {
     requireReplacement();
-    const identity = ++sourceIdentity, revision = sourceRevision;
+    const accessRevision = sourceAccess.synchronize(), identity = ++sourceIdentity, revision = sourceRevision;
     directFiles?.replaced(); // An import/recovery never inherits an older file handle.
     fileJob = null;
     els.markdown.value = next.source;
@@ -460,19 +468,21 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     els.markdown.focus();
     const installed = sourceDocument();
     if (!alive || suspended || composing || sourceIdentity !== identity || sourceRevision !== revision + 1
+      || sourceAccess.synchronize() !== accessRevision || sourceAccess.blocked()
       || installed.filename !== next.filename || installed.source !== next.source)
       throw Object.assign(new Error("The editor changed during source replacement. Its newer state is retained; no file connection was adopted."), { code: "STALE_SOURCE" });
     els.fileStatus.textContent = `${action} ${next.filename}. Raw HTML is off. Select its local images below to include them in the preview and exports.`;
   }
   function renameSource(filename) {
     requireReplacement();
-    const identity = sourceIdentity, revision = sourceRevision, source = sourceDocument().source;
+    const accessRevision = sourceAccess.synchronize(), identity = sourceIdentity, revision = sourceRevision, source = sourceDocument().source;
     sourceFilename = documentName(filename);
     sourceDownloadId++;
     revokeMarkdown();
     filenameChanges.dispatchEvent(new Event("input"));
     const current = sourceDocument();
     if (!alive || suspended || composing || identity !== sourceIdentity || revision !== sourceRevision
+      || sourceAccess.synchronize() !== accessRevision || sourceAccess.blocked()
       || current.source !== source || current.filename !== filename)
       throw Object.assign(new Error("The saved file was verified, but the editor changed while naming it. Choose the file again to reconnect."), { code: "STALE_SOURCE" });
   }
@@ -502,7 +512,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   function startDrafts() {
     drafts?.dispose();
     drafts = createDraftControls({
-      sourceEditor: sourceChanges, filename: filenameChanges,
+      sourceEditor: sourceChanges, filename: filenameChanges, accessFields: [els.markdown],
       remember: els.rememberDraft, refresh: els.refreshDraft, restore: els.restoreDraft,
       forget: els.forgetDraft, save: els.saveDraft, status: els.draftStatus,
       readDocument: sourceDocument,
@@ -557,18 +567,24 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   listen(els.downloadMarkdown, "click", () => { downloadMarkdown(); });
   async function openMarkdown(file) {
     if (!alive || suspended || composing || !file) return false;
+    const accessRevision = sourceAccess.synchronize();
+    if (sourceAccess.blocked()) {
+      els.fileStatus.textContent = "SOURCE_BUSY: Unlock the active editor before opening Markdown. The current source can still be downloaded.";
+      return false;
+    }
     directFiles?.changed(); // A newer file-open intent cannot commit an older staged save.
     sourceChanged(); // A later file-open intent supersedes an in-flight restore.
     // The later source selection owns replacement. Retire an earlier image
     // read before capturing fileJob, so its cleanup cannot cancel this open.
     cancelImages();
     retireWorkspace("File opening started. Prepare the editable workspace again after the source is ready.");
-    const job = { raw: raw(), generation };
+    const job = { raw: raw(), generation, accessRevision };
     fileJob = job; // A newer selection owns publication, even if an old read settles last.
     refreshWorkspaceControls();
     directFiles?.refresh();
     const owns = () => alive && !suspended && fileJob === job;
-    const fresh = () => owns() && !composing && generation === job.generation && unchanged(job.raw);
+    const fresh = () => owns() && !composing && sourceAccess.synchronize() === job.accessRevision
+      && !sourceAccess.blocked() && generation === job.generation && unchanged(job.raw);
     els.fileStatus.textContent = "Reading local Markdown…";
     try {
       const next = await readMarkdownFile(file);
@@ -595,7 +611,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     }
   }
   listen(els.openMarkdown, "click", () => {
-    if (alive && !suspended && !composing) els.markdownFile.click();
+    sourceAccess.synchronize();
+    if (alive && !suspended && !composing && !sourceAccess.blocked()) els.markdownFile.click();
   });
   listen(els.markdownFile, "change", () => {
     const file = els.markdownFile.files?.[0];
@@ -687,6 +704,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     dispose() {
       if (!alive) return;
       alive = false;
+      sourceAccess.dispose();
       directFiles?.dispose();
       pauseDrafts();
       releaseImages();

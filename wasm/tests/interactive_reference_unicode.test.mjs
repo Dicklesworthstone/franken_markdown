@@ -89,3 +89,59 @@ test('footnote identities and heading IDs retain their separate existing rules',
   assert.match(html, /ligature note/);
   assert.match(html, /ordinary note/);
 });
+
+test('Unicode label whitespace keeps distinct link and image destinations', () => {
+  for (const separator of ['\u00a0', '\u2003', '\ufeff']) {
+    const label = 'part' + separator + 'one';
+    const html = render('[part one]: /ascii\n[' + label + ']: /distinct\n\n[plain][part one] [special][' + label + '] ![image][' + label + ']\n');
+    assert.equal(html, '<p><a href="/ascii">plain</a> <a href="/distinct">special</a> <img src="/distinct" alt="image"></p>\n');
+  }
+});
+
+test('Unicode label edges and whitespace-only labels work in all reference forms', () => {
+  for (const label of ['\u00a0part', 'part\u00a0', '\u00a0']) {
+    const html = render('[part]: /ascii\n[' + label + ']: /distinct\n\n[full][' + label + '] [' + label + '][] [' + label + ']\n');
+    assert.equal(html, '<p><a href="/distinct">full</a> <a href="/distinct">' + label + '</a> <a href="/distinct">' + label + '</a></p>\n');
+  }
+});
+
+test('multiline labels preserve Unicode content while folding ASCII padding and case', () => {
+  const source = '[Straße\n \u00a0\n ONE]: /first\n[strasse \u00a0 one]: /shadow\n[strasse one]: /other\n\n[label][STRASSE\t\u00a0  ONE]\n';
+  assert.equal(render(source), '<p><a href="/first">label</a></p>\n');
+  assert.equal(render(source.replace(/\n/g, '\r\n')), '<p><a href="/first">label</a></p>\n');
+});
+
+test('reference collection retains Unicode-only label and title lines in containers', () => {
+  const quote = '> [\u00a0]: /target "first\n> \u00a0\n> # title content\n> last"\n>\n> [label][\u00a0]\n';
+  assert.equal(render(quote), '<blockquote>\n<p><a href="/target" title="first\n\u00a0\n# title content\nlast">label</a></p>\n</blockquote>\n');
+  const list = '- [\u00a0]: /target "first\n  \u00a0\n  last"\n\n[label][\u00a0]\n';
+  assert.match(render(list), /<a href="\/target" title="first\n\u00a0\nlast">label<\/a>/);
+  assert.doesNotMatch(render(list), /<h[1-6]\b/);
+});
+
+test('multiline titles accept significant Unicode content in inline and reference links', () => {
+  for (const separator of ['\u00a0', '\u2003', '\f', '\u2028']) {
+    const title = 'first\n ' + separator + '\nlast';
+    const expected = '<p><a href="/target" title="' + title + '">label</a></p>\n';
+    assert.equal(render('[label](/target "' + title + '")'), expected);
+    for (const opening of [' ', '\n']) {
+      assert.equal(render('[ref]: /target' + opening + '"' + title + '"\n\n[label][ref]\n'), expected);
+    }
+  }
+});
+
+test('ASCII blank lines still reject same-line-started titles and empty labels', () => {
+  for (const blank of ['', ' ', '\t', ' \t ']) {
+    assert.doesNotMatch(render('[ref]: /wrong "first\n' + blank + '\nlast"\n\n[ref]\n'), /<a\b/);
+    assert.doesNotMatch(render('[' + blank + ']: /wrong\n\n[' + blank + ']\n'), /<a\b/);
+  }
+});
+
+test('preserved Unicode title lines keep markup inert and unsafe URLs blocked', () => {
+  const title = 'first\n\u00a0\n<script>[hidden](/hidden)</script>&quot; onmouseover=&quot;x';
+  const html = render('[ref]: /safe "' + title + '"\n\n[label][ref]\n');
+  assert.match(html, /href="\/safe"/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>| onmouseover="|href="\/hidden"/);
+  assert.doesNotMatch(render('[ref]: javascript:alert(1) "' + title + '"\n\n[label][ref]\n'), /<a\b|<script>/);
+});

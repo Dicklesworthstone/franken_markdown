@@ -452,8 +452,11 @@ function parseMarkdownClient(source, imageAssets) {
     // removal or a full-fold expansion. It also bounds inline reference uses.
     let characters = 0;
     for (const scalar of label) if (++characters > 999) return null;
+    // Only space, tab and line endings normalize away in reference labels.
+    // NBSP, other Unicode spaces and an interior BOM remain distinct keys.
+    const normalized = label.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '').replace(/[ \t\r\n]+/g, ' ');
     let key = '';
-    for (const scalar of label.trim().replace(/\s+/g, ' ')) {
+    for (const scalar of normalized) {
       const folded = fmdFoldReferenceScalar(scalar.codePointAt(0));
       charge(folded.length);
       key += folded;
@@ -549,7 +552,7 @@ function parseMarkdownClient(source, imageAssets) {
         if (quote === '(' && ch === '(') return null;
         if (ch === '\\' && escapable(text[i + 1])) { charge(); i++; newline = false; continue; }
         if (ch === '\n') { if (newline) return null; newline = true; }
-        else if (!/\s/.test(ch)) newline = false;
+        else if (ch !== ' ' && ch !== '\t') newline = false;
       }
       if (text[i] !== endQuote) return null;
       const titleEnd = i++;
@@ -1026,11 +1029,11 @@ function parseMarkdownClient(source, imageAssets) {
       if (ch === undefined) {
         if (line + 1 >= lines.length) return null;
         charge(lines[line + 1].length + 1);
-        if (!lines[line + 1].trim()) return null;
+        if (blankLine(lines[line + 1])) return null;
         label += '\n'; characters++; line++; column = 0;
       } else if (ch === ']') {
         column++;
-        if (text[column] !== ':' || !label.trim()) return null;
+        if (text[column] !== ':' || !/[^ \t\r\n]/.test(label)) return null;
         column++; break;
       } else {
         if (ch === '[') return null;
@@ -1095,7 +1098,7 @@ function parseMarkdownClient(source, imageAssets) {
         if (ch === undefined) {
           if (row + 1 >= lines.length) return null;
           charge(lines[row + 1].length + 1);
-          if (!lines[row + 1].trim()) return null;
+          if (blankLine(lines[row + 1])) return null;
           title += '\n'; row++; col = 0; continue;
         }
         if (ch === close) {
@@ -1133,7 +1136,7 @@ function parseMarkdownClient(source, imageAssets) {
     let escaped = false, nesting = 0, separated = false, close = '';
     const punctuation = ch => /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(ch);
     return line => {
-      if (!line.trim()) return null;
+      if (blankLine(line)) return null;
       if (!lines++) {
         const trimmed = line.replace(/^[ \t]+/, '');
         if (indentation(line).width > 3 || !trimmed.startsWith('[')) return null;
@@ -1149,7 +1152,7 @@ function parseMarkdownClient(source, imageAssets) {
             }
             if (!escaped && ch === '[') return null;
             if (++characters > 999) return null;
-            hasText ||= !/\s/.test(ch);
+            hasText ||= !/[ \t\r\n]/.test(ch);
             escaped = !escaped && ch === '\\'; break;
           case 'colon':
             if (ch !== ':') return null;

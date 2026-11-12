@@ -19,6 +19,8 @@ const DEFAULT_LIMITS = Object.freeze({
 });
 const MAX_DISPLAY_PATH_COMMANDS = 65536;
 const MAX_DISPLAY_TOTAL_PATH_COMMANDS = 262144;
+// Source-only break hints cost validation work even though they paint no glyphs.
+const MAX_SOURCE_HINT_UNITS = 65536;
 const DEFAULT_COLORS = Object.freeze({
   background: "#ffffff",
   text: "#1f2328",
@@ -332,6 +334,7 @@ export class FlowCanvasRenderer {
       total = null,
       totalBounds = null,
       glyphCount = 0,
+      sourceHintUnits = 0,
       frameCommands = 0,
       displayCommands = 0;
     let clips = [], scannedItems = 0, receivedItems = 0;
@@ -396,7 +399,8 @@ export class FlowCanvasRenderer {
         if (plans.length >= this.#limits.maxVisibleItems)
           fail("BUDGET_EXCEEDED", "too many visible drawing items");
         if (item.kind === "text") {
-          const planning = textPlan(item, bounds, clip, this.#limits.maxGlyphs - glyphCount);
+          const planning = textPlan(item, bounds, clip, this.#limits.maxGlyphs - glyphCount,
+            MAX_SOURCE_HINT_UNITS - sourceHintUnits);
           let part = planning.next();
           while (!part.done) {
             const pause = checkpoint(part.value);
@@ -405,6 +409,7 @@ export class FlowCanvasRenderer {
           }
           const plan = part.value;
           glyphCount += plan.glyphs.length;
+          sourceHintUnits += plan.sourceHintUnits;
           requireFont(plan.fontId);
           for (const glyph of plan.glyphs) {
             requireFont(glyph.fontId);
@@ -724,7 +729,7 @@ export class FlowCanvasRenderer {
   }
 }
 
-function* textPlan(item, bounds, clip, glyphBudget) {
+function* textPlan(item, bounds, clip, glyphBudget, sourceHintBudget) {
   const run = item.fontRun;
   if (
     !run ||
@@ -735,7 +740,8 @@ function* textPlan(item, bounds, clip, glyphBudget) {
     !Array.isArray(run.clusters) ||
     run.glyphCount !== run.glyphs.length ||
     run.clusterCount !== run.clusters.length ||
-    run.clusters.length > run.glyphs.length
+    (run.clusters.length > run.glyphs.length &&
+      !(run.clusters.length === 1 && run.glyphs.length === 0))
   ) {
     fail(
       "INVALID_WASM_RESPONSE",
@@ -752,6 +758,24 @@ function* textPlan(item, bounds, clip, glyphBudget) {
   const fill = rawFill === undefined ? null : rgba(rawFill, badFill);
   const { baselineY, mathFallback } = textPlacement(item, bounds);
   const glyphs = new Array(run.glyphs.length);
+  const plan = {
+    kind: "text",
+    bounds,
+    clip,
+    size,
+    fontId: primaryFontId,
+    fontIds,
+    glyphs,
+    color,
+    fill,
+    baselineY,
+    mathFallback,
+    sourceHintUnits: 0,
+  };
+  if (run.clusters.length === 1 && glyphs.length === 0) {
+    plan.sourceHintUnits = yield* sourceHintPlan(item.text, run, bounds, primaryFontId, sourceHintBudget);
+    return plan;
+  }
   let count = 0;
   for (let index = 0; index < run.clusters.length; index++) {
     const cluster = run.clusters[index],
@@ -794,19 +818,38 @@ function* textPlan(item, bounds, clip, glyphBudget) {
   if (count % 128) yield count % 128;
   if (count !== glyphs.length)
     fail("INVALID_WASM_RESPONSE", "glyphs are missing cluster ownership");
-  return {
-    kind: "text",
-    bounds,
-    clip,
-    size,
-    fontId: primaryFontId,
-    fontIds,
-    glyphs,
-    color,
-    fill,
-    baselineY,
-    mathFallback,
-  };
+  return plan;
+}
+
+// A hint-only fragment retains exact source coordinates without invented ink.
+// This exception is narrower than host glyph admission: one complete source
+// cluster, no glyphs, and only the two controls removed by prose projection.
+function* sourceHintPlan(source, run, bounds, fontId, budget) {
+  const invalid = () => fail("INVALID_WASM_RESPONSE", "invalid source-only break-hint cluster");
+  if (typeof source !== "string" || source.length === 0) invalid();
+  if (source.length > budget) fail("BUDGET_EXCEEDED", "too many source-only break hints");
+  const cluster = run.clusters[0], bytes = cluster?.bytes,
+    utf16 = cluster?.utf16, glyphs = cluster?.glyphs;
+  if (cluster?.index !== 0 || cluster.fontId !== fontId
+      || !Array.isArray(bytes) || bytes.length !== 2 || bytes[0] !== 0
+      || !Number.isSafeInteger(bytes[1]) || bytes[1] <= 0
+      || !Array.isArray(utf16) || utf16.length !== 2 || utf16[0] !== 0 || utf16[1] !== source.length
+      || !Array.isArray(glyphs) || glyphs.length !== 2 || glyphs[0] !== 0 || glyphs[1] !== 0
+      || cluster.xStart !== 0 || cluster.xEnd !== 0 || run.totalAdvance !== 0 || bounds.width !== 0)
+    invalid();
+  // Capture every borrowed scalar before the cooperative scan can yield.
+  const expectedBytes = bytes[1], units = source.length;
+  let actualBytes = 0;
+  for (let i = 0; i < units; i++) {
+    const value = source.charCodeAt(i);
+    if (value === 0x00ad) actualBytes += 2;
+    else if (value === 0x200b) actualBytes += 3;
+    else invalid();
+    if ((i + 1) % 128 === 0) yield 128;
+  }
+  if (units % 128) yield units % 128;
+  if (actualBytes !== expectedBytes) invalid();
+  return units;
 }
 // A mixed text/math line owns its actual baseline in native layout. Retain the
 // old font-derived presentation policy only when that field is absent or null.

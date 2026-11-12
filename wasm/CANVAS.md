@@ -58,6 +58,18 @@ advances and offsets, never an outline's nominal advance. Every actual glyph
 font ID is resolved independently, so a fallback face cannot be drawn with the
 primary face's metrics. No fonts are installed in the DOM.
 
+Authored prose break hints retain source coordinates even when they paint no
+glyph. A hint-only fragment is admitted only when its complete nonempty text
+consists of U+00AD/U+200B, it owns exactly one cluster with exact UTF-8/UTF-16
+ranges, and its glyph range, advance and width are all zero. Canvas requests
+the actual face's metrics without inventing a glyph. Normal glyph-bearing
+clusters retain their existing validation.
+
+Source-only validation has a separate ceiling of 65,536 UTF-16 units per frame
+and yields cooperatively during long scans. These units do not consume the
+visible-glyph budget. Invalid source ranges or an exhausted budget reject the
+attempt before publication and preserve the last complete frame.
+
 Mixed text/math lines carry an explicit `baselineY` measured by native layout
 from the actual bundled font metrics and formula extents. Canvas uses that
 absolute logical coordinate, then applies each glyph's existing vertical offset.

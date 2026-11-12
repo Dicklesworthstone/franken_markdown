@@ -4,7 +4,7 @@
 //! Like prose continuation, this requires enough word-boundary context in a
 //! window; it never guesses a split inside an unknown shaper cluster.
 
-use super::breaks::{cjk_boundary, prohibited_boundary};
+use super::discretionary;
 use super::styled::{measurement_window_end, validate_ranges};
 use super::{FlowInlineRun, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
 use crate::text::OwnedTextRun;
@@ -46,6 +46,8 @@ where
         }];
         let runs = if plain { &unstyled[..] } else { runs };
         validate_ranges(text, runs)?;
+        let mut intrinsic = text.chars().any(discretionary::is_hint)
+            .then(|| discretionary::Intrinsic::new(self.options.max_shape_bytes));
         let cap = f64::from(available);
         let mut minimum = 1.0_f64;
         let mut preferred = 1.0_f64;
@@ -55,9 +57,12 @@ where
             let mut start = offset;
             let mut advance = 0.0_f64;
             let mut group_advance = 0.0_f64;
+            let mut group_start = offset;
             while start < physical_end {
                 let end = measurement_window_end(
                     text,
+                    runs,
+                    role,
                     start,
                     physical_end,
                     self.options.max_shape_bytes,
@@ -76,7 +81,11 @@ where
                         .rposition(|(index, cluster)| {
                             cluster.separator
                                 || (index + 1 < clusters.len()
-                                    && cjk_boundary(text, cluster.bytes.end))
+                                    && (discretionary::word_boundary(
+                                        text, runs, cluster.bytes.clone(), role,
+                                    ) || discretionary::contains_boundary(
+                                        text, runs, cluster.bytes.clone(), role,
+                                    )))
                         })
                         .map(|index| index + 1)
                         .ok_or(FlowLayoutError::BudgetExceeded(
@@ -87,11 +96,21 @@ where
                     // A CJK opener/closer belongs to its neighboring cluster.
                     // Water filling must leave room for that complete group,
                     // including groups spanning inline face/style changes.
-                    if !prohibited_boundary(text, cluster.bytes.start) {
+                    if !discretionary::prohibited_boundary(text, runs, cluster.bytes.start, role) {
                         group_advance = 0.0;
+                        group_start = cluster.bytes.start;
                     }
                     group_advance += f64::from(cluster.advance);
                     minimum = minimum.max(group_advance);
+                    if let Some(intrinsic) = &mut intrinsic {
+                        let cost = self.table_hint_cost(
+                            text, runs, group_start..cluster.bytes.end, group_advance, role,
+                        )?;
+                        intrinsic.push(
+                            f64::from(cluster.advance), cost,
+                            &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                        )?;
+                    }
                     advance = (advance + f64::from(cluster.advance)).min(cap);
                 }
                 let next = clusters
@@ -103,6 +122,10 @@ where
                     ));
                 }
                 start = next;
+            }
+            if let Some(intrinsic) = &mut intrinsic {
+                intrinsic.finish_line();
+                minimum = minimum.max(intrinsic.minimum());
             }
             preferred = preferred.max(advance);
             offset = physical_end + 1;
@@ -128,11 +151,7 @@ where
             if start == end {
                 continue;
             }
-            let size = if spec.style.code {
-                self.options.code_size
-            } else {
-                self.options.body_size
-            };
+            let size = self.inline_size(self.options.body_size, spec.style);
             let measured = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
             let mut logical: Vec<_> = measured.clusters.iter().collect();
             logical.sort_by_key(|cluster| cluster.byte_range.start);

@@ -43,24 +43,34 @@ pub struct FlowInlineRun {
 }
 
 /// Preserve formula identity even through the three-argument shaping API while
-/// retaining its established omission of inline face and link styling.
-pub(super) fn render_runs(runs: &[FlowInlineRun], styled: bool) -> Cow<'_, [FlowInlineRun]> {
+/// retaining its established omission of inline face and link styling. Literal
+/// code ownership is also retained when prose break hints need interpretation.
+pub(super) fn render_runs(
+    runs: &[FlowInlineRun],
+    styled: bool,
+    literal_hints: bool,
+) -> Cow<'_, [FlowInlineRun]> {
     if styled {
         return Cow::Borrowed(runs);
     }
-    if !runs.iter().any(|run| run.math.is_some()) {
+    if !runs.iter().any(|run| run.math.is_some() || (literal_hints && run.style.code)) {
         return Cow::Borrowed(&[]);
     }
     let mut plain: Vec<FlowInlineRun> = Vec::new();
     for run in runs {
         if run.math.is_none()
-            && let Some(previous) = plain.last_mut().filter(|previous| previous.math.is_none())
+            && let Some(previous) = plain.last_mut().filter(|previous| {
+                previous.math.is_none() && previous.style.code == (literal_hints && run.style.code)
+            })
         {
             previous.range.end = run.range.end;
         } else {
             plain.push(FlowInlineRun {
                 range: run.range.clone(),
-                style: FlowInlineStyle::default(),
+                style: FlowInlineStyle {
+                    code: literal_hints && run.style.code,
+                    ..FlowInlineStyle::default()
+                },
                 link: None,
                 math: run.math,
             });
@@ -572,7 +582,7 @@ mod tests {
         assert!(formulas[0].style.bold);
         assert_eq!(formulas[0].active_link_target(), Some("#result"));
         assert_eq!(formulas[2].math, Some(FlowMathStyle::Display));
-        let plain = render_runs(&runs, false);
+        let plain = render_runs(&runs, false, false);
         assert_eq!(plain.iter().filter(|run| run.math.is_some()).count(), 3);
         assert!(
             plain

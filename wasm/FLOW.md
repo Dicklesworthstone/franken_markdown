@@ -145,6 +145,34 @@ font coverage still apply, and failed transactions retain the previous state.
 See [the complete Flow diagram contract](../docs/FLOW_DIAGRAMS.md) for examples,
 the supported syntax, limits and actual native/WASM browser checks.
 
+## Authored soft hyphens and zero-width breaks
+
+Flow interprets U+00AD (soft hyphen) and U+200B (zero-width space) in prose.
+Both are invisible when the text fits without a break. A chosen soft-hyphen
+boundary paints a real hyphen in the original inline face; a zero-width
+boundary adds no glyph. The final line is reshaped and checked against its
+available width, including the selected hyphen.
+
+This applies to headings, paragraphs, lists, quotations and table cells,
+including styled links and prose beside inline mathematics. Ordinary spaces
+remain break opportunities when followed by invisible hints. Inline/fenced
+code and literal TeX fallback keep their source characters and existing
+shaper behavior. Hints do not enable automatic dictionary hyphenation.
+
+Reading text, source copying and each text fragment's UTF-8/UTF-16 coordinates
+retain the authored characters. A painted hyphen belongs to the source soft
+hyphen; it does not insert a character into the document. Unused hints share
+source ownership with neighboring glyphs. An isolated hint-only styled fragment
+has one source cluster, zero glyphs and zero width. Update the Canvas consumer
+with the rebuilt WASM package so it accepts this exact source-only form.
+
+Bounded shaping windows count original source bytes, including invisible
+controls. A work-window boundary is not itself a line break. Authored hints
+can separate an ASCII ligature after final-boundary reshaping; other host
+grapheme clusters remain indivisible. Existing shaping, item and line budgets
+still apply. The three-argument Rust display-list API preserves literal-code
+ownership while retaining its existing unstyled typography.
+
 ## Optional horizontal CJK text
 
 Build the native/WASM producer with `cjk-face` to include the existing bundled
@@ -224,6 +252,12 @@ invoked by both `scripts/check-wasm-package.sh` and the DSR quality route
 `scripts/dsr-wasm-package.sh`.
 Type declarations are checked with `tsc --noEmit --strict --target ES2022
 --module NodeNext --moduleResolution NodeNext wasm/flow_types_test.mts`.
+
+`tests/flow_discretionary_breaks.rs` asserts actual bundled glyphs, authored
+breaks, source/caret coverage, literal-code ownership, and bounded table/text
+layout. `node --test wasm/flow_canvas_break_hints.test.mjs` checks source-only
+fragment admission, malformed payloads, work limits and cancellation using
+explicit Canvas/session fixtures; it does not execute the WASM renderer.
 
 `tests/flow_cjk.rs` checks the optional font's actual cmap, outlines, advances,
 metrics, source/caret ranges, wrapping and bounded-layout continuation, with a

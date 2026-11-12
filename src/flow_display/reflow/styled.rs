@@ -1,7 +1,7 @@
 //! Mixed-face wrapping and interaction geometry. The parent owns all shaper,
 //! line and output admission, so the rich path cannot bypass those budgets.
 
-use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow, breaks};
+use super::{Align, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow, discretionary};
 use crate::display::{
     DisplayItem, DisplayRect, DisplaySemanticAnchor, DisplayTextRun, VectorShapeType,
 };
@@ -15,6 +15,7 @@ struct Cluster {
     run_index: usize,
     advance: f32,
     word_break: bool,
+    continuation: Option<usize>,
 }
 
 struct Fragment {
@@ -45,14 +46,16 @@ where
             return self
                 .inline_math_text(text, runs, x, y, width, size, leading, role, color, span);
         }
-        // Keep the short unstyled path unchanged. Long paragraphs need bounded
-        // measurement windows, not a larger per-call budget. Coalesce default
-        // spans just as the legacy path does, so they cannot split ligatures.
+        // Keep the no-hint short unstyled path unchanged. Authored hints need
+        // source candidates even inside a no-break ligature. Long paragraphs
+        // share this bounded continuation path and the same final reshaping.
+        // Coalesced default spans keep the legacy font and ligature behavior.
         let plain = runs.is_empty()
             || runs
                 .iter()
                 .all(|r| r.style == FlowInlineStyle::default() && r.link.is_none());
         if plain
+            && !text.chars().any(discretionary::is_hint)
             && text
                 .split_terminator('\n')
                 .all(|line| line.len() <= self.options.max_shape_bytes)
@@ -91,6 +94,8 @@ where
             while window_start < physical_end {
                 let window_end = measurement_window_end(
                     text,
+                    runs,
+                    role,
                     window_start,
                     physical_end,
                     self.options.max_shape_bytes,
@@ -109,20 +114,7 @@ where
                     let run_size = self.inline_size(size, spec.style);
                     let measured =
                         self.shaped_with_style(&text[start..end], run_size, role, spec.style)?;
-                    let mut logical: Vec<_> = measured.clusters.iter().collect();
-                    logical.sort_by_key(|cluster| cluster.byte_range.start);
-                    for cluster in logical {
-                        let bytes =
-                            start + cluster.byte_range.start..start + cluster.byte_range.end;
-                        let word_break = text[bytes.clone()].chars().all(|c| c == ' ' || c == '\t')
-                            || breaks::cjk_boundary(text, bytes.end);
-                        clusters.push(Cluster {
-                            bytes,
-                            run_index: index,
-                            advance: cluster.advance(),
-                            word_break,
-                        });
-                    }
+                    clusters.extend(measured_clusters(text, runs, start, &measured, index, role));
                 }
                 let mut first = 0;
                 while first < clusters.len() {
@@ -157,20 +149,21 @@ where
                     }
                     // Code keeps the existing cluster-wrap policy; spaces must
                     // not become preferred breaks just because a line is long.
+                    let measured_end = end;
                     if end < clusters.len() && role != FlowTextRole::Code {
                         end = word_break.unwrap_or(end);
                     }
                     let mut minimum_end = first + 1;
                     while role != FlowTextRole::Code
                         && minimum_end < clusters.len()
-                        && breaks::prohibited_boundary(text, clusters[minimum_end - 1].bytes.end)
+                        && discretionary::prohibited_boundary(text, runs, clusters[minimum_end - 1].bytes.end, role)
                     {
                         minimum_end += 1;
                     }
                     end = end.max(minimum_end);
                     while role != FlowTextRole::Code
                         && end > minimum_end
-                        && breaks::prohibited_boundary(text, clusters[end - 1].bytes.end)
+                        && discretionary::prohibited_boundary(text, runs, clusters[end - 1].bytes.end, role)
                     {
                         end -= 1;
                     }
@@ -185,6 +178,18 @@ where
                         }
                         break;
                     }
+                    let mut preferred = discretionary::at_boundary(
+                        text, runs, clusters[end - 1].bytes.end, role,
+                    ).is_some();
+                    let mut emergency_end = measured_end.max(minimum_end);
+                    while emergency_end > minimum_end
+                        && discretionary::prohibited_boundary(
+                            text, runs, clusters[emergency_end - 1].bytes.end, role,
+                        )
+                    {
+                        emergency_end -= 1;
+                    }
+                    let mut emergency = (preferred && emergency_end > end).then_some(emergency_end);
                     // Re-shape every final fragment. Kerning/ligatures may change
                     // at a line boundary; never trust only the full-run measurement.
                     let (fragments, final_width) = loop {
@@ -198,16 +203,19 @@ where
                         if final_width <= width {
                             break (fragments, final_width);
                         }
-                        if end == minimum_end {
+                        let Some(next) = discretionary::next_line_end(
+                            minimum_end, end, &mut preferred, &mut emergency,
+                            |candidate| clusters[candidate - 1].word_break,
+                        ) else {
                             return Err(FlowLayoutError::ClusterTooWide {
                                 advance: final_width,
                                 available: width,
                             });
-                        }
-                        end -= 1;
+                        };
+                        end = next;
                         while role != FlowTextRole::Code
                             && end > minimum_end
-                            && breaks::prohibited_boundary(text, clusters[end - 1].bytes.end)
+                            && discretionary::prohibited_boundary(text, runs, clusters[end - 1].bytes.end, role)
                         {
                             end -= 1;
                         }
@@ -215,10 +223,14 @@ where
                     let Some(initial) = fragments.first() else {
                         return Err(FlowLayoutError::InvalidShapedRun);
                     };
-                    let direction = initial.run.context.direction;
+                    let direction = fragments
+                        .iter()
+                        .find(|part| !part.run.glyphs.is_empty())
+                        .unwrap_or(initial)
+                        .run.context.direction;
                     if fragments
                         .iter()
-                        .any(|part| part.run.context.direction != direction)
+                        .any(|part| !part.run.glyphs.is_empty() && part.run.context.direction != direction)
                     {
                         return Err(FlowLayoutError::Shaping(
                             "mixed-direction styled line requires paragraph-level bidi resolution"
@@ -229,7 +241,11 @@ where
                         ascent: 0.0,
                         descent: 0.0,
                     });
+                    let has_glyphs = fragments.iter().any(|part| !part.run.glyphs.is_empty());
                     for fragment in &fragments {
+                        if has_glyphs && fragment.run.glyphs.is_empty() {
+                            continue;
+                        }
                         let Some(current) = &mut metrics else { break };
                         if let Some(other) = fragment.run.vertical_metrics {
                             current.ascent = current.ascent.max(other.ascent);
@@ -263,7 +279,7 @@ where
                         // ink rather than pretending to encode the complete style.
                         let ink = if spec.active_link_target().is_some() {
                             "link"
-                        } else if spec.style.code {
+                        } else if spec.style.code && self.inline_styles {
                             "code"
                         } else {
                             color
@@ -302,6 +318,27 @@ where
                     debug_assert!(final_width <= width);
                     height += line.height;
                     first = end;
+                    // A chosen boundary inside a measured ligature changes
+                    // the remaining glyphs too. Refresh just that bounded
+                    // source cluster, not the rest of the paragraph/window.
+                    if let Some(next) = clusters.get(first)
+                        && let Some(context_end) = next.continuation
+                    {
+                        let context_start = next.bytes.start;
+                        let index = next.run_index;
+                        let spec = &runs[index];
+                        let measured = self.shaped_with_style(
+                            &text[context_start..context_end],
+                            self.inline_size(size, spec.style),
+                            role,
+                            spec.style,
+                        )?;
+                        let replacement = measured_clusters(
+                            text, runs, context_start, &measured, index, role,
+                        );
+                        let tail = clusters.partition_point(|part| part.bytes.end <= context_end);
+                        clusters.splice(first..tail, replacement);
+                    }
                 }
                 window_start = clusters
                     .get(first)
@@ -316,7 +353,7 @@ where
     }
 
     pub(super) fn inline_size(&self, size: f32, style: FlowInlineStyle) -> f32 {
-        if style.code {
+        if style.code && self.inline_styles {
             self.options.code_size * (size / self.options.body_size)
         } else {
             size
@@ -332,6 +369,10 @@ where
         role: FlowTextRole,
     ) -> Result<Vec<Fragment>, FlowLayoutError> {
         let mut out = Vec::new();
+        let selected = clusters
+            .last()
+            .and_then(|cluster| discretionary::at_boundary(text, runs, cluster.bytes.end, role))
+            .and_then(|hint| hint.hyphen);
         let mut cursor = 0;
         while cursor < clusters.len() {
             let index = clusters[cursor].run_index;
@@ -344,7 +385,13 @@ where
             }
             let spec = &runs[index];
             let size = self.inline_size(size, spec.style);
-            let run = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
+            let run = self.shaped_discretionary(
+                &text[start..end],
+                size,
+                role,
+                spec.style,
+                selected.filter(|at| (start..end).contains(at)).map(|at| at - start),
+            )?;
             out.push(Fragment {
                 run,
                 run_index: index,
@@ -378,11 +425,33 @@ where
     }
 }
 
+fn measured_clusters(
+    text: &str,
+    runs: &[FlowInlineRun],
+    start: usize,
+    measured: &OwnedTextRun,
+    index: usize,
+    role: FlowTextRole,
+) -> Vec<Cluster> {
+    discretionary::measured_clusters(text, runs, start, measured, role, true)
+        .into_iter()
+        .map(|cluster| Cluster {
+            word_break: discretionary::word_boundary(text, runs, cluster.bytes.clone(), role),
+            bytes: cluster.bytes,
+            run_index: index,
+            advance: cluster.advance,
+            continuation: cluster.continuation,
+        })
+        .collect()
+}
+
 // A safe work boundary is not a published line break. Carry the final
 // tentative line and keep every final host-shaped cluster intact. Latin words
 // still require separators; CJK adds the existing permitted pair boundaries.
 pub(super) fn measurement_window_end(
     text: &str,
+    runs: &[FlowInlineRun],
+    role: FlowTextRole,
     start: usize,
     end: usize,
     limit: usize,
@@ -390,7 +459,7 @@ pub(super) fn measurement_window_end(
     if end - start <= limit {
         return Ok(end);
     }
-    breaks::measurement_boundary(text, start, end, limit).ok_or(FlowLayoutError::BudgetExceeded(
+    discretionary::measurement_boundary(text, runs, role, start, end, limit).ok_or(FlowLayoutError::BudgetExceeded(
         "word exceeds shaping window",
     ))
 }

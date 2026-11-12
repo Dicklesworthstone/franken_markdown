@@ -2,13 +2,15 @@
 //!
 //! Hosts supply the existing fmd-font/native-route OwnedTextRun contract. This
 //! module does not select system fonts, perform I/O, or substitute an estimated
-//! width when shaping fails. Wrapping is greedy at spaces, with cluster-boundary
-//! emergency breaks; it is not the PDF Knuth-Plass paragraph engine.
+//! width when shaping fails. Wrapping uses spaces, CJK pairs and authored prose
+//! break hints, with cluster-boundary emergency breaks; it is not the PDF
+//! Knuth-Plass paragraph engine.
 
 use super::{BlockMeta, DisplayBlock, FlowDisplayError, FlowInlineStyle, ResumableFlowDisplay};
 
 mod breaks;
 mod diagram;
+mod discretionary;
 mod financial;
 mod gutters;
 mod inline_math;
@@ -38,8 +40,10 @@ pub enum FlowTextRole {
 }
 
 /// Explicit viewport and work limits for shaped reflow. `max_shape_bytes` bounds
-/// one call to the shaper; `max_total_shape_bytes` charges all calls, including
-/// table/list measurement, continuation windows and final-line reshaping.
+/// one source fragment, including hidden controls; `max_total_shape_bytes`
+/// charges all calls, including table/list measurement, continuation windows
+/// and final-line reshaping. Intrinsic authored-break candidate scans also
+/// charge this allowance, so degenerate table input cannot hide unbounded work.
 /// Math and diagrams also charge source bytes and retained path-command payload
 /// against this total. The same ceiling separately bounds retained link-target
 /// bytes in styled output. Hosts must bound their shaper's execution.
@@ -133,6 +137,12 @@ impl ResumableFlowDisplay {
     /// not original Markdown offsets. `source_span` remains an enclosing AST
     /// range. The legacy `to_display_list` remains the estimate-only API.
     ///
+    /// Authored prose U+00AD and U+200B are hidden before the host callback.
+    /// A selected soft-hyphen break shapes a visible hyphen in its original
+    /// inline style. Published logical text and UTF-8/UTF-16 source clusters
+    /// retain every control for copying and selection. Code and literal TeX
+    /// fallback keep their original bytes at the host boundary.
+    ///
     /// Code whitespace and text bytes are preserved; lines break only between
     /// shaped clusters. Each line is reshaped and measured again at its final
     /// boundary. An over-wide indivisible cluster returns an error rather than
@@ -207,6 +217,7 @@ impl ResumableFlowDisplay {
             return Err(FlowLayoutError::Input(error.clone()));
         }
         let mut layout = Reflow::new(options, shape)?;
+        layout.inline_styles = styled;
         let pending = self
             .prepared
             .iter()
@@ -232,7 +243,14 @@ impl ResumableFlowDisplay {
                 table_edges.clear();
                 table_decimals.clear();
             }
-            let inline_runs = super::inline::render_runs(&meta.inline_runs, styled);
+            let literal_hints = match block {
+                DisplayBlock::Heading { text, .. }
+                | DisplayBlock::Paragraph { text }
+                | DisplayBlock::ListItem { text, .. }
+                | DisplayBlock::Quote { text } => text.chars().any(discretionary::is_hint),
+                _ => false,
+            };
+            let inline_runs = super::inline::render_runs(&meta.inline_runs, styled, literal_hints);
             match block {
                 DisplayBlock::Heading { level, text } => {
                     let factor = match level {
@@ -397,6 +415,7 @@ impl ResumableFlowDisplay {
                         let runs = super::inline::render_runs(
                             meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
                             styled,
+                            text.chars().any(discretionary::is_hint),
                         );
                         layout.alignment = meta
                             .table_alignments
@@ -537,6 +556,8 @@ struct Reflow<'a, F: ?Sized> {
     list: DisplayList,
     options: FlowLayoutOptions,
     shape: &'a mut F,
+    // Literal-code ownership survives the plain adapter without changing its sizes.
+    inline_styles: bool,
     lines: usize,
     shape_bytes: usize,
     link_bytes: usize,
@@ -583,6 +604,7 @@ where
             list: DisplayList::new(),
             options,
             shape,
+            inline_styles: true,
             lines: 0,
             shape_bytes: 0,
             link_bytes: 0,
@@ -627,17 +649,39 @@ where
         role: FlowTextRole,
         style: FlowInlineStyle,
     ) -> Result<OwnedTextRun, FlowLayoutError> {
+        self.shaped_discretionary(text, size, role, style, None)
+    }
+
+    fn shaped_discretionary(
+        &mut self,
+        text: &str,
+        size: f32,
+        role: FlowTextRole,
+        style: FlowInlineStyle,
+        selected: Option<usize>,
+    ) -> Result<OwnedTextRun, FlowLayoutError> {
         if !size.is_finite() || size <= 0.0 {
             return Err(FlowLayoutError::InvalidOptions);
         }
         if text.len() > self.options.max_shape_bytes {
             return Err(FlowLayoutError::BudgetExceeded("bytes per shaping call"));
         }
+        // Charge the complete source, including invisible controls. An empty
+        // visible projection must not bypass either work allowance.
         self.shape_bytes = self
             .shape_bytes
             .checked_add(text.len())
             .filter(|bytes| *bytes <= self.options.max_total_shape_bytes)
             .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
+        if discretionary::enabled(role, style) && text.chars().any(discretionary::is_hint) {
+            let projection = discretionary::Projection::new(text, selected);
+            let run = (self.shape)(&projection.visible, size, role, style)
+                .map_err(FlowLayoutError::Shaping)?;
+            // External shapers retain the strict glyph/source contract. Only
+            // this internal projection may add a source-only hidden cluster.
+            validate_run(&run, &projection.visible, size)?;
+            return projection.restore(text, run);
+        }
         let run = (self.shape)(text, size, role, style).map_err(FlowLayoutError::Shaping)?;
         validate_run(&run, text, size)?;
         Ok(run)
@@ -678,6 +722,7 @@ where
                 let runs = super::inline::render_runs(
                     meta.cell_runs.get(column).map(Vec::as_slice).unwrap_or(&[]),
                     styled,
+                    text.chars().any(discretionary::is_hint),
                 );
                 let (min, ideal) = if runs.iter().any(|run| run.math.is_some()) {
                     self.inline_math_measures(text, &runs, role, width)?
@@ -737,6 +782,8 @@ where
                 return Err(FlowLayoutError::InvalidShapedRun);
             }
         }
+        let mut intrinsic = text.chars().any(discretionary::is_hint)
+            .then(|| discretionary::Intrinsic::new(self.options.max_shape_bytes));
         let mut minimum = 1.0_f64;
         let mut preferred = 1.0_f64;
         let mut offset = 0;
@@ -748,6 +795,7 @@ where
             }
             let mut advance = 0.0_f64;
             let mut group_advance = 0.0_f64;
+            let mut group_start = offset;
             if rich {
                 let physical_end = offset + physical.len();
                 let first = runs.partition_point(|run| run.range.end <= offset);
@@ -760,21 +808,28 @@ where
                     if start == end {
                         continue;
                     }
-                    let size = if spec.style.code {
-                        self.options.code_size
-                    } else {
-                        self.options.body_size
-                    };
+                    let size = self.inline_size(self.options.body_size, spec.style);
                     let run = self.shaped_with_style(&text[start..end], size, role, spec.style)?;
                     advance += f64::from(run.total_advance);
                     let mut logical: Vec<_> = run.clusters.iter().collect();
                     logical.sort_by_key(|cluster| cluster.byte_range.start);
                     for cluster in logical {
-                        if !breaks::prohibited_boundary(text, start + cluster.byte_range.start) {
+                        if !discretionary::prohibited_boundary(text, runs, start + cluster.byte_range.start, role) {
                             group_advance = 0.0;
+                            group_start = start + cluster.byte_range.start;
                         }
                         group_advance += f64::from(cluster.advance());
                         minimum = minimum.max(group_advance);
+                        if let Some(intrinsic) = &mut intrinsic {
+                            let cost = self.table_hint_cost(
+                                text, runs, group_start..start + cluster.byte_range.end,
+                                group_advance, role,
+                            )?;
+                            intrinsic.push(
+                                f64::from(cluster.advance()), cost,
+                                &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                            )?;
+                        }
                     }
                 }
             } else if !physical.is_empty() {
@@ -783,15 +838,30 @@ where
                 let mut logical: Vec<_> = run.clusters.iter().collect();
                 logical.sort_by_key(|cluster| cluster.byte_range.start);
                 for cluster in logical {
-                    if !breaks::prohibited_boundary(text, offset + cluster.byte_range.start) {
+                    if !discretionary::prohibited_boundary(text, runs, offset + cluster.byte_range.start, role) {
                         group_advance = 0.0;
+                        group_start = offset + cluster.byte_range.start;
                     }
                     group_advance += f64::from(cluster.advance());
                     minimum = minimum.max(group_advance);
+                    if let Some(intrinsic) = &mut intrinsic {
+                        let cost = self.table_hint_cost(
+                            text, runs, group_start..offset + cluster.byte_range.end,
+                            group_advance, role,
+                        )?;
+                        intrinsic.push(
+                            f64::from(cluster.advance()), cost,
+                            &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                        )?;
+                    }
                 }
             }
             if !advance.is_finite() {
                 return Err(FlowLayoutError::InvalidShapedRun);
+            }
+            if let Some(intrinsic) = &mut intrinsic {
+                intrinsic.finish_line();
+                minimum = minimum.max(intrinsic.minimum());
             }
             preferred = preferred.max(advance);
             offset += physical.len() + 1;
@@ -928,13 +998,14 @@ where
         color: &str,
         span: SourceSpan,
     ) -> Result<f32, FlowLayoutError> {
-        // Code reaches this method directly. Route long physical lines through
-        // continuation layout, retaining the same role/cluster-break policy.
-        // The short-text branch of inline_text only returns here when every
-        // physical line fits, so this cannot recurse on a long line.
-        if text
-            .split_terminator('\n')
-            .any(|line| line.len() > self.options.max_shape_bytes)
+        // Code reaches this method directly. Long lines and authored prose
+        // opportunities share the continuation renderer. Its short plain path
+        // returns here only when no hint needs interpretation, so there is no
+        // recursion and code retains its original cluster-wrap policy.
+        if (role != FlowTextRole::Code && text.chars().any(discretionary::is_hint))
+            || text
+                .split_terminator('\n')
+                .any(|line| line.len() > self.options.max_shape_bytes)
         {
             return self.inline_text(text, &[], x, y, width, size, leading, role, color, span);
         }

@@ -162,6 +162,15 @@ produce `missing_glyphs` diagnostics in PDF/SVG. See the [font source and exact
 repertoire](fmd-font/fonts/noto-sans-cjk/README.md) for the pinned license,
 reproduction command, and independent geometry check.
 
+### Authored breaks in browser Flow
+
+Flow honors soft hyphens and zero-width spaces in prose, styled links and
+table cells, including text beside mathematics. Hidden hints preserve the
+original source and selection coordinates; a soft hyphen paints only when
+its break is selected. Long paragraphs use the same bounded shaping path.
+Rebuild the WASM package with its matching Canvas modules. See
+[authored Flow breaks](wasm/FLOW.md#authored-soft-hyphens-and-zero-width-breaks).
+
 ### Emoji in browser Flow
 
 Flow can now use the existing optional `emoji-face` font to draw real monochrome

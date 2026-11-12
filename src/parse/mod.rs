@@ -2447,7 +2447,7 @@ impl ReferenceDefinitionScan {
                     if self.label_chars > MAX_REFERENCE_LABEL_LEN {
                         return None;
                     }
-                    self.label_has_text |= !ch.is_whitespace();
+                    self.label_has_text |= !is_reference_label_whitespace(ch);
                     self.escaped = !self.escaped && ch == '\\';
                 }
                 ReferencePhase::Colon => {
@@ -2526,7 +2526,7 @@ impl ReferenceDefinitionScan {
                     } else if ch == '(' && close == ')' {
                         return None;
                     } else {
-                        if !ch.is_whitespace() {
+                        if !is_space_or_tab(ch) {
                             self.title_saw_newline = false;
                         }
                         self.escaped = ch == '\\';
@@ -6167,7 +6167,7 @@ fn parse_link_title(chars: &[char], i: &mut usize) -> Option<String> {
                 }
             }
             _ => {
-                if !ch.is_whitespace() {
+                if !is_space_or_tab(ch) {
                     saw_newline = false;
                 }
                 title.push(ch);
@@ -7317,6 +7317,13 @@ fn compute_bracket_pairs(
     }
 }
 
+// CommonMark reference identity collapses only spaces, tabs and line endings.
+// Other Unicode whitespace remains significant, including in an otherwise
+// whitespace-only label. Definitions, uses and editor source spans share this.
+fn is_reference_label_whitespace(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\r' | '\n')
+}
+
 fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
     // Definitions and uses share the source-character limit, before trimming
     // whitespace or case folding. Invalid definitions must stay visible.
@@ -7334,18 +7341,18 @@ fn normalize_reference_label_chars(label: &[char]) -> Option<String> {
         }
     }
     let mut start = 0usize;
-    while start < label.len() && label[start].is_whitespace() {
+    while start < label.len() && is_reference_label_whitespace(label[start]) {
         start += 1;
     }
     let mut end = label.len();
-    while end > start && label[end - 1].is_whitespace() {
+    while end > start && is_reference_label_whitespace(label[end - 1]) {
         end -= 1;
     }
 
     let mut out = String::with_capacity(end.saturating_sub(start));
     let mut pending_space = false;
     for &ch in &label[start..end] {
-        if ch.is_whitespace() {
+        if is_reference_label_whitespace(ch) {
             pending_space = true;
             continue;
         }

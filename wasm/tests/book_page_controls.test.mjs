@@ -232,7 +232,10 @@ test("composition and imports block page apply; suspension discards drafts and d
   f.el["chapter-source"].emit("compositionstart");
   assert(f.field("apply").disabled); f.field("apply").emit("click");
   assert.equal(f.collection.options.page, undefined);
-  f.el["chapter-source"].emit("compositionend"); assert(!f.field("apply").disabled);
+  f.el["chapter-source"].emit("compositionend");
+  assert(f.field("apply").disabled, "the final composition input still owns the source");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert(!f.field("apply").disabled);
   let finish;
   const file = new File(["x"], "slow.md"); file.arrayBuffer = () => new Promise(resolve => { finish = resolve; });
   const reading = f.controls.importFiles([file]);

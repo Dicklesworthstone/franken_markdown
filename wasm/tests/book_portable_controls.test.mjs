@@ -199,6 +199,8 @@ test("composition blocks portable work and cancels an in-flight copy", async () 
   await assert.rejects(f.controls.importFiles([input.file], "portable"), { code: "BOOK_BUSY" });
   assert.equal(f.el["save-portable"].disabled, true);
   f.el["chapter-source"].emit("compositionend");
+  await assert.rejects(f.controls.preparePortable(), { code: "BOOK_BUSY" });
+  await new Promise(resolve => setTimeout(resolve, 0));
   const pending = f.controls.preparePortable();
   f.el["chapter-source"].emit("compositionstart");
   await assert.rejects(pending, { code: "ABORTED" });

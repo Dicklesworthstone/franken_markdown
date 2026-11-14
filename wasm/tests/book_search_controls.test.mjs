@@ -344,6 +344,9 @@ test("IME composition blocks search, replace, history and source navigation", as
     code: "BOOK_BUSY",
   });
   h.el["chapter-source"].dispatchEvent(new Event("compositionend"));
+  assert(h.el["search-run"].disabled);
+  assert.throws(() => h.search.find(), { code: "BOOK_BUSY" });
+  await new Promise(resolve => setTimeout(resolve, 0));
   assert(!h.el["search-run"].disabled);
 });
 test("query/replacement composition cancels a pending review without auto-searching", async (t) => {

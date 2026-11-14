@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createBookCollection } from "../demo/book_collection.mjs";
 import { createBookControls } from "../demo/book_controls.mjs";
+import { createBookSourceHistoryControls } from "../demo/book_source_history.mjs";
 
 const gate = () => {
   let resolve;
@@ -16,9 +17,11 @@ const gate = () => {
   return { promise, resolve };
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+const compositionTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const code = (expected) => (error) => error.code === expected;
 class Element extends EventTarget {
   #value = "";
+  #capture = new Map();
   children = [];
   textContent = "";
   disabled = false;
@@ -31,6 +34,29 @@ class Element extends EventTarget {
   }
   set value(next) {
     this.#value = String(next).replace(/\r\n?/g, "\n");
+  }
+  // Node EventTarget has no capture phase. History must reserve its input
+  // group before the real controller captures the source, as in the browser.
+  addEventListener(type, listener, options) {
+    if (options === true || options?.capture) {
+      if (!this.#capture.has(type)) this.#capture.set(type, new Set());
+      this.#capture.get(type).add(listener);
+    } else super.addEventListener(type, listener, options);
+  }
+  removeEventListener(type, listener, options) {
+    if (options === true || options?.capture) this.#capture.get(type)?.delete(listener);
+    else super.removeEventListener(type, listener, options);
+  }
+  dispatchEvent(event) {
+    for (const listener of this.#capture.get(event.type) ?? []) listener(event);
+    return super.dispatchEvent(event);
+  }
+  setAttribute(name, value) { this[name] = value; }
+  appendChild(node) { node.parentElement = this; this.children.push(node); return node; }
+  insertBefore(node, sibling) {
+    node.parentElement = this;
+    const index = this.children.indexOf(sibling);
+    if (index < 0) this.children.push(node); else this.children.splice(index, 0, node);
   }
   removeAttribute(name) {
     delete this[name];
@@ -150,6 +176,139 @@ function type(el, value, event = "input") {
   el.value = value;
   el.dispatchEvent(new Event(event));
 }
+
+const compositionActions = [
+  ["chapter selection", "chapters", f => type(f.el.chapters, "1", "change")],
+  ["chapter addition", "add-chapter", f => f.el["add-chapter"].click()],
+  ["include addition", "add-include", f => f.el["add-include"].click()],
+  ["move down", "move-down", f => f.el["move-down"].click()],
+  ["move up", "move-up", f => f.el["move-up"].click()],
+  ["source removal", "remove-chapter", f => f.el["remove-chapter"].click()],
+  ["source role", "source-role", f => type(f.el["source-role"], "include", "change")],
+];
+for (const field of ["chapter-source", "chapter-path"])
+  for (const [action, id, run] of compositionActions)
+    test(`composition ownership rejects ${action} during ${field} input`, async t => {
+      const f = setup(t); await initial(f);
+      if (id === "move-up") type(f.el.chapters, "1", "change");
+      const index = f.controls.currentChapter;
+      f.el[field].dispatchEvent(new Event("compositionstart"));
+      const partial = field === "chapter-source" ? "日本" : "日本.md";
+      type(f.el[field], partial);
+      const before = f.collection.files;
+      run(f); await tick();
+      assert.deepEqual(f.collection.files, before, "an unfinished composition retains its source owner");
+      assert.equal(f.controls.currentChapter, index);
+      assert.equal(f.el.chapters.value, String(index));
+      assert.equal(f.el[field].value, partial);
+      assert(f.el[id].disabled);
+      assert.match(f.el.status.textContent, /BOOK_BUSY/);
+      const final = field === "chapter-source" ? "日本語" : "日本語.md";
+      f.el[field].dispatchEvent(new Event("compositionend"));
+      type(f.el[field], final);
+      await compositionTick();
+      const expected = before.map((file, i) => i === index
+        ? { ...file, [field === "chapter-source" ? "source" : "path"]: final } : file);
+      assert.deepEqual(f.collection.files, expected);
+      assert.equal(f.controls.sourceBusy, false);
+    });
+
+for (const field of ["chapter-source", "chapter-path"])
+  test(`composition ownership blocks direct publication and source capture for ${field}`, async t => {
+    const f = setup(t); await initial(f);
+    f.el[field].dispatchEvent(new Event("compositionstart"));
+    for (const format of ["pdf", "epub", "site"]) {
+      const pending = f.controls.prepare(format);
+      f.jobs.at(-1)?.resolve(f.output(format));
+      await assert.rejects(pending, code("BOOK_BUSY"));
+      assert(f.el[`export-${format}`].disabled);
+    }
+    assert.throws(() => f.controls.prepareSource(false), code("BOOK_BUSY"));
+    assert.throws(() => f.controls.prepareSource(true), code("BOOK_BUSY"));
+    assert.throws(() => f.controls.captureProject(), code("BOOK_BUSY"));
+    assert(f.el["save-chapter"].disabled); assert(f.el["save-project"].disabled);
+    assert.equal(f.jobs.length, 0); assert(f.el.download.hidden);
+    f.el[field].dispatchEvent(new Event("compositionend"));
+    assert.equal(f.controls.sourceBusy, true, "final input still belongs to the ending composition");
+    await compositionTick();
+    f.controls.prepareSource(true);
+    assert.equal((await (await fetch(f.el.download.href)).json()).files[0].source, "# One\r\n");
+    const pending = f.controls.prepare("pdf");
+    f.jobs[0].resolve(f.output("pdf")); await pending;
+    assert.equal(f.el.download.download, "My-book.pdf");
+  });
+
+for (const field of ["chapter-source", "chapter-path"])
+  test(`composition ownership retires prepared downloads and pending export on ${field} start`, async t => {
+    const f = setup(t); await initial(f);
+    f.controls.prepareSource(false);
+    const href = f.el.download.href;
+    f.el[field].dispatchEvent(new Event("compositionstart"));
+    assert(f.el.download.hidden); assert(f.el.download.click().defaultPrevented);
+    await assert.rejects(fetch(href));
+    f.el[field].dispatchEvent(new Event("compositionend")); await compositionTick();
+    const pending = f.controls.prepare("epub");
+    const refused = assert.rejects(pending, code("STALE_SOURCE"));
+    f.el[field].dispatchEvent(new Event("compositionstart"));
+    f.jobs[0].resolve(f.output("epub")); await refused;
+    assert(f.el.download.hidden);
+    assert.equal(f.collection.files[0].source, "# One\r\n");
+  });
+
+for (const finalAfterEnd of [false, true])
+  test(`composition ownership retains final input ${finalAfterEnd ? "after" : "before"} compositionend and one history entry`, async t => {
+    const f = setup(t); await initial(f);
+    f.el["chapter-source"].parentElement = new Element();
+    const history = createBookSourceHistoryControls({ root: f.root, controls: f.controls, collection: f.collection });
+    t.after(() => history.dispose());
+    const editor = f.el["chapter-source"], original = f.collection.files;
+    const input = (value, composing) => {
+      const inputType = composing ? "insertCompositionText" : "insertFromComposition";
+      editor.dispatchEvent(Object.assign(new Event("beforeinput"), { inputType }));
+      editor.value = value;
+      editor.dispatchEvent(Object.assign(new Event("input"), { inputType, isComposing: composing }));
+    };
+    editor.dispatchEvent(new Event("compositionstart")); input("日", true); input("日本", true);
+    if (!finalAfterEnd) input("日本語", true);
+    editor.dispatchEvent(new Event("compositionend"));
+    assert.equal(f.controls.sourceBusy, true);
+    type(f.el.chapters, "1", "change");
+    assert.equal(f.controls.currentChapter, 0);
+    assert.throws(() => history.undo(), code("BOOK_BUSY"));
+    assert.throws(() => f.controls.prepareSource(false), code("BOOK_BUSY"));
+    if (finalAfterEnd) input("日本語", false);
+    await compositionTick();
+    assert.deepEqual(f.collection.files, [{ ...original[0], source: "日本語" }, original[1]]);
+    assert.equal(history.state.undo, 1);
+    history.undo(); assert.deepEqual(f.collection.files, original);
+    history.redo(); assert.equal(f.collection.files[0].source, "日本語");
+    type(f.el.chapters, "1", "change"); assert.equal(f.controls.currentChapter, 1);
+    assert.equal(editor.value, "# Two");
+  });
+
+test("composition ownership keeps a finishing composition busy against an already pending import", async t => {
+  const f = setup(t); await initial(f);
+  const slow = delayedFile("new include", "new.txt"), before = f.collection.files;
+  const pending = f.controls.importFiles([slow.file], "includes"); await slow.entered.promise;
+  f.el["chapter-source"].dispatchEvent(new Event("compositionstart"));
+  f.el["chapter-source"].dispatchEvent(new Event("compositionend"));
+  slow.hold.resolve(); await assert.rejects(pending, code("BOOK_BUSY"));
+  assert.deepEqual(f.collection.files, before);
+  await compositionTick();
+  await f.controls.importFiles([new File(["new include"], "new.txt")], "includes");
+  assert.equal(f.collection.files.at(-1).role, "include");
+});
+
+test("composition ownership cleanup cannot unlock a newer composition after suspension", async t => {
+  const f = setup(t); await initial(f);
+  const editor = f.el["chapter-source"];
+  editor.dispatchEvent(new Event("compositionstart")); editor.dispatchEvent(new Event("compositionend"));
+  f.controls.suspend();
+  editor.dispatchEvent(new Event("compositionstart"));
+  await compositionTick(); assert.equal(f.controls.sourceBusy, true);
+  editor.dispatchEvent(new Event("compositionend")); await compositionTick();
+  assert.equal(f.controls.sourceBusy, false);
+});
 for (const format of ["pdf", "epub", "site"])
   test(`publishing UI routes ${format} and exposes only a separate explicit download`, async (t) => {
     const f = setup(t);
@@ -371,7 +530,9 @@ test("overlapping source/path composition stays busy until both finish", async (
   f.el["chapter-source"].dispatchEvent(new Event("compositionstart"));
   f.el["chapter-path"].dispatchEvent(new Event("compositionstart"));
   f.el["chapter-source"].dispatchEvent(new Event("compositionend")); assert.equal(f.controls.sourceBusy, true);
-  f.el["chapter-path"].dispatchEvent(new Event("compositionend")); assert.equal(f.controls.sourceBusy, false);
+  f.el["chapter-path"].dispatchEvent(new Event("compositionend"));
+  assert.equal(f.controls.sourceBusy, true);
+  await compositionTick(); assert.equal(f.controls.sourceBusy, false);
 });
 test("retired import cleanup cannot unlock a newer pending import", async (t) => {
   const f = setup(t); await initial(f);
@@ -407,6 +568,7 @@ for (const field of ["chapter-source", "chapter-path"]) test(`${field} compositi
   await assert.rejects(f.controls.importFiles([new File(["new"], "new.md")]), code("BOOK_BUSY"));
   assert.deepEqual(f.collection.files, before); assert.equal(f.collection.images.length, 1);
   f.el[field].dispatchEvent(new Event("compositionend"));
+  await compositionTick();
   f.controls.replaceProject(project, f.controls.checkpoint());
   assert.equal(f.collection.files[0].source, "replacement"); assert.equal(f.collection.images.length, 0);
   await f.controls.importFiles([new File(["new"], "new.md")]); assert.equal(f.collection.files.at(-1).path, "new.md");
@@ -425,7 +587,7 @@ for (const phase of ["read", "confirmation"]) test(`project ${phase} cannot repl
   await assert.rejects(pending, code("BOOK_BUSY"));
   assert.equal(confirmations, phase === "read" ? 0 : 1);
   assert.deepEqual(f.collection.files, before); assert.equal(f.collection.images.length, 1);
-  f.el["chapter-source"].dispatchEvent(new Event("compositionend")); f.confirm(() => true);
+  f.el["chapter-source"].dispatchEvent(new Event("compositionend")); await compositionTick(); f.confirm(() => true);
   await f.controls.importFiles([new File([JSON.stringify(project)], "project.json")], "project");
   assert.equal(f.collection.files[0].source, "replacement"); assert.equal(f.collection.images.length, 0);
 });
@@ -434,7 +596,7 @@ test("pending chapter removal respects composition begun during confirmation", a
   f.confirm(() => hold.promise); f.el["remove-chapter"].click();
   f.el["chapter-path"].dispatchEvent(new Event("compositionstart")); hold.resolve(true); await tick();
   assert.deepEqual(f.collection.files, before); assert.match(f.el.status.textContent, /BOOK_BUSY/);
-  f.el["chapter-path"].dispatchEvent(new Event("compositionend")); f.confirm(() => true);
+  f.el["chapter-path"].dispatchEvent(new Event("compositionend")); await compositionTick(); f.confirm(() => true);
   f.el["remove-chapter"].click(); await tick(); assert.equal(f.collection.files.length, 1);
 });
 test("source rescue remains available with invalid publishing settings and a half-edited path", async (t) => {

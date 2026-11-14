@@ -77,6 +77,7 @@ export function createBookControls({
   let lastSourceBusy = false;
   let composing = false;
   const composingFields = new Set();
+  const finishingComposition = new Map();
   let lifecycle = 0, importOwner = null;
   let resourceRevision = bookCollectionResourceRevision(collection, worker);
   let disposed = false,
@@ -89,6 +90,17 @@ export function createBookControls({
   const alive = () => {
     if (disposed) throw bookError("SESSION_DISPOSED", "Book controls are disposed.");
   };
+  function sourceReady() {
+    alive();
+    if (reading || composing)
+      throw bookError("BOOK_BUSY", "Finish importing or composing text before changing source or preparing output.");
+  }
+  function clearComposition() {
+    for (const timer of finishingComposition.values()) clearTimeout(timer);
+    finishingComposition.clear();
+    composingFields.clear();
+    composing = false;
+  }
   const options = () => ({
     ...collection.options,
     title: el.title.value,
@@ -112,15 +124,18 @@ export function createBookControls({
   function buttons() {
     const files = collection.files,
       count = files.length;
+    const busy = reading || composing;
     const hasChapters = files.some((file) => file.role !== "include");
-    el["move-up"].disabled = active <= 0;
-    el["move-down"].disabled = active >= count - 1;
-    el["remove-chapter"].disabled = el["save-chapter"].disabled = count === 0;
+    el.chapters.disabled = busy || count === 0;
+    el["add-chapter"].disabled = el["add-include"].disabled = el["save-project"].disabled = busy;
+    el["move-up"].disabled = busy || active <= 0;
+    el["move-down"].disabled = busy || active >= count - 1;
+    el["remove-chapter"].disabled = el["save-chapter"].disabled = busy || count === 0;
     el["chapter-path"].disabled = el["chapter-source"].disabled = count === 0;
     el["source-role"].disabled = count === 0 || composing || reading;
     el["revoke-images"].disabled = collection.images.length === 0;
     for (const kind of ["pdf", "epub", "site"])
-      el[`export-${kind}`].disabled = !hasChapters || preparing || reading;
+      el[`export-${kind}`].disabled = !hasChapters || preparing || busy;
     for (const kind of [
       "import-files",
       "import-folder",
@@ -219,6 +234,8 @@ export function createBookControls({
   function publish(output, ticket, revision, view) {
     if (
       disposed ||
+      composing ||
+      reading ||
       ticket !== generation ||
       revision !== collection.revision ||
       view !== signature()
@@ -245,10 +262,10 @@ export function createBookControls({
   async function prepare(format) {
     let ticket = null;
     try {
-      alive();
-      if (reading) throw bookError("BOOK_BUSY", "A local import is in progress.");
+      sourceReady();
       invalidate(true);
       capture();
+      sourceReady();
       const input = capturePublication(),
         revision = collection.revision,
         view = signature();
@@ -304,9 +321,10 @@ export function createBookControls({
   }
 
   function prepareSource(project) {
-    alive();
+    sourceReady();
     invalidate();
     capture(project);
+    sourceReady();
     const output = project ? collection.projectDownload() : collection.chapterDownload(active);
     publish(output, generation, collection.revision, signature());
   }
@@ -419,23 +437,37 @@ export function createBookControls({
   });
   for (const id of ["chapter-source", "chapter-path"]) {
     on(id, "compositionstart", () => {
+      clearTimeout(finishingComposition.get(id));
+      finishingComposition.delete(id);
       composingFields.add(id);
       composing = true;
-      if (portableAbort) invalidate();
-      buttons();
+      // Even before the first input, an IME owns the current source. Retire
+      // prepared downloads and pending work without evicting an idle book.
+      invalidate(true);
     });
     on(id, "compositionend", () => {
-      composingFields.delete(id);
-      composing = composingFields.size > 0;
-      buttons();
+      if (!composingFields.has(id)) return;
+      clearTimeout(finishingComposition.get(id));
+      // Some IMEs dispatch their final input after compositionend. Keep the
+      // source owner and history recovery fenced until that turn has finished.
+      const lifetime = lifecycle;
+      const timer = setTimeout(() => {
+        if (disposed || lifetime !== lifecycle || finishingComposition.get(id) !== timer) return;
+        finishingComposition.delete(id);
+        composingFields.delete(id);
+        composing = composingFields.size > 0;
+        buttons();
+      }, 0);
+      finishingComposition.set(id, timer);
     });
   }
   on("chapter-source", "input", () => invoke(capture));
   on("chapter-path", "input", () => invoke(capture));
   on("source-role", "change", () =>
     invoke(() => {
-      invalidate(true);
       try {
+        sourceReady();
+        invalidate(true);
         capture();
       } finally {
         el["source-role"].value = collection.files[active]?.role ?? "chapter";
@@ -463,17 +495,32 @@ export function createBookControls({
       },
     );
   }
-  on("chapters", "change", () =>
+  on("chapters", "change", (event) =>
     invoke(() => {
       const next = Number(el.chapters.value);
-      capture();
-      active = next;
-      showChapter();
+      try {
+        sourceReady();
+        if (!Number.isInteger(next) || !collection.files[next])
+          throw bookError("INVALID_SELECTION", "Choose an existing source.");
+        capture();
+        sourceReady();
+        active = next;
+        showChapter();
+      } catch (error) {
+        // No navigation occurred. Downstream history/search observers must
+        // not treat the rejected selection as a new source ownership boundary.
+        event.stopImmediatePropagation();
+        throw error;
+      } finally {
+        el.chapters.value = String(active);
+      }
     }),
   );
   on("add-chapter", "click", () =>
     invoke(() => {
+      sourceReady();
       capture();
+      sourceReady();
       const used = new Set(collection.files.map((file) => file.path));
       let n = 1;
       while (used.has(`chapter-${n}.md`)) n++;
@@ -487,7 +534,9 @@ export function createBookControls({
   );
   on("add-include", "click", () =>
     invoke(() => {
+      sourceReady();
       capture();
+      sourceReady();
       const used = new Set(collection.files.map((file) => file.path));
       let n = 1;
       while (used.has(`include-${n}.md`)) n++;
@@ -506,7 +555,9 @@ export function createBookControls({
   ])
     on(id, "click", () =>
       invoke(() => {
+        sourceReady();
         capture();
+        sourceReady();
         active = collection.move(active, delta);
         showChapter();
       }),
@@ -575,6 +626,8 @@ export function createBookControls({
   on("download", "click", (event) => {
     if (
       disposed ||
+      composing ||
+      reading ||
       !published ||
       published.revision !== collection.revision ||
       published.view !== signature()
@@ -605,7 +658,9 @@ export function createBookControls({
       return JSON.stringify([collection.revision, signature()]);
     },
     captureProject() {
+      sourceReady();
       capture();
+      sourceReady();
       return collection.project();
     },
     get currentChapter() {
@@ -736,8 +791,7 @@ export function createBookControls({
         importOwner = null;
         reading = false;
         for (const [id] of importModes) el[id].value = "";
-        composingFields.clear();
-        composing = false;
+        clearComposition();
         invalidate();
         pageSetup?.discard();
         collection.revokeImages();
@@ -750,7 +804,7 @@ export function createBookControls({
       if (disposed) return;
       lifecycle++;
       importOwner = null;
-      composingFields.clear();
+      clearComposition();
       disposed = true;
       invalidate();
       unsubscribe();

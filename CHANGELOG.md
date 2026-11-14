@@ -150,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Book editing keeps input-method composition attached to its original source
+  through the final input event. Chapter navigation, structural edits, source
+  capture and publication wait for committed text; composition retires stale
+  downloads and pending exports while preserving a single undo history entry.
 - Literal code and HTML preserve authored tabs after Markdown container
   indentation is removed, including Makefile recipes, nested lists and quotes,
   rich footnotes, multiline inline literals and tab-only code lines. Partial

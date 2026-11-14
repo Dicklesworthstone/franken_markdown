@@ -791,7 +791,7 @@ function parseMarkdownClient(source, imageAssets) {
   function safeUrl(raw, image, literal = false) {
     // Angle autolinks own literal destinations; only explicit/reference
     // links and images apply Markdown escape and entity decoding.
-    const url = (literal ? raw : unescape(raw)).trim();
+    const url = literal ? raw : unescape(raw).trim();
     // Bindings can replace image bytes, not turn a non-image data URL into an
     // image source. Match native admission before consulting an exact binding.
     if (image && /^data:/i.test(url) && !fmdDataImageMime(url)) return null;
@@ -952,14 +952,26 @@ function parseMarkdownClient(source, imageAssets) {
     return '<sup class="footnote-ref" id="' + id + '"><a href="#' + note.id + '" role="doc-noteref">' + note.number + '</a></sup>';
   }
   function emailAddress(label) {
-    // The former pair of greedy domain classes backtracked quadratically on
-    // a long dotted domain ending in a second '@'. Keep the same subset with
-    // independent linear checks, including its permissive trailing-dot cases.
+    // Match the native CommonMark email production, not the broader bare-GFM
+    // extension. Single-label domains are valid; every domain label is 1..63
+    // ASCII letters/digits/hyphens with no leading or trailing hyphen.
+    // Scan labels without split() allocation or nested regex backtracking.
     charge(label.length * 3 + 1);
     const at = label.indexOf('@');
-    if (at < 1 || label.indexOf('@', at + 1) >= 0 || /[\s<>]/.test(label)) return false;
-    const dot = label.indexOf('.', at + 2);
-    return dot >= 0 && dot < label.length - 1;
+    if (at < 1 || at === label.length - 1
+        || !/^[A-Za-z0-9.!#$%&'*+\/=?^_\x60{|}~-]+$/.test(label.slice(0, at))) return false;
+    let width = 0;
+    for (let i = at + 1; i < label.length; i++) {
+      const code = label.charCodeAt(i);
+      if (code === 46) {
+        if (!width || label[i - 1] === '-') return false;
+        width = 0; continue;
+      }
+      if (!(code >= 48 && code <= 57 || code >= 65 && code <= 90
+          || code >= 97 && code <= 122 || code === 45)) return false;
+      if (width === 0 && code === 45 || ++width > 63) return false;
+    }
+    return width > 0 && label[label.length - 1] !== '-';
   }
   function codeExtent(text, start) {
     const content = runEnd(text, start, '`'), marker = text.slice(start, content);
@@ -1019,10 +1031,15 @@ function parseMarkdownClient(source, imageAssets) {
   function autolinkAt(text, start) {
     const close = find(text, '>', start + 1);
     if (close < 0) return null;
-    const label = text.slice(start + 1, close), email = emailAddress(label);
-    const uri = /^[a-z][a-z0-9+.-]*:/i.test(label) && !/[\s<\u0000-\u001f\u007f-\u009f]/.test(label);
-    return email || uri
-      ? {kind: 'autolink', label, url: email ? 'mailto:' + label : label, end: close + 1} : null;
+    const label = text.slice(start + 1, close);
+    charge(label.length + 1);
+    if (/[\p{White_Space}<\u0000-\u001f\u007f-\u009f]/u.test(label)) return null;
+    // URI recognition precedes email recognition: a mailto URI or an HTTP URL
+    // containing '@' must never acquire another mailto prefix. Syntax ownership
+    // is independent from safeUrl's unchanged scheme and backslash admission.
+    const uri = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:/.test(label);
+    if (!uri && !emailAddress(label)) return null;
+    return {kind: 'autolink', label, url: uri ? label : 'mailto:' + label, end: close + 1};
   }
   // HTML atoms own their complete source, including brackets in attributes,
   // comments and declarations. They remain escaped text in offline output:

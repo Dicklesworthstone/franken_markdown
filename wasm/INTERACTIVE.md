@@ -49,6 +49,15 @@ whitespace; spaces produced by character references stay visible. Source hard
 breaks remain distinct from soft breaks. These changes affect the live preview;
 the editable source and Save Markdown remain unchanged.
 
+## Angle links in lightweight saved documents
+
+Angle-delimited URIs retain their authored scheme and destination, including
+`<mailto:user@example.com>` and HTTP URLs containing an email address.
+Angle-delimited email addresses use the native CommonMark grammar, including
+single-label domains and bounded domain labels. Malformed addresses return to
+ordinary inline parsing. The existing allowed-scheme and unsafe-destination
+checks continue to apply before a link is emitted.
+
 ## Example: Node host with a matching local build
 
 ```js

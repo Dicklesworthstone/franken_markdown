@@ -222,10 +222,12 @@ test('heading and footnote IDs cannot collide', () => {
   test('dotted invalid email autolinks do not trigger regex backtracking', () => {
     const label = 'a@' + '.'.repeat(100000) + '@';
     assert.equal(render('<' + label + '>'), '<p>&lt;' + label + '&gt;</p>\n');
-    for (const label of ['a@b.c', 'a@b..', 'a@..b', 'a.b@c.d']) {
+    // CommonMark angle-email domains admit one label, but no empty labels.
+    // Keep the hostile-input assertion above and both positive/negative controls.
+    for (const label of ['a@b.c', 'a@b', 'a@localhost', 'a@b-c', 'a.b@c.d']) {
       assert.equal(render('<' + label + '>'), '<p><a href="mailto:' + label + '">' + label + '</a></p>\n');
     }
-    for (const label of ['a@.b', 'a@b.', '@b.c', 'a@@b.c', 'a @b.c']) {
+    for (const label of ['a@.b', 'a@b.', 'a@b..', 'a@..b', '@b.c', 'a@@b.c', 'a @b.c']) {
       assert.equal(render('<' + label + '>'), '<p>&lt;' + label + '&gt;</p>\n');
     }
   });

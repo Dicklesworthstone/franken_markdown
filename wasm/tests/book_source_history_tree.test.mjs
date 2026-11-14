@@ -214,6 +214,9 @@ const cases = {
     const h=make();h.click('add-chapter');h.el('chapter-source').emit('compositionstart');
     assert.throws(()=>h.ui.undo(),{code:'BOOK_BUSY'});h.el('chapter-source').emit('compositionend');
     h.el('chapter-path').emit('compositionstart');assert.throws(()=>h.ui.undo(),{code:'BOOK_BUSY'});h.el('chapter-path').emit('compositionend');
+    // Final IME input may follow compositionend in this task. Keep its busy
+    // assertion, then admit the independent file read on the next task.
+    assert(h.controls.sourceBusy);assert.throws(()=>h.ui.undo(),{code:'BOOK_BUSY'});await turn();assert(!h.controls.sourceBusy);
     let release;const input=localFile('new.md','new');const bytes=await input.arrayBuffer();input.arrayBuffer=()=>new Promise(resolve=>{release=()=>resolve(bytes)});
     const pending=h.controls.importFiles([input]);assert(h.controls.sourceBusy);assert.throws(()=>h.ui.undo(),{code:'BOOK_BUSY'});
     release();await pending;h.ui.undo();h.ui.undo();h.close();
@@ -234,6 +237,7 @@ async function run(name) {
     'wasm/demo/book_collection.mjs':new URL('../demo/book_collection.mjs',import.meta.url),
     'wasm/demo/book_controls.mjs':new URL('../demo/book_controls.mjs',import.meta.url),
     'wasm/demo/book_source_history.mjs':new URL('../demo/book_source_history.mjs',import.meta.url),
+    'wasm/book_render_diagnostics.mjs':new URL('../book_render_diagnostics.mjs',import.meta.url),
   };
   const adapterPaths=new Set(['wasm/book_session.mjs','wasm/book_worker.mjs','wasm/pdf_page.mjs','wasm/demo/book_font_assets.mjs','wasm/demo/book_source_search.mjs','adapters.mjs']);
   const get=name=>{

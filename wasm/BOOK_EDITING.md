@@ -40,6 +40,25 @@ FMD_CHROMIUM=/path/to/chromium \
 node wasm/tests/book_source_formatting.browser.mjs
 ```
 
+## Rename sources and update references
+
+Select a chapter or include-only source, then use **Rename a source and update
+references** under **Arrange and edit**. **Prepare rename** asks the native engine
+to preserve incoming links, outgoing relative links/images and transclusions
+across the complete source graph. Review affected files and select **Apply
+rename**. This installs one atomic source-tree edit; book-wide undo and redo
+restore paths and rewritten references together while preserving publishing
+settings and resource bytes. The ordinary path input continues to edit only the
+selected path. Neither control moves files on your computer.
+
+The operation requires a matching WASM build, runs in a cancellable source-only
+worker and fails explicitly when ownership or target preservation cannot be
+proved. It captures the current supplied image keys so moving a source preserves
+the renderer's origin-qualified or literal image binding without reading asset
+bytes. Source edits, image-key changes, project changes, composition, destination
+edits and page suspension invalidate a prepared plan. See [source rename](BOOK_SOURCE_RENAME.md)
+for the direct and worker APIs, limits and verification boundaries.
+
 ## Find source text
 
 Enter literal text, choose the whole book or the current chapter, then select
@@ -130,7 +149,9 @@ Replay installs the complete source tree as one collection revision and updates
 the actual chapter selector and editor. A surviving selected path stays selected;
 a deleted selection is clamped to the remaining sources. Empty books clear the
 editor and disable source-specific controls without making redo unavailable.
-Renames do not rewrite links or transclusion references, in either direction.
+Literal path edits do not rewrite references. History restores the exact source
+stored by an explicit **Rename a source and update references** transaction;
+undo and redo do not rerun the parser or compute new reference edits.
 
 This history never restores publishing settings, image/font bytes, permissions,
 file handles or local-library identity. A revoked resource remains revoked after

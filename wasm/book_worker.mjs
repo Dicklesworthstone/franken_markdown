@@ -1,15 +1,16 @@
 // Worker transport only. The entrypoint injects the real Rust/WASM book API.
-import { BOOK_LINK_REPORT_MAX_BYTES, bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, prepareBookInput, parseBookChapterPreview, validateBookLinkReportBytes } from "./book_session.mjs";
+import { BOOK_LINK_REPORT_MAX_BYTES, bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookLinkOptions, bookTextBytes, prepareBookInput, parseBookChapterPreview, validateBookLinkReportBytes } from "./book_session.mjs";
 import { createRetainedBook } from "./book_retained.mjs";
 import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "./book_source_diagnostics.mjs";
+import { BOOK_SOURCE_RENAME_MAX_BYTES, prepareBookSourceRename, parseBookSourceRename } from "./book_source_rename.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
 const FONT_COLLECTION_LIMIT = 32 * 1024 * 1024;
 const FONT_COLLECTION_FORMAT = "font-collection";
 const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
-const sourceFormats = new Set(["links", "diagnostics"]);
+const sourceFormats = new Set(["links", "diagnostics", "source-rename"]);
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 const formats = Object.freeze({
   pdf: ["renderBookPdf", "application/pdf", "pdf"],
@@ -20,6 +21,7 @@ const formats = Object.freeze({
   inspection: ["inspectBook", "application/json", "json"],
   links: ["checkBookLinks", "application/json", "json"],
   diagnostics: ["checkBookSourceDiagnostics", "application/json", "json"],
+  "source-rename": ["renameBookSource", "application/json", "json"],
   [FONT_COLLECTION_FORMAT]: ["extractFontCollectionFace", "font/sfnt", "sfnt"],
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
@@ -27,6 +29,20 @@ function formatInfo(format) {
   if (!Object.hasOwn(formats, format))
     throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection, links or diagnostics.");
   return formats[format];
+}
+
+function renameSelection(format, value) {
+  if (format !== "source-rename") {
+    if (value !== undefined) throw bookError("INVALID_OPTIONS", "sourceRename requires the source-rename operation.");
+    return undefined;
+  }
+  const data = deltaRecord(value, ["oldPath", "newPath"]);
+  return { oldPath: data.oldPath, newPath: data.newPath };
+}
+function sourceOutputLimit(format, maximum) {
+  if (!sourceFormats.has(format)) return maximum;
+  return Math.min(maximum, format === "source-rename" ? BOOK_SOURCE_RENAME_MAX_BYTES
+    : format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES);
 }
 
 // Selection is an operation argument, not a presentation option or retained
@@ -348,12 +364,13 @@ export function createBookWorkerClient({
     cancelPending();
     releaseIdle();
   }
-  async function run(files, format, options = {}, { signal, selectedChapter } = {}, sourceOnly = false) {
+  async function run(files, format, options = {}, { signal, selectedChapter, sourceRename } = {}, sourceOnly = false) {
     alive();
     if (active) throw bookError("BOOK_BUSY", "A book export is already running.");
     const [, mimeType, extension] = formatInfo(format);
     const extractingFont = format === FONT_COLLECTION_FORMAT;
     const selected = chapterSelection(format, selectedChapter);
+    const rename = renameSelection(format, sourceRename);
     // Full links requests remain source-only and one-shot. Only an explicit
     // revision-fenced delta may check the already-authorized publication.
     const retainingBook = retainBook && (retainedFormats.has(format)
@@ -386,7 +403,9 @@ export function createBookWorkerClient({
         authoringProfile,
         chapterCount = null,
         collectionIndex = null,
-        collectionBytes = null;
+        collectionBytes = null,
+        renameCapture = null,
+        renameSourceLength = null;
       const onAbort = () =>
         finish(bookError("EXPORT_CANCELLED", "Book export cancelled; source is unchanged."));
       function retireWorker(keep = false) {
@@ -482,10 +501,11 @@ export function createBookWorkerClient({
             retainedFormats.has(format) ? authoringProfile : undefined);
           const fontReceipt = bookFontEmbeddingReceipt(data,
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
-          checkedOutput(data.bytes, data.sourceLength,
-            sourceFormats.has(format) ? Math.min(maxOutputBytes,
-              format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES) : maxOutputBytes);
+          checkedOutput(data.bytes, data.sourceLength, sourceOutputLimit(format, maxOutputBytes));
           checkedLinkAllowance(data.bytes, format);
+          const renameReport = renameCapture ? parseBookSourceRename(data.bytes, renameCapture) : null;
+          if (renameCapture && data.sourceLength !== renameSourceLength)
+            throw bookError("WORKER_PROTOCOL_ERROR", "Source rename replied for a different input size.");
           const renderReceipt = bookRenderDiagnosticsReceipt(data, format);
           if (selected !== undefined) {
             if (data.selectedChapter !== selected)
@@ -501,6 +521,7 @@ export function createBookWorkerClient({
               sourceLength: data.sourceLength,
               ...(format === "pdf" && archive ? archive : {}),
               ...fontReceipt, ...profileReceipt, ...renderReceipt,
+              ...(renameReport ? { report: renameReport } : {}),
               ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
               ...(inputRevision === null ? {} : { retainedInputRevision: inputRevision }),
               mimeType,
@@ -563,6 +584,15 @@ export function createBookWorkerClient({
           input = prepareFontCollection(files, options.faceIndex);
           collectionIndex = input.faceIndex;
           collectionBytes = input.fontBytes.length;
+        } else if (rename) {
+          const prepared = prepareBookSourceRename(files, rename.oldPath, rename.newPath, options);
+          input = { files: prepared.files, options: prepared.options };
+          const privateSources = captureSources(prepared);
+          renameCapture = { files: privateSources.files, options: { includeSources: privateSources.includeSources,
+            imageDestinations: Object.freeze([...prepared.options.imageDestinations]) },
+            oldPath: prepared.oldPath, newPath: prepared.newPath };
+          renameSourceLength = [...privateSources.files, ...privateSources.includeSources]
+            .reduce((size, file) => size + bookTextBytes(file.source), 0);
         } else if (!sourceOnly) input = prepareBookInput(
           files,
           format === "inspection" ? {} : sourceFormats.has(format) ? bookLinkOptions(options) : options,
@@ -626,6 +656,7 @@ export function createBookWorkerClient({
         );
         worker.postMessage({ schemaVersion: 1, id, format, ...input, maxOutputBytes,
           ...(selected === undefined ? {} : { selectedChapter: selected }),
+          ...(rename ? { sourceRename: { oldPath: renameCapture.oldPath, newPath: renameCapture.newPath } } : {}),
           ...(retainingBook ? { retainBook: true } : retainingPreview ? { retainPreview: true } : {}) }, transfer);
       } catch (error) {
         finish(bookError("WORKER_FAILED", diagnostic(error).message));
@@ -638,6 +669,8 @@ export function createBookWorkerClient({
     supportsSourceSet: true,
     extractFontCollectionFace: (bytes, faceIndex = 0, request) =>
       run(bytes, FONT_COLLECTION_FORMAT, { faceIndex }, request),
+    renameSource: (files, oldPath, newPath, options, request) =>
+      run(files, "source-rename", options, { ...request, sourceRename: { oldPath, newPath } }),
     render: (files, format, options, request) => run(files, format, options, request),
     renderSourceUpdate: (files, format, options, request) => run(files, format, options, request, true),
     renderSources: (files, format, options, request) => run(files, format, options, request, 2),
@@ -680,6 +713,7 @@ export function installBookWorker(scope, engine) {
       }
       let [method] = formatInfo(data.format);
       const selected = chapterSelection(data.format, data.selectedChapter);
+      const rename = renameSelection(data.format, data.sourceRename);
       if (data.retainPreview !== undefined && typeof data.retainPreview !== "boolean")
         throw bookError("WORKER_PROTOCOL_ERROR", "Invalid preview retention request.");
       if (data.retainBook !== undefined && typeof data.retainBook !== "boolean")
@@ -748,7 +782,7 @@ export function installBookWorker(scope, engine) {
           : applyBookSourceUpdate(capture.input, mutation);
       } else {
         if (capture && capture.mode !== mode) releaseCapture();
-        input = prepareBookInput(
+        input = rename ? prepareBookSourceRename(data.files, rename.oldPath, rename.newPath, data.options) : prepareBookInput(
           data.files,
           data.format === "inspection" ? {} : sourceFormats.has(data.format)
             ? bookLinkOptions(data.options) : data.options,
@@ -758,18 +792,19 @@ export function installBookWorker(scope, engine) {
       const archive = archivalPolicy(input.options);
       const fontEmbedding = input.options.fontEmbedding;
       const authoringProfile = input.options.profile;
-      const args = [input.files, input.options];
+      const args = rename ? [input.files, input.oldPath, input.newPath, input.options] : [input.files, input.options];
       if (data.retainBook) args.push(data.format);
       if (selected !== undefined) args.push(selected);
+      if (rename && typeof engine[method] !== "function")
+        throw bookError("UNSUPPORTED_BOOK_SOURCE_RENAME", "Rebuild the matching book worker and renderer for source renaming.");
       const result = await engine[method](...args);
       const profileReceipt = bookAuthoringProfileReceipt(result,
         retainedFormats.has(data.format) ? authoringProfile : undefined);
       const fontReceipt = bookFontEmbeddingReceipt(result,
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
-      checkedOutput(result.bytes, result.sourceLength,
-        sourceFormats.has(data.format) ? Math.min(data.maxOutputBytes,
-          data.format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES) : data.maxOutputBytes);
+      checkedOutput(result.bytes, result.sourceLength, sourceOutputLimit(data.format, data.maxOutputBytes));
       checkedLinkAllowance(result.bytes, data.format);
+      if (rename) parseBookSourceRename(result.bytes, input);
       const renderReceipt = bookRenderDiagnosticsReceipt(result, data.format);
       if (data.format === "pdf") {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))

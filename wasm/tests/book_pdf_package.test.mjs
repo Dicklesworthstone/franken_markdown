@@ -10,7 +10,7 @@ const repo = dirname(wasm.replace(/[\\/]$/, ''));
 const read = path => readFileSync(path, 'utf8');
 // The proof helpers' full relative import closure, plus their documentation.
 const required = [
-  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_render_diagnostics.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
+  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_source_rename.mjs', 'book_render_diagnostics.mjs', 'book_worker.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
   // book_pdf_controls.mjs reads publishing-profile fields from the collection
   // module (a3ca221), which in turn uses the font asset store.
   'demo/book_pdf_controls.mjs', 'demo/book_collection.mjs', 'demo/book_font_assets.mjs', 'BOOK_PDF_PROOF.md',
@@ -79,6 +79,7 @@ async function bootstrap(fail = false) {
     // components a descriptor-preserving facade of the controls.
     'demo/book_source_history.mjs': 'export const createBookSourceHistoryControls = options => globalThis.__bookPdfBoot.create("history", options);',
     'demo/book_source_formatting.mjs': 'export const createBookSourceFormattingControls = options => globalThis.__bookPdfBoot.create("formatting", options);',
+    'demo/book_source_rename.mjs': 'export const createBookSourceRenameControls = options => globalThis.__bookPdfBoot.create("rename", options);',
     'demo/book_directory_controls.mjs': 'export const createBookDirectoryControls = options => globalThis.__bookPdfBoot.create("directory", options);',
     'demo/book_source_folder_controls.mjs': 'export const createBookSourceFolderControls = options => globalThis.__bookPdfBoot.create("sourceFolder", options);',
     // Edition publishing joined the publisher in d510546.
@@ -132,6 +133,6 @@ test('proof initialization failure disposes only its worker and leaves the remai
   assert(proof, 'publisher never attempts PDF proofing');
   assert.deepEqual(boot.lifecycle, [`worker-${proof.options.worker.id}:dispose`]);
   assert.match(boot.statuses.get('#book-pdf-status').textContent, /Ordinary PDF\/EPUB\/site exports/);
-  for (const name of ['controls', 'library', 'preview', 'search', 'inspection', 'links'])
+  for (const name of ['controls', 'library', 'preview', 'search', 'inspection', 'links', 'rename'])
     assert(boot.made.some(item => item.name === name), `lost ${name}`);
 });

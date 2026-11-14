@@ -1,4 +1,4 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookSourceDiagnosticsOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookSourceDiagnosticsOutput, BookSourceRenameOptions, BookSourceRenameOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
 export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links" | "diagnostics";
 /** A transport capture revision is local to this worker client, not a native
@@ -45,6 +45,17 @@ export interface BookInspectionOutput {
 }
 export interface BookWorker {
   readonly busy: boolean;
+  /** Prepare a complete native source-only rename in one disposable worker.
+   * Cancellation/timeout terminates work; source is only changed when the host
+   * explicitly installs the returned report. No publication or asset load is
+   * started. Requires matching worker scripts and the renameBookSource ABI. */
+  renameSource(
+    files: readonly BookFile[],
+    oldPath: string,
+    newPath: string,
+    options?: BookSourceRenameOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<BookSourceRenameOutput>;
   /** Extract an explicitly selected TTC/OTC face in an isolated worker.
    * Owns the exact input view before yielding; never transfers caller buffers.
    * Collection and selected-face payloads are capped at 32 MiB, further bounded

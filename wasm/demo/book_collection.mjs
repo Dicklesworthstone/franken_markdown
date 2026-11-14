@@ -435,6 +435,12 @@ export function createBookCollection() {
       alive();
       return images.map(({ destination, bytes }) => ({ destination, size: bytes.byteLength }));
     },
+    /** Exact current renderer keys without reading or copying resource bytes.
+     * Source refactoring uses the complete inventory to preserve image binding. */
+    get imageDestinations() {
+      alive();
+      return Object.freeze(images.map(image => image.destination));
+    },
     get fonts() {
       alive();
       return fonts.list();

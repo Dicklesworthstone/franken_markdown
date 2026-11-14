@@ -93,6 +93,7 @@ const bindings={
  './book_search_controls.mjs':{createBookSearchControls:()=>component('search')},
  './book_source_history.mjs':{createBookSourceHistoryControls:()=>component('history')},
  './book_source_formatting.mjs':{createBookSourceFormattingControls:()=>component('formatting')},
+ './book_source_rename.mjs':{createBookSourceRenameControls:()=>component('rename')},
 };
 const context=vm.createContext({document,window});
 const app=new vm.SourceTextModule(readFileSync(process.env.EDITION_APP,'utf8'),{context});
@@ -107,7 +108,7 @@ if(!failure){assert(calls.indexOf('edition.suspend')<calls.indexOf('source.suspe
 events.get('pagehide')({persisted:false});
 assert.equal(calls.filter(value=>value==='publisher.dispose').length,1);
 if(!failure)assert(calls.indexOf('edition.dispose')<calls.indexOf('source.dispose'));
-for(const name of ['files','directory','history','formatting','profile','images','fonts','proof','links','parser','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
+for(const name of ['files','directory','history','formatting','rename','profile','images','fonts','proof','links','parser','inspection','search','preview','library','source'])assert(calls.includes(name+'.dispose'),name);
 console.log('application edition wiring and lifecycle passed');
 `;
 for (const fail of [false, true]) {

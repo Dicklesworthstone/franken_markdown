@@ -32,7 +32,7 @@ function setup({ fail = false } = {}) {
     },
   };
   for (const name of ["createBookImageControls", "createBookFontControls", "createBookLibraryControls", "createBookPdfControls",
-    "createBookPreviewControls", "createBookSearchControls", "createBookInspectionControls", "createBookLinkControls"])
+    "createBookPreviewControls", "createBookSearchControls", "createBookInspectionControls", "createBookLinkControls", "createBookSourceRenameControls"])
     globals[name] = inert;
   for (const name of ["createBookImagePanel", "createBookFontPanel", "createBookPdfPanel", "createBookInspectionPanel", "createBookLinkPanel"])
     globals[name] = () => {};
@@ -43,7 +43,7 @@ function setup({ fail = false } = {}) {
 test("the real publisher creates data-only profile controls and brackets host suspension/disposal", () => {
   assert.match(source, /import \{[^}]*createBookPublicationControls[^}]*\} from "\.\/book_pdf_controls\.mjs"/);
   const h = setup(); assert.equal(h.calls.filter(value => value === "profile.create").length, 1);
-  assert.equal(h.calls.filter(value => value === "worker").length, 6, "no additional renderer for authoring");
+  assert.equal(h.calls.filter(value => value === "worker").length, 7, "seven independent clients, including source rename; profile authoring owns none");
   h.events.get("pagehide")({ persisted: true });
   assert(h.calls.indexOf("profile.suspend") < h.calls.indexOf("host.suspend"));
   h.events.get("pageshow")({ persisted: true }); assert(h.calls.includes("profile.resume"));
@@ -54,7 +54,7 @@ test("the real publisher creates data-only profile controls and brackets host su
 test("profile initialization failure leaves the existing publisher and lifecycle usable", () => {
   const h = setup({ fail: true });
   assert.match(h.nodes.get("#book-publication-status").textContent, /Applied settings, source editing and ordinary publication remain available/);
-  assert.equal(h.calls.filter(value => value === "worker").length, 6);
+  assert.equal(h.calls.filter(value => value === "worker").length, 7);
   h.events.get("pagehide")({ persisted: true }); h.events.get("pageshow")({ persisted: true });
   h.events.get("pagehide")({ persisted: false }); assert(h.calls.includes("host.dispose"));
 });

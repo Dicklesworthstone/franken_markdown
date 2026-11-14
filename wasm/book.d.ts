@@ -92,7 +92,7 @@ export interface BookOptions {
   /** Link PDF note numbers back to their first citation. Default false. */
   footnoteBacklinks?: boolean;
   /** Continue long text notes across page feet. Default false.
-   * Requires greedy pagination without a baseline grid and a matching WASM
+   * Requires greedy pagination; baseline grids are supported. Requires a matching WASM
    * package; unsupported policies and older token parsers fail explicitly. */
   splitFootnotes?: boolean;
   /** An explicit mode overrides microtype tokens in typography. */
@@ -434,3 +434,47 @@ export function parseBookChapterPreview(
   expectedSelected?: number,
   expectedCount?: number,
 ): BookChapterPreview;
+
+/** An immutable, complete source-only rename plan. The native parser and
+ * expander own every reference edit; no disk paths or resource keys are moved. */
+export interface BookSourceRenameReport {
+  readonly schema: "fmd-book-source-rename-v1";
+  readonly oldPath: string;
+  readonly newPath: string;
+  readonly files: readonly Readonly<BookFile>[];
+  readonly includeSources: readonly Readonly<BookFile>[];
+  /** Sources whose path or exact source text changed, independently checked. */
+  readonly changedSourceCount: number;
+  /** Native destination/include token edits, excluding the source path itself. */
+  readonly editCount: number;
+}
+export interface BookSourceRenameOutput {
+  readonly format: "book-source-rename";
+  readonly mimeType: "application/json";
+  readonly extension: "json";
+  readonly sourceLength: number;
+  readonly bytes: Uint8Array;
+  readonly report: BookSourceRenameReport;
+  blob(): Blob;
+}
+export interface BookSourceRenameOptions extends Pick<BookOptions, "includeSources" | "profile" | "expandIncludes"> {
+  /** Complete inventory of currently supplied image destination keys. Omission
+   * means no supplied images. Keys are captured, trimmed and checked for
+   * duplicates; image bytes are never requested. At most 4096 keys, 4096 UTF-8
+   * bytes each, 16 MiB combined. Keep this inventory fixed until applying. */
+  readonly imageDestinations?: readonly string[];
+}
+/** Plan one chapter/include move, preserving incoming/outgoing links, image
+ * destinations and transclusion directives across the complete source graph.
+ * The host explicitly applies the complete resulting source set. Canonical
+ * relative paths, active include expansion and a matching WASM build are
+ * required. Ambiguous or unprovable rewrites fail without partial results.
+ * Inputs are owned before initialization; image/font bytes and presentation
+ * remain unread. Supply the full imageDestinations inventory to preserve the
+ * renderer's origin-qualified versus literal image-key binding. */
+export function renameBookSource(
+  files: readonly BookFile[],
+  oldPath: string,
+  newPath: string,
+  options?: BookSourceRenameOptions,
+): Promise<BookSourceRenameOutput>;

@@ -60,6 +60,13 @@ async function startup(fail = false) {
       return { suspend() { calls.push("history.suspend"); }, resume() { calls.push("history.resume"); },
         dispose() { calls.push("history.dispose"); }, reset() { calls.push("history.reset"); } };
     },
+    createBookSourceRenameControls(options) {
+      assert.equal(options.collection, collection); assert.equal(options.controls, host);
+      assert.equal(options.root, document); assert.equal(typeof options.worker.dispose, "function");
+      calls.push("rename.create");
+      return { suspend() { calls.push("rename.suspend"); }, resume() { calls.push("rename.resume"); },
+        dispose() { calls.push("rename.dispose"); } };
+    },
   };
   for (const name of ["createBookImageControls", "createBookFontControls", "createBookLibraryControls", "createBookPdfControls",
     "createBookPublicationControls", "createBookPreviewControls", "createBookSearchControls", "createBookInspectionControls", "createBookLinkControls"])
@@ -74,19 +81,24 @@ async function startup(fail = false) {
 
 test("real application orchestration brackets host lifetime and resets successful imports", async () => {
   const h = await startup();
-  assert.equal(h.calls.filter(call => call === "worker").length, 6);
+  // Source refactoring owns one additional independently cancellable client.
+  assert.equal(h.calls.filter(call => call === "worker").length, 7);
   h.hostOptions.onProjectReplaced(); assert(h.calls.includes("history.reset"));
   h.events.get("pagehide")({ persisted: true });
   assert(h.calls.indexOf("history.suspend") < h.calls.indexOf("host.suspend"));
+  assert(h.calls.indexOf("rename.suspend") < h.calls.indexOf("host.suspend"));
   h.events.get("pageshow")({ persisted: true }); assert(h.calls.includes("history.resume"));
+  assert(h.calls.includes("rename.resume"));
   h.events.get("pagehide")({ persisted: false });
   assert(h.calls.indexOf("history.dispose") < h.calls.indexOf("host.dispose"));
+  assert(h.calls.indexOf("rename.dispose") < h.calls.indexOf("host.dispose"));
 });
 
 test("optional history initialization failure leaves publication and host lifecycle available", async () => {
   const h = await startup(true);
   assert.match(h.nodes.get("#book-history-status").textContent, /Source editing, replacement-specific undo, saves and publication remain available/);
-  assert.equal(h.calls.filter(call => call === "worker").length, 6);
+  assert.equal(h.calls.filter(call => call === "worker").length, 7);
+  assert(h.calls.includes("rename.create"));
   h.hostOptions.onProjectReplaced(); h.events.get("pagehide")({ persisted: false });
   assert(h.calls.includes("host.dispose"));
 });

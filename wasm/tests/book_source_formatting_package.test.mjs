@@ -54,7 +54,7 @@ async function startup(fail = false) {
   };
   for (const name of ["createBookImageControls", "createBookFontControls", "createBookLibraryControls", "createBookPdfControls",
     "createBookPublicationControls", "createBookPreviewControls", "createBookSearchControls", "createBookInspectionControls",
-    "createBookLinkControls", "createBookSourceHistoryControls"]) globals[name] = empty;
+    "createBookLinkControls", "createBookSourceHistoryControls", "createBookSourceRenameControls"]) globals[name] = empty;
   for (const name of ["createBookImagePanel", "createBookFontPanel", "createBookPdfPanel", "createBookInspectionPanel", "createBookLinkPanel"])
     globals[name] = () => {};
   // Named factory adapters qualify application ownership, not real DOM or WASM.
@@ -73,6 +73,6 @@ test("application brackets source formatting within the host lifetime", async ()
 test("optional formatting initialization failure preserves the rest of startup", async () => {
   const h = await startup(true);
   assert.match(h.nodes.get("#status").textContent, /formatting is unavailable.*Ordinary source editing/);
-  assert.equal(h.calls.filter(call => call === "worker").length, 6);
+  assert.equal(h.calls.filter(call => call === "worker").length, 7);
   h.events.get("pagehide")({ persisted: false }); assert(h.calls.includes("host.dispose"));
 });

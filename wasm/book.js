@@ -1,6 +1,7 @@
 // Shares initialization and the WASM instance with the main renderer entry.
 
 import { createBookBindings } from "./book_session.mjs";
+import { createBookSourceRename } from "./book_source_rename.mjs";
 import { init } from "./franken_markdown.js";
 import * as engine from "./pkg/franken_markdown.js";
 
@@ -16,4 +17,8 @@ export const renderBookSite = bindings.renderBookSite;
 export const renderBookChapterPreview = bindings.renderBookChapterPreview;
 export const checkBookLinks = bindings.checkBookLinks;
 export const checkBookSourceDiagnostics = bindings.checkBookSourceDiagnostics;
+export const renameBookSource = createBookSourceRename(async () => {
+  await init();
+  return engine.renameBookSource;
+});
 export { parseBookLinkReport, parseBookChapterPreview, parseBookSourceDiagnosticsReport } from "./book_session.mjs";

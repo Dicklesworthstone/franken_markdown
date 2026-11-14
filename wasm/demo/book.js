@@ -17,6 +17,7 @@ import { createBookPreviewControls } from "./book_preview_controls.mjs";
 import { createBookSearchControls } from "./book_search_controls.mjs";
 import { createBookSourceHistoryControls } from "./book_source_history.mjs";
 import { createBookSourceFormattingControls } from "./book_source_formatting.mjs";
+import { createBookSourceRenameControls } from "./book_source_rename.mjs";
 
 import { createBookFileControls } from "./book_file_controls.mjs";
 import { createBookDirectoryControls } from "./book_directory_controls.mjs";
@@ -33,6 +34,7 @@ let library = null,
   search = null,
   sourceHistory = null,
   sourceFormatting = null,
+  sourceRename = null,
   projectFiles = null,
   sourceDirectory = null,
   sourceFolder = null,
@@ -97,6 +99,17 @@ try {
 } catch {
   document.querySelector("#status").textContent =
     "Source formatting is unavailable. Ordinary source editing, history, saves and publication remain available.";
+}
+// Refactoring owns a disposable source-only worker. Applying its reviewed result
+// uses the existing atomic source tree and book-wide undo, never a file move.
+let renameWorker = null;
+try {
+  renameWorker = createBookWorker();
+  sourceRename = createBookSourceRenameControls({ root: document, controls, collection, worker: renameWorker });
+} catch {
+  renameWorker?.dispose();
+  const status = document.querySelector("#book-rename-status") ?? document.querySelector("#status");
+  if (status) status.textContent = "Reference-preserving source renaming is unavailable. Ordinary source editing and saves remain available.";
 }
 // One edition owns a separate publisher; ordinary exports and proofs retain
 // their existing clients. Creating the publisher does not start a worker.
@@ -238,6 +251,7 @@ window.addEventListener("pagehide", (event) => {
   if (event.persisted) {
     sourceFolder?.suspend();
     sourceFormatting?.suspend();
+    sourceRename?.suspend();
     edition?.suspend();
     sourceDirectory?.suspend();
     projectFiles?.suspend();
@@ -256,6 +270,7 @@ window.addEventListener("pagehide", (event) => {
   } else {
     sourceFolder?.dispose();
     sourceFormatting?.dispose();
+    sourceRename?.dispose();
     edition?.dispose();
     sourceDirectory?.dispose();
     projectFiles?.dispose();
@@ -277,6 +292,7 @@ window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
     sourceFolder?.resume();
     sourceFormatting?.resume();
+    sourceRename?.resume();
     edition?.resume();
     sourceDirectory?.resume();
     projectFiles?.resume();

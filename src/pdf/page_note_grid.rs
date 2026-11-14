@@ -7,6 +7,7 @@
 use super::{
     ENDNOTES_GAP_BEFORE, LayoutCx, Line, PAGE_NOTE_MAX_SHARE, PageNoteLayout, admit_page_notes,
     baseline_grid, heading_gap_before, layout_endnotes_heading, layout_pdf_note_body, line_leading,
+    split_footnotes,
 };
 
 /// Each pass is linear in the retained lines. Migration only goes from the
@@ -81,7 +82,12 @@ pub(super) fn finish(
         let previous: Vec<_> = notes.iter().map(|note| note.at_foot).collect();
         for note in notes.iter_mut().filter(|note| note.at_foot) {
             note.height = baseline_grid::height(note.lines.iter());
-            if note.height > capacity * PAGE_NOTE_MAX_SHARE {
+            let split = note.lines.first().is_some_and(|line| line.flow.split_note);
+            if if split {
+                !split_footnotes::fits(&note.lines, capacity - separator_height)
+            } else {
+                note.height > capacity * PAGE_NOTE_MAX_SHARE
+            } {
                 // Clearing only the temporary foot layout prevents a later
                 // pass from readmitting this note. Its source body survives
                 // and is laid out as an endnote on the next iteration.

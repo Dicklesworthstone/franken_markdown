@@ -140,11 +140,19 @@ or a required label-and-content group that cannot fit on a note-only page also
 sends its complete note to that fallback. The same complete fallback applies
 when the first group and its citing body line cannot fit together.
 
-Continuation requires **greedy pagination without a baseline grid**. Combining
-it with `--pdf-optimal-pagination`, `--pdf-strict-pagination`, or a positive
-`--pdf-baseline-grid-pt` fails with `pdf_split_footnotes_incompatible`. Disable
-continuation or the incompatible policy; the renderer does not silently change
-the requested pagination contract.
+Continuation requires **greedy pagination** and supports an optional baseline
+grid, for example `--pdf-split-footnotes --pdf-baseline-grid-pt 13.333`.
+Body text, note fragments and repeated table headers share the final document
+grid. Notes are admitted after shared font and object clearance has been
+measured; a required heading, label or complete table row that no longer fits
+keeps the complete endnote fallback. Fractional grid heights and note-only page
+placement use fixed-point arithmetic, retaining the grid phase through long
+continuations. Running margin bands keep their independent geometry.
+
+Combining continuation with `--pdf-optimal-pagination` or
+`--pdf-strict-pagination` still fails with `pdf_split_footnotes_incompatible`,
+with or without a grid. Disable continuation or the incompatible policy; the
+renderer does not silently change the requested pagination contract.
 
 The option is off by default. `fmd config set pdf_split_footnotes true` supplies
 a persistent default, and `--pdf-split-footnotes=false` overrides it for one

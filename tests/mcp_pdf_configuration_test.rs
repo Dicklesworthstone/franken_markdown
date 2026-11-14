@@ -579,6 +579,25 @@ fn continuation_reaches_mcp_pdf_and_configured_verification_without_policy_downg
             franken_markdown::verify::to_json(&report)
         );
     }
+    let mut grid = PdfOptions {
+        split_footnotes: true,
+        ..PdfOptions::default()
+    };
+    grid.theme.page.baseline_grid =
+        Some(franken_markdown::BaselineGrid::from_points(13.333).unwrap());
+    let parameters = "{\"splitFootnotes\":true,\"baselineGridPt\":13.333}";
+    let rendered = call("fmd.render_pdf", args(parameters, &source)).unwrap();
+    assert_eq!(
+        content(&rendered),
+        base64_encode(&franken_markdown::render_pdf(&source, &grid).unwrap())
+    );
+    let verified = call("fmd.verify", args(parameters, &source)).unwrap();
+    assert_eq!(
+        content(&verified),
+        franken_markdown::verify::to_json(
+            &franken_markdown::verify::verify_pdf_result(&doc, &grid).unwrap()
+        )
+    );
     for tool in ["fmd.render_pdf", "fmd.verify"] {
         for value in ["null", "1", "\"true\"", "{}"] {
             assert_eq!(
@@ -594,7 +613,7 @@ fn continuation_reaches_mcp_pdf_and_configured_verification_without_policy_downg
         for policy in [
             "\"optimalPagination\":true",
             "\"strictPagination\":true",
-            "\"baselineGridPt\":12",
+            "\"strictPagination\":true,\"baselineGridPt\":12",
         ] {
             let error = call(
                 tool,

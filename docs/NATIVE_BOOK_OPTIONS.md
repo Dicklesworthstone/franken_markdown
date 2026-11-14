@@ -157,9 +157,10 @@ fmd book ./manual --to pdf --out ./compact.pdf \
 or quotations across page feet,
 including note-only pages after body text. The default remains indivisible notes
 with a trailing fallback. Use `--pdf-split-footnotes=false` to override a saved
-`pdf_split_footnotes=true` setting. This mode requires greedy pagination without
-a baseline grid; optimal/strict pagination and a positive grid are explicit
-errors. See [PDF footnotes](PDF_FOOTNOTES.md) for supported blocks, fallback and navigation.
+`pdf_split_footnotes=true` setting. This mode requires greedy pagination and can
+be combined with `--pdf-baseline-grid-pt`. Body and continued note baselines use
+the same page grid. Optimal/strict pagination remain explicit errors. See
+[PDF footnotes](PDF_FOOTNOTES.md) for supported blocks, fallback and navigation.
 
 `--microtype` accepts `off`, `protrusion`, and `expansion`, with the same
 policies as ordinary rendering. The three typography switches and

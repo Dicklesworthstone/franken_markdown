@@ -521,6 +521,49 @@ fn inline_formulas_continue_without_endnote_fallback_or_lost_geometry() {
 }
 
 #[test]
+fn gridded_note_fragments_keep_inline_object_ink_and_prose_baselines() {
+    for (content, tag) in [
+        (r"$\frac{x^2}{y_3}$", "Formula"),
+        ("[![badge](badge.svg)](https://example.org/icon)", "Figure"),
+    ] {
+        let source = source(36, content);
+        let mut options = options();
+        options.theme.page.baseline_grid =
+            Some(franken_markdown::BaselineGrid::from_points(13.333).unwrap());
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pdf = Pdf::new(&bytes);
+        assert_continued(&pdf, 36);
+        let objects = pdf.elements(tag);
+        assert_eq!(objects.len(), 36);
+        for (id, _, _) in objects {
+            assert!(pdf.ancestry(id).contains(&"Note"));
+        }
+        for &page in &pdf.pages {
+            for run in pdf.runs(page).iter().filter(|run| {
+                ["NOTE", "BODY", "CITATION"]
+                    .iter()
+                    .any(|marker| run.text.contains(marker))
+            }) {
+                let steps = (264.0 - run.y) / 13.333;
+                assert!(
+                    (steps - steps.round()).abs() * 13.333 < 0.015,
+                    "prose surrounding {tag} must stay on the shared grid: {run:?}"
+                );
+            }
+        }
+        assert_eq!(
+            bytes,
+            render_pdf_document_emitted(
+                &parse_markdown(&source),
+                &options,
+                PdfEmitOptions::monolithic()
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
 fn linked_inline_images_continue_with_note_ownership_and_full_annotation_bounds() {
     let source = source(36, "[![badge](badge.svg)](https://example.org/icon)");
     let options = options();
@@ -688,7 +731,10 @@ fn assert_atomic_continuation(pdf: &Pdf, count: usize) {
         .map(|&page| pdf.runs(page))
         .collect::<Vec<_>>();
     let text: String = runs.iter().flatten().map(|run| run.text.as_str()).collect();
-    assert!(!text.contains("Notes"), "keep the complete note at page feet");
+    assert!(
+        !text.contains("Notes"),
+        "keep the complete note at page feet"
+    );
     let mut previous = 0;
     let mut note_pages = BTreeSet::new();
     for index in 0..count {
@@ -938,7 +984,10 @@ fn standalone_gallery_members_remain_atomic_across_note_fragments() {
     let figures = pdf.elements("Figure");
     assert_eq!(figures.len(), 2);
     assert_eq!(figures[0].1, pdf.pages[0]);
-    assert_ne!(figures[1].1, pdf.pages[0], "gallery may break between figures");
+    assert_ne!(
+        figures[1].1, pdf.pages[0],
+        "gallery may break between figures"
+    );
     for (_, _, bounds) in figures {
         assert!((bounds[2] - bounds[0] - 120.0).abs() < 0.03);
         assert!((bounds[3] - bounds[1] - 105.0).abs() < 0.03);
@@ -949,7 +998,10 @@ fn standalone_gallery_members_remain_atomic_across_note_fragments() {
 fn display_formulas_and_compiled_diagrams_continue_without_endnotes() {
     for (first, tag) in [
         ("$$\n\\frac{x^2}{y_3}\n$$", "Formula"),
-        ("~~~mermaid\nflowchart LR\n A[Start] --> B[Done]\n~~~", "Figure"),
+        (
+            "~~~mermaid\nflowchart LR\n A[Start] --> B[Done]\n~~~",
+            "Figure",
+        ),
     ] {
         let source = atomic_note_source(&format!("{first}\n\n{}", continued_rows(36)));
         let options = atomic_options();
@@ -963,7 +1015,10 @@ fn display_formulas_and_compiled_diagrams_continue_without_endnotes() {
         if tag == "Formula" {
             let content = pdf.content(objects[0].1);
             assert!(content.contains("/ActualText "));
-            assert!(content.contains("frac{x^2}{y_3}"), "retain exact formula source");
+            assert!(
+                content.contains("frac{x^2}{y_3}"),
+                "retain exact formula source"
+            );
         }
         let report =
             franken_markdown::verify::verify_pdf(&parse_markdown(&source), &options).unwrap();
@@ -1000,7 +1055,10 @@ fn continued_quoted_list_figures_do_not_turn_their_marker_into_a_keep_chain() {
     assert!(ancestry.contains(&"LBody"));
     let first = pdf.runs(page);
     let marker = first.iter().find(|run| run.text == "1.").unwrap();
-    assert!((marker.size - 9.35).abs() < 0.015, "use normal list type size");
+    assert!(
+        (marker.size - 9.35).abs() < 0.015,
+        "use normal list type size"
+    );
     assert!(marker.y > bounds[1] && marker.y < bounds[3]);
     assert!(
         !first.iter().any(|run| run.text.contains("NOTE000")),
@@ -1016,7 +1074,10 @@ fn oversized_atomic_units_and_unreferenced_figures_keep_complete_fallback() {
         br#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="1000"><rect width="160" height="1000" fill="blue"/></svg>"#.to_vec(),
     ));
     for source in [
-        atomic_note_source(&format!("![tall evidence](tall.svg)\n\n{}", continued_rows(36))),
+        atomic_note_source(&format!(
+            "![tall evidence](tall.svg)\n\n{}",
+            continued_rows(36)
+        )),
         format!(
             "Body without a citation.\n\n[^orphan]: ![orphan evidence](figure.svg)\n\n    {}",
             continued_rows(36).replace('\n', "\n    ")
@@ -1076,8 +1137,14 @@ fn unresolved_atomic_blocks_keep_their_visible_fallback_with_the_first_label() {
             .into_iter()
             .map(|run| run.text)
             .collect();
-        assert!(first.contains(marker), "keep the visible fallback on page one");
-        assert!(!first.contains("NOTE000"), "exercise the mandatory first unit");
+        assert!(
+            first.contains(marker),
+            "keep the visible fallback on page one"
+        );
+        assert!(
+            !first.contains("NOTE000"),
+            "exercise the mandatory first unit"
+        );
         assert!(pdf.elements("Figure").is_empty());
         assert!(pdf.elements("Formula").is_empty());
         let text: String = pdf

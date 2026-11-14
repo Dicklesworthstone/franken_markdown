@@ -300,6 +300,14 @@ fn long_note_continuation_reaches_render_config_and_explicit_opt_out() {
     succeeded(&show);
     assert!(String::from_utf8_lossy(&show.stdout).contains("\"pdf_split_footnotes\":true"));
     assert_eq!(workspace.render("configured.pdf", &[]), enabled);
+    let mut grid = split.clone();
+    grid.theme.page.baseline_grid =
+        Some(franken_markdown::BaselineGrid::from_points(13.333).unwrap());
+    assert_eq!(
+        workspace.render("grid-split.pdf", &["--pdf-baseline-grid-pt", "13.333"]),
+        render_pdf(&source, &grid).unwrap(),
+        "configured continuation and explicit grid reach the same native layout",
+    );
     assert_eq!(
         workspace.render("opt-out.pdf", &["--pdf-split-footnotes=false"]),
         ordinary
@@ -321,7 +329,10 @@ fn long_note_continuation_reaches_render_config_and_explicit_opt_out() {
     for (name, flags) in [
         ("optimal.pdf", vec!["--pdf-optimal-pagination"]),
         ("strict.pdf", vec!["--pdf-strict-pagination"]),
-        ("grid.pdf", vec!["--pdf-baseline-grid-pt", "12"]),
+        (
+            "strict-grid.pdf",
+            vec!["--pdf-strict-pagination", "--pdf-baseline-grid-pt", "12"],
+        ),
     ] {
         let output = workspace
             .command()

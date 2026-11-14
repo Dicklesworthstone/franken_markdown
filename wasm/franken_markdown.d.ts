@@ -206,7 +206,7 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
   /** Link PDF note numbers back to their first citation. Default false. */
   footnoteBacklinks?: boolean;
   /** Continue long text notes across page feet. Default false.
-   * Requires greedy pagination without a baseline grid and a matching WASM
+   * Requires greedy pagination; baseline grids are supported with a matching WASM
    * package; unsupported policies and older token parsers fail explicitly. */
   splitFootnotes?: boolean;
   /** Opt-in PDF body baseline spacing in points, 1..144 (rounded to 0.001 pt).

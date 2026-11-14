@@ -4219,6 +4219,12 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
             if let Some(last) = note.lines.last_mut() {
                 last.gap_after = PAGE_NOTE_GAP;
             }
+            // Continuation measures natural ink and source-container seams
+            // before grid quantization. The grid admission pass checks the
+            // same mandatory groups again after shared clearance is final.
+            let split_candidate = cx.opts.split_footnotes && split_footnotes::eligible(body);
+            let split = split_candidate
+                && split_footnotes::prepare(&mut note.lines, cx.faces, capacity - separator_height);
             baseline_grid::apply(&mut note.lines, cx.opts.theme.page.baseline_grid, cx.faces);
             note.height = if cx.opts.theme.page.baseline_grid.is_some() {
                 baseline_grid::height(note.lines.iter())
@@ -4228,9 +4234,6 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
                     .map(|line| line_leading(line) + line.gap_after)
                     .sum()
             };
-            let split_candidate = cx.opts.split_footnotes && split_footnotes::eligible(body);
-            let split = split_candidate
-                && split_footnotes::prepare(&mut note.lines, cx.faces, capacity - separator_height);
             if !split && (split_candidate || note.height > capacity * PAGE_NOTE_MAX_SHARE) {
                 // The ordinary full-size endnote layout is produced below.
                 // Do not retain a second measured copy of an oversized note.

@@ -848,8 +848,8 @@ pub struct PdfOptions {
     /// Other blocks and unreferenced notes retain existing indivisible-note
     /// and full-fidelity endnote handling.
     /// Default false preserves indivisible page notes and existing output.
-    /// This mode requires greedy pagination without a baseline grid;
-    /// incompatible layout policies are rejected rather than silently weakened.
+    /// This mode requires greedy pagination and supports an optional baseline
+    /// grid. Exact/optimal pagination is rejected rather than silently weakened.
     pub split_footnotes: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///

@@ -498,11 +498,12 @@ at continuation boundaries. This is available on document, book, worker, Flow,
 and saved offline-workspace PDF paths. Retained books also accept `split-footnotes` in the
 `typography` token string. Omission or `false` preserves existing behavior.
 
-This mode requires greedy pagination without a baseline grid. The core rejects
-combinations with `optimalPagination`, `strictPagination`, or a positive
-`baselineGridPt`. Tables, standalone figures, display mathematics and headings
-retain their existing indivisible-note/endnote handling. Unreferenced notes
-remain in the trailing Notes section. Use a matching
+This mode requires greedy pagination and supports a positive `baselineGridPt`:
+body text and continued note text share the physical page grid. The core rejects
+combinations with `optimalPagination` or `strictPagination`. Tables continue at
+complete rows with repeated headers; headings retain their first content row.
+Indivisible objects or mandatory groups that cannot fit keep the complete
+endnote fallback. Unreferenced notes remain in the trailing Notes section. Use a matching
 rebuilt JavaScript/WASM package: older native token parsers reject the request,
 and the adapters do not retry after dropping it.
 See [PDF footnotes](../docs/PDF_FOOTNOTES.md) for the scope and navigation rules.

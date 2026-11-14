@@ -10,12 +10,9 @@ use std::ops::Range;
 use super::*;
 
 pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
-    if options.split_footnotes
-        && (options.requests_optimal_pagination() || options.theme.page.baseline_grid.is_some())
-    {
+    if options.split_footnotes && options.requests_optimal_pagination() {
         return Err(RenderError::InvalidInput(
-            "pdf_split_footnotes_incompatible: continuation requires greedy pagination without a baseline grid"
-                .to_string(),
+            "pdf_split_footnotes_incompatible: continuation requires greedy pagination".to_string(),
         ));
     }
     Ok(())
@@ -207,6 +204,13 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
         let extra = container_clearance(&lines[index - 1], &lines[index]);
         lines[index - 1].gap_after += extra;
     }
+    fits(lines, capacity)
+}
+
+/// Final shared grid clearance can enlarge a mandatory fragment after its
+/// natural ink was prepared. Admission must check those finalized dimensions,
+/// including the header repeated before a continuing table row.
+pub(super) fn fits(lines: &[Line], capacity: f32) -> bool {
     let headers = TableHeaders::scan(lines);
     let mut start = 0;
     while start < lines.len() {
@@ -282,14 +286,25 @@ fn paint_ink(line: &Line, code_edge: bool, quote_edge: bool) -> (f32, f32) {
 }
 
 fn top_guard(line: &Line) -> f32 {
+    if line.grid.is_some() {
+        return 0.0;
+    }
     (paint_ink(line, true, true).0 + line_baseline_lift(line) - line_leading(line)).max(0.0)
 }
 
 fn bottom_guard(line: &Line) -> f32 {
+    if line.grid.is_some() {
+        return 0.0;
+    }
     (paint_ink(line, true, true).1 - line_baseline_lift(line) - line.gap_after).max(0.0)
 }
 
 fn container_clearance(before: &Line, after: &Line) -> f32 {
+    if before.grid.is_some() && after.grid.is_some() {
+        // The shared grid measures every possible predecessor's descent.
+        // Its row advances already protect this new fragment/header seam.
+        return 0.0;
+    }
     let code_edge = before.bg != after.bg;
     let closes_quote = before
         .quote_bars
@@ -317,6 +332,9 @@ fn container_clearance(before: &Line, after: &Line) -> f32 {
 }
 
 fn fragment_height(lines: &[Line]) -> f32 {
+    if lines.first().is_some_and(|line| line.grid.is_some()) {
+        return baseline_grid::height(lines.iter());
+    }
     lines
         .iter()
         .map(|line| line_leading(line) + line.gap_after)
@@ -463,11 +481,15 @@ impl TableHeaders {
             if lines.get(end).is_some_and(|line| {
                 line.flow.group == group && line.flow.kind == FlowKind::TableRow
             }) {
-                let height = lines[start..end]
-                    .iter()
-                    .map(|line| line_leading(line) + line.gap_after)
-                    .sum::<f32>()
-                    + top_guard(first);
+                let height = if first.grid.is_some() {
+                    baseline_grid::height(lines[start..end].iter())
+                } else {
+                    lines[start..end]
+                        .iter()
+                        .map(|line| line_leading(line) + line.gap_after)
+                        .sum::<f32>()
+                        + top_guard(first)
+                };
                 headers.insert(
                     group,
                     TableHeader {
@@ -547,6 +569,32 @@ fn extend(
     end: usize,
     budget: f32,
 ) {
+    if lines
+        .get(fragment.start)
+        .is_some_and(|line| line.grid.is_some())
+    {
+        let mut height = milli_height(headers.fragment_height(lines, fragment.clone()));
+        let budget = ((f64::from(budget) + 0.001) * 1000.0).floor() as i64;
+        while fragment.end < end {
+            let next_end = unit_end(lines, fragment.end, end);
+            let mut candidate = height;
+            if fragment.start >= fragment.end {
+                candidate += milli_height(headers.extra_height(lines, fragment.start));
+            }
+            for line in &lines[fragment.end..next_end] {
+                candidate += line.grid.map_or_else(
+                    || milli_height(line_leading(line) + line.gap_after),
+                    |grid| i64::from(grid.height().milli_points()),
+                );
+            }
+            if candidate > budget {
+                break;
+            }
+            fragment.end = next_end;
+            height = candidate;
+        }
+        return;
+    }
     let mut height = headers.fragment_height(lines, fragment.clone());
     while fragment.end < end {
         let next_end = unit_end(lines, fragment.end, end);
@@ -568,6 +616,20 @@ fn extend(
     }
 }
 
+fn milli_height(height: f32) -> i64 {
+    (f64::from(height) * 1000.0).round() as i64
+}
+
+/// Snapped fragment heights are exact milli-points. Preserve that arithmetic
+/// while combining many notes rather than accumulating fractional f32 drift.
+fn add_height(left: f32, right: f32, grid: bool) -> f32 {
+    if grid {
+        ((milli_height(left) + milli_height(right)) as f64 / 1000.0) as f32
+    } else {
+        left + right
+    }
+}
+
 /// Reserve every new note's first fragment before spending remaining space on
 /// older continuations. The returned queue is speculative until its body break
 /// is selected; probing another reserve cannot consume or duplicate content.
@@ -580,6 +642,7 @@ fn allocate(
     budget: f32,
 ) -> Allocation {
     let headers = &cursor.headers;
+    let grid = lines[notes.separator].grid.is_some();
     let introduced = notes.notes_in(start, end);
     let mut fresh = Vec::with_capacity(introduced.len());
     let mut used = 0.0;
@@ -589,11 +652,11 @@ fn allocate(
         } else {
             range.clone()
         };
-        used += headers.fragment_height(lines, fragment.clone());
+        used = add_height(used, headers.fragment_height(lines, fragment.clone()), grid);
         fresh.push(fragment);
     }
     let separator = &lines[notes.separator];
-    let separator_height = line_leading(separator) + separator.gap_after;
+    let separator_height = fragment_height(std::slice::from_ref(separator));
     let available = (budget - separator_height).max(0.0);
     let mut consumed_pending = 0;
     let mut continued_pending = None;
@@ -611,7 +674,7 @@ fn allocate(
         if fragment.start >= fragment.end {
             break;
         }
-        used += headers.fragment_height(lines, fragment.clone());
+        used = add_height(used, headers.fragment_height(lines, fragment.clone()), grid);
         let next = fragment.end;
         fragments.push(fragment);
         consumed_pending += 1;
@@ -629,7 +692,15 @@ fn allocate(
             whole.end,
             before + (available - used).max(0.0),
         );
-        used += headers.fragment_height(lines, fragment.clone()) - before;
+        used = add_height(
+            used,
+            add_height(
+                headers.fragment_height(lines, fragment.clone()),
+                -before,
+                grid,
+            ),
+            grid,
+        );
         if fragment.end < whole.end {
             new_pending.push(fragment.end..whole.end);
         }
@@ -638,7 +709,7 @@ fn allocate(
     let reserve = if fragments.is_empty() {
         0.0
     } else {
-        separator_height + used
+        add_height(separator_height, used, grid)
     };
     Allocation {
         fragments,
@@ -656,6 +727,18 @@ fn body_height(
     page: PageGeom,
     shrink_from: Option<usize>,
 ) -> f32 {
+    if page.grid.is_some() {
+        let rows = repeated_table_header_lines(lines, start, page)
+            .into_iter()
+            .chain(lines[start..end].iter());
+        return add_height(
+            baseline_grid::height(rows),
+            -lines
+                .get(end.saturating_sub(1))
+                .map_or(0.0, |line| line.gap_after),
+            true,
+        );
+    }
     let mut height = repeated_table_header_height(lines, start, page);
     for (index, line) in lines.iter().enumerate().take(end).skip(start) {
         height += line_leading(line);
@@ -680,6 +763,21 @@ fn place<'a>(
     page: PageGeom,
 ) {
     if allocation.fragments.is_empty() {
+        return;
+    }
+    if page.grid.is_some() {
+        // Repeated headers are borrowed from the same immutable note region.
+        // Place the complete physical region in fixed-point arithmetic so its
+        // last edge shares the body's grid phase even on note-only pages.
+        let rows = std::iter::once(&lines[notes.separator]).chain(
+            allocation.fragments.iter().flat_map(|fragment| {
+                let header = headers
+                    .at(lines, fragment.start)
+                    .map_or(0..0, |header| header.range.clone());
+                lines[header].iter().chain(lines[fragment.clone()].iter())
+            }),
+        );
+        baseline_grid::place_notes(rows, page.bottom, placed);
         return;
     }
     let mut y = page.bottom + allocation.reserve;

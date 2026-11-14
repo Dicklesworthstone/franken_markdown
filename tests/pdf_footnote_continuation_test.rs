@@ -974,12 +974,15 @@ fn incompatible_pagination_modes_fail_explicitly_without_weakened_constraints() 
     for (name, mut options) in [
         ("optimal", options()),
         ("strict", options()),
-        ("grid", options()),
+        ("optimal-grid", options()),
+        ("strict-grid", options()),
     ] {
         match name {
             "optimal" => options.optimal_pagination = true,
             "strict" => options.strict_pagination = true,
-            "grid" => {
+            "optimal-grid" | "strict-grid" => {
+                options.optimal_pagination = name == "optimal-grid";
+                options.strict_pagination = name == "strict-grid";
                 options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
             }
             _ => unreachable!(),
@@ -990,6 +993,334 @@ fn incompatible_pagination_modes_fail_explicitly_without_weakened_constraints() 
             "{name}: {error}",
         );
     }
+}
+
+fn assert_grid_rows(pages: &[PaintedPage], options: &PdfOptions) {
+    let pitch = f64::from(
+        options
+            .theme
+            .page
+            .baseline_grid
+            .unwrap()
+            .spacing_milli_points(),
+    ) / 1000.0;
+    let margins = options.theme.page.margins;
+    for (index, page) in pages.iter().enumerate() {
+        let origin = page.height - f64::from(margins.top_pt);
+        let mut rows = BTreeMap::<i64, (f64, f64)>::new();
+        for run in page.runs.iter().filter(|run| {
+            !run.artifact
+                && run
+                    .text
+                    .chars()
+                    .any(|character| character.is_ascii_alphabetic())
+        }) {
+            let steps = (origin - run.y) / pitch;
+            assert!(
+                (steps - steps.round()).abs() * pitch < PRECISION,
+                "page {} is off-grid: {run:?}, pitch {pitch}",
+                index + 1
+            );
+            let top = run.y + run.cap_height * run.size;
+            let bottom = run.y + run.descent * run.size;
+            assert!(
+                top <= origin + PRECISION && bottom >= f64::from(margins.bottom_pt) - PRECISION,
+                "page {} has out-of-bounds text: {run:?}",
+                index + 1
+            );
+            rows.entry((run.y * 1000.0).round() as i64)
+                .and_modify(|bounds| {
+                    bounds.0 = bounds.0.min(bottom);
+                    bounds.1 = bounds.1.max(top);
+                })
+                .or_insert((bottom, top));
+        }
+        let rows: Vec<_> = rows.into_values().collect();
+        for adjacent in rows.windows(2) {
+            assert!(
+                adjacent[0].1 <= adjacent[1].0 + PRECISION,
+                "page {} overlaps body/note text: {adjacent:?}",
+                index + 1
+            );
+        }
+        let footer = page
+            .runs
+            .iter()
+            .filter(|run| run.artifact && run.text.starts_with("FOLIO "))
+            .map(|run| run.text.as_str())
+            .collect::<String>();
+        assert_eq!(footer, format!("FOLIO {}/{}", index + 1, pages.len()));
+    }
+}
+
+#[test]
+fn baseline_grid_continues_long_notes_on_the_citation_page_and_later_page_feet() {
+    let mut source = String::from("CITATION.[^long]\n\n");
+    for index in 0..14 {
+        source.push_str(&format!("BODY{index:03} ordinary document paragraph.\n\n"));
+    }
+    source.push_str(&numbered_note("long", "NOTE", 73));
+    for pitch in [12.0, 13.333, 17.125] {
+        let mut options = options();
+        options.theme.page.baseline_grid = Some(BaselineGrid::from_points(pitch).unwrap());
+        options.footnote_backlinks = true;
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pages = painted_pages(&bytes);
+        assert_markers(&pages, "BODY", 14);
+        assert_markers(&pages, "NOTE", 73);
+        assert_eq!(locate(&pages, "CITATION").0, locate(&pages, "NOTE000").0);
+        assert!(locate(&pages, "NOTE072").0 > locate(&pages, "NOTE000").0);
+        assert!(
+            locate(&pages, "NOTE072").0 > locate(&pages, "BODY013").0,
+            "pending notes must survive after the last body page"
+        );
+        assert!(
+            !text(&pages).contains("Notes"),
+            "eligible notes must stay at page feet"
+        );
+        assert_grid_rows(&pages, &options);
+        assert_geometry(&pages, &options);
+        assert_destinations(&bytes, &pages, &["CITATION", "NOTE000"]);
+        assert_eq!(
+            String::from_utf8_lossy(&bytes).matches("/S /Note ").count(),
+            1
+        );
+        assert_eq!(bytes, render_pdf(&source, &options).unwrap());
+    }
+}
+
+#[test]
+fn baseline_grid_continuations_keep_heading_table_and_code_ownership() {
+    let mut source = String::from(
+        "RICHCITATION.[^rich]\n\n[^rich]:\n    ## NOTEHEADING\n\n    | HEADER |\n    | --- |\n",
+    );
+    for index in 0..35 {
+        source.push_str(&format!("    | CELL{index:03} preserved content |\n"));
+    }
+    source.push_str("\n    > ```text\n");
+    for index in 0..27 {
+        source.push_str(&format!("    > CODE{index:03} preserved content\n"));
+    }
+    source.push_str("    > ```\n");
+    let mut options = options();
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+    options.footnote_backlinks = true;
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "CELL", 35);
+    assert_markers(&pages, "CODE", 27);
+    assert_eq!(
+        locate(&pages, "RICHCITATION").0,
+        locate(&pages, "NOTEHEADING").0
+    );
+    assert_eq!(
+        locate(&pages, "NOTEHEADING").0,
+        locate(&pages, "CELL000").0,
+        "heading, original header and first complete row stay together"
+    );
+    for index in 0..35 {
+        let (page, row) = locate(&pages, &format!("CELL{index:03}"));
+        let header = pages[page]
+            .runs
+            .iter()
+            .find(|run| run.text.contains("HEADER"))
+            .unwrap();
+        assert!(
+            header.y > row.y,
+            "each continued table page repeats its header"
+        );
+    }
+    assert_eq!(
+        text(&pages).matches("HEADER").count(),
+        1,
+        "repeated headers are artifacts, not duplicate logical content"
+    );
+    assert_eq!(structure_count(&bytes, "Note"), 1);
+    assert_eq!(structure_count(&bytes, "Table"), 1);
+    assert_eq!(structure_count(&bytes, "BlockQuote"), 1);
+    assert!(!text(&pages).contains("Notes"));
+    assert_grid_rows(&pages, &options);
+    assert_panel_bounds(&pages, &options);
+    assert_first_note_navigation(&bytes, &pages, "RICHCITATION");
+    let document = parse_markdown(&source);
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
+}
+
+#[test]
+fn baseline_grid_rechecks_mandatory_note_groups_after_shared_ink_clearance() {
+    let document = definition_note(vec![Block::DefinitionList(vec![DefinitionItem {
+        terms: (0..32)
+            .map(|index| definition_text(format!("TERM{index:03}")))
+            .collect(),
+        definitions: vec![definition_text("LASTDESC belongs to every source term.")],
+    }])]);
+    let mut options = definition_options();
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+    let bytes =
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::default()).unwrap();
+    let pages = painted_pages(&bytes);
+    assert!(text(&pages).contains("Notes"));
+    assert_markers(&pages, "TERM", 32);
+    assert_eq!(text(&pages).matches("LASTDESC").count(), 1);
+    assert_grid_rows(&pages, &options);
+    let mut ordinary = options.clone();
+    ordinary.split_footnotes = false;
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(&document, &ordinary, PdfEmitOptions::default()).unwrap(),
+        "a mandatory group too tall for a grid page keeps the complete ordinary endnote"
+    );
+}
+
+#[test]
+fn baseline_grid_multiple_notes_share_the_citation_page_and_exact_fragment_accounting() {
+    let mut source = String::from("FIRSTCLAIM.[^alpha][^beta]\n\n");
+    for index in 0..10 {
+        source.push_str(&format!("BODY{index:03} ordinary continuation.\n\n"));
+    }
+    source.push_str("LATERCLAIM.[^short]\n\n");
+    source.push_str(&numbered_note("alpha", "ALPHA", 47));
+    source.push('\n');
+    source.push_str(&numbered_note("beta", "BETA", 39));
+    source.push_str("\n[^short]: SHORTNOTE keeps its later citation.\n");
+    let mut options = options();
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(11.111).unwrap());
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "ALPHA", 47);
+    assert_markers(&pages, "BETA", 39);
+    assert_markers(&pages, "BODY", 10);
+    assert_eq!(locate(&pages, "FIRSTCLAIM").0, locate(&pages, "ALPHA000").0);
+    assert_eq!(locate(&pages, "FIRSTCLAIM").0, locate(&pages, "BETA000").0);
+    assert_eq!(
+        locate(&pages, "LATERCLAIM").0,
+        locate(&pages, "SHORTNOTE").0
+    );
+    assert_grid_rows(&pages, &options);
+    assert_geometry(&pages, &options);
+    assert_destinations(&bytes, &pages, &["ALPHA000", "BETA000", "SHORTNOTE"]);
+    assert_eq!(structure_count(&bytes, "Note"), 3);
+    let browser = franken_markdown::wasm::render_pdf(
+        &source,
+        &franken_markdown::wasm::WasmRenderOptions {
+            theme: options.theme.clone(),
+            running: options.running.clone(),
+            split_footnotes: true,
+            metadata_epoch_seconds: options.metadata_epoch_seconds,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        bytes, browser.bytes,
+        "browser core uses the same finalized grid pager"
+    );
+}
+
+#[test]
+fn baseline_grid_continuation_keeps_short_and_absent_notes_byte_identical() {
+    for source in [
+        "Ordinary source without notes.",
+        "CITATION.[^short]\n\n[^short]: SHORTNOTE fits in one row.",
+    ] {
+        let mut options = options();
+        options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+        let continued = render_pdf(source, &options).unwrap();
+        options.split_footnotes = false;
+        assert_eq!(continued, render_pdf(source, &options).unwrap(), "{source}");
+    }
+}
+
+#[test]
+fn baseline_grid_mixes_continuations_indivisible_notes_and_full_size_endnotes() {
+    let mut source = String::from("| BODYHEADER |\n| --- |\n");
+    for index in 0..42 {
+        let citation = if index == 14 {
+            " CLAIM[^long][^fixed]"
+        } else {
+            ""
+        };
+        source.push_str(&format!(
+            "| BODY{index:03} preserved table row{citation} |\n"
+        ));
+    }
+    source.push('\n');
+    source.push_str(&numbered_note("long", "NOTE", 93));
+    // The thematic rule excludes this short note from continuation, while the
+    // unreferenced heading is laid out at full size in the Notes section.
+    source.push_str("\n[^fixed]: FIXEDNOTE stays indivisible.\n\n    ---\n\n[^unused]:\n    # ENDNOTE\n\n    Unreferenced evidence remains visible.\n");
+    let mut options = options();
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    assert_markers(&pages, "BODY", 42);
+    assert_markers(&pages, "NOTE", 93);
+    assert_eq!(text(&pages).matches("FIXEDNOTE").count(), 1);
+    assert_eq!(text(&pages).matches("ENDNOTE").count(), 1);
+    assert!(text(&pages).contains("Notes"));
+    let citation_page = locate(&pages, "CLAIM").0;
+    assert!(
+        citation_page > 0,
+        "exercise a citation after a repeated body header"
+    );
+    assert_eq!(citation_page, locate(&pages, "NOTE000").0);
+    assert_eq!(citation_page, locate(&pages, "FIXEDNOTE").0);
+    assert!(
+        pages[citation_page]
+            .runs
+            .iter()
+            .any(|run| run.artifact && run.text.contains("BODYHEADER"))
+    );
+    assert!(locate(&pages, "NOTE092").0 > citation_page);
+    assert_grid_rows(&pages, &options);
+    assert_eq!(structure_count(&bytes, "Note"), 3);
+    assert_destinations(&bytes, &pages, &["NOTE000", "FIXEDNOTE"]);
+    assert_eq!(
+        bytes,
+        render_pdf_document_emitted(
+            &parse_markdown(&source),
+            &options,
+            PdfEmitOptions::monolithic()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn baseline_grid_fractional_note_only_pages_do_not_accumulate_position_drift() {
+    let rows = (0..1200)
+        .map(|index| format!("LONGNOTE{index:04} retained line."))
+        .collect::<Vec<_>>()
+        .join("  \n    ");
+    let source = format!("CITATION.[^long]\n\n[^long]: {rows}\n");
+    let mut options = options();
+    options.theme.page.size.height_pt = 14_400.0;
+    options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pages = painted_pages(&bytes);
+    let painted = text(&pages);
+    let mut previous = 0;
+    for index in 0..1200 {
+        let marker = format!("LONGNOTE{index:04}");
+        assert_eq!(painted.matches(&marker).count(), 1, "retain {marker} once");
+        let offset = painted.find(&marker).unwrap();
+        assert!(offset >= previous, "source order changed at {marker}");
+        previous = offset + marker.len();
+    }
+    assert_eq!(
+        locate(&pages, "CITATION").0,
+        locate(&pages, "LONGNOTE0000").0
+    );
+    assert!(locate(&pages, "LONGNOTE1199").0 > 0);
+    assert_grid_rows(&pages, &options);
+    assert_geometry(&pages, &options);
+    assert_eq!(
+        String::from_utf8_lossy(&bytes).matches("/S /Note ").count(),
+        1
+    );
 }
 
 #[test]
@@ -1613,13 +1944,20 @@ fn assert_note_heading_ownership(pdf: &[u8], level: u8, count: usize) {
             dictionary.contains("/Type /StructElem ") && dictionary.contains(&tag)
         })
         .collect();
-    assert_eq!(headings.len(), count, "one logical heading per source heading");
+    assert_eq!(
+        headings.len(),
+        count,
+        "one logical heading per source heading"
+    );
     assert_eq!(structure_count(pdf, "Note"), 1);
     for heading in headings {
         let mut owner = reference_after(objects.dictionary(heading), "/P ");
         let mut visited = BTreeSet::new();
         loop {
-            assert!(visited.insert(owner), "structure parent chain must be acyclic");
+            assert!(
+                visited.insert(owner),
+                "structure parent chain must be acyclic"
+            );
             let dictionary = objects.dictionary(owner);
             assert!(
                 dictionary.contains("/Type /StructElem "),
@@ -1745,7 +2083,11 @@ fn late_note_heading_moves_with_its_subject_and_retains_its_real_link_destinatio
     assert_markers(&pages, "AFTER", 30);
     assert!(!text(&pages).contains("Notes"));
     let targets = destinations(&bytes, &pages);
-    assert_eq!(targets.len(), 3, "citation, return label, and authored heading link");
+    assert_eq!(
+        targets.len(),
+        3,
+        "citation, return label, and authored heading link"
+    );
     assert!(targets.iter().any(|&(page, y)| {
         page == heading_page && (y - heading.y - heading.size * 0.9).abs() < 0.025
     }));
@@ -1914,7 +2256,11 @@ fn gfm_plus_definition_note_keeps_all_terms_with_its_first_description() {
             _ => &[],
         })
         .collect();
-    assert_eq!(items.len(), 20, "exercise parsed definition lists, not prose");
+    assert_eq!(
+        items.len(),
+        20,
+        "exercise parsed definition lists, not prose"
+    );
     assert!(
         items
             .iter()
@@ -1933,7 +2279,10 @@ fn gfm_plus_definition_note_keeps_all_terms_with_its_first_description() {
         let (description_page, description) = locate(&pages, &format!("DESC{index:03}"));
         assert_eq!(term_page, alias_page);
         assert_eq!(term_page, description_page, "definition item {index}");
-        assert!(description.x > term.x, "retain the definition's indentation");
+        assert!(
+            description.x > term.x,
+            "retain the definition's indentation"
+        );
     }
     assert_eq!(locate(&pages, "TERM000").0, locate(&pages, "BODYCITE").0);
     assert!(locate(&pages, "TERM019").0 > locate(&pages, "TERM000").0);
@@ -1966,7 +2315,10 @@ fn wrapped_definition_terms_stay_whole_while_a_long_description_continues() {
                 "ALIASSTART another expanded term with several measured words and more words ALIASEND",
             ),
         ],
-        definitions: vec![description, definition_text("OTHERDEF retained second definition.")],
+        definitions: vec![
+            description,
+            definition_text("OTHERDEF retained second definition."),
+        ],
     }])]);
     let options = definition_options();
     let bytes =
@@ -1993,7 +2345,9 @@ fn nested_definition_notes_preserve_quote_and_list_ownership() {
     let items = (0..24)
         .map(|index| DefinitionItem {
             terms: vec![definition_text(format!("TERM{index:03}"))],
-            definitions: vec![definition_text(format!("DESC{index:03} retained description."))],
+            definitions: vec![definition_text(format!(
+                "DESC{index:03} retained description."
+            ))],
         })
         .collect();
     let document = definition_note(vec![Block::BlockQuote(vec![Block::List(List {
@@ -2059,12 +2413,14 @@ fn empty_definition_items_keep_their_prefix_without_capturing_adjacent_items() {
         for height in [144.0, 160.0, 180.0, 192.0] {
             let mut options = definition_options();
             options.theme.page.size.height_pt = height;
-            let bytes =
-                render_pdf_document_emitted(&document, &options, PdfEmitOptions::default())
-                    .unwrap();
+            let bytes = render_pdf_document_emitted(&document, &options, PdfEmitOptions::default())
+                .unwrap();
             let pages = painted_pages(&bytes);
             assert!(!text(&pages).contains("Notes"));
-            assert_eq!(locate(&pages, "FIRSTSOURCE").0, locate(&pages, "BODYCITE").0);
+            assert_eq!(
+                locate(&pages, "FIRSTSOURCE").0,
+                locate(&pages, "BODYCITE").0
+            );
             assert_markers(&pages, "EMPTY", 24);
             assert!(locate(&pages, "EMPTY023").0 > locate(&pages, "FIRSTSOURCE").0);
             assert_eq!(structure_count(&bytes, "Note"), 1);

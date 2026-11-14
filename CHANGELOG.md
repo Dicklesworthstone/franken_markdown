@@ -153,6 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Automatic book previews resume after completed text composition and imports,
+  using the final captured source while respecting cancellation and suspension.
 - Book editing keeps input-method composition attached to its original source
   through the final input event. Chapter navigation, structural edits, source
   capture and publication wait for committed text; composition retires stale

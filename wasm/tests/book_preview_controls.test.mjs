@@ -4,6 +4,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { File } from "node:buffer";
+import { createBookCollection } from "../demo/book_collection.mjs";
+import { createBookControls } from "../demo/book_controls.mjs";
 import { createBookPreviewControls } from "../demo/book_preview_controls.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -46,7 +49,7 @@ const output = (value = pages) => ({
   format: "book-preview",
   bytes: new TextEncoder().encode(JSON.stringify({ schema: "fmd-book-preview-v1", pages: value })),
 });
-function setup(t) {
+function setup(t, { sourceHost = false } = {}) {
   const el = Object.fromEntries(required.map((id) => [id, new Element()]));
   const root = { querySelector: (query) => el[query.slice(1)], createElement: () => new Element() },
     host = new EventTarget();
@@ -63,7 +66,7 @@ function setup(t) {
       { path: "two.md", source: "# Two" },
     ],
     images = [{ destination: "figure.svg", bytes: new Uint8Array([1]) }];
-  const collection = {
+  const collection = sourceHost ? createBookCollection() : {
     files,
     subscribe(fn) {
       subscriptions.add(fn);
@@ -73,7 +76,10 @@ function setup(t) {
       return { files: structuredClone(files), options: { images: structuredClone(images) } };
     },
   };
-  const controls = {
+  if (sourceHost) collection.append({ chapters: files, images });
+  const controls = sourceHost ? createBookControls({ root, collection,
+    worker: { cancel() {}, dispose() {}, render() { throw new Error("Publication is not part of this preview test"); } },
+  }) : {
     captureProject() {
       if (invalid) throw new Error("Invalid current setting");
     },
@@ -116,6 +122,7 @@ function setup(t) {
     },
   });
   t.after(() => view.dispose());
+  if (sourceHost) t.after(() => controls.dispose());
   const fire = async (ms) => {
     for (const [id, job] of [...timers])
       if (job.ms === ms) {
@@ -139,6 +146,8 @@ function setup(t) {
   };
   return {
     view,
+    controls,
+    collection,
     el,
     jobs,
     files,
@@ -252,6 +261,65 @@ test("automatic preview coalesces edits and pauses through composition", async (
   await tick();
   assert(h.el["preview-frame"].srcdoc.includes("script nonce"));
 });
+for (const [field, finalAfterEnd] of [["chapter-source", false], ["chapter-source", true], ["chapter-path", true]])
+  test(`automatic preview resumes after the real ${field} host captures final input ${finalAfterEnd ? "after" : "before"} compositionend`, async t => {
+    const h = setup(t, { sourceHost: true }), input = h.el[field];
+    h.el["preview-auto"].checked = true;
+    input.dispatchEvent(new Event("compositionstart"));
+    input.value = field === "chapter-source" ? "日本" : "guide/日本.md";
+    input.dispatchEvent(new Event("input"));
+    await h.fire(600); assert.equal(h.jobs.length, 0);
+    const final = field === "chapter-source" ? "日本語" : "guide/日本語.md";
+    const commit = () => { input.value = final; input.dispatchEvent(new Event("input")); };
+    if (!finalAfterEnd) commit();
+    input.dispatchEvent(new Event("compositionend"));
+    if (finalAfterEnd) commit();
+    assert.equal(h.controls.sourceBusy, true);
+    assert.equal([...h.timers.values()].filter(job => job.ms === 600).length, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(h.controls.sourceBusy, false);
+    assert.equal([...h.timers.values()].filter(job => job.ms === 600).length, 1);
+    await h.fire(600);
+    assert.equal(h.jobs.length, 1);
+    assert.deepEqual(h.jobs[0].files, h.collection.files);
+    assert.equal(h.jobs[0].files[0][field === "chapter-source" ? "source" : "path"], final);
+    h.jobs[0].resolve(output(pages.map((page, index) => ({ ...page, source: h.collection.files[index].path }))));
+    await tick();
+    assert(h.el["preview-frame"].srcdoc.includes("script nonce"));
+  });
+test("automatic preview resumes from the complete imported book after source ownership releases", async t => {
+  const h = setup(t, { sourceHost: true });
+  h.el["preview-auto"].checked = true;
+  const hold = gate(), file = new File(["# Imported"], "third.md");
+  file.arrayBuffer = async () => { await hold.promise; return new TextEncoder().encode("# Imported").buffer; };
+  const pending = h.controls.importFiles([file]);
+  assert(h.controls.sourceBusy); await h.fire(600); assert.equal(h.jobs.length, 0);
+  hold.resolve(); await pending;
+  assert.equal([...h.timers.values()].filter(job => job.ms === 600).length, 1);
+  await h.fire(600); assert.equal(h.jobs.length, 1);
+  assert.deepEqual(h.jobs[0].files, h.collection.files);
+  assert.equal(h.jobs[0].files.at(-1).source, "# Imported");
+  h.jobs[0].resolve(output(h.collection.files.map((file, index) => ({
+    path: `chapter-${index}.html`, source: file.path, title: file.path, html: "<p>Preview</p>",
+  }))));
+  await tick(); assert(h.el["preview-frame"].srcdoc.includes("script nonce"));
+});
+for (const action of ["cancel", "suspend"])
+  test(`finishing source composition cannot restart automatic preview after ${action}`, async t => {
+    const h = setup(t, { sourceHost: true });
+    h.el["preview-auto"].checked = true;
+    h.el["chapter-source"].dispatchEvent(new Event("compositionstart"));
+    h.el["chapter-source"].value = "Final source";
+    h.el["chapter-source"].dispatchEvent(new Event("input"));
+    h.el["chapter-source"].dispatchEvent(new Event("compositionend"));
+    if (action === "cancel") h.el["preview-cancel"].click(); else h.view.suspend();
+    await new Promise(resolve => setTimeout(resolve, 0)); await h.fire(600);
+    assert.equal(h.jobs.length, 0); assert.equal(h.timers.size, 0);
+    assert.equal(h.el["preview-auto"].checked, false);
+    if (action === "suspend") h.view.resume();
+    await built(h);
+    assert.equal(h.jobs[0].files[0].source, "Final source");
+  });
 test("invalid current settings never render old model values", async (t) => {
   const h = setup(t);
   h.invalid(true);

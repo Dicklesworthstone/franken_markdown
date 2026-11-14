@@ -264,7 +264,10 @@ export function createBookPreviewControls({
   });
   const unsubscribeSource = controls.subscribeSourceState?.(() => {
     if (controls.sourceBusy) changed();
-    else buttons();
+    // Inputs may finish while an import or IME still owns the source. Resume
+    // the existing debounce only after that ownership is released; an explicit
+    // cancel, suspension or unchecked automatic mode still prevents rendering.
+    else changed(true);
   });
   for (const id of [
     "chapter-source",

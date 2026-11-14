@@ -724,10 +724,16 @@ function parseMarkdownClient(source, imageAssets) {
   }
   function paragraphSource(lines) {
     const padded = lazyPadding.get(lines);
-    return lines.map((line, index) => {
+    const text = lines.map((line, index) => {
       charge(line.length + 1);
       return index === 0 || padded?.has(index) ? line.replace(/^[ \t]+/, '') : line;
-    }).join('\n').replace(/[ \t]+$/, '');
+    }).join('\n');
+    // An unanchored /[ \t]+$/ search retries each position of an interior
+    // whitespace run when later text prevents a suffix match. Walk only the
+    // actual suffix so large prose/code spans cannot bypass the work budget.
+    let end = text.length;
+    while (end > 0 && (text[end - 1] === ' ' || text[end - 1] === '\t')) { charge(); end--; }
+    return text.slice(0, end);
   }
   const escape = text => {
     text = String(text); charge(text.length);

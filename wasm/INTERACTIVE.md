@@ -17,6 +17,25 @@ cannot upgrade an old binary; the exporter rejects it with
 `wasm-bindgen --target web` output from that same build. A mismatched runtime
 fails visibly rather than silently falling back.
 
+## Character references in lightweight saved documents
+
+The lightweight `renderInteractiveHtml` editor shares the native parser's
+complete 2,125-name HTML character-reference table. Accented letters,
+mathematical symbols and multi-character references survive edits in prose,
+headings, link titles, image descriptions and fenced-code language labels.
+Names are case-sensitive and require a semicolon. Decimal numeric references
+accept one to seven digits; hexadecimal references accept one to six.
+
+Decoding follows source ownership: escaped references stay literal, decoded
+punctuation does not create new Markdown syntax, and code, raw HTML, formulas
+and angle-autolink destinations retain their literal contents. Explicit link
+and image destinations still pass the existing URL policy after decoding.
+Save Markdown retains the authored reference spelling.
+
+The table is generated from `src/parse/entities.rs`, without a DOM or external
+entity library. `node scripts/generate-interactive-entities.mjs --check` checks
+that the embedded table matches that native source.
+
 ## Example: Node host with a matching local build
 
 ```js

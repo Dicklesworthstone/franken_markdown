@@ -1,7 +1,7 @@
 // Execute the saved-document renderer's angle-autolink grammar.
 // Native source: src/parse/mod.rs::{parse_autolink,is_uri_autolink,is_email_autolink}.
 // Exact CommonMark 0.31.2 fixtures remain unchanged. URL admission remains the
-// lightweight renderer's existing allowlist; this adds no bare-GFM autolinks.
+// lightweight renderer's existing allowlist; bare links use the GFM extension.
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
@@ -21,9 +21,15 @@ test('official autolink examples retain exact grammar and the existing safe URL 
   // Four unsupported schemes and a literal-backslash URI remain inert source.
   // These existing policy differences are not being claimed as conformance.
   const refused = new Set([596, 598, 599, 601, 603]);
+  // GFM intentionally links these two bare forms; the original CommonMark
+  // fixture remains intact and all angle-autolink expectations stay exact.
+  const gfm = new Map([
+    [611, '<p>' + anchor('https://example.com') + '</p>\n'],
+    [612, '<p>' + anchor('foo@bar.example.com', 'mailto:foo@bar.example.com') + '</p>\n'],
+  ]);
   for (const example of examples) {
     const expected = refused.has(example.example)
-      ? '<p>' + escape(example.markdown.replace(/\n$/, '')) + '</p>\n' : example.html;
+      ? '<p>' + escape(example.markdown.replace(/\n$/, '')) + '</p>\n' : gfm.get(example.example) ?? example.html;
     assert.equal(render(example.markdown), expected, 'CommonMark example ' + example.example);
   }
 });

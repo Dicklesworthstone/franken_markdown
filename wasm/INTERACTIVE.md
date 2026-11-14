@@ -28,7 +28,7 @@ accept one to seven digits; hexadecimal references accept one to six.
 
 Decoding follows source ownership: escaped references stay literal, decoded
 punctuation does not create new Markdown syntax, and code, raw HTML, formulas
-and angle-autolink destinations retain their literal contents. Explicit link
+and autolink destinations retain their literal contents. Explicit link
 and image destinations still pass the existing URL policy after decoding.
 Save Markdown retains the authored reference spelling.
 
@@ -54,7 +54,15 @@ Only those indentation columns are removed; later tabs and literal spaces are
 preserved. An unfinished fenced block keeps each authored blank line without
 adding a synthetic line at the end of the document, including inside lists.
 
-## Angle links in lightweight saved documents
+## Links in lightweight saved documents
+
+Bare HTTP(S) URLs, `www` addresses, email addresses and `mailto` links stay
+clickable after editing. The same GFM domain and punctuation rules used by the
+native parser keep sentence punctuation outside links and preserve balanced URL
+parentheses. Code, formulas, raw markup, note identifiers and explicit link or
+image labels retain their own contents. URL bodies stay literal: Markdown-like
+bytes inside a URL cannot load an image or hide following source. Failed scans
+and ownership repairs use the renderer's existing work and structure limits.
 
 Angle-delimited URIs retain their authored scheme and destination, including
 `<mailto:user@example.com>` and HTTP URLs containing an email address.

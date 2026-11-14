@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Saved editable HTML recognizes bare HTTP(S), `www`, email and `mailto` links
+  with the native GFM punctuation and domain rules. Literal URL contents and
+  explicit link, image, code and math ownership retain the existing URL policy.
 - PDF footnotes and endnotes retain source-owned `/Note`, `/Reference` and
   `/Lbl` structure with unique IDs and annotation ownership. Complete note
   bodies keep their identity across page-foot placement, endnote fallback,

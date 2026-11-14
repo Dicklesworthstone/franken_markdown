@@ -795,7 +795,7 @@ function parseMarkdownClient(source, imageAssets) {
       (all, escaped, body) => escaped ?? characterReferenceValue(body) ?? all);
   };
   function safeUrl(raw, image, literal = false) {
-    // Angle autolinks own literal destinations; only explicit/reference
+    // Autolinks own literal destinations; only explicit/reference
     // links and images apply Markdown escape and entity decoding.
     const url = literal ? raw : unescape(raw).trim();
     // Bindings can replace image bytes, not turn a non-image data URL into an
@@ -1047,6 +1047,109 @@ function parseMarkdownClient(source, imageAssets) {
     if (!uri && !emailAddress(label)) return null;
     return {kind: 'autolink', label, url: uri ? label : 'mailto:' + label, end: close + 1};
   }
+  // Match the native GFM extension on source, before decoding entities or
+  // escapes. In particular, an email's grammar differs from <angle-email>, and
+  // HTTP hosts need not be DNS names (localhost and Unicode hosts are valid).
+  const bareSpace = ch => /\p{White_Space}/u.test(ch || '');
+  const bareLocal = ch => /[A-Za-z0-9.+_-]/.test(ch || '');
+  const bareDomain = ch => /[A-Za-z0-9._-]/.test(ch || '');
+  function bareEmailEnd(text, start) {
+    let pos = start;
+    while (bareLocal(text[pos])) { charge(); pos++; }
+    if (pos === start || text[pos] !== '@') return -1;
+    const domain = ++pos;
+    let dotted = false;
+    while (bareDomain(text[pos])) {
+      charge();
+      if (text[pos] === '.' && text[pos + 1] === '.') break;
+      if (text[pos] === '.') dotted = true;
+      pos++;
+    }
+    while (pos > domain && text[pos - 1] === '.') { charge(); pos--; }
+    // A final sentence dot does not provide the required domain separator.
+    if (!dotted || pos <= domain || /[-_]/.test(text[pos - 1])) return -1;
+    for (let i = domain; i < pos; i++) { charge(); if (text[i] === '.') return pos; }
+    return -1;
+  }
+  function bareUrlEnd(text, start) {
+    let end = start;
+    while (end < text.length && !bareSpace(text[end]) && text[end] !== '<' && text[end] !== '>') { charge(); end++; }
+    let excessCloses;
+    while (end > start) {
+      charge();
+      const last = text[end - 1];
+      if ('.,:!?*_~\'"'.includes(last)) end--;
+      else if (last === ';') {
+        let name = end - 1;
+        while (name > start && /[A-Za-z0-9]/.test(text[name - 1])) { charge(); name--; }
+        end = name < end - 1 && name > start && text[name - 1] === '&' ? name - 1 : end - 1;
+      } else if (last === ')') {
+        if (excessCloses === undefined) {
+          excessCloses = 0;
+          for (let i = start; i < end; i++) {
+            charge();
+            if (text[i] === '(') excessCloses--;
+            else if (text[i] === ')') excessCloses++;
+          }
+        }
+        if (excessCloses <= 0) break;
+        excessCloses--; end--;
+      } else break;
+    }
+    return end;
+  }
+  function bareHost(text, start, end) {
+    let host = false, previousUnderscore = false, currentUnderscore = false;
+    for (let i = start; i < end; i++) {
+      charge();
+      const ch = text[i], code = text.charCodeAt(i);
+      if (ch === '.') { previousUnderscore = currentUnderscore; currentUnderscore = false; }
+      else if (ch === '_') currentUnderscore = true;
+      else if (ch === '-') continue;
+      else if (asciiLetter(code) || asciiDigit(code) || code > 159 && !bareSpace(ch)) host = true;
+      else break;
+    }
+    return host && !previousUnderscore && !currentUnderscore;
+  }
+  function bareAngleAttempt(text, start, end) {
+    const escaped = pos => {
+      let count = 0;
+      while (pos > 0 && text[--pos] === '\\') { charge(); count++; }
+      return count % 2 === 1;
+    };
+    let before = start;
+    while (before > 0 && bareSpace(text[before - 1])) { charge(); before--; }
+    if (before === 0 || text[before - 1] !== '<' || escaped(before - 1)) return false;
+    while (end < text.length && bareSpace(text[end])) { charge(); end++; }
+    return text[end] === '>' && !escaped(end);
+  }
+  function bareAutolinkAt(text, start, emails) {
+    if (start > 0 && !bareSpace(text[start - 1]) && !'([{\'"*_~'.includes(text[start - 1])) return null;
+    if (!/[hHwW]/.test(text[start]) && !(emails && /[A-Za-z0-9.+-]/.test(text[start]))) return null;
+    const prefix = text.slice(start, start + 8).toLowerCase();
+    let end = -1, destination;
+    const www = prefix.startsWith('www.');
+    if (www || prefix.startsWith('http://') || prefix.startsWith('https://')) {
+      end = bareUrlEnd(text, start);
+      const domain = www ? start : start + (prefix.startsWith('https://') ? 8 : 7);
+      if (www && end <= start + 4 || end < domain || !bareHost(text, domain, end)) return null;
+      if (www) destination = 'http://' + text.slice(start, end);
+    } else if (emails && /[A-Za-z0-9.+-]/.test(text[start])) {
+      const mailto = prefix.startsWith('mailto:'), xmpp = prefix.startsWith('xmpp:');
+      end = bareEmailEnd(text, start + (mailto ? 7 : xmpp ? 5 : 0));
+      if (end < 0) return null;
+      if (xmpp && text[end] === '/') {
+        let resource = end + 1;
+        while (/[A-Za-z0-9.@]/.test(text[resource] || '')) { charge(); resource++; }
+        while (resource > end + 1 && text[resource - 1] === '.') { charge(); resource--; }
+        if (resource > end + 1) end = resource;
+      }
+      if (!mailto && !xmpp) destination = 'mailto:' + text.slice(start, end);
+    }
+    if (end < 0 || bareAngleAttempt(text, start, end)) return null;
+    const label = text.slice(start, end);
+    return {kind: 'autolink', label, url: destination ?? label, end};
+  }
   // HTML atoms own their complete source, including brackets in attributes,
   // comments and declarations. They remain escaped text in offline output:
   // recognizing their grammar must not create links, notes or image grants.
@@ -1109,65 +1212,103 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return -1;
   }
-  function inlineIndex(text) {
-    const atoms = new Map(), stack = [];
-    let rawBrackets, bareParens, math;
+  function inlineIndex(text, bareLinks = true) {
+    const atoms = new Map();
+    let rawBrackets, bareParens, maybeBare = false;
     const bareParenEnd = start => (bareParens ??= bareParenthesisPairs(text)).get(start);
     const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
+    function indexFrom(start) {
+      const stack = [];
+      let math;
+      for (let i = start; i < text.length;) {
+        charge();
+        const ch = text[i];
+        if (ch === '@' || /[hHwW]/.test(ch) && /^(?:https?:\/\/|www\.)/i.test(text.slice(i, i + 8))) maybeBare = true;
+        if (ch === '\\' && (escapable(text[i + 1]) || text[i + 1] === '\n')) { i += 2; continue; }
+        if (ch === '`') {
+          const code = codeExtent(text, i);
+          if (code.kind) remember(i, code);
+          i = code.end; continue;
+        }
+        if (ch === '$') {
+          const width = runEnd(text, i, '$') - i;
+          // Native parsing leaves a long run's prefix literal, then tries its
+          // last double/single suffix. Skip the literal prefix in one step.
+          if (width > 2) { i += width - 2; continue; }
+          const end = (math ??= mathDelimiters(text))(i, width);
+          if (end >= 0) { remember(i, {kind: 'math', end}); i = end; continue; }
+        }
+        if (ch === '<') {
+          const link = autolinkAt(text, i);
+          if (link) {
+            remember(i, link);
+            if (stack.length) stack.at(-1).containsLink = true;
+            i = link.end; continue;
+          }
+          const end = inlineHtmlEnd(text, i);
+          if (end >= 0) { remember(i, {kind: 'html', end}); i = end; continue; }
+        }
+        const image = ch === '!' && text[i + 1] === '[';
+        if (image || ch === '[') {
+          if (!image && text[i + 1] === '^' && notes.size) {
+            const close = (rawBrackets ??= rawBracketPairs(text)).get(i);
+            const label = close === undefined ? null : text.slice(i + 2, close);
+            if (label !== null && notes.has(noteKey(label))) {
+              remember(i, {kind: 'note', label, end: close + 1});
+              i = close + 1; continue;
+            }
+          }
+          allocate();
+          stack.push({start: i, open: i + (image ? 1 : 0), image, containsLink: false});
+          i += image ? 2 : 1; continue;
+        }
+        if (ch === ']' && stack.length) {
+          const open = stack.pop();
+          const target = open.image || !open.containsLink ? targetAfter(text, open.open, i, bareParenEnd) : null;
+          if (target) {
+            remember(open.start, {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target});
+            if (!open.image && stack.length) stack.at(-1).containsLink = true;
+            i = target.end; continue;
+          }
+          // An accepted image contains its child links as alt text. A rejected
+          // label propagates them, preventing an enclosing anchor from nesting.
+          if (open.containsLink && stack.length) stack.at(-1).containsLink = true;
+        }
+        i++;
+      }
+    }
+    indexFrom(0);
+    if (!bareLinks || !maybeBare) return atoms;
+    charge(text.length);
+    const emails = text.includes('@');
     for (let i = 0; i < text.length;) {
       charge();
+      const atom = atoms.get(i);
+      if (atom) { i = atom.end; continue; }
       const ch = text[i];
       if (ch === '\\' && (escapable(text[i + 1]) || text[i + 1] === '\n')) { i += 2; continue; }
-      if (ch === '`') {
-        const code = codeExtent(text, i);
-        if (code.kind) remember(i, code);
-        i = code.end; continue;
+      if ('`*_~'.includes(ch)) { i = runEnd(text, i, ch); continue; }
+      if (ch === '&') {
+        const entity = characterReference(text, i);
+        if (entity) { i = entity.end; continue; }
       }
-      if (ch === '$') {
-        const width = runEnd(text, i, '$') - i;
-        // Native parsing leaves a long run's prefix literal, then tries its
-        // last double/single suffix. Skip the literal prefix in one step.
-        if (width > 2) { i += width - 2; continue; }
-        const end = (math ??= mathDelimiters(text))(i, width);
-        if (end >= 0) { remember(i, {kind: 'math', end}); i = end; continue; }
+      const link = bareAutolinkAt(text, i, emails);
+      if (!link) { i++; continue; }
+      // Explicit links/images already own their complete labels. An earlier
+      // bare URL instead owns any syntax inside its literal body. If it takes
+      // a speculative code/math/link opener whose closer lies beyond the URL,
+      // reindex that released suffix so real following Markdown stays live.
+      let releasesSuffix = false;
+      for (let pos = i + 1; pos < link.end; pos++) {
+        charge();
+        if ((atoms.get(pos)?.end ?? 0) > link.end) { releasesSuffix = true; break; }
       }
-      if (ch === '<') {
-        const link = autolinkAt(text, i);
-        if (link) {
-          remember(i, link);
-          if (stack.length) stack.at(-1).containsLink = true;
-          i = link.end; continue;
-        }
-        const end = inlineHtmlEnd(text, i);
-        if (end >= 0) { remember(i, {kind: 'html', end}); i = end; continue; }
+      if (releasesSuffix) {
+        for (const start of atoms.keys()) { charge(); if (start >= i) atoms.delete(start); }
+        indexFrom(link.end);
       }
-      const image = ch === '!' && text[i + 1] === '[';
-      if (image || ch === '[') {
-        if (!image && text[i + 1] === '^' && notes.size) {
-          const close = (rawBrackets ??= rawBracketPairs(text)).get(i);
-          const label = close === undefined ? null : text.slice(i + 2, close);
-          if (label !== null && notes.has(noteKey(label))) {
-            remember(i, {kind: 'note', label, end: close + 1});
-            i = close + 1; continue;
-          }
-        }
-        allocate();
-        stack.push({start: i, open: i + (image ? 1 : 0), image, containsLink: false});
-        i += image ? 2 : 1; continue;
-      }
-      if (ch === ']' && stack.length) {
-        const open = stack.pop();
-        const target = open.image || !open.containsLink ? targetAfter(text, open.open, i, bareParenEnd) : null;
-        if (target) {
-          remember(open.start, {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target});
-          if (!open.image && stack.length) stack.at(-1).containsLink = true;
-          i = target.end; continue;
-        }
-        // An accepted image contains its child links as alt text. A rejected
-        // label propagates them, preventing an enclosing anchor from nesting.
-        if (open.containsLink && stack.length) stack.at(-1).containsLink = true;
-      }
-      i++;
+      remember(i, link);
+      i = link.end;
     }
     return atoms;
   }
@@ -1253,7 +1394,7 @@ function parseMarkdownClient(source, imageAssets) {
   function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false) {
     charge(text.length + 1);
     if (depth > MAX_DEPTH) return escape(text);
-    const atoms = inlineIndex(text), emphasis = emphasisIndex(text, atoms);
+    const atoms = inlineIndex(text, links), emphasis = emphasisIndex(text, atoms);
     let out = '', i = 0, styles = 0;
     // Only prose newlines discard continuation indentation. Atomic code,
     // mathematics, markup and link targets have already claimed their source.

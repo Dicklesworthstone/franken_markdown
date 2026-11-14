@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfTypographyTokens, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAnalysisOptions, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfTypographyTokens, validateBaselineGridFit } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -934,10 +934,26 @@ function interactiveHtmlArguments(markdown, input) {
     lang, Boolean(options.toc), depth, format]};
 }
 
-export async function documentStats(markdown) {
+async function analyzeDocument(markdown, options, ordinary, name, label) {
+  const { profile } = normalizeAnalysisOptions(options);
+  const analyze = profile === undefined ? ordinary
+    : requireBrowserBinding(name, "profile-aware document analysis");
+  if (profile !== undefined) requireBindingArguments(analyze, 2, "Profile-aware document analysis");
   const source = String(markdown);
   await init();
-  return parseJson(wasmDocumentStats(source), "document stats JSON");
+  const report = parseJson(profile === undefined ? analyze(source) : analyze(source, profile), label);
+  if (profile === undefined) return report;
+  if (!report || typeof report !== "object" || Array.isArray(report)
+      || (report.profile !== undefined && report.profile !== profile)) {
+    throw Object.assign(new Error("Invalid profiled native analysis report"), { code: "INVALID_WASM_RESPONSE" });
+  }
+  // This receipt follows the selected two-argument native binding, never an
+  // echo around a legacy one-argument call that could ignore the dialect.
+  return { ...report, profile };
+}
+
+export async function documentStats(markdown, options = {}) {
+  return analyzeDocument(markdown, options, wasmDocumentStats, "documentStatsProfiled", "document stats JSON");
 }
 
 export async function searchIndex(markdown) {
@@ -946,10 +962,8 @@ export async function searchIndex(markdown) {
   return parseJson(wasmSearchIndex(source), "search index JSON");
 }
 
-export async function accessibilityAudit(markdown) {
-  const source = String(markdown);
-  await init();
-  return parseJson(wasmAccessibilityAudit(source), "accessibility audit JSON");
+export async function accessibilityAudit(markdown, options = {}) {
+  return analyzeDocument(markdown, options, wasmAccessibilityAudit, "accessibilityAuditProfiled", "accessibility audit JSON");
 }
 
 export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {

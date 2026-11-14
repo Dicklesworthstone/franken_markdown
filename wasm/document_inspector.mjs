@@ -1,6 +1,7 @@
 // Read-only document intelligence on the existing owned-worker transport.
 // Importing or constructing an inspector starts no worker and loads no WASM.
 import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from "./worker_transport.mjs";
+import { analysisAuthoringProfileReceipt, normalizeAnalysisOptions } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const INSPECTION_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -166,8 +167,11 @@ function decodeOutput(value, max) {
   reportJson(report, { bytes: max, nodes: 0 }, 0, false);
   if (!object(report) || report.schema !== SCHEMA || report.sourceLength !== value.sourceLength)
     protocol("inspection JSON identity does not match its envelope");
+  analysisAuthoringProfileReceipt(report, value.profile, "WORKER_PROTOCOL_ERROR");
   statsReport(report.stats, value.sourceLength);
   accessibilityReport(report.accessibility);
+  analysisAuthoringProfileReceipt(report.stats, report.profile, "WORKER_PROTOCOL_ERROR");
+  analysisAuthoringProfileReceipt(report.accessibility, report.profile, "WORKER_PROTOCOL_ERROR");
   return { report: freezeData(report), bytes };
 }
 function helpers({ report, bytes }) {
@@ -203,7 +207,9 @@ export function createDocumentInspector(options = {}) {
       try {
         if (disposed || rpc?.closed) fail("SESSION_DISPOSED", "document inspector is closed");
         if (starting) fail("WORKER_STARTING", "workerFactory cannot reenter this inspector");
-        controls = record(controls, ["signal", "timeoutMs"]);
+        controls = record(controls, ["signal", "timeoutMs", "profile"]);
+        const analysis = normalizeAnalysisOptions({ profile: controls.profile });
+        const profile = analysis.profile;
         const { signal, timeoutMs = limits.timeoutMs } = controls;
         if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647
             || (signal !== undefined && (!signal || typeof signal.aborted !== "boolean"
@@ -211,7 +217,7 @@ export function createDocumentInspector(options = {}) {
           fail("INVALID_OPTIONS", "invalid inspection signal or deadline");
         if (signal?.aborted) fail("ABORTED", "inspection aborted before dispatch");
         const sourceLength = stringBytes(markdown, INSPECTION_SOURCE_LIMIT);
-        const charge = 512 + 2 * markdown.length;
+        const charge = 512 + 2 * markdown.length + (profile === undefined ? 0 : 64 + 2 * profile.length);
         if (charge > limits.maxPendingBytes) fail("WORKER_QUEUE_FULL", "inspection exceeds its ingress budget");
         if (disposed) fail("SESSION_DISPOSED", "document inspector is closed");
         if (!rpc) {
@@ -229,13 +235,17 @@ export function createDocumentInspector(options = {}) {
             throw error;
           } finally { starting = false; }
         }
-        return rpc.request("inspect", charge, () => ({ args: [markdown, maxOutputBytes] }), controls).then(value => {
+        return rpc.request("inspect", charge, () => ({
+          args: profile === undefined ? [markdown, maxOutputBytes] : [markdown, maxOutputBytes, analysis],
+        }), { signal, timeoutMs }).then(value => {
           const output = verified.get(value);
           verified.delete(value);
           if (!output || output.report.sourceLength !== sourceLength) {
             rpc.dispose();
             protocol("inspection response belongs to a different source");
           }
+          try { analysisAuthoringProfileReceipt(output.report, profile); }
+          catch (error) { rpc.dispose(); throw error; }
           return helpers(output);
         });
       } catch (error) { return Promise.reject(error); }
@@ -249,26 +259,36 @@ export function createDocumentInspector(options = {}) {
 export function installDocumentInspector(endpoint, loadRenderer) {
   let renderer;
   return serveOwnedWorker(endpoint, async (method, args) => {
-    if (method !== "inspect" || !Array.isArray(args) || args.length !== 2)
+    if (method !== "inspect" || !Array.isArray(args) || (args.length !== 2 && args.length !== 3))
       protocol("invalid document inspection request");
-    const sourceLength = stringBytes(args[0], INSPECTION_SOURCE_LIMIT);
+    const options = normalizeAnalysisOptions(args.length === 3 ? args[2] : {});
+    const profile = options.profile;
+    const source = args[0];
+    const sourceLength = stringBytes(source, INSPECTION_SOURCE_LIMIT);
     const max = outputLimit(args[1]);
     try {
       renderer ??= Promise.resolve().then(loadRenderer);
       const engine = await renderer;
       if (typeof engine.documentStats !== "function" || typeof engine.accessibilityAudit !== "function")
         fail("UNSUPPORTED_WASM_PACKAGE", "Document inspection requires matching statistics and accessibility WASM bindings");
-      const prefix = `{"schema":"${SCHEMA}","sourceLength":${sourceLength},"stats":`;
+      const prefix = `{"schema":"${SCHEMA}","sourceLength":${sourceLength}`
+        + (profile === undefined ? "" : `,"profile":${JSON.stringify(profile)}`) + ',"stats":';
       const middle = ',"accessibility":';
-      const budget = { bytes: max - prefix.length - middle.length - 1, nodes: 3 };
+      const budget = { bytes: max - prefix.length - middle.length - 1,
+        nodes: profile === undefined ? 3 : 4 };
       if (budget.bytes < 0) fail("BUDGET_EXCEEDED", "inspection output limit is too small");
-      const stats = reportJson(await engine.documentStats(args[0]), budget, 1);
-      statsReport(JSON.parse(stats), sourceLength);
-      const accessibility = reportJson(await engine.accessibilityAudit(args[0]), budget, 1);
-      accessibilityReport(JSON.parse(accessibility));
+      const call = profile === undefined ? [source] : [source, options];
+      const stats = reportJson(await engine.documentStats(...call), budget, 1);
+      const parsedStats = JSON.parse(stats);
+      statsReport(parsedStats, sourceLength);
+      analysisAuthoringProfileReceipt(parsedStats, profile);
+      const accessibility = reportJson(await engine.accessibilityAudit(...call), budget, 1);
+      const parsedAccessibility = JSON.parse(accessibility);
+      accessibilityReport(parsedAccessibility);
+      analysisAuthoringProfileReceipt(parsedAccessibility, profile);
       const bytes = new TextEncoder().encode(prefix + stats + middle + accessibility + "}");
       if (bytes.byteLength > max) fail("BUDGET_EXCEEDED", "combined inspection output limit exceeded");
-      const value = { format: "document-inspection", sourceLength, bytes };
+      const value = { format: "document-inspection", sourceLength, bytes, ...options };
       return { state: null, value, transfer: [bytes.buffer] };
     } catch (error) {
       const code = error?.code === "UNSUPPORTED_WASM_PACKAGE" ? error.code : "RENDER_FAILED";

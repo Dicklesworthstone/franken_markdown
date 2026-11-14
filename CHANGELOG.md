@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Browser statistics and accessibility APIs accept an explicit Markdown dialect.
+  Cancellable document inspection carries it through both native analyses and
+  portable JSON, verifies matching engine/worker receipts, and captures source
+  plus grammar before asynchronous work. Legacy calls remain unchanged; older
+  packages reject an unsupported explicit dialect instead of silently ignoring it.
 - The Flow editor publishes EPUB ebooks and SVG posters alongside HTML and PDF.
   Applied contents, typography and authorized assets reach each supported
   format; EPUB retains title, language and appearance, and SVG exposes poster

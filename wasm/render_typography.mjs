@@ -13,6 +13,34 @@ export function normalizeAuthoringProfile(value) {
   return value;
 }
 
+/** Source analysis accepts a grammar choice, without publication/resource grants. */
+export function normalizeAnalysisOptions(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    invalid("analysis options must be a plain data object");
+  let profile;
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (key !== "profile" || !field || !Object.hasOwn(field, "value"))
+      invalid("analysis only accepts a data-valued authoring profile");
+    profile = normalizeAuthoringProfile(field.value);
+  }
+  return Object.freeze(profile === undefined ? {} : { profile });
+}
+
+/** Check that both native analyses consumed the requested grammar. A legacy
+ * facade that ignores extra arguments cannot supply a successful receipt. */
+export function analysisAuthoringProfileReceipt(report, expected, code = "UNSUPPORTED_WASM_PACKAGE") {
+  const field = report && typeof report === "object"
+    ? Object.getOwnPropertyDescriptor(report, "profile") : undefined;
+  const profile = field?.value;
+  if ((field && !Object.hasOwn(field, "value")) || profile !== expected
+      || (profile !== undefined && profile !== "commonmark-gfm" && profile !== "gfm-plus")) {
+    throw Object.assign(new Error("Document analysis did not acknowledge the requested Markdown dialect; rebuild matching renderer and worker packages"), { code });
+  }
+  return profile === undefined ? {} : { profile };
+}
+
 /** Capture native typography controls, without retaining caller objects or
  * invoking accessors. Missing and explicit false values keep their spelling. */
 export function normalizePdfTypography(value) {

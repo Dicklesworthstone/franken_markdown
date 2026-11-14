@@ -102,8 +102,7 @@ when the browser delivers that final input after `compositionend`.
 
 If a publication deadline or cancellation destroys the retained worker, the
 preview withdraws navigation and publication readiness immediately. The editor
-keeps its Markdown and the last successfully painted frame. Choose **Restart
-worker** to create a new session from the latest source. A late export or paint
+keeps its Markdown and the last successfully painted frame. Choose **Restart preview from current source** to create a new session from the latest source. A late export or paint
 from the old session cannot restore readiness or replace the new session; at
 most one physical export remains active while old work settles.
 

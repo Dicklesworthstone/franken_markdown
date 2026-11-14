@@ -1,4 +1,4 @@
-import type { FmdDocumentStats, FmdAccessibilityReport } from "./franken_markdown.js";
+import type { FmdDocumentStats, FmdAccessibilityReport, FmdAnalysisOptions, FmdAuthoringProfile } from "./franken_markdown.js";
 
 /** Native JSON reports are deeply frozen, including outlines and findings. */
 export type InspectionReadonly<T> = T extends object
@@ -6,8 +6,9 @@ export type InspectionReadonly<T> = T extends object
 export interface DocumentInspectionReport {
   readonly schema: "fmd-document-inspection-v1";
   readonly sourceLength: number;
+  readonly profile?: FmdAuthoringProfile;
   readonly stats: InspectionReadonly<FmdDocumentStats>;
-  /** Source audit with native default options, not PDF/UA certification.
+  /** Selected source grammar with native default PDF layout/resources, not PDF/UA certification.
    * Additive native fields are retained and may include document text. */
   readonly accessibility: InspectionReadonly<FmdAccessibilityReport>;
 }
@@ -20,7 +21,7 @@ export interface DocumentInspection extends DocumentInspectionReport {
   blob(): Blob;
   filename(baseName?: string): string;
 }
-export interface DocumentInspectionControl {
+export interface DocumentInspectionControl extends FmdAnalysisOptions {
   signal?: AbortSignal;
   /** Queue wait, initialization and both native analyses; 0 disables. */
   timeoutMs?: number;

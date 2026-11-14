@@ -14,7 +14,7 @@ const inspector = createDocumentInspector({ maxPendingOperations: 1 });
 const controller = new AbortController();
 try {
   const report = await inspector.inspect("# Guide\n\n[Read more](#missing)", {
-    signal: controller.signal, timeoutMs: 30000,
+    profile: "commonmark-gfm", signal: controller.signal, timeoutMs: 30000,
   });
   console.log(report.stats.words, report.stats.outline, report.stats.findings);
   console.log(report.accessibility.findings);
@@ -54,8 +54,18 @@ The result schema is `fmd-document-inspection-v1`. `sourceLength` counts UTF-8
 bytes. `stats` is the native `fmd-document-stats-v1` report: reading/speaking-time
 estimates, readability heuristics, structural inventory, outline and source
 quality findings. `accessibility` is the native schema-version-one PDF-target
-source audit. It uses that API's existing default options; no raw-HTML trust,
-asset loading or export settings are accepted by inspection.
+source audit. The optional `profile` selects `"commonmark-gfm"` or
+`"gfm-plus"` before both native analyses. PDF layout and resource settings
+retain the audit API's defaults; inspection accepts no raw-HTML trust, asset
+loading or publication settings.
+
+An explicit grammar requires matching profile-aware generated bindings. Both
+native reports must acknowledge it before the inspector delivers a combined
+report; an older facade that ignores options fails with
+`UNSUPPORTED_WASM_PACKAGE`. The combined report, both native stage reports,
+and downloaded JSON carry the same `profile`. Omission preserves legacy
+request and report shapes. Editors should include the dialect in their report
+revision identity and invalidate results when it changes.
 
 **This is source analysis, not generated-PDF validation or PDF/UA certification.**
 No findings does not prove conformance or that a document is accessible. Native
@@ -78,7 +88,8 @@ it does not mutate the already-decoded reports, but does change `text()`/`blob()
 
 ## Cancellation, stale results and limits
 
-Methods accept `{signal, timeoutMs}`. A deadline includes queue wait, first-use
+Methods accept `{profile, signal, timeoutMs}` as data properties; profile aliases,
+accessors and unknown options are rejected before starting a worker. A deadline includes queue wait, first-use
 initialization and both analyses; zero disables it. Queued cancellation releases
 only that request. In-flight cancellation terminates the worker immediately and
 permanently closes the inspector because synchronous WASM cannot service an
@@ -94,7 +105,8 @@ not know when the host has edited its document.
 
 Sources accept at most 4 MiB of valid UTF-8, rejecting unpaired UTF-16 surrogates.
 The default pending-ingress budget is 16 MiB (maximum 64 MiB), charged as 512 bytes
-plus two bytes per source code unit; active and queued requests share it. There
+plus two bytes per source code unit. An explicit profile adds 64 bytes plus
+two bytes per profile code unit; active and queued requests share the budget. There
 are at most 32 pending operations by default (maximum 128). The combined JSON
 output is at most 8 MiB, configurable downward through `maxOutputBytes`, with at
 most 100,000 JSON values and depth 32. Escaped UTF-8 size is checked before building
@@ -112,7 +124,12 @@ the message protocol never selects import URLs or executable expressions.
 `node --test wasm/document_inspector.test.mjs` executes the production inspector
 and transport in real Node worker threads with explicitly synthetic native-report
 fixtures. It checks ownership, aggregate bounds, schema failures, cancellation,
-queueing and no partial delivery. It is not proof of Rust parsing or audit quality.
+queueing and no partial delivery. `wasm/document_inspector_profile.test.mjs`
+checks grammar admission, source/profile capture, both native receipts, exact
+output limits and stale worker responses through explicit in-process endpoints.
+`node --experimental-vm-modules --test wasm/analysis_profile_api.test.mjs`
+checks the production public facade with generated-binding doubles. These tests
+are not proof of Rust parsing or audit quality.
 
 `node wasm/document_inspector_smoke.mjs PACKAGE WASM` loads a supplied matching
 **generated Rust/WASM package**, compares both reports against the existing direct

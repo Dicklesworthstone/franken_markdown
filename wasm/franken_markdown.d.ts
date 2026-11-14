@@ -332,8 +332,8 @@ export interface FmdRenderer {
   capabilities(): Promise<FmdCapabilities>;
   fontCollectionFaceCount(bytes: FmdFontCollectionBytes): Promise<number>;
   extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
-  accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
-  documentStats(markdown: string): Promise<FmdDocumentStats>;
+  accessibilityAudit(markdown: string, options?: FmdAnalysisOptions): Promise<FmdAccessibilityReport>;
+  documentStats(markdown: string, options?: FmdAnalysisOptions): Promise<FmdDocumentStats>;
   renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdBookPdfOutput>;
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -368,8 +368,14 @@ export interface FmdFinding {
   message?: string;
   detail?: string;
 }
+/** Source grammar only; PDF layout and resources retain engine audit defaults. */
+export interface FmdAnalysisOptions {
+  profile?: FmdAuthoringProfile;
+}
 export interface FmdDocumentStats {
   schema: "fmd-document-stats-v1";
+  /** Present only after an explicitly selected native authoring profile ran. */
+  readonly profile?: FmdAuthoringProfile;
   bytes: number;
   lines: number;
   words: number;
@@ -388,6 +394,7 @@ export interface FmdDocumentStats {
 export interface FmdAccessibilityReport {
   schema_version: "1";
   target: "pdf";
+  readonly profile?: FmdAuthoringProfile;
   findings: FmdFinding[];
   [key: string]: unknown;
 }
@@ -433,8 +440,8 @@ export function fontCollectionFaceCount(bytes: FmdFontCollectionBytes): Promise<
  * Rendering performs its existing outline/metric and publication-budget checks.
  */
 export function extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
-export function accessibilityAudit(markdown: string): Promise<FmdAccessibilityReport>;
-export function documentStats(markdown: string): Promise<FmdDocumentStats>;
+export function accessibilityAudit(markdown: string, options?: FmdAnalysisOptions): Promise<FmdAccessibilityReport>;
+export function documentStats(markdown: string, options?: FmdAnalysisOptions): Promise<FmdDocumentStats>;
 /** Publish ordered chapters with the same PDF typography, running bands and
  * explicit pdfImages as renderPdf. Advanced settings require matching generated
  * WASM; older packages reject them with UNSUPPORTED_WASM_PACKAGE.

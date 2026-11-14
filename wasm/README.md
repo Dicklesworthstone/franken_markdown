@@ -362,6 +362,28 @@ these boundaries with explicit generated-binding doubles, including cold/warm
 initialization, concurrent requests and caller-buffer detachment. They do not
 substitute for rendering/parity checks against a generated WASM artifact.
 
+### Grammar-aware document analysis
+
+`documentStats(source, { profile: "commonmark-gfm" })` and
+`accessibilityAudit(source, { profile: "gfm-plus" })` select the same source
+grammar as publication. Renderer instances expose both signatures. Analysis
+options accept only the canonical optional profile; they grant no image, font,
+layout or raw-HTML authority. The source and grammar are captured before
+initialization yields.
+
+Explicit profiles require the matching `documentStatsProfiled` and
+`accessibilityAuditProfiled` generated bindings. Older packages report
+`UNSUPPORTED_WASM_PACKAGE` without retrying with a different grammar. Successful
+explicit reports include a `profile` receipt after the selected native binding
+runs. Omitted profiles preserve legacy calls and report shapes.
+
+For cancellable analysis, call
+`inspector.inspect(source, { profile: "commonmark-gfm", signal, timeoutMs })`.
+Both report stages, the portable JSON and the worker acknowledgment must agree
+on that captured profile. See [Document inspection](DOCUMENT_INSPECTION.md).
+The accessibility API uses default PDF layout/resources and performs source
+authoring checks; it does not certify a generated PDF.
+
 Every render result has:
 
 - `format`: `html` or `pdf`,

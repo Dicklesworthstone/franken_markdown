@@ -9,7 +9,7 @@ use franken_markdown::{HtmlOptions, PdfOptions, parse_markdown, render_html, ren
 const FLOW: &str = "```mermaid\ngraph TD\n  A[Start] --> B{Decide}\n  B -->|yes| C[Done]\n```\n";
 const SEQUENCE: &str = "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hi\n```\n";
 const PIE: &str = "```mermaid\npie title Pets\n  \"Dogs\" : 386\n```\n";
-const UNSUPPORTED: &str = "```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n";
+const UNSUPPORTED: &str = "```mermaid\ngantt\ntitle Schedule\nsection Rendering\nCompile :2026-01-01, 1d\n```\n";
 
 fn runs(markdown: &str) -> Vec<VerifyTextRun> {
     verification_text_layer(&parse_markdown(markdown), &PdfOptions::default())
@@ -54,7 +54,7 @@ fn supported_mermaid_fences_are_pdf_figures_not_source() {
 fn unsupported_mermaid_types_stay_code_in_pdf_and_html() {
     let runs = runs(UNSUPPORTED);
     assert!(runs.iter().all(|run| run.kind != "image"), "{runs:?}");
-    assert!(runs.iter().any(|run| run.text.contains("classDiagram")));
+    assert!(runs.iter().any(|run| run.text.contains("gantt")));
     let html = render_html(UNSUPPORTED, &HtmlOptions::default()).unwrap();
     assert!(!html.contains("<div class=\"fmd-diagram-wrapper\">"));
     assert!(html.contains("language-mermaid"));

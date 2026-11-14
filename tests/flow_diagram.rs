@@ -39,7 +39,16 @@ const STATE: &str = concat!(
     "Choice --> Working: if n >= 0\nChoice --> Idle: retry\n",
     "Working --> [*]: complete\n",
 );
-const UNSUPPORTED: &str = "classDiagram\nclass Example {\n  +load()\n}\nExample --> Other\n";
+const CLASS: &str = concat!(
+    "classDiagram\ndirection LR\n",
+    "class Document {\n  +String title\n  +render() String\n}\n",
+    "class Renderer {\n  <<interface>>\n  +render() String\n}\n",
+    "Renderer <|.. HtmlRenderer : implements\n",
+    "Document \"1\" *-- \"1\" HtmlRenderer : renders & caches\n",
+);
+// Keep the unsupported-dialect control when class diagrams become native figures.
+const UNSUPPORTED: &str =
+    "gantt\ntitle Publication schedule\nsection Rendering\nCompile :2026-01-01, 1d\n";
 const ASCII: &str = "+--------+\n| source |\n+--------+\n";
 
 fn options(width: f32) -> FlowLayoutOptions {
@@ -769,6 +778,7 @@ fn browser_wire_preserves_paths_strokes_real_label_outlines_and_source_only_path
         let original = browser_payload(&state, "flowchart", FLOW, true);
         let mut scenes = vec![original.clone()];
         for (name, language, code, supported) in [
+            ("class", "mermaid", CLASS, true),
             ("sequence", "mermaid", SEQUENCE, true),
             ("pie", "mermaid", PIE, true),
             ("unsupported", "mermaid", UNSUPPORTED, false),
@@ -946,4 +956,36 @@ fn browser_highlighting_mode_survives_diagram_fallback_edits_and_width_changes()
         .unwrap();
     assert!(!ordinary.contains("\"tok-kw\""));
     assert_eq!(state.source(), changed);
+}
+
+#[test]
+fn class_diagrams_keep_members_relationships_and_exact_source_in_narrow_flow() {
+    let source = fence("mermaid", CLASS);
+    for width in [180.0, 400.0, 900.0] {
+        let state = session(&source, width);
+        assert_scene_bounds(state.display(), &source, CLASS, width, FontFamily::Sans);
+        let visible = flattened(state.display());
+        for label in [
+            "Document",
+            "String title",
+            "render() String",
+            "interface",
+            "HtmlRenderer",
+            "implements",
+            "renders & caches",
+        ] {
+            assert!(visible.contains(label), "lost class diagram label {label:?}");
+        }
+        assert!(!visible.contains("Diagram source fallback:"));
+        assert!(
+            paths(state.display()).iter().any(|path| {
+                path.stroke
+                    .as_ref()
+                    .is_some_and(|stroke| !stroke.dash.is_empty())
+            }),
+            "realization retains its dashed relationship"
+        );
+        assert!(state.pending_assets().is_empty());
+        assert_eq!(state.source(), source);
+    }
 }

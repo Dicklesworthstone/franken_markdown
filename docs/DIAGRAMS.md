@@ -3,8 +3,8 @@
 Mermaid fences use the same first-party SVG compiler in HTML, PDF, SVG posters,
 and EPUB. Rendering does not load Mermaid.js, execute scripts, or contact the
 network. Flowcharts (`graph`/`flowchart`), state diagrams
-(`stateDiagram`/`stateDiagram-v2`), sequence diagrams (`sequenceDiagram`),
-and pie charts are supported. Other diagram types retain their source as a
+(`stateDiagram`/`stateDiagram-v2`), class diagrams (`classDiagram`), sequence
+diagrams (`sequenceDiagram`), and pie charts are supported. Other diagram types retain their source as a
 highlighted code block.
 
 ## Flowcharts
@@ -106,6 +106,56 @@ malformed input preserves the **entire source block** without a partial diagram.
 The supported grammar follows the
 [official Mermaid state syntax](https://mermaid.js.org/syntax/stateDiagram.html).
 See [the state-machine examples](../examples/state-diagrams.md).
+
+## Class diagrams
+
+````markdown
+```mermaid
+classDiagram
+    direction LR
+    class Document {
+        +String title
+        +render() String
+    }
+    class Renderer {
+        <<interface>>
+        +render() String
+    }
+    Renderer <|.. HtmlRenderer : implements
+    Document "1" *-- "1" HtmlRenderer : renders
+```
+````
+
+The `classDiagram` header is required, including in an explicitly named
+`class` fence. Classes can be declared with `class Name`, introduced by a
+relationship, given a display label with `class Name["Display label"]`, or
+named with backticks. Members can be written in multiline braces or as
+`Name : member`. Attributes and methods occupy separate compartments;
+visibility prefixes and return types remain visible. Static members use drawn
+underlines; abstract methods retain their `*` classifier. Stereotypes such as
+`<<interface>>` appear above the class name.
+
+Relationships retain their UML endpoints: open triangles for inheritance and
+realization, filled diamonds for composition, open diamonds for aggregation,
+and open arrows for association and dependency. Solid and dashed connectors,
+bidirectional endpoint combinations, optional quoted multiplicities and colon
+labels preserve their meaning. A single `direction TD`, `TB`, `BT`, `LR`,
+or `RL` controls layout. Cycles, self-links and parallel relationships reuse
+the native graph router's separate lanes.
+
+Labels and members are escaped text. Newlines separate statements; standalone
+`%%` comments are accepted. Source admission is bounded to 64 KiB, 256 classes,
+1024 relationships, 128 UTF-8 bytes per identifier, 512 bytes per label or
+member, 64 bytes per multiplicity, 64 members per class and 2048 members in total. Unsupported syntax or
+exceeded limits preserve the **entire source block**. Namespaces, notes,
+callbacks, custom styles, Mermaid configuration, generic type notation and
+semicolon-separated statements are outside this profile.
+
+The compiler feeds HTML, tagged PDF figures, SVG posters, EPUB chapters and
+Flow's native vector scene. Flow retains the exact source as its accessible
+transcript. The supported syntax is described by the
+[official Mermaid class reference](https://mermaid.js.org/syntax/classDiagram.html).
+See [the class diagram examples](../examples/class-diagrams.md).
 
 ## Sequence diagrams
 

@@ -183,8 +183,8 @@ skin tones, flags and keycaps still require a broader host shaper. See
 
 ### Diagrams in browser Flow
 
-Flow now draws supported Mermaid flowcharts, state diagrams, sequence diagrams and pie charts
-with the same native compiler used by the publication outputs. Paths preserve
+Flow now draws supported Mermaid flowcharts, state diagrams, class diagrams, sequence
+diagrams and pie charts with the same native compiler used by the publication outputs. Paths preserve
 arrows, curves, thick/dashed strokes and colors; labels use actual bundled-font
 outlines. Figures fit their measured lane after reflow, and the semantic reader
 retains exact selectable diagram source. Unsupported syntax shows a visible

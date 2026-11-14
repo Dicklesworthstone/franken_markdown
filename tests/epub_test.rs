@@ -1496,3 +1496,33 @@ fn state_diagrams_reach_single_and_book_epubs_as_valid_declared_svg() {
         assert!(opf.contains("properties=\"svg\""));
     }
 }
+
+#[test]
+fn class_diagrams_reach_single_and_book_epubs_with_members_and_declared_svg() {
+    use franken_markdown::BookInput;
+    use franken_markdown::book::BookRenderer;
+    let source = "# Architecture\n\n```mermaid\nclassDiagram\nclass Document {\n+String title\n+render() String\n}\nDocument --> Renderer : renders & caches\n```\n";
+    let doc = parse_markdown(source);
+    let single = epub::render_epub(&doc, &HtmlOptions::default()).unwrap();
+    assert_eq!(
+        single,
+        epub::render_epub(&doc, &HtmlOptions::default()).unwrap()
+    );
+    let renderer = BookRenderer::new(&[BookInput {
+        path: "architecture.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [single, renderer.render_epub().unwrap()] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert_well_formed_xml(&chapter);
+        assert!(chapter.contains("class=\"fmd-diagram fmd-class\""));
+        assert!(chapter.contains("+String title"));
+        assert!(chapter.contains("+render() String"));
+        assert!(chapter.contains("renders &amp; caches"));
+        assert!(!chapter.contains("language-mermaid"));
+        let opf = entry_text(&archive, "OEBPS/content.opf");
+        assert_well_formed_xml(&opf);
+        assert!(opf.contains("properties=\"svg\""));
+    }
+}

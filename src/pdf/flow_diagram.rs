@@ -119,7 +119,7 @@ impl From<LineJoin> for crate::display::DisplayLineJoin {
     }
 }
 
-/// Compile a complete supported flowchart, state machine, sequence diagram or pie chart.
+/// Compile a complete supported Mermaid diagram into a native vector scene.
 /// Source and geometry refusals are recoverable: the caller retains the
 /// original fenced block. No SVG, image decoder or ambient resource escapes.
 pub(crate) fn compile(source: &str, language: &str) -> Result<Scene, &'static str> {
@@ -195,7 +195,8 @@ fn generated_inventory(svg: &str) -> Result<Inventory, &'static str> {
     let mut stack = Vec::new();
     let mut roots = 0;
     let mut position = 0;
-    let preserve = svg.contains("class=\"fmd-diagram fmd-sequence\"");
+    let preserve = svg.contains("class=\"fmd-diagram fmd-sequence\"")
+        || svg.contains("class=\"fmd-diagram fmd-class\"");
     while let Some(relative) = svg[position..].find('<') {
         let start = position + relative;
         let end = start + svg[start..].find('>').ok_or("incomplete diagram tag")?;
@@ -908,7 +909,7 @@ mod tests {
     #[test]
     fn unsupported_or_excessive_source_is_refused_as_a_complete_figure() {
         for source in [
-            "classDiagram\nA --> B",
+            "gantt\ntitle Schedule\nsection Rendering\nCompile :2026-01-01, 1d",
             "graph TD\nA-->B\nsubgraph hidden\nC-->D\nend",
             "%%{init: {}}%%\ngraph TD\nA-->B",
         ] {

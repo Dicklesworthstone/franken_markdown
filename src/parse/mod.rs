@@ -6928,8 +6928,10 @@ fn scan_inline_html_end(chars: &[char], i: usize) -> Result<usize, usize> {
         }
         return Err(j);
     }
-    // 4. Declaration: <!ASCII_UPPER ... >
-    if chars.get(i + 1) == Some(&'!') && chars.get(i + 2).is_some_and(|c| c.is_ascii_uppercase()) {
+    // 4. Declaration: <!ASCII_LETTER ... > (CommonMark 0.31.2). The
+    // contents are opaque even when the first letter is lowercase; otherwise
+    // link-looking text inside a declaration can steal its enclosing link.
+    if chars.get(i + 1) == Some(&'!') && chars.get(i + 2).is_some_and(|c| c.is_ascii_alphabetic()) {
         let mut j = i + 3;
         while j < n && chars[j] != '>' {
             j += 1;

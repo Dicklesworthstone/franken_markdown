@@ -339,6 +339,134 @@ impl LazyLinePadding {
     }
 }
 
+/// Provenance of tabs expanded only for structural indentation. Literal
+/// consumers recover a tab only when its entire expansion survives container
+/// and fence stripping; a bisected tab remains the required residual spaces.
+/// Addresses identify borrowed/copy-derived source, never equal-looking text.
+#[derive(Default)]
+struct LiteralTabs {
+    spans: BTreeMap<usize, usize>,
+    inserted: Vec<(usize, Option<usize>)>,
+}
+
+impl LiteralTabs {
+    fn checkpoint(&self) -> usize {
+        self.inserted.len()
+    }
+
+    fn restore_checkpoint(&mut self, checkpoint: usize) {
+        for (start, previous) in self.inserted.drain(checkpoint..).rev() {
+            if let Some(end) = previous {
+                self.spans.insert(start, end);
+            } else {
+                self.spans.remove(&start);
+            }
+        }
+    }
+
+    fn insert(&mut self, start: usize, end: usize) {
+        let previous = self.spans.insert(start, end);
+        self.inserted.push((start, previous));
+    }
+
+    /// Register a known leading-tab expansion, optionally after a container
+    /// has consumed some of its columns. Only wholly retained tabs are owned.
+    fn expanded(&mut self, output: &str, original: &str, column: usize, consumed: usize) {
+        let base = output.as_ptr() as usize;
+        let mut current = column;
+        for byte in original.bytes() {
+            let width = match byte {
+                b' ' => 1,
+                b'\t' => 4 - current % 4,
+                _ => break,
+            };
+            let start = current - column;
+            current += width;
+            if byte == b'\t' && start >= consumed {
+                let offset = start - consumed;
+                if offset + width <= output.len() {
+                    self.insert(base + offset, base + offset + width);
+                }
+            }
+        }
+    }
+
+    /// Container copies retain a known suffix of one exact source allocation.
+    /// Intersect with complete intervals so removed tab columns never regrow.
+    fn copied_suffix(&mut self, output: &str, original: &str) {
+        if self.spans.is_empty() {
+            return;
+        }
+        let common = output
+            .bytes()
+            .rev()
+            .zip(original.bytes().rev())
+            .take_while(|(left, right)| left == right)
+            .count();
+        let source = original.as_ptr() as usize + original.len() - common;
+        let target = output.as_ptr() as usize + output.len() - common;
+        let end = source + common;
+        let spans: Vec<_> = self
+            .spans
+            .range(source..end)
+            .filter_map(|(&start, &stop)| {
+                (stop <= end).then_some((target + start - source, target + stop - source))
+            })
+            .collect();
+        for (start, stop) in spans {
+            self.insert(start, stop);
+        }
+    }
+
+    fn marker_body(&mut self, output: &str, original: &str, marker: &Marker<'_>) {
+        let source = trim_start_space_tab(original);
+        let width = if marker.ordered {
+            source.bytes().take_while(u8::is_ascii_digit).count() + 1
+        } else {
+            1
+        };
+        let after_marker = &source[width..];
+        if after_marker.starts_with('\t') {
+            // marker_padding consumes one column of its first tab. A task
+            // marker can consume more of the resulting body before its copy.
+            let consumed = 1 + marker.rest.len() - output.len();
+            self.expanded(output, after_marker, marker.indent + width, consumed);
+        } else {
+            self.copied_suffix(output, original);
+        }
+    }
+
+    fn contains_complete(&self, text: &str) -> bool {
+        let start = text.as_ptr() as usize;
+        let end = start + text.len();
+        self.spans
+            .range(start..end)
+            .any(|(_, &stop)| stop <= end)
+    }
+
+    fn literal<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if !self.contains_complete(text) {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let base = text.as_ptr() as usize;
+        let end = base + text.len();
+        let mut output = String::with_capacity(text.len());
+        let mut cursor = 0;
+        for (&start, &stop) in self.spans.range(base..end) {
+            if stop > end {
+                continue;
+            }
+            let start = start - base;
+            let stop = stop - base;
+            output.push_str(&text[cursor..start]);
+            output.push('\t');
+            cursor = stop;
+        }
+        output.push_str(&text[cursor..]);
+        std::borrow::Cow::Owned(output)
+    }
+}
+
 struct ParseProfiler {
     enabled: bool,
     stages: Vec<ParseStageSummary>,
@@ -363,6 +491,7 @@ struct ParseProfiler {
     block_depth: usize,
     destinations: Option<destinations::DestinationTracker>,
     lazy_line_padding: LazyLinePadding,
+    literal_tabs: LiteralTabs,
     // Only the spanned entrypoint records top-level block consumption. The
     // normal parser remains the source of truth for every block boundary.
     block_spans: Option<BlockSpanTracker>,
@@ -381,6 +510,7 @@ impl ParseProfiler {
             block_depth: 0,
             destinations: None,
             lazy_line_padding: LazyLinePadding::default(),
+            literal_tabs: LiteralTabs::default(),
             block_spans: None,
         }
     }
@@ -397,6 +527,7 @@ impl ParseProfiler {
             block_depth: 0,
             destinations: None,
             lazy_line_padding: LazyLinePadding::default(),
+            literal_tabs: LiteralTabs::default(),
             block_spans: None,
         }
     }
@@ -558,6 +689,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // metadata, not content: split it off before line scanning so it never
     // renders as a thematic break or paragraph text.
     let src = document_body(src);
+    let tab_checkpoint = profiler.literal_tabs.checkpoint();
     let tab_storage: Option<Vec<String>> = if src.contains('\t') {
         Some(
             logical_lines(src)
@@ -570,6 +702,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     if let Some(storage) = &tab_storage {
         for (copied, original) in storage.iter().zip(logical_lines(src)) {
             profiler.destination_suffix(copied, original);
+            profiler.literal_tabs.expanded(copied, original, 0, 0);
         }
     }
     let lines = profiler.measure(
@@ -618,6 +751,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
         "line classification, block assembly, and recursive block parsing",
         block_started,
     );
+    profiler.literal_tabs.restore_checkpoint(tab_checkpoint);
     Document { blocks }
 }
 
@@ -1178,7 +1312,7 @@ fn collect_link_reference_metadata_at_depth(
         if scan.maybe_blockquote && blockquote_marker_start(line) {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
             let (inner, used) =
-                split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut(), None);
+                split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut(), None, None);
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
             i += used;
             if depth < MAX_BLOCK_NESTING_DEPTH {
@@ -1267,6 +1401,7 @@ fn collect_link_reference_metadata_at_depth(
                 &lines[i..],
                 marker,
                 tracker.as_deref_mut(),
+                None,
                 None,
             );
             let used = split.used.max(1);
@@ -1848,7 +1983,12 @@ fn parse_blocks_with_refs_profiled(
                     i += 1;
                     break;
                 }
-                code.push_str(strip_fence_indent(lines[i], fence_indent));
+                code.push_str(
+                    profiler
+                        .literal_tabs
+                        .literal(strip_fence_indent(lines[i], fence_indent))
+                        .as_ref(),
+                );
                 code.push('\n');
                 i += 1;
             }
@@ -1882,11 +2022,11 @@ fn parse_blocks_with_refs_profiled(
                     for line in &lines[i + 1..i + used] {
                         if let Some(inner) = math_block_close(line) {
                             if !inner.is_empty() {
-                                code.push_str(inner);
+                                code.push_str(profiler.literal_tabs.literal(inner).as_ref());
                                 code.push('\n');
                             }
                         } else {
-                            code.push_str(line);
+                            code.push_str(profiler.literal_tabs.literal(line).as_ref());
                             code.push('\n');
                         }
                     }
@@ -1914,7 +2054,7 @@ fn parse_blocks_with_refs_profiled(
         }
         if scanned_indented_code_start(scan) {
             let started = profiler.checkpoint();
-            let (code, used) = parse_indented_code(&lines[i..]);
+            let (code, used) = parse_indented_code(&lines[i..], &profiler.literal_tabs);
             profiler.record_since(
                 "indented_code_block",
                 used,
@@ -1983,10 +2123,12 @@ fn parse_blocks_with_refs_profiled(
         if scanned_blockquote_start(scan) {
             let started = profiler.checkpoint();
             let checkpoint = profiler.destination_checkpoint();
+            let tab_checkpoint = profiler.literal_tabs.checkpoint();
             let (inner, used) = split_blockquote_lines_tracked(
                 &lines[i..],
                 profiler.destinations.as_mut(),
                 Some(&mut profiler.lazy_line_padding),
+                Some(&mut profiler.literal_tabs),
             );
             i += used;
             let inner_line_count = inner.len();
@@ -2006,6 +2148,7 @@ fn parse_blocks_with_refs_profiled(
                 started,
             );
             blocks.push(Block::BlockQuote(inner_blocks));
+            profiler.literal_tabs.restore_checkpoint(tab_checkpoint);
             profiler.destination_restore(checkpoint);
             continue;
         }
@@ -2013,10 +2156,34 @@ fn parse_blocks_with_refs_profiled(
             let started = profiler.checkpoint();
             let start = i;
             i = html_block_end(lines, i, end_cond, |l| *l);
-            let html = lines[start..i].join("\n");
-            if let Some(tracker) = &mut profiler.destinations {
-                tracker.block_html(&html, &lines[start..i]);
-            }
+            let html = if lines[start..i]
+                .iter()
+                .any(|line| profiler.literal_tabs.contains_complete(line))
+            {
+                let checkpoint = profiler.destination_checkpoint();
+                let literal: Vec<_> = lines[start..i]
+                    .iter()
+                    .map(|line| profiler.literal_tabs.literal(line))
+                    .collect();
+                for (copy, original) in literal.iter().zip(&lines[start..i]) {
+                    if let std::borrow::Cow::Owned(_) = copy {
+                        profiler.destination_suffix(copy.as_ref(), original);
+                    }
+                }
+                let literal_refs: Vec<_> = literal.iter().map(|line| line.as_ref()).collect();
+                let html = literal_refs.join("\n");
+                if let Some(tracker) = &mut profiler.destinations {
+                    tracker.block_html(&html, &literal_refs);
+                }
+                profiler.destination_restore(checkpoint);
+                html
+            } else {
+                let html = lines[start..i].join("\n");
+                if let Some(tracker) = &mut profiler.destinations {
+                    tracker.block_html(&html, &lines[start..i]);
+                }
+                html
+            };
             profiler.record_since(
                 "html_block",
                 i - start,
@@ -2199,6 +2366,43 @@ fn parse_lines_as_inlines(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
 ) -> (Vec<Inline>, usize, usize) {
+    if lines
+        .iter()
+        .any(|line| profiler.literal_tabs.contains_complete(line))
+    {
+        // Block ownership has already consumed structural columns. Recover
+        // the remaining source tabs before code/HTML/math consume their opaque
+        // inline contents. Apply lazy/outer trimming on the original views so
+        // copied buffers cannot lose their container-padding provenance.
+        let checkpoint = profiler.destination_checkpoint();
+        let views: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                inline_source_line(
+                    line,
+                    index == 0,
+                    index + 1 == lines.len(),
+                    &profiler.lazy_line_padding,
+                )
+            })
+            .collect();
+        let literal: Vec<_> = views
+            .iter()
+            .map(|line| profiler.literal_tabs.literal(line))
+            .collect();
+        for (copy, original) in literal.iter().zip(&views) {
+            if let std::borrow::Cow::Owned(_) = copy {
+                profiler.destination_suffix(copy.as_ref(), original);
+            }
+        }
+        let literal_refs: Vec<_> = literal.iter().map(|line| line.as_ref()).collect();
+        // These views contain real tabs, not registered expanded intervals;
+        // re-entry takes the ordinary path without another reconstruction.
+        let parsed = parse_lines_as_inlines(&literal_refs, refs, profiler);
+        profiler.destination_restore(checkpoint);
+        return parsed;
+    }
     match lines {
         [] => (Vec::new(), 0, 0),
         [line] => {
@@ -3034,7 +3238,7 @@ fn indented_code_start(line: &str) -> bool {
     leading_spaces(line) >= 4
 }
 
-fn parse_indented_code(lines: &[&str]) -> (String, usize) {
+fn parse_indented_code(lines: &[&str], tabs: &LiteralTabs) -> (String, usize) {
     let used = indented_code_extent(lines, |line| *line);
     // Presize the body from the extent: raw byte lengths plus one newline per
     // line. Blank lines push only '\n' and content lines drop at most four
@@ -3047,7 +3251,7 @@ fn parse_indented_code(lines: &[&str]) -> (String, usize) {
         .sum::<usize>();
     let mut code = String::with_capacity(body_bytes);
     for line in lines.iter().take(used) {
-        code.push_str(strip_n(line, 4));
+        code.push_str(tabs.literal(strip_n(line, 4)).as_ref());
         code.push('\n');
     }
     (code, used)
@@ -3119,6 +3323,7 @@ fn split_blockquote_lines_tracked<'a>(
     lines: &[&'a str],
     mut tracker: Option<&mut destinations::DestinationTracker>,
     mut padding: Option<&mut LazyLinePadding>,
+    mut tabs: Option<&mut LiteralTabs>,
 ) -> (Vec<std::borrow::Cow<'a, str>>, usize) {
     let mut inner = Vec::new();
     let mut tail = ContainerTail::default();
@@ -3146,6 +3351,17 @@ fn split_blockquote_lines_tracked<'a>(
         } else {
             break;
         };
+        if let std::borrow::Cow::Owned(_) = &stripped
+            && let Some(tabs) = &mut tabs
+        {
+            if let Some(marker) = blockquote_marker_offset(line)
+                && line[marker + 1..].starts_with('\t')
+            {
+                tabs.expanded(stripped.as_ref(), &line[marker + 1..], marker + 1, 1);
+            } else {
+                tabs.copied_suffix(stripped.as_ref(), line);
+            }
+        }
         tail.observe(stripped.as_ref());
         inner.push(stripped);
         used += 1;
@@ -4104,6 +4320,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
     first: Marker<'a>,
     mut tracker: Option<&mut destinations::DestinationTracker>,
     mut padding: Option<&mut LazyLinePadding>,
+    mut tabs: Option<&mut LiteralTabs>,
 ) -> ListSplit<'a> {
     let ordered = first.ordered;
     let start = first.start;
@@ -4133,6 +4350,9 @@ fn split_list_items_with_first_marker_tracked<'a>(
         {
             let (task, first_body) = split_task_marker(item_lines[0].as_ref());
             item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
+            if let Some(tabs) = &mut tabs {
+                tabs.marker_body(item_lines[0].as_ref(), item_origin, &m);
+            }
             if let Some(tracker) = &mut tracker {
                 tracker.map_suffix(item_lines[0].as_ref(), item_origin);
             }
@@ -4237,6 +4457,11 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 {
                     tracker.map_suffix(copied, lines[i]);
                 }
+                if let std::borrow::Cow::Owned(copied) = &lazy
+                    && let Some(tabs) = &mut tabs
+                {
+                    tabs.copied_suffix(copied, lines[i]);
+                }
                 tail.observe(lazy.as_ref());
                 item_lines.push(lazy);
             }
@@ -4245,6 +4470,9 @@ fn split_list_items_with_first_marker_tracked<'a>(
 
         let (task, first_body) = split_task_marker(item_lines[0].as_ref());
         item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
+        if let Some(tabs) = &mut tabs {
+            tabs.marker_body(item_lines[0].as_ref(), item_origin, &m);
+        }
         if let Some(tracker) = &mut tracker {
             tracker.map_suffix(item_lines[0].as_ref(), item_origin);
         }
@@ -4266,13 +4494,16 @@ fn parse_list_profiled_with_first_marker(
     first: Marker<'_>,
 ) -> (List, usize) {
     let checkpoint = profiler.destination_checkpoint();
+    let tab_checkpoint = profiler.literal_tabs.checkpoint();
     let split = split_list_items_with_first_marker_tracked(
         lines,
         first,
         profiler.destinations.as_mut(),
         Some(&mut profiler.lazy_line_padding),
+        Some(&mut profiler.literal_tabs),
     );
     let parsed = parse_list_split(split, refs, profiler);
+    profiler.literal_tabs.restore_checkpoint(tab_checkpoint);
     profiler.destination_restore(checkpoint);
     parsed
 }

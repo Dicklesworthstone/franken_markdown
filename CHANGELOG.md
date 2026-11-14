@@ -150,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Literal code and HTML preserve authored tabs after Markdown container
+  indentation is removed, including Makefile recipes, nested lists and quotes,
+  rich footnotes, multiline inline literals and tab-only code lines. Partial
+  tab consumption retains the required spaces, while source diagnostics and
+  link destinations keep their original byte coordinates.
 - Optimal and strict PDF pagination honor explicit document and chapter breaks
   after headings. Heading keeps stay within their source list item and quotation
   ancestry, so trailing container headings cannot make an otherwise feasible

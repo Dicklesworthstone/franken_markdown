@@ -13,6 +13,7 @@ const DEFAULTS = Object.freeze({
   lang: "",
   toc: null,
   tocDepth: null,
+  svgWidthPt: null,
   author: "",
   pageNumbers: true,
   codeLineNumbers: null,
@@ -122,7 +123,7 @@ export function normalizeRenderSettings(input = {}) {
       fail(`${key} must be boolean or null.`);
   }
   for (const key of [
-    "tocDepth", "baseFontSize", "headingScale", "tableFontSize", "fitToPages",
+    "tocDepth", "svgWidthPt", "baseFontSize", "headingScale", "tableFontSize", "fitToPages",
     "baselineGridPt", "pageWidthPt", "pageHeightPt", ...Object.keys(PAGE_SIDES),
   ]) {
     if (values[key] !== null && typeof values[key] !== "number")
@@ -174,7 +175,18 @@ export function normalizeRenderSettings(input = {}) {
     },
     validationToken,
   );
-  return Object.freeze({ values: Object.freeze(values), preview, html, pdf });
+  const [, epub] = normalizeFlowExport(
+    "epub", { ...selected(common), darkMode: values.darkMode }, validationToken,
+  );
+  const [, svg] = normalizeFlowExport(
+    "svg",
+    {
+      ...selected(["toc", "tocDepth"]),
+      ...(values.svgWidthPt === null ? {} : { maxWidthPt: values.svgWidthPt }),
+    },
+    validationToken,
+  );
+  return Object.freeze({ values: Object.freeze(values), preview, html, pdf, epub, svg });
 }
 
 const booleanChoices = [
@@ -199,6 +211,7 @@ const FIELDS = [
   ["lang", "Export language tag (for example, de-DE)", "text", 64],
   ["toc", "Export table of contents", "boolean", booleanChoices],
   ["tocDepth", "Contents depth (empty uses renderer default)", "number", 1, 6, true],
+  ["svgWidthPt", "SVG poster width in points (optional, default 612)", "number", 144, 14400],
   ["author", "PDF author (empty uses renderer default)", "text", 4096],
   ["pageNumbers", "PDF page numbers", "boolean", booleanChoices],
   ["codeLineNumbers", "PDF code line numbers", "boolean", booleanChoices],
@@ -238,7 +251,7 @@ const FIELDS = [
   ],
   [
     "darkMode",
-    "HTML appearance",
+    "HTML and EPUB appearance",
     "select",
     [
       ["auto", "Follow reader's light/dark preference"],
@@ -261,7 +274,7 @@ function mount(root) {
     const title = make("h2", "Typography and publishing", "render-settings-title");
     const help = make(
       "p",
-      "Apply changes to use the Rust engine's measured typography. Canvas sizes affect only the flowing preview; PDF sizes use points and its separate page layout. The bundled font applies to both exports. Settings do not modify or save Markdown, and do not enable raw HTML or network images.",
+      "Apply changes to use the Rust engine's measured typography. Canvas sizes affect only the flowing preview; PDF sizes use points and its separate page layout. The bundled font applies to all four exports. Settings do not modify or save Markdown, and do not enable raw HTML or network images.",
       "render-settings-help",
     );
     panel.append(title, help);
@@ -283,7 +296,7 @@ function mount(root) {
                 : key === "baselineGridPt"
                   ? "PDF pagination and typography"
                   : key === "darkMode"
-                    ? "HTML publishing"
+                    ? "HTML and EPUB publishing"
                     : null;
       if (groupTitle) {
         group = make("fieldset");
@@ -395,6 +408,7 @@ export function createRenderSettingsControls({
   let applied = normalizeRenderSettings(initial),
     disposed = false,
     composing = false,
+    finishingComposition = null,
     applying = false;
   const ui = mount(root),
     listeners = [];
@@ -496,11 +510,22 @@ export function createRenderSettingsControls({
   listen(ui.form, "input", changed);
   listen(ui.form, "change", changed);
   listen(ui.form, "compositionstart", () => {
+    if (finishingComposition !== null) clearTimeout(finishingComposition);
+    finishingComposition = null;
     composing = true;
+    onInvalidate();
     refresh();
   });
   listen(ui.form, "compositionend", () => {
     composing = false;
+    if (finishingComposition !== null) clearTimeout(finishingComposition);
+    // Publication remains fenced through a final input delivered after this
+    // event; applying the settled draft keeps its existing synchronous API.
+    const timer = setTimeout(() => {
+      if (disposed || finishingComposition !== timer) return;
+      finishingComposition = null;
+    }, 0);
+    finishingComposition = timer;
     refresh();
   });
   listen(
@@ -550,7 +575,10 @@ export function createRenderSettingsControls({
     reset,
     exportOptions(format) {
       alive();
-      if (!["html", "pdf"].includes(format)) fail("Choose HTML or PDF export.");
+      if (!["html", "pdf", "epub", "svg"].includes(format))
+        fail("Choose HTML, PDF, EPUB or SVG export.");
+      if (composing || finishingComposition !== null || applying)
+        throw new FlowError("SETTINGS_BUSY", "Finish text composition or the current settings operation first.");
       if (pending())
         throw new FlowError(
           "UNAPPLIED_SETTINGS",
@@ -561,6 +589,8 @@ export function createRenderSettingsControls({
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (finishingComposition !== null) clearTimeout(finishingComposition);
+      finishingComposition = null;
       for (const remove of listeners) remove();
       listeners.length = 0;
       for (const field of Object.values(ui.fields)) field.disabled = true;

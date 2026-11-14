@@ -23,6 +23,8 @@ const same = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.l
 export function createExportControls({
   html,
   pdf,
+  epub = null,
+  svg = null,
   download,
   status,
   sourceEditor,
@@ -34,13 +36,17 @@ export function createExportControls({
   let state = null,
     pending = false,
     disposed = false,
+    composing = false,
+    finishingComposition = null,
     epoch = 0,
     published = null,
     url = null;
   const available = () =>
-    !disposed && !pending && state?.status === "ready" && state.images?.status !== "loading";
+    !disposed && !pending && !composing && state?.status === "ready" && state.images?.status !== "loading";
+  const actions = Object.entries({ html, pdf, epub, svg }).filter(([, button]) => button);
   const buttons = () => {
-    html.disabled = pdf.disabled = !available();
+    const disabled = !available();
+    for (const [, button] of actions) button.disabled = disabled;
   };
   function revoke() {
     download.hidden = true;
@@ -110,16 +116,33 @@ export function createExportControls({
       buttons();
     }
   }
-  const onHtml = () => {
-      void prepare("html");
-    },
-    onPdf = () => {
-      void prepare("pdf");
-    };
+  const handlers = actions.map(([format, button]) => ({
+    button, run: () => { void prepare(format); },
+  }));
   const onInput = () => invalidate();
+  const onCompositionStart = () => {
+    if (finishingComposition !== null) clearTimeout(finishingComposition);
+    finishingComposition = null;
+    composing = true;
+    invalidate("Finish text composition before preparing a publication.");
+  };
+  const onCompositionEnd = () => {
+    if (finishingComposition !== null) clearTimeout(finishingComposition);
+    // Some editors send the final input after compositionend. Keep source
+    // ownership through that input turn before admitting another publication.
+    composing = true;
+    const timer = setTimeout(() => {
+      if (disposed || finishingComposition !== timer) return;
+      finishingComposition = null;
+      composing = false;
+      buttons();
+    }, 0);
+    finishingComposition = timer;
+  };
   const onDownload = (event) => {
     if (
       disposed ||
+      composing ||
       !published ||
       published.epoch !== epoch ||
       sourceEditor.value !== published.source ||
@@ -144,9 +167,10 @@ export function createExportControls({
       invalidate("Publishing settings changed or are unapplied; prepare a fresh export.");
     }
   };
-  html.addEventListener("click", onHtml);
-  pdf.addEventListener("click", onPdf);
+  for (const { button, run } of handlers) button.addEventListener("click", run);
   sourceEditor.addEventListener("input", onInput);
+  sourceEditor.addEventListener("compositionstart", onCompositionStart);
+  sourceEditor.addEventListener("compositionend", onCompositionEnd);
   download.addEventListener("click", onDownload);
   revoke();
   buttons();
@@ -168,11 +192,14 @@ export function createExportControls({
       if (disposed) return;
       disposed = true;
       epoch++;
+      if (finishingComposition !== null) clearTimeout(finishingComposition);
+      finishingComposition = null;
       revoke();
       buttons();
-      html.removeEventListener("click", onHtml);
-      pdf.removeEventListener("click", onPdf);
+      for (const { button, run } of handlers) button.removeEventListener("click", run);
       sourceEditor.removeEventListener("input", onInput);
+      sourceEditor.removeEventListener("compositionstart", onCompositionStart);
+      sourceEditor.removeEventListener("compositionend", onCompositionEnd);
       download.removeEventListener("click", onDownload);
     },
   });

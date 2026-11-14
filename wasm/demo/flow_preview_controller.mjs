@@ -63,7 +63,7 @@ export function createPreviewController({
   const imagesPending = () => Boolean(assets && session && !session.disposed && (
     imagesRevision !== session.revision || assetJob?.owner === assets
   ));
-  const exportDocument = createPreviewExport(() => ({
+  const prepareExport = createPreviewExport(() => ({
     session,
     source: appliedSource,
     desiredSource: desired?.source,
@@ -96,6 +96,30 @@ export function createPreviewController({
   const alive = () => {
     if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed");
   };
+  async function exportDocument(format, options, source) {
+    const owner = session, generation = epoch;
+    try {
+      return await prepareExport(format, options, source);
+    } catch (error) {
+      // An active worker deadline/abort destroys its retained document. Retire
+      // ready/navigation state immediately, retaining source and the last
+      // successful pixels. A retired export cannot poison a replacement owner.
+      if (!disposed && session === owner && epoch === generation && owner?.disposed) {
+        version++;
+        paint?.abort();
+        paint = null;
+        publish({
+          status: "error", reading: "", document: null, readingError: null, readingPending: false,
+          error: Object.freeze({
+            code: "SESSION_LOST",
+            message: "Document export lost the worker; restart explicitly. Source remains in the editor.",
+          }),
+        });
+        settle();
+      }
+      throw error;
+    }
+  }
   const valid = (input) => {
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new FlowError("INVALID_OPTIONS", "preview input must be an object");
@@ -378,6 +402,9 @@ export function createPreviewController({
     running = true;
     try {
       while (!disposed) {
+        // Preserve a terminal worker failure while stale paint/read work
+        // settles. Only an explicit restart may create a replacement owner.
+        if (session?.disposed && state.status === "error") break;
         const intent = desired,
           ticket = version,
           generation = epoch;

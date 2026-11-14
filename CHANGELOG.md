@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Flow editor publishes EPUB ebooks and SVG posters alongside HTML and PDF.
+  Applied contents, typography and authorized assets reach each supported
+  format; EPUB retains title, language and appearance, and SVG exposes poster
+  width. Source/settings composition fences protect publication, while worker
+  loss withdraws stale navigation and exports until an explicit restart.
 - Native offline workspaces select CommonMark/GFM or GFM Plus before parsing.
   The dialect reaches preview, HTML/PDF/EPUB/SVG exports and document analysis,
   and persists through saved HTML and source projects. Settings apply through

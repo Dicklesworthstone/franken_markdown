@@ -73,6 +73,8 @@ function start() {
   exportControls = createExportControls({
     html: document.querySelector("#export-html"),
     pdf: document.querySelector("#export-pdf"),
+    epub: document.querySelector("#export-epub"),
+    svg: document.querySelector("#export-svg"),
     download: document.querySelector("#export-download"),
     status: document.querySelector("#export-status"),
     sourceEditor: source,

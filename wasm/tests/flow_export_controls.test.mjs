@@ -30,9 +30,11 @@ class Element extends EventTarget {
     return event;
   }
 }
-function fixture(readOptions) {
+function fixture(readOptions, { allFormats = false } = {}) {
   const html = new Element(),
     pdf = new Element(),
+    epub = new Element(),
+    svg = new Element(),
     download = new Element(),
     status = new Element(),
     sourceEditor = new Element();
@@ -58,6 +60,7 @@ function fixture(readOptions) {
   const controls = createExportControls({
     html,
     pdf,
+    ...(allFormats ? { epub, svg } : {}),
     download,
     status,
     sourceEditor,
@@ -78,7 +81,10 @@ function fixture(readOptions) {
       return {
         ...result,
         format,
-        mimeType: format === "pdf" ? "application/pdf" : "text/html; charset=utf-8",
+        mimeType: {
+          pdf: "application/pdf", html: "text/html; charset=utf-8",
+          epub: "application/epub+zip", svg: "image/svg+xml",
+        }[format],
       };
     },
   });
@@ -86,6 +92,8 @@ function fixture(readOptions) {
   return {
     html,
     pdf,
+    epub,
+    svg,
     download,
     status,
     sourceEditor,
@@ -387,3 +395,136 @@ test("unapplied settings appearing during preparation suppress download publicat
   assert.equal(f.created.length, 0);
   assert.equal(f.download.hidden, true);
 });
+
+
+const publicationFormats = ["html", "pdf", "epub", "svg"];
+const compositionTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
+for (const [format, mimeType] of [
+  ["html", "text/html; charset=utf-8"], ["pdf", "application/pdf"],
+  ["epub", "application/epub+zip"], ["svg", "image/svg+xml"],
+]) {
+  test("four-format publication prepares " + format + " with its own MIME and extension", async (t) => {
+    const f = fixture((kind) => kind === "svg" ? { maxWidthPt: 900, toc: true } : { title: "Edition" },
+      { allFormats: true });
+    t.after(() => f.controls.dispose());
+    let clicks = 0;
+    f.download.addEventListener("click", () => clicks++);
+    f[format].click();
+    for (const name of publicationFormats) assert.equal(f[name].disabled, true);
+    await tick();
+    assert.equal(clicks, 0);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].format, format);
+    assert.equal(f.calls[0].source, "old");
+    assert.equal(f.calls[0].options[format === "svg" ? "maxWidthPt" : "title"],
+      format === "svg" ? 900 : "Edition");
+    assert.equal(f.created[0].type, mimeType);
+    assert.equal(f.download.download, "document." + format);
+    assert.equal(f.download.click().defaultPrevented, false);
+    for (const name of publicationFormats) assert.equal(f[name].disabled, false);
+  });
+
+  for (const finalInputBeforeEnd of [true, false]) {
+    test("publication composition owns " + format + " through final input " +
+      (finalInputBeforeEnd ? "before" : "after") + " compositionend", async (t) => {
+      const f = fixture(undefined, { allFormats: true });
+      t.after(() => f.controls.dispose());
+      f[format].click();
+      await tick();
+      f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+      assert.equal(f.download.hidden, true);
+      assert.deepEqual(f.revoked, ["blob:test-1"]);
+      for (const name of publicationFormats) {
+        assert.equal(f[name].disabled, true);
+        f[name].click(); // Programmatic events must also respect ownership.
+      }
+      assert.equal(f.calls.length, 1);
+      const finalInput = () => {
+        f.sourceEditor.value = "new";
+        f.sourceEditor.dispatchEvent(new Event("input"));
+      };
+      if (finalInputBeforeEnd) finalInput();
+      f.sourceEditor.dispatchEvent(new Event("compositionend"));
+      if (!finalInputBeforeEnd) finalInput();
+      f[format].click();
+      assert.equal(f.calls.length, 1);
+      await compositionTurn();
+      f[format].click();
+      await tick();
+      assert.equal(f.calls.length, 2);
+      assert.equal(f.calls[1].source, "new");
+      assert.equal(f.download.hidden, false);
+    });
+  }
+}
+
+test("starting composition retires an in-flight publication even when source text is unchanged", async (t) => {
+  const f = fixture(undefined, { allFormats: true }), hold = gate();
+  t.after(() => f.controls.dispose());
+  f.hold(hold);
+  f.epub.click();
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  await compositionTurn();
+  for (const name of publicationFormats) {
+    assert.equal(f[name].disabled, true);
+    f[name].click();
+  }
+  assert.equal(f.calls.length, 1);
+  hold.resolve();
+  await tick();
+  assert.equal(f.created.length, 0);
+  assert.equal(f.download.hidden, true);
+  f.hold(null);
+  f.svg.click();
+  await tick();
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.download.download, "document.svg");
+});
+
+test("a replacement composition and disposal cannot be unlocked by an older completion task", async () => {
+  const f = fixture(undefined, { allFormats: true });
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  f.sourceEditor.dispatchEvent(new Event("compositionstart"));
+  await compositionTurn();
+  for (const name of publicationFormats) assert.equal(f[name].disabled, true);
+  f.sourceEditor.dispatchEvent(new Event("compositionend"));
+  f.controls.dispose();
+  const status = f.status.textContent;
+  await compositionTurn();
+  for (const name of publicationFormats) {
+    assert.equal(f[name].disabled, true);
+    f[name].click();
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.status.textContent, status);
+  assert.equal(f.download.hidden, true);
+});
+
+for (const format of ["epub", "svg"]) {
+  test("new publication format " + format + " keeps the single physical slot and rejects stale options", async (t) => {
+    let depth = 2;
+    const f = fixture(() => ({ toc: true, tocDepth: depth }), { allFormats: true });
+    const hold = gate();
+    t.after(() => f.controls.dispose());
+    f.hold(hold);
+    f[format].click();
+    for (const name of publicationFormats) f[name].click();
+    assert.equal(f.calls.length, 1);
+    depth = 4; // Deliberately omit an input notification: final admission still checks.
+    hold.resolve();
+    await tick();
+    assert.equal(f.created.length, 0);
+    assert.match(f.status.textContent, /STALE_OPTIONS/);
+    f.hold(null);
+    f[format].click();
+    await tick();
+    assert.equal(f.calls[1].options.tocDepth, 4);
+    assert.equal(f.download.hidden, false);
+    f.controls.update({ ...f.state, images: { status: "loading" } });
+    assert.equal(f.download.hidden, true);
+    assert.deepEqual(f.revoked, ["blob:test-1"]);
+    assert.equal(f.download.click().defaultPrevented, true);
+  });
+}

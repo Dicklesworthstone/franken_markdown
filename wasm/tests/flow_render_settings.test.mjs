@@ -567,3 +567,115 @@ test("settings runtime and guide are included in both package assemblers", async
       assert.ok(copied.includes(path), `${name}: ${path}`);
   }
 });
+
+
+test("four-format settings preserve defaults and route only supported publication fields", () => {
+  const defaults = normalizeRenderSettings();
+  assert.deepEqual(defaults.epub, { maxOutputBytes: 64 * 1024 * 1024, darkMode: "auto" });
+  assert.deepEqual(defaults.svg, { maxOutputBytes: 64 * 1024 * 1024, maxWidthPt: 612 });
+  const settings = normalizeRenderSettings({
+    title: "Collected essays", lang: "de-DE", toc: true, tocDepth: 3,
+    darkMode: "disabled", svgWidthPt: 960.5, author: "PDF author", pageSize: "a5",
+  });
+  assert.deepEqual(settings.epub, {
+    maxOutputBytes: 64 * 1024 * 1024, title: "Collected essays", lang: "de-DE",
+    toc: true, tocDepth: 3, darkMode: "disabled",
+  });
+  assert.deepEqual(settings.svg, {
+    maxOutputBytes: 64 * 1024 * 1024, maxWidthPt: 960.5, toc: true, tocDepth: 3,
+  });
+  assert.equal(settings.html.maxWidthPt, undefined);
+  assert.equal(settings.pdf.maxWidthPt, undefined);
+  assert.equal(settings.pdf.darkMode, undefined);
+  assert.equal(settings.epub.author, undefined);
+  assert.equal(settings.epub.page, undefined);
+  assert.equal(Object.isFrozen(settings.epub), true);
+  assert.equal(Object.isFrozen(settings.svg), true);
+  assert.deepEqual(normalizeRenderSettings(settings.values), settings);
+});
+
+for (const width of [143, 14401, NaN, Infinity, -Infinity, "900", false]) {
+  test("SVG publication width rejects " + String(width), () => {
+    assert.throws(() => normalizeRenderSettings({ svgWidthPt: width }), { code: "INVALID_OPTIONS" });
+  });
+}
+test("SVG publication width accepts native bounds without changing preview or PDF", () => {
+  const defaults = normalizeRenderSettings();
+  for (const width of [144, 612, 14400]) {
+    const settings = normalizeRenderSettings({ svgWidthPt: width });
+    assert.equal(settings.svg.maxWidthPt, width);
+    assert.deepEqual(settings.preview, defaults.preview);
+    assert.deepEqual(settings.pdf, defaults.pdf);
+    assert.deepEqual(settings.html, defaults.html);
+  }
+});
+
+test("EPUB and SVG settings apply, remount, discard and reset with the current document", (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  f.set("title", "Edition");
+  f.set("lang", "fr");
+  f.set("toc", "true");
+  f.set("tocDepth", "4");
+  f.set("darkMode", "disabled");
+  f.set("svgWidthPt", "900");
+  assert.throws(() => f.controls.exportOptions("epub"), { code: "UNAPPLIED_SETTINGS" });
+  assert.throws(() => f.controls.exportOptions("svg"), { code: "UNAPPLIED_SETTINGS" });
+  f.submit();
+  assert.equal(f.controls.exportOptions("epub").title, "Edition");
+  assert.equal(f.controls.exportOptions("epub").darkMode, "disabled");
+  assert.equal(f.controls.exportOptions("svg").maxWidthPt, 900);
+  const saved = f.controls.settings.values;
+  f.remount(saved);
+  assert.equal(f.el("render-svgWidthPt").value, "900");
+  assert.equal(f.controls.exportOptions("svg").tocDepth, 4);
+  f.set("svgWidthPt", "1200");
+  f.el("render-settings-discard").click();
+  assert.equal(f.el("render-svgWidthPt").value, "900");
+  f.sourceEditor.dispatchEvent(new Event("fmd-document-replaced", { cancelable: true }));
+  assert.equal(f.el("render-svgWidthPt").value, "");
+  assert.equal(f.controls.exportOptions("svg").maxWidthPt, 612);
+  assert.equal(f.controls.exportOptions("epub").title, undefined);
+  f.set("svgWidthPt", "1440");
+  f.submit();
+  f.el("render-settings-reset").click();
+  assert.equal(f.controls.exportOptions("svg").maxWidthPt, 612);
+  assert.equal(f.sourceEditor.value, "# Original Markdown");
+  assert.equal(f.inputEvents, 0);
+});
+
+test("publication settings composition invalidates output and owns the final input turn", async (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  const form = f.el("render-settings-form");
+  form.dispatchEvent(new Event("compositionstart"));
+  assert.equal(f.invalidated.length, 1);
+  for (const format of ["html", "pdf", "epub", "svg"])
+    assert.throws(() => f.controls.exportOptions(format), { code: "SETTINGS_BUSY" });
+  form.dispatchEvent(new Event("compositionend"));
+  for (const format of ["html", "pdf", "epub", "svg"])
+    assert.throws(() => f.controls.exportOptions(format), { code: "SETTINGS_BUSY" });
+  f.set("title", "Final title"); // Browser ordering may deliver this after compositionend.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.throws(() => f.controls.exportOptions("epub"), { code: "UNAPPLIED_SETTINGS" });
+  f.submit();
+  assert.equal(f.controls.exportOptions("epub").title, "Final title");
+  assert.equal(f.controls.exportOptions("svg").maxWidthPt, 612);
+  assert.equal(f.inputEvents, 0);
+});
+
+test("publication settings cannot export reentrantly while an apply callback owns admission", () => {
+  let controls, refused = 0;
+  const f = fixture({ onApply() {
+    for (const format of ["html", "pdf", "epub", "svg"]) {
+      assert.throws(() => controls.exportOptions(format), { code: "SETTINGS_BUSY" });
+      refused++;
+    }
+  } });
+  controls = f.controls;
+  f.set("svgWidthPt", "900");
+  f.submit();
+  assert.equal(refused, 4);
+  assert.equal(controls.exportOptions("svg").maxWidthPt, 900);
+  controls.dispose();
+});

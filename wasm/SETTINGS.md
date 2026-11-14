@@ -2,7 +2,7 @@
 
 The **Typography and publishing** panel in `demo/flow-canvas.html` configures
 measured Canvas preview and document exports. It uses the existing worker and
-HTML/PDF renderer, not CSS scaling, a screenshot, or a second Markdown engine.
+HTML/PDF/EPUB/SVG renderers.
 
 ## Applying settings
 
@@ -38,15 +38,23 @@ race, even if it happened before a physical reflow.
 
 These controls do not change the selectable reading surface's browser typography
 or extend the bundled shaping profile's supported scripts. Canvas is a flowing
-preview, not a paginated PDF proof. Font family is shared with HTML/PDF exports;
+preview, not a paginated PDF proof. Font family is shared with all four export formats;
 Canvas body size, code size and line height are not PDF point-size settings.
 
 ## Publishing
 
-Shared HTML/PDF options are title, language tag, table of contents and its depth.
+Choose **Prepare HTML**, **Prepare PDF**, **Prepare EPUB**, or **Prepare SVG**,
+then use the prepared download link. Title and language apply to HTML, PDF and
+EPUB. All four formats receive the selected table of contents and its depth.
 A language tag is metadata/render configuration, not translation or a promise of
 support for an otherwise unsupported script. Optional blank fields use the
 renderer default instead of guessing an application default.
+
+SVG has an optional poster width from 144 through 14,400 points; leaving it
+blank uses the renderer's 612-point default. EPUB retains the applied appearance
+settings. Each format uses the current session font and explicitly authorized
+images. Missing native EPUB or SVG bindings produce an explicit refusal while
+other supported formats remain available.
 
 PDF additionally exposes author, page numbers, code line numbers, body size
 (6–24 pt), heading scale (1.05–2), table size (5–24 pt), target page count (1–1000),
@@ -80,13 +88,24 @@ All paper and typography settings are applied atomically. Invalid margins,
 custom dimensions or grid/fit combinations retain the previous applied settings
 and every editable field, so the draft can be corrected or discarded.
 
-HTML appearance follows the reader's light/dark preference by default, with a
-light-only alternative. PDF-only settings are not sent to HTML. The font used by
+HTML and EPUB appearance follow the reader's light/dark preference by default,
+with a light-only alternative. PDF-only settings remain scoped to PDF. The font used by
 exports comes from the current native session, not an arbitrary option overriding
 the preview's font identity. A publishing-only Apply invalidates prepared exports
 without changing Markdown or requiring a different preview layout.
 
 ## Ownership and lifecycle
+
+Source or settings composition immediately invalidates prepared downloads.
+Publication waits through the final input turn after composition ends, including
+when the browser delivers that final input after `compositionend`.
+
+If a publication deadline or cancellation destroys the retained worker, the
+preview withdraws navigation and publication readiness immediately. The editor
+keeps its Markdown and the last successfully painted frame. Choose **Restart
+worker** to create a new session from the latest source. A late export or paint
+from the old session cannot restore readiness or replace the new session; at
+most one physical export remains active while old work settles.
 
 Settings are page-session memory only. They are not written into Markdown,
 frontmatter, file handles, browser drafts, local storage, or a server. Applying a
@@ -111,7 +130,8 @@ rendering or settings failure does not take away original Markdown recovery.
 ```sh
 node --test wasm/tests/flow_preview_controller.test.mjs \
   wasm/tests/flow_export_controls.test.mjs \
-  wasm/tests/flow_render_settings.test.mjs
+  wasm/tests/flow_render_settings.test.mjs \
+  wasm/tests/flow_publication_controls.test.mjs
 ```
 
 The suites execute production preview orchestration, settings normalization and

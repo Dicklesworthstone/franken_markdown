@@ -708,7 +708,13 @@ function parseMarkdownClient(source, imageAssets) {
   // reparsed. Track its own line identity, never its text: an identical authored
   // line inside a code span must keep its literal spaces.
   const lazyPadding = new WeakMap();
+  // split() adds an empty element after the final newline. It is a source
+  // boundary, not another blank code line; retain its identity through lists.
+  const terminalEmptyLine = new WeakMap();
   function pushSourceLine(target, line, sourceLines, index, lazy = false) {
+    if (terminalEmptyLine.get(sourceLines) === index) {
+      allocate(); terminalEmptyLine.set(target, target.length);
+    }
     if (lazy || lazyPadding.get(sourceLines)?.has(index)) {
       let padded = lazyPadding.get(target);
       if (!padded) { allocate(); lazyPadding.set(target, padded = new Set()); }
@@ -1442,6 +1448,16 @@ function parseMarkdownClient(source, imageAssets) {
     charge(remaining + 1);
     return ' '.repeat(remaining) + line.slice(indent.end);
   }
+  // Indented code removes four columns, preserving every later space/tab.
+  // Unlike container padding, its remaining indentation is literal code text.
+  function stripCodeIndent(line) {
+    let end = 0, column = 0;
+    while (column < 4 && (line[end] === ' ' || line[end] === '\t')) {
+      charge();
+      column += line[end++] === '\t' ? 4 - column % 4 : 1;
+    }
+    return line.slice(end);
+  }
   function stripQuote(line) {
     const marker = line.match(/^ {0,3}>/);
     if (!marker) return null;
@@ -1896,7 +1912,10 @@ function parseMarkdownClient(source, imageAssets) {
         const code = [], end = fenceEnd(fm[1]);
         const indent = line.length - line.trimStart().length;
         i++;
-        while (i < lines.length && !end.test(lines[i])) code.push(lines[i++].replace(new RegExp('^ {0,' + indent + '}'), ''));
+        while (i < lines.length && !end.test(lines[i])) {
+          if (terminalEmptyLine.get(lines) !== i) code.push(lines[i].replace(new RegExp('^ {0,' + indent + '}'), ''));
+          i++;
+        }
         if (i < lines.length) i++;
         // References can introduce whitespace. Decode the whole info string
         // before choosing its first native Unicode White_Space-delimited word;
@@ -1916,9 +1935,9 @@ function parseMarkdownClient(source, imageAssets) {
         // engine typesets mathematics; fallback never reparses formula source.
         push({kind: 'math', text: lines.slice(start, i).join('\n')}); continue;
       }
-      if (/^( {4}|\t)/.test(line)) {
+      if (indentation(line).width >= 4) {
         const code = [];
-        while (i < lines.length && (/^( {4}|\t)/.test(lines[i]) || blankLine(lines[i]))) code.push(lines[i++].replace(/^( {4}|\t)/, ''));
+        while (i < lines.length && (indentation(lines[i]).width >= 4 || blankLine(lines[i]))) code.push(stripCodeIndent(lines[i++]));
         while (code.length && blankLine(code.at(-1))) code.pop();
         push({kind: 'code', lang: '', text: code.join('\n') + '\n'}); continue;
       }
@@ -2006,8 +2025,8 @@ function parseMarkdownClient(source, imageAssets) {
           while (i < lines.length) {
             if (blankLine(lines[i])) {
               if (tail.literalBlank()) {
-                const inner = stripIndent(lines[i++], next.width);
-                tail.observe(inner); item.push(inner); continue;
+                const inner = stripIndent(lines[i], next.width);
+                tail.observe(inner); pushSourceLine(item, inner, lines, i); i++; continue;
               }
               let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (!blankLine(lines[j])) break; j++; }
               const following = j < lines.length && !rule(lines[j]) && listMarker(lines[j]);
@@ -2190,6 +2209,7 @@ function parseMarkdownClient(source, imageAssets) {
     return body;
   }
   const lines = documentBody(source).replace(/\r\n?/g, '\n').replace(/\0/g, '\ufffd').split('\n');
+  if (lines.at(-1) === '') { allocate(); terminalEmptyLine.set(lines, lines.length - 1); }
   const body = renderBlocks(parseBlocks(lines));
   if (!usedNotes.length) return body;
   // Render the growing work queue once per note, then emit all backlinks.

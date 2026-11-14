@@ -49,6 +49,11 @@ whitespace; spaces produced by character references stay visible. Source hard
 breaks remain distinct from soft breaks. These changes affect the live preview;
 the editable source and Save Markdown remain unchanged.
 
+Indented code uses four visual columns, so mixed spaces and tabs remain code.
+Only those indentation columns are removed; later tabs and literal spaces are
+preserved. An unfinished fenced block keeps each authored blank line without
+adding a synthetic line at the end of the document, including inside lists.
+
 ## Angle links in lightweight saved documents
 
 Angle-delimited URIs retain their authored scheme and destination, including

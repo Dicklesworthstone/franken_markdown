@@ -17,7 +17,9 @@ Each `parseMarkdownClient` invocation owns a fresh, deterministic budget:
 | One returned or accumulated HTML string | 32 Mi UTF-16 code units |
 | Admitted lines, delimiter entries, table cells and other tracked structures | 262,144 |
 
-The existing recursive-rendering depth policy remains 64. A source below the
+Inline formatting and recursive rendering keep a depth limit of 64. Deeper
+formatting spans remain complete escaped source, including their delimiters;
+their links, images, and footnotes cannot become active. A source below the
 input-size ceiling can still exceed work or structure limits. Work units are
 charges for scans, transformations, searches and HTML assembly; they are not
 elapsed milliseconds or an exact count of VM instructions. These checks do not
@@ -37,9 +39,9 @@ network access, browser storage, or alternate parser is introduced.
 
 ## Removed unbounded paths
 
-Inline ownership is indexed once per buffer: code spans, accepted links and
-images, reference suffixes, angle autolinks and known footnote references retain
-their literal boundaries. Link labels and emphasis searches share that index,
+Inline ownership is indexed once per buffer: code spans, math formulas, accepted
+links and images, reference suffixes, angle autolinks and known footnote
+references retain their literal boundaries. Link labels and formatting share that index,
 so a bracket or emphasis marker inside code cannot activate a different link or
 publish a footnote. Destinations and titles use their own grammar rather than
 generic parenthesis pairing; their brackets and backticks cannot consume later
@@ -50,7 +52,7 @@ escaped-HTML and URL policies still apply.
 
 Missing bracket pairs do not trigger a new full-suffix scan for each opener.
 All indexed entries debit the shared structure budget, and unsuccessful target
-and delimiter searches debit work. Nested bare-URL parentheses share a lazy
+searches debit work. Nested bare-URL parentheses share a lazy
 index bounded by that grammar's whitespace, control and raw-`<` boundaries;
 repeated incomplete links do not rescan the same tail. Angle destinations and
 titles retain their own grammar, including literal unmatched parentheses.
@@ -59,9 +61,17 @@ consumed once. Heading closing hashes and email-autolink validation use linear
 checks instead of ambiguous backtracking patterns. Quote collection no longer
 spreads all child lines into a function's argument list.
 
-Remaining potentially repetitive delimiter searches debit the shared work
-budget as they advance. Recursive blocks, footnote traversal, reference
-expansion and table materialization use the same invocation-wide budget.
+Emphasis, strong emphasis, and double-tilde strike use a delimiter stack with
+Unicode whitespace/punctuation/symbol flanking and CommonMark's rule of three.
+Maximal inert underscore runs stay literal inside words. Matching retires
+interior delimiters to prevent crossing styles; remembered lower bounds avoid
+repeating failed searches. Tags are emitted at their original source positions,
+so nested styles do not repeatedly parse or copy the same enclosed text. Link
+labels keep their own delimiter scope. Delimiter entries, matched events, and
+every search step debit the existing structure/work budgets.
+
+Recursive blocks, footnote traversal, reference expansion and table
+materialization use the same invocation-wide budget.
 Line-array and delimiter/cell allocation are admitted before growing those
 structures. Embedded image bindings are checked before validating or copying
 large data URIs; small reference-based sources cannot expand HTML unchecked.
@@ -74,14 +84,18 @@ Run the established test entry point:
 ```sh
 node --test tests/interactive_renderer.test.mjs
 node --test wasm/tests/interactive_inline_ownership.test.mjs
+node --test wasm/tests/interactive_emphasis.test.mjs
 node --check src/interactive_renderer.js
 ```
 
-The 23 pre-existing cases retain their assertions. Added regressions exercise
-50,000 unmatched brackets, 100,000 interior spaces, long heading whitespace,
+Regressions exercise exact official emphasis examples, nested/crossing styles,
+Unicode scalar boundaries, literal depth fallback, 50,000 unmatched brackets,
+100,000 interior spaces, long heading whitespace,
 130,000 quote lines, nested and escaped pairs, many short links, invalid dotted
 email autolinks, source/line/delimiter/table/output admission, repeated searches,
-reference expansion, footnotes and clean state after failure.
+reference expansion, footnotes and clean state after failure. Thousands of
+unmatched emphasis openers now render their complete source within the normal
+budget; independent low-work and structure controls still require typed refusal.
 
 The VM timeout in the tests is only a hang guard. Exhaustion tests require the
 renderer's own `FMD_RENDER_LIMIT` code and resource kind; a VM timeout or generic

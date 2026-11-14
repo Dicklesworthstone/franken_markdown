@@ -829,13 +829,104 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return atoms;
   }
+  // Resolve formatting in source order without rescanning or reparsing each
+  // enclosed substring. Atomic code, math, HTML and accepted links keep their
+  // own delimiters; link labels are resolved separately when they are rendered.
+  function emphasisIndex(text, atoms) {
+    const events = new Map(), bottom = Array(18).fill(-1);
+    let first = null, last = null;
+    for (let i = 0; i < text.length;) {
+      charge();
+      const atom = atoms.get(i);
+      if (atom) { i = atom.end; continue; }
+      const ch = text[i];
+      if (ch === '\\' && (escapable(text[i + 1]) || text[i + 1] === '\n')) { i += 2; continue; }
+      if (ch !== '*' && ch !== '_' && ch !== '~') { i++; continue; }
+      const end = runEnd(text, i, ch), count = end - i;
+      // Treat a maximal run as a unit, including inert intraword underscores
+      // and the native extension's unsupported single/long tilde runs.
+      if (ch === '~' && count !== 2) { i = end; continue; }
+      let before = i ? text[i - 1] : undefined;
+      if (i >= 2 && /[\udc00-\udfff]/.test(before) && /[\ud800-\udbff]/.test(text[i - 2])) before = text.slice(i - 2, i);
+      const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)) : undefined;
+      const beforeSpace = before === undefined || /\p{White_Space}/u.test(before);
+      const afterSpace = after === undefined || /\p{White_Space}/u.test(after);
+      const beforePunct = before !== undefined && /[\p{P}\p{S}]/u.test(before);
+      const afterPunct = after !== undefined && /[\p{P}\p{S}]/u.test(after);
+      const left = !afterSpace && (!afterPunct || beforeSpace || beforePunct);
+      const right = !beforeSpace && (!beforePunct || afterSpace || afterPunct);
+      const canOpen = ch === '~' ? !afterSpace : left && (ch !== '_' || !right || beforePunct);
+      const canClose = ch === '~' ? !beforeSpace : right && (ch !== '_' || !left || afterPunct);
+      if (canOpen || canClose) {
+        allocate();
+        const delimiter = {ch, start: i, left: i, right: end, count, canOpen, canClose, prev: last, next: null};
+        if (last) last.next = delimiter;
+        else first = delimiter;
+        last = delimiter;
+      }
+      i = end;
+    }
+    const unlink = delimiter => {
+      if (delimiter.prev) delimiter.prev.next = delimiter.next;
+      if (delimiter.next) delimiter.next.prev = delimiter.prev;
+    };
+    let closer = first;
+    while (closer) {
+      charge();
+      if (!closer.canClose) { closer = closer.next; continue; }
+      const slot = (closer.ch === '*' ? 0 : closer.ch === '_' ? 6 : 12)
+        + (closer.canOpen ? 3 : 0) + closer.count % 3;
+      let opener = closer.prev;
+      while (opener && opener.start >= bottom[slot]) {
+        charge();
+        const odd = closer.ch !== '~' && (closer.canOpen || opener.canClose)
+          && (opener.count + closer.count) % 3 === 0
+          && (opener.count % 3 !== 0 || closer.count % 3 !== 0);
+        if (opener.ch === closer.ch && opener.canOpen && !odd) break;
+        opener = opener.prev;
+      }
+      if (!opener || opener.start < bottom[slot]) {
+        bottom[slot] = closer.start;
+        const next = closer.next;
+        if (!closer.canOpen) unlink(closer);
+        closer = next; continue;
+      }
+      const width = opener.right - opener.left >= 2 && closer.right - closer.left >= 2 ? 2 : 1;
+      const tag = closer.ch === '~' ? 'del' : width === 2 ? 'strong' : 'em';
+      const opening = opener.right - width, closing = closer.left;
+      allocate(2);
+      events.set(opening, {open: true, tag, end: opening + width, closeEnd: closing + width});
+      events.set(closing, {open: false, tag, end: closing + width});
+      // A match retires interior delimiters, preventing crossing styles. The
+      // source offsets of failed-search bounds remain valid after this splice.
+      opener.next = closer; closer.prev = opener;
+      opener.right -= width; closer.left += width;
+      if (opener.left === opener.right) unlink(opener);
+      if (closer.left === closer.right) {
+        const next = closer.next; unlink(closer); closer = next;
+      }
+    }
+    return events;
+  }
   function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false) {
     charge(text.length + 1);
     if (depth > MAX_DEPTH) return escape(text);
-    const atoms = inlineIndex(text);
-    let out = '', i = 0;
+    const atoms = inlineIndex(text), emphasis = emphasisIndex(text, atoms);
+    let out = '', i = 0, styles = 0;
     while (i < text.length) {
       charge();
+      const event = emphasis.get(i);
+      if (event) {
+        if (event.open && depth + styles >= MAX_DEPTH) {
+          // The complete deeper span stays literal, including its delimiters
+          // and atoms. Never activate links/notes beyond the nesting policy.
+          out = append(out, escape(text.slice(i, event.closeEnd)));
+          i = event.closeEnd; continue;
+        }
+        styles += event.open ? 1 : -1;
+        out = append(out, '<' + (event.open ? '' : '/') + event.tag + '>');
+        i = event.end; continue;
+      }
       const atom = atoms.get(i);
       if (atom) {
         if (atom.kind === 'code') {
@@ -853,7 +944,7 @@ function parseMarkdownClient(source, imageAssets) {
             : '<a href="' + escape(url) + '">' + escape(atom.label) + '</a>');
         } else {
           const image = atom.kind === 'image';
-          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + 1, false, false, images && !image, table);
+          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + styles + 1, false, false, images && !image, table);
           // Only emitted images consult embedded assets. Nested images in alt
           // text contribute their own readable labels without hidden expansion.
           const url = (image ? images : links) ? safeUrl(atom.url, image) : null;
@@ -880,27 +971,11 @@ function parseMarkdownClient(source, imageAssets) {
         out = append(out, marker); i += marker.length; continue;
       }
       if ('*_~'.includes(ch)) {
-        // Never interpret intraword underscores or single tildes as delimiters.
-        const run = text.slice(i, runEnd(text, i, ch));
-        const size = ch === '~' ? (run.length >= 2 ? 2 : 0) : Math.min(run.length, 3);
-        const marker = ch.repeat(size);
-        if (size && !/\s/.test(text[i + size] || ' ') && !(ch === '_' && /[\p{L}\p{N}]/u.test(text[i - 1] || ''))) {
-          let end = i + size;
-          for (; end <= text.length - size; end++) {
-            charge(size);
-            const owned = atoms.get(end);
-            if (owned) { end = owned.end - 1; continue; }
-            if (text[end] === '\\' && escapable(text[end + 1])) { end++; continue; }
-            if (text.startsWith(marker, end) && !/\s/.test(text[end - 1])
-                && !(ch === '_' && /[\p{L}\p{N}]/u.test(text[end + size] || ''))) break;
-          }
-          if (end > text.length - size) end = -1;
-          if (end > i + size) {
-            const tags = ch === '~' ? ['del'] : size === 3 ? ['strong', 'em'] : [size === 2 ? 'strong' : 'em'];
-            out = append(out, tags.map(t => '<' + t + '>').join('') + inline(text.slice(i + size, end), depth + 1, links, footnotes, images, table) + tags.slice().reverse().map(t => '</' + t + '>').join(''));
-            i = end + size; continue;
-          }
-        }
+        // Emit only the unresolved part of this run; a later offset in the
+        // same run can still open a matched style (for example **foo*).
+        let end = i + 1;
+        while (text[end] === ch && !emphasis.has(end)) { charge(); end++; }
+        out = append(out, text.slice(i, end)); i = end; continue;
       }
       if (ch === '&') {
         const entity = text.slice(i).match(/^&(?:#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/i);

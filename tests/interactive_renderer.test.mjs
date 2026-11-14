@@ -21,7 +21,8 @@ test('code spans shield formatting, links and markup, with arbitrary backtick ru
 });
 
 test('emphasis, strike, escapes and intraword underscores', () => {
-  assert.equal(render('***both*** **strong** _em_ ~~old~~ \\*literal\\* a_b_c'), '<p><strong><em>both</em></strong> <strong>strong</strong> <em>em</em> <del>old</del> *literal* a_b_c</p>\n');
+  // CommonMark example 467 and native rendering put strong inside emphasis.
+  assert.equal(render('***both*** **strong** _em_ ~~old~~ \\*literal\\* a_b_c'), '<p><em><strong>both</strong></em> <strong>strong</strong> <em>em</em> <del>old</del> *literal* a_b_c</p>\n');
 });
 
 test('all heading levels, setext headings and unique Unicode anchors', () => {
@@ -251,8 +252,11 @@ test('heading and footnote IDs cannot collide', () => {
     limited('work', () => render('<'.repeat(10000)));
   });
 
-  test('emphasis searches and repeated balanced reference probes share the work budget', () => {
-    limited('work', () => render('start ' + '_x '.repeat(7000)));
+  test('unmatched emphasis completes within budget while expensive reference probes remain bounded', () => {
+    // A delimiter stack consumes this once; the old repeated suffix search
+    // exhausted work. Preserve every unmatched run rather than rejecting it.
+    const text = 'start ' + '_x '.repeat(7000);
+    assert.equal(render(text), '<p>' + text + '</p>\n');
     limited('work', () => render('['.repeat(20000) + ']'.repeat(20000)));
   });
 

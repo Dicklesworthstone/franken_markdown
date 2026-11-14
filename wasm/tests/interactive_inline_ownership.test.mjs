@@ -19,7 +19,7 @@ test('code brackets cannot select a different link destination', () => {
 });
 
 test('emphasis and strike never activate links or footnotes from code content', () => {
-  for (const [marker, open, close] of [['*', '<em>', '</em>'], ['_', '<em>', '</em>'], ['**', '<strong>', '</strong>'], ['***', '<strong><em>', '</em></strong>'], ['~~', '<del>', '</del>']]) {
+  for (const [marker, open, close] of [['*', '<em>', '</em>'], ['_', '<em>', '</em>'], ['**', '<strong>', '</strong>'], ['***', '<em><strong>', '</strong></em>'], ['~~', '<del>', '</del>']]) {
     const source = `${marker}before \`${marker} [evil] [^n]\` after${marker}\n\n[evil]: /wrong\n[^n]: SECRET NOTE`;
     assert.equal(render(source), `<p>${open}before <code>${marker} [evil] [^n]</code> after${close}</p>\n`);
   }

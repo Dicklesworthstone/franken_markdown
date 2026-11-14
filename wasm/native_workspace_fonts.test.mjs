@@ -26,13 +26,19 @@ function fixture(payload = initial()) {
     renderPdfConfiguredPage: record('pdf-page', 'application/pdf', '%PDF-'),
     renderEpubConfiguredAdvanced: record('epub', 'application/epub+zip'),
     renderSvgConfiguredResources: record('svg', 'image/svg+xml'),
+    renderSvgConfiguredNavigation: record('svg', 'image/svg+xml'),
   };
+  Object.defineProperty(bindings.renderSvgConfiguredNavigation, 'length', {value: 17});
   return {payload, calls, bindings, renderer: createNativeWorkspaceRenderer(bindings, payload), get freed() { return freed; }};
 }
 function renderAll(f) {
   f.calls.length = 0;
   f.renderer.html('source'); f.renderer.pdf('source'); f.renderer.epub('source'); f.renderer.svg('source');
   return f.calls.map(({format, args}) => {
+    if (format === 'svg') {
+      assert.equal(args.length, 17);
+      assert.deepEqual(args.slice(14), [f.renderer.settings.profile, true, 4]);
+    }
     const index = ({html: 7, pdf: 11, 'pdf-page': 11, epub: 12, svg: 8})[format];
     return {format, source: args[0], fonts: args.slice(index, index + 5).map(x => Array.from(x)), weights: Array.from(args[index + 5])};
   });

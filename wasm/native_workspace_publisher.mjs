@@ -122,7 +122,11 @@ export function createNativeWorkspacePublisher(dependencies) {
     const html = assemble(shell.html, preview, payload, markdown);
     textSize(html, NATIVE_WORKSPACE_LIMITS.outputBytes, 'native workspace output');
     const bytes = new TextEncoder().encode(html);
-    const diagnostics = [...shell.diagnostics, ...renderer.diagnostics];
+    // The legacy shell supplies controls, not the retained document preview.
+    // Its default-dialect diagnostics cannot describe an explicitly profiled
+    // document; the complete native preview owns those findings instead.
+    const diagnostics = opts.profile === undefined
+      ? [...shell.diagnostics, ...renderer.diagnostics] : [...renderer.diagnostics];
     return Object.freeze({format: 'interactive-html', mimeType: 'text/html;charset=utf-8',
       extension: 'html', sourceLength, bytes, diagnostics,
       text: () => new TextDecoder('utf-8', {fatal: true}).decode(bytes),

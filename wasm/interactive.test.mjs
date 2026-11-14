@@ -11,12 +11,13 @@ after(() => rm(dir,{recursive:true,force:true}));
 await writeFile(join(dir,'package.json'),'{"type":"module"}');
 for(const file of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs','pdf_page.mjs','pdf_running.mjs']) await copyFile(new URL(file,import.meta.url),join(dir,file));
 await writeFile(join(dir,'franken_markdown.js'),`
-export const state={calls:[], gate:null,legacy:false,preWorker:false};
+export const state={calls:[], gate:null,legacy:false,preWorker:false,missingPreview:false,mismatchedSource:false};
 export async function init(bytes) { state.calls.push({kind:'init',bytes}); if(state.gate) await state.gate; }
 export async function renderInteractiveHtml(source,options) {
   state.calls.push({kind:'render',source,options});
-  const text='<!DOCTYPE html>\\n<html><head></head><body><script type="application/json" id="fmd-raw-source">'
-    +JSON.stringify(source).replace(/</g,'\\\\u003c')+'</script>\\n<script>\\n'
+  const preview=state.missingPreview?'':'<div id="fmd-app-body"><main><div class="fmd-content" id="fmd-content">Legacy shell preview</div>\\n  </main>\\n</div>\\n';
+  const text='<!DOCTYPE html>\\n<html><head></head><body>'+preview+'<script type="application/json" id="fmd-raw-source">'
+    +JSON.stringify(state.mismatchedSource?'Different source':source).replace(/</g,'\\\\u003c')+'</script>\\n<script>\\n'
     +(state.legacy?'/* old app */':"window.addEventListener('fmd-native-ready', () => {});" + (state.preWorker ? '' : '/* fmd-async-preview-v1 */'))
     +'\\n</script>\\n</body>\\n</html>\\n';
   return {format:'interactive-html',mimeType:'text/html; charset=utf-8',extension:'html',
@@ -32,7 +33,7 @@ const runtime=()=>({bindings:'export default async function() {}',wasm:wasm()});
 function payload(output) {
   return JSON.parse(output.text().split('<script type="application/json" id="fmd-native-runtime">')[1].split('</script>')[0]);
 }
-function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWorker=false;}
+function reset() {state.calls=[];state.gate=null;state.legacy=false;state.preWorker=false;state.missingPreview=false;state.mismatchedSource=false;}
 function pdfBindings(archival = 39) {
   const calls = [];
   const bindings = {renderHtmlConfiguredAdvanced() {throw Error('Unexpected preview render');}};
@@ -50,6 +51,104 @@ function pdfBindings(archival = 39) {
   }
   return {bindings, calls};
 }
+
+function profileBindings(htmlArity = 22, pdfArity = 40) {
+  const bindings = {}, calls = [];
+  for (const [name, arity, format] of [
+    ['renderHtmlConfiguredAdvanced', 19, 'html'], ['renderPdfConfiguredMulti', 28, 'pdf'],
+    ['renderHtmlConfiguredProfiled', htmlArity, 'html'], ['renderPdfConfiguredProfiled', pdfArity, 'pdf'],
+  ]) {
+    if (arity === null) continue;
+    const render = (...args) => {
+      calls.push({name, args});
+      const text = format === 'html' ? '<html><head></head><body>Native preview adapter</body></html>' : '%PDF-ADAPTER';
+      return {bytes: new TextEncoder().encode(text), mimeType: format === 'html' ? 'text/html' : 'application/pdf',
+        diagnosticsJson: () => '[{"message":"Native render diagnostic"}]', free() {}};
+    };
+    Object.defineProperty(render, 'length', {value: arity}); bindings[name] = render;
+  }
+  return {bindings, calls};
+}
+
+test('one-shot dialect admission rejects aliases and invalid values before source, runtime or asset getters', async () => {
+  for (const profile of ['', 'commonmark', 'gfm', 'gfm+', 'extended', 'CommonMark-GFM', ' gfm-plus', 'gfm-plus ',
+    null, false, 0, {}, ['gfm-plus'], new String('gfm-plus'), Symbol('gfm-plus')]) {
+    reset(); let reads = 0;
+    const unread = () => { reads++; throw Error('Resource read before profile admission'); };
+    const options = {profile, get pdfImages() {return unread();}, get fontAssets() {return unread();}};
+    const supplied = {get bindings() {return unread();}, get wasm() {return unread();}};
+    await assert.rejects(renderOfflineWorkspace({toString: unread}, supplied, options), {code: 'INVALID_OPTIONS'});
+    assert.equal(reads, 0); assert.deepEqual(state.calls, []);
+  }
+});
+
+for (const profile of ['commonmark-gfm', 'gfm-plus']) {
+  test(`one-shot ${profile} is captured once before init and survives saved renderer dispatch`, async () => {
+    reset(); let release, reads = 0, selected = profile;
+    state.gate = new Promise(resolve => {release = resolve;});
+    const options = {title: 'Owned', get profile() {reads++; return selected;}};
+    const pending = renderOfflineWorkspace('Term\n: definition', runtime(), options);
+    const capturedReads = reads, started = state.calls.map(call => call.kind);
+    selected = profile === 'commonmark-gfm' ? 'gfm-plus' : 'commonmark-gfm';
+    options.title = 'Later'; release();
+    const result = await pending, saved = payload(result);
+    assert.equal(capturedReads, 1); assert.deepEqual(started, ['init']);
+    assert.equal(reads, 1); assert.equal(saved.options.profile, profile); assert.equal(saved.options.title, 'Owned');
+    assert.deepEqual(state.calls.find(call => call.kind === 'render').options, {title: 'Owned', lang: undefined});
+    assert.deepEqual(result.diagnostics, []);
+    assert.doesNotMatch(result.text(), />Legacy shell preview<\/div>/);
+    assert.match(result.text(), /Preview pending: the selected Markdown dialect/);
+    const f = profileBindings(), renderer = createNativeWorkspaceRenderer(f.bindings, saved);
+    assert.deepEqual(f.calls, []);
+    renderer.html('Term\n: definition'); renderer.pdf('Term\n: definition');
+    assert.deepEqual(f.calls.map(call => call.name), ['renderHtmlConfiguredProfiled', 'renderPdfConfiguredProfiled']);
+    assert.equal(f.calls[0].args.length, 22); assert.equal(f.calls[0].args[21], profile);
+    assert.equal(f.calls[1].args.length, 40); assert.equal(f.calls[1].args[39], profile);
+    assert.deepEqual(renderer.diagnostics, [{message: 'Native render diagnostic'}]);
+    const reopened = payload(await renderOfflineWorkspace('Term\n: definition', runtime(), renderer.settings));
+    assert.deepEqual(reopened, saved);
+    createNativeWorkspaceRenderer(f.bindings, reopened).html('Term\n: definition');
+    assert.equal(f.calls.at(-1).args[21], profile);
+  });
+}
+
+test('an omitted one-shot dialect retains default shell output, diagnostics and legacy render dispatch', async () => {
+  for (const options of [{}, {profile: undefined}]) {
+    reset(); const result = await renderOfflineWorkspace('Source', runtime(), options), saved = payload(result);
+    assert.equal(Object.hasOwn(saved.options, 'profile'), false);
+    assert.deepEqual(result.diagnostics, [{message: 'initial diagnostic'}]);
+    assert.match(result.text(), />Legacy shell preview<\/div>/);
+    const f = profileBindings(null, null), renderer = createNativeWorkspaceRenderer(f.bindings, saved);
+    renderer.html('Source'); renderer.pdf('Source');
+    assert.deepEqual(f.calls.map(call => call.name), ['renderHtmlConfiguredAdvanced', 'renderPdfConfiguredMulti']);
+    assert.equal(f.calls[0].args.length, 19); assert.equal(f.calls[1].args.length, 27);
+  }
+});
+
+test('profiled one-shot output only replaces a verified shell preview and retains exact hostile source', async () => {
+  for (const fault of ['missingPreview', 'mismatchedSource']) {
+    reset(); state[fault] = true;
+    await assert.rejects(renderOfflineWorkspace('Source', runtime(), {profile: 'commonmark-gfm'}),
+      {code: 'UNSUPPORTED_WASM_PACKAGE'});
+  }
+  reset();
+  const source = '<div class="fmd-content" id="fmd-content">\n</div>\n  </main>\n</div>\n'
+    + '<script type="application/json" id="fmd-raw-source">"Different"</script>\n</script>\u2028';
+  const result = await renderOfflineWorkspace(source, runtime(), {profile: 'commonmark-gfm'});
+  const retained = result.text().split('<script type="application/json" id="fmd-raw-source">')[1].split('</script>')[0];
+  assert.equal(JSON.parse(retained), source);
+  assert.equal(result.sourceLength, Buffer.byteLength(source));
+  assert.match(result.text(), /Preview pending: the selected Markdown dialect/);
+});
+
+test('profiled one-shot payloads refuse missing or short native capabilities without legacy fallback', async () => {
+  reset(); const saved = payload(await renderOfflineWorkspace('Source', runtime(), {profile: 'commonmark-gfm'}));
+  for (const [html, pdf] of [[null, 40], [21, 40], [22, null], [22, 39]]) {
+    const f = profileBindings(html, pdf);
+    assert.throws(() => createNativeWorkspaceRenderer(f.bindings, saved), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    assert.deepEqual(f.calls, []);
+  }
+});
 
 test('PDF typesetting and archival policy are owned before init and reopen separately from shell settings',async()=>{
   reset();let release;state.gate=new Promise(resolve=>{release=resolve;});

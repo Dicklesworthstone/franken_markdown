@@ -144,6 +144,35 @@ pub fn document_stats(markdown: &str) -> String {
     compute_doc_stats(markdown, &document).to_json()
 }
 
+/// Compute document intelligence using the requested source dialect.
+/// An omitted profile preserves the exact legacy report. Explicit profiles
+/// select the grammar before parsing and apply the same authoring transform
+/// as publication, so definition-list delimiters and page-break comments have
+/// their selected meanings before the document is counted.
+///
+/// # Errors
+/// Rejects an unknown authoring profile before parsing the source.
+#[wasm_bindgen(js_name = documentStatsProfiled)]
+pub fn document_stats_profiled(
+    markdown: &str,
+    authoring_profile: Option<String>,
+) -> std::result::Result<String, JsValue> {
+    document_stats_profiled_inner(markdown, authoring_profile.as_deref()).map_err(JsValue::from_str)
+}
+
+fn document_stats_profiled_inner(
+    markdown: &str,
+    authoring_profile: Option<&str>,
+) -> Result<String, &'static str> {
+    let profile = parse_authoring_profile(authoring_profile)?;
+    if profile.is_none() {
+        return Ok(document_stats(markdown));
+    }
+    let document = crate::parse_markdown_with_profile(markdown, profile);
+    let document = crate::apply_profile(&document, profile);
+    Ok(compute_doc_stats(markdown, &document).to_json())
+}
+
 /// Build the deterministic search index used by static-document experiences.
 #[wasm_bindgen(js_name = searchIndex)]
 #[must_use]
@@ -208,6 +237,38 @@ pub fn accessibility_audit(markdown: &str) -> std::result::Result<String, JsValu
         crate::verify::verify_pdf(&document, &crate::PdfOptions::default()).ok_or_else(|| {
             JsValue::from_str("accessibility audit could not materialize the document")
         })?;
+    Ok(crate::verify::to_json(&crate::verify::filter_a11y(report)))
+}
+
+/// Run the authoring accessibility audit using the requested source dialect.
+/// PDF layout keeps the existing audit defaults; only the Markdown authoring
+/// profile changes. This is not a verification of a workspace's configured
+/// assets, typography, archival settings or final exported PDF.
+///
+/// # Errors
+/// Rejects an unknown authoring profile before parsing, or a document that the
+/// existing PDF verification pipeline cannot materialize.
+#[wasm_bindgen(js_name = accessibilityAuditProfiled)]
+pub fn accessibility_audit_profiled(
+    markdown: &str,
+    authoring_profile: Option<String>,
+) -> std::result::Result<String, JsValue> {
+    accessibility_audit_profiled_inner(markdown, authoring_profile.as_deref())
+        .map_err(JsValue::from_str)
+}
+
+fn accessibility_audit_profiled_inner(
+    markdown: &str,
+    authoring_profile: Option<&str>,
+) -> Result<String, &'static str> {
+    let profile = parse_authoring_profile(authoring_profile)?;
+    let document = crate::parse_markdown_with_profile(markdown, profile);
+    let options = crate::PdfOptions {
+        profile,
+        ..crate::PdfOptions::default()
+    };
+    let report = crate::verify::verify_pdf(&document, &options)
+        .ok_or("accessibility audit could not materialize the document")?;
     Ok(crate::verify::to_json(&crate::verify::filter_a11y(report)))
 }
 

@@ -29,17 +29,20 @@ function fixtureBindings() {
         message: JSON.stringify({format, args}, (_key, value) => ArrayBuffer.isView(value) ? [...value] : value)}]),
       free() { freed++; }};
   }
+  const navigation = (...args) => render('svg', args);
+  Object.defineProperty(navigation, 'length', {value: 17});
   return {calls, get freed() { return freed; },
     renderHtmlConfiguredAdvanced: (...args) => render('html', args),
     renderPdfConfiguredMulti: (...args) => render('pdf', args),
     renderPdfConfiguredPage: (...args) => render('pdf', args),
     renderEpubConfiguredAdvanced: (...args) => render('epub', args),
     renderEpubConfiguredMetadata: (...args) => render('epub', args),
-    renderSvgConfiguredResources: (...args) => render('svg', args)};
+    renderSvgConfiguredResources: (...args) => render('svg', args),
+    renderSvgConfiguredNavigation: navigation};
 }
 const bindingSource = `const adapter = (${fixtureBindings.toString()})();
 export const {renderHtmlConfiguredAdvanced, renderPdfConfiguredMulti,
-renderPdfConfiguredPage, renderEpubConfiguredAdvanced, renderEpubConfiguredMetadata, renderSvgConfiguredResources} = adapter;
+renderPdfConfiguredPage, renderEpubConfiguredAdvanced, renderEpubConfiguredMetadata, renderSvgConfiguredResources, renderSvgConfiguredNavigation} = adapter;
 export default async function init(input) { await WebAssembly.instantiate(input.module_or_path); }`;
 const state = () => ({version: 1, wasm: 'AGFzbQEAAAA=', bindings: bindingSource,
   options: {font: 'serif', darkMode: 'disabled', fontScale: 1.25, title: 'Document',
@@ -103,7 +106,11 @@ test('EPUB and SVG use the complete native ABI and committed document settings',
     assert.deepEqual(args.slice(start + 3, start + 8).map(value => [...value]), [[4, 5], [], [], [], [6]]);
     assert.deepEqual([...args[start + 8]], [650, 0, 0, 0, 0]);
     if (format === 'epub') assert.deepEqual(args.slice(3, 9), ['Document', 'fr', 1.25, undefined, true, 3]);
-    else assert.deepEqual(args.slice(3, 5), [1.25, undefined]);
+    else {
+      assert.deepEqual(args.slice(3, 5), [1.25, undefined]);
+      assert.equal(args.length, 17);
+      assert.deepEqual(args.slice(14), [undefined, true, 3]);
+    }
     assert.equal(renderer.diagnostics[0].code, 'fixture_publication');
     assert.equal(renderer.diagnostics[0].scope, 'document');
   }
@@ -125,6 +132,7 @@ test('resource and settings transactions survive EPUB/SVG publication and saved-
   reopened.svg('# Reopened');
   assert.deepEqual(bindings.calls.at(-1).args[5], ['chart.png', 'new.png']);
   assert.equal(bindings.calls.at(-1).args[3], 1.5);
+  assert.deepEqual(bindings.calls.at(-1).args.slice(14), [undefined, true, 3]);
   settings.rollback(); renderer.epub('# Previous settings');
   assert.equal(bindings.calls.at(-1).args[3], 'Document');
 });
@@ -132,13 +140,29 @@ test('resource and settings transactions survive EPUB/SVG publication and saved-
 test('old bindings retain HTML/PDF but never substitute resource-losing legacy exports', () => {
   const bindings = fixtureBindings();
   delete bindings.renderEpubConfiguredAdvanced; delete bindings.renderEpubConfiguredMetadata;
-  delete bindings.renderSvgConfiguredResources;
+  delete bindings.renderSvgConfiguredResources; delete bindings.renderSvgConfiguredNavigation;
   bindings.renderEpubConfigured = bindings.renderSvgConfigured = () => assert.fail('legacy fallback called');
   const renderer = createNativeWorkspaceRenderer(bindings, state());
   assert.deepEqual(renderer.exportFormats, ['html', 'pdf']);
   for (const format of ['epub', 'svg']) assert.throws(() => renderer[format]('# Source'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
   assert.match(renderer.html('# Still usable'), /<html>/);
   assert.equal(new TextDecoder().decode(renderer.pdf('# Still usable')), '%PDF-fixture');
+});
+
+test('resource-only SVG bindings remain usable without navigation but cannot drop a requested outline', () => {
+  for (const short of [false, true]) {
+    const bindings = fixtureBindings();
+    if (short) Object.defineProperty(bindings.renderSvgConfiguredNavigation, 'length', {value: 16, configurable: true});
+    else delete bindings.renderSvgConfiguredNavigation;
+    const renderer = createNativeWorkspaceRenderer(bindings, state());
+    assert.throws(() => renderer.svg('# Requested outline'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    assert.equal(bindings.calls.length, 0, 'no resource-only fallback may consume the source');
+    renderer.stageSettings({toc: false, tocDepth: undefined}).commit();
+    renderer.svg('# Plain poster');
+    assert.equal(bindings.calls.at(-1).args.length, 14);
+    renderer.stageSettings({tocDepth: 2}).commit();
+    assert.throws(() => renderer.svg('[TOC]\n\n# Marker outline'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+  }
 });
 
 test('native publication rejects malformed Unicode and always releases invalid result handles', () => {
@@ -158,7 +182,12 @@ test('serialized production worker publishes all four formats and owns exact byt
     const result = await api.exportDocument(format, '\ufeff# 中𝄞\r\n', payload);
     assert.equal(result.format, format); assert.equal(result.mimeType, mime);
     assert.equal(result.bytes.byteOffset, 0); assert.equal(result.bytes.byteLength, result.bytes.buffer.byteLength);
-    assert.equal(resultArgs(result)[0], '\ufeff# 中𝄞\r\n');
+    const args = resultArgs(result);
+    assert.equal(args[0], '\ufeff# 中𝄞\r\n');
+    if (format === 'svg') {
+      assert.equal(args.length, 17);
+      assert.deepEqual(args.slice(14), [null, true, 3]);
+    }
     assert.equal(result.diagnostics[0].scope, 'document');
     assert.equal(result.diagnostics[0].code, 'fixture_publication');
     // Mutating the caller's output cannot detach or corrupt the renderer cache.
@@ -184,7 +213,7 @@ test('publication admission refuses invalid formats and Unicode before worker cr
 
 test('worker reports unsupported bindings without losing working formats', async t => {
   const payload = state();
-  payload.bindings = bindingSource.replace('renderEpubConfiguredAdvanced, renderEpubConfiguredMetadata, renderSvgConfiguredResources', 'unusedEpub, unusedMetadata, unusedSvg');
+  payload.bindings = bindingSource.replace('renderEpubConfiguredAdvanced, renderEpubConfiguredMetadata, renderSvgConfiguredResources, renderSvgConfiguredNavigation', 'unusedEpub, unusedMetadata, unusedSvg, unusedNavigation');
   const {api} = client(t, payload);
   for (const format of ['epub', 'svg']) {
     await assert.rejects(api.exportDocument(format, '# Source', payload), {code: 'UNSUPPORTED_WASM_PACKAGE'});

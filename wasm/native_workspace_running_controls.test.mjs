@@ -38,15 +38,22 @@ function field(tag, attributes) {
   };
   return result;
 }
-function setup(options = {}, {async = false, old = false} = {}) {
-  const source = '# Current source', calls = [], patches = [], jobs = [];
-  const bindings = {renderHtmlConfiguredAdvanced() {
+function setup(options = {}, {async = false, old = false, profiledHtml = true, profiledPdf = true} = {}) {
+  const source = '# Current source', calls = [], htmlCalls = [], patches = [], jobs = [];
+  function renderHtml(name, args) {
+    htmlCalls.push({name, args, committed: renderer.settings});
     const bytes = new TextEncoder().encode('<html><head></head><body>Preview</body></html>');
     return {bytes, mimeType: 'text/html', diagnosticsJson: () => '[]', free() {}};
-  }};
+  }
+  const bindings = {renderHtmlConfiguredAdvanced: (...args) => renderHtml('renderHtmlConfiguredAdvanced', args)};
+  if (profiledHtml) {
+    const render = (...args) => renderHtml('renderHtmlConfiguredProfiled', args);
+    Object.defineProperty(render, 'length', {value: 22}); bindings.renderHtmlConfiguredProfiled = render;
+  }
   for (const [name, arity] of [['renderPdfConfiguredMulti', 28], ['renderPdfConfiguredPage', 29],
-    ['renderPdfConfiguredRunning', 33], ['renderPdfConfiguredRunningImages', 36]]) {
+    ['renderPdfConfiguredRunning', 33], ['renderPdfConfiguredRunningImages', 36], ['renderPdfConfiguredProfiled', 40]]) {
     if (old && name.includes('Running')) continue;
+    if (!profiledPdf && name === 'renderPdfConfiguredProfiled') continue;
     const render = (...args) => {
       calls.push({name, args}); const bytes = new TextEncoder().encode('%PDF-ADAPTER');
       return {bytes, mimeType: 'application/pdf', diagnosticsJson: () => '[]', free() {}};
@@ -118,7 +125,7 @@ function setup(options = {}, {async = false, old = false} = {}) {
     return {get settingsController() {return settingsController;}};
   `)(native, document, source);
   return {
-    renderer, payload, calls, patches, jobs, context,
+    renderer, payload, calls, htmlCalls, patches, jobs, context,
     field(name) {assert.ok(fields.has(name), 'Missing field ' + name); return fields.get(name);},
     get status() {return status.textContent;}, get dialog() {return dialog;},
     open() {controls.get('btn-document-settings').dispatch('click');},
@@ -209,3 +216,106 @@ test('running draft changes and cancellation fence asynchronous settings publica
   assert.equal(f.dialog.open, false); assert.equal(f.renderer.settings.running.header.left, 'New draft');
   assert.equal(f.renderer.settings.running.footer.center, '{page}');
 });
+
+test('dialect controls preserve omitted and explicit profiles on an unchanged apply', () => {
+  for (const profile of [undefined, 'commonmark-gfm', 'gfm-plus']) {
+    const f = setup(profile === undefined ? {} : {profile});
+    const before = f.renderer.settings, saved = f.payload.options;
+    f.open(); assert.equal(f.field('profile').value, profile ?? ''); f.apply();
+    assert.equal(f.renderer.settings, before); assert.equal(f.payload.options, saved);
+    assert.equal(Object.hasOwn(f.renderer.settings, 'profile'), profile !== undefined);
+    assert.equal(f.patches.length, 0); assert.equal(f.htmlCalls.length, 0);
+    assert.equal(f.calls.length, 0); assert.equal(f.dialog.open, false);
+  }
+});
+
+test('choosing a dialect preflights its HTML before committing the matching PDF grammar', () => {
+  for (const profile of ['commonmark-gfm', 'gfm-plus']) {
+    const f = setup(), before = f.renderer.settings, images = f.payload.images;
+    f.open(); f.edit('profile', profile); f.apply();
+    assert.deepEqual(f.patches, [{profile}]); assert.equal(f.dialog.open, false);
+    assert.equal(f.htmlCalls.length, 1);
+    const html = f.htmlCalls[0];
+    assert.equal(html.name, 'renderHtmlConfiguredProfiled'); assert.equal(html.committed, before);
+    assert.equal(html.args[0], '# Current source'); assert.equal(html.args.length, 22);
+    assert.deepEqual(html.args.slice(19), [undefined, undefined, profile]);
+    assert.equal(f.renderer.settings.profile, profile); assert.equal(f.payload.options, f.renderer.settings);
+    assert.equal(f.payload.images, images); assert.equal(f.calls.length, 0);
+    f.renderer.pdf('# Current source');
+    const pdf = f.calls.at(-1);
+    assert.equal(pdf.name, 'renderPdfConfiguredProfiled'); assert.equal(pdf.args.length, 40);
+    assert.equal(pdf.args[0], '# Current source'); assert.equal(pdf.args[39], profile);
+    assert.deepEqual(pdf.args[8], ['logo.png']); assert.deepEqual([...pdf.args[9]], [1, 2, 3]);
+    f.open(); assert.equal(f.field('profile').value, profile);
+  }
+});
+
+test('resetting the dialect removes the saved override and restores legacy dispatch', () => {
+  const f = setup({profile: 'commonmark-gfm'}), before = f.renderer.settings;
+  f.open(); f.edit('profile', ''); f.apply();
+  assert.deepEqual(f.patches, [{profile: undefined}]);
+  assert.equal(Object.hasOwn(f.renderer.settings, 'profile'), false);
+  assert.equal(Object.hasOwn(f.payload.options, 'profile'), false);
+  assert.equal(f.htmlCalls[0].name, 'renderHtmlConfiguredAdvanced');
+  assert.equal(f.htmlCalls[0].committed, before); assert.equal(f.htmlCalls[0].args.length, 19);
+  f.renderer.pdf('# Current source'); assert.equal(f.calls.at(-1).name, 'renderPdfConfiguredMulti');
+  f.open(); assert.equal(f.field('profile').value, '');
+  const reset = f.renderer.settings; f.apply(); assert.equal(f.renderer.settings, reset);
+  assert.equal(f.patches.length, 1); assert.equal(f.htmlCalls.length, 1);
+});
+
+test('cancelling a pending dialect change keeps the committed grammar until a fresh apply', async () => {
+  const f = setup({profile: 'gfm-plus'}, {async: true});
+  const before = f.renderer.settings, saved = f.payload.options, images = f.payload.images;
+  f.open(); f.edit('profile', 'commonmark-gfm'); f.apply();
+  const abandoned = f.jobs[0];
+  assert.equal(f.renderer.settings, before); assert.equal(f.htmlCalls.length, 0);
+  assert.equal(f.context.settingsController.busy, true);
+  f.cancel(); f.finish(abandoned); await Promise.resolve(); await Promise.resolve();
+  assert.equal(f.renderer.settings, before); assert.equal(f.payload.options, saved);
+  assert.equal(f.payload.images, images); assert.equal(f.htmlCalls.length, 0);
+  assert.equal(f.context.settingsController.busy, false); assert.equal(f.dialog.open, false);
+  f.renderer.pdf('# Current source'); assert.equal(f.calls.at(-1).args[39], 'gfm-plus');
+  f.open(); assert.equal(f.field('profile').value, 'gfm-plus');
+  f.edit('profile', 'commonmark-gfm'); f.apply(); f.finish();
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(f.htmlCalls[0].committed, before);
+  assert.equal(f.htmlCalls[0].args[21], 'commonmark-gfm');
+  assert.equal(f.renderer.settings.profile, 'commonmark-gfm'); assert.equal(f.dialog.open, false);
+});
+
+for (const event of [true, false]) {
+  test(`dialect draft changes ${event ? 'with' : 'without'} an input event reject an older asynchronous capture`, async () => {
+    const f = setup({}, {async: true}), before = f.renderer.settings, saved = f.payload.options;
+    f.open(); f.edit('profile', 'commonmark-gfm'); f.apply();
+    const abandoned = f.jobs[0];
+    f.edit('profile', 'gfm-plus', {event}); f.finish(abandoned);
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(f.renderer.settings, before); assert.equal(f.payload.options, saved);
+    assert.equal(f.htmlCalls.length, 0); assert.equal(f.dialog.open, true);
+    assert.equal(f.context.settingsController.busy, false);
+    assert.match(f.status, /draft changed/i);
+    f.apply(); f.finish(); await Promise.resolve(); await Promise.resolve();
+    assert.equal(f.renderer.settings.profile, 'gfm-plus');
+    assert.equal(f.htmlCalls.length, 1); assert.equal(f.htmlCalls[0].args[21], 'gfm-plus');
+    assert.equal(f.dialog.open, false);
+  });
+}
+
+for (const capability of ['profiledHtml', 'profiledPdf']) {
+  test(`a missing ${capability} capability leaves committed settings and retained assets untouched`, () => {
+    const f = setup({}, {[capability]: false});
+    const before = f.renderer.settings, saved = f.payload.options, images = f.payload.images, fonts = f.payload.fonts;
+    const inventory = f.renderer.imageAssets, revision = f.renderer.revision;
+    f.open(); f.edit('profile', 'commonmark-gfm'); f.apply();
+    assert.equal(f.renderer.settings, before); assert.equal(f.payload.options, saved);
+    assert.equal(f.payload.images, images); assert.equal(f.payload.fonts, fonts);
+    assert.deepEqual(f.renderer.imageAssets, inventory); assert.equal(f.renderer.revision, revision);
+    assert.equal(f.htmlCalls.length, 0); assert.equal(f.calls.length, 0);
+    assert.equal(f.dialog.open, true); assert.match(f.status, /matching WASM bindings/);
+    f.cancel(); f.renderer.html('# Current source'); f.renderer.pdf('# Current source');
+    assert.equal(f.htmlCalls.at(-1).name, 'renderHtmlConfiguredAdvanced');
+    assert.equal(f.calls.at(-1).name, 'renderPdfConfiguredMulti');
+    assert.equal(Object.hasOwn(f.renderer.settings, 'profile'), false);
+  });
+}

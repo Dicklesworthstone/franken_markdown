@@ -7,7 +7,7 @@ export function createNativeSourceProjectCodec(overrides = {}) {
     totalAssetBytes: 128 * MiB, imageCount: 4096, destinationBytes: 8192,
     totalDestinationBytes: 65536, outputBytes: 256 * MiB};
   const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
-  const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
+  const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang', 'profile',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
     'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'running'];
@@ -105,6 +105,8 @@ export function createNativeSourceProjectCodec(overrides = {}) {
   function captureSettings(input) {
     const value = {font: 'sans', darkMode: 'auto', fontScale: 1,
       pageNumbers: false, codeLineNumbers: false, toc: false, ...record(input, settingKeys)};
+    if (value.profile !== undefined && !['commonmark-gfm', 'gfm-plus'].includes(value.profile))
+      invalid('profile must be commonmark-gfm or gfm-plus');
     if (!['sans', 'serif'].includes(value.font) || !['auto', 'disabled'].includes(value.darkMode)) invalid('Invalid font family or color mode');
     if (!Number.isFinite(value.fontScale) || value.fontScale < 0.5 || value.fontScale > 3) invalid('fontScale must be 0.5..3');
     for (const key of ['pageNumbers', 'codeLineNumbers', 'toc'])

@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native offline workspaces select CommonMark/GFM or GFM Plus before parsing.
+  The dialect reaches preview, HTML/PDF/EPUB/SVG exports and document analysis,
+  and persists through saved HTML and source projects. Settings apply through
+  the existing cancellable preview transaction; unsupported bindings fail
+  explicitly. SVG publication also retains configured table-of-contents depth.
 - Saved editable HTML recognizes bare HTTP(S), `www`, email and `mailto` links
   with the native GFM punctuation and domain rules. Literal URL contents and
   explicit link, image, code and math ownership retain the existing URL policy.

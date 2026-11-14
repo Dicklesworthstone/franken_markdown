@@ -13,7 +13,7 @@ export interface FmdNativeWorkspaceRuntime {
  * Unsupported settings throw, including customCss and raw HTML passthrough.
  */
 export interface FmdNativeWorkspaceOptions extends Pick<FmdPdfRenderOptions,
-  'font' | 'darkMode' | 'title' | 'author' | 'lang' | 'metadataEpochSeconds' |
+  'font' | 'darkMode' | 'title' | 'author' | 'lang' | 'metadataEpochSeconds' | 'profile' |
   'pageNumbers' | 'codeLineNumbers' | 'toc' | 'tocDepth' | 'pdfImages' | 'fontAssets' |
   'typography' | 'optimalPagination' | 'strictPagination' | 'footnoteBacklinks' | 'splitFootnotes' | 'baselineGridPt' |
   'microtype' | 'microtypeProtrusion' | 'fitToPages' | 'pdfA' | 'pdfAStrict' | 'running'> {

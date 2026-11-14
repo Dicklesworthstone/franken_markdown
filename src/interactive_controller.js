@@ -497,6 +497,7 @@
       <h2 id="fmd-settings-title">Document settings</h2>
       <p id="fmd-settings-help">Apply changes to native rendering. Save HTML keeps settings and resources; Save Markdown keeps source only. View zoom does not change PDF type size.</p>
       <fieldset><legend>Typography and navigation</legend><div data-grid>
+        <label>Markdown dialect<select name="profile"><option value="">Default (GFM Plus)</option><option value="commonmark-gfm">CommonMark + GFM</option><option value="gfm-plus">GFM Plus</option></select></label>
         <label>Body font<select name="font"><option value="sans">Sans serif</option><option value="serif">Serif</option></select></label>
         <label>Type scale (0.5–3)<input name="fontScale" type="number" min="0.5" max="3" step="any" required></label>
         <label>Document color mode<select name="darkMode"><option value="auto">Automatic</option><option value="disabled">Light</option></select></label>
@@ -568,7 +569,7 @@
     const field = name => form.elements.namedItem(name);
     const flags = ['toc', 'pageNumbers', 'codeLineNumbers'];
     const numbers = ['fontScale', 'tocDepth'];
-    const texts = ['font', 'darkMode', 'title', 'author', 'lang'];
+    const texts = ['font', 'darkMode', 'title', 'author', 'lang', 'profile'];
     const settingsFields = [...flags, ...numbers, ...texts];
     const typographyFlags = ['homogeneous', 'antiriver', 'pareto'];
     const pdfFields = ['pdfProfile', 'pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
@@ -726,7 +727,7 @@
         // even when an input normalizes newlines; omitted values stay omitted.
         for (const name of settingsFields) if (raw(name) !== initial[name]) {
           patch[name] = flags.includes(name) ? raw(name) : numbers.includes(name) ? field(name).valueAsNumber
-            : ['title', 'author', 'lang'].includes(name) && raw(name) === '' ? undefined : raw(name);
+            : ['title', 'author', 'lang', 'profile'].includes(name) && raw(name) === '' ? undefined : raw(name);
         }
         for (const name of typographyFlags) if (raw(name) !== initial[name]) {
           // Keep unedited and omitted nested switches exactly as saved. The
@@ -1255,7 +1256,7 @@
       panel.style.cssText = 'position:fixed;z-index:1000;right:16px;bottom:16px;width:min(38rem,calc(100vw - 32px));max-height:75vh;overflow:auto;box-sizing:border-box;padding:20px;border:1px solid var(--border-color,#aaa);border-radius:8px;background:var(--bg-primary,#fff);color:var(--fg-primary,#222);box-shadow:0 4px 24px #0003;overflow-wrap:anywhere';
       make('h2', 'Document Lab', panel).id = 'fmd-lab-title';
       make('p', 'Analyze the current Markdown with the embedded Rust engine. Reports are read-only and never change source, settings or resources.', panel);
-      make('p', 'Accessibility uses engine-default PDF options, not this workspace’s configured paper, fonts or images. It is an authoring audit, not PDF/UA certification.', panel).id = 'fmd-lab-scope';
+      make('p', 'Accessibility follows the selected Markdown dialect. Layout checks use engine-default PDF options, not this workspace’s configured paper, fonts or images. It is an authoring audit, not PDF/UA certification.', panel).id = 'fmd-lab-scope';
       const actions = make('div', undefined, panel);
       actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px';
       const action = (id, label) => {

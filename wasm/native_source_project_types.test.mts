@@ -1,11 +1,12 @@
 // Compile-only public API consumer; no engine is loaded by this check.
 import {createNativeSourceProject, readNativeSourceProject, createNativeWorkspaceExporter,
   NATIVE_SOURCE_PROJECT_LIMITS, type FmdNativeSourceProjectInput,
-  type FmdNativeSourceProjectOutput, type FmdNativeWorkspaceRuntime} from './native_workspace.js';
+  type FmdNativeSourceProjectOutput, type FmdNativeWorkspaceOptions,
+  type FmdNativeWorkspaceRuntime} from './native_workspace.js';
 import {renderPdf, type FmdRenderOutput} from './franken_markdown.js';
 
 const source: FmdNativeSourceProjectOutput = createNativeSourceProject('# Document', {
-  font: 'serif', fontScale: 1.125, allowRawHtml: false, metadataEpochSeconds: 0,
+  font: 'serif', fontScale: 1.125, allowRawHtml: false, metadataEpochSeconds: 0, profile: 'commonmark-gfm',
   page: {size: 'a4', margins: 36},
   running: {header: {left: '{chapter}', right: '{section}', image: {dest: 'chart.png', position: 'right', heightPt: 20}},
     footer: {center: '{page} / {pages}'}, skipFirstPage: true},
@@ -19,6 +20,9 @@ const inputs: FmdNativeSourceProjectInput[] = [source.text(), source.bytes, sour
 const project = readNativeSourceProject(inputs[0]);
 project.options.title = 'Changed';
 project.options.footnoteBacklinks = false;
+project.options.profile = 'gfm-plus';
+const dialect: FmdNativeWorkspaceOptions['profile'] = project.options.profile;
+createNativeSourceProject('Default dialect', {profile: undefined});
 if (project.options.running?.header) project.options.running.header.left = 'Host-owned title';
 project.options.pdfImages?.push({destination: 'next.png', bytes: new Uint8Array([2])});
 if (project.options.fontAssets?.[0]) project.options.fontAssets[0].weight = 400;
@@ -32,8 +36,22 @@ async function render() {
   const exporter = await createNativeWorkspaceExporter(selectedRuntime);
   const output: FmdRenderOutput = exporter.renderProject(reencoded.bytes);
   const legacy: FmdRenderOutput = exporter.render(project.source, project.options);
-  return [output, legacy];
+  const profiled: FmdRenderOutput = exporter.render(project.source, {profile: 'commonmark-gfm', pdfA: '2b'});
+  const extended: FmdRenderOutput = exporter.render(project.source, {profile: 'gfm-plus'});
+  // @ts-expect-error Native exporters retain the same canonical authoring profile contract.
+  exporter.render(project.source, {profile: 'commonmark'});
+  return [output, legacy, profiled, extended];
 }
+// @ts-expect-error Project files retain a canonical Markdown dialect, not a CLI alias.
+createNativeSourceProject('', {profile: 'gfm'});
+// @ts-expect-error Authoring profile and archival PDF profile remain distinct.
+createNativeSourceProject('', {profile: '2b'});
+// @ts-expect-error Dialect selection does not coerce booleans.
+createNativeSourceProject('', {profile: true});
+// @ts-expect-error Omission is supported, but null is not an authoring profile.
+createNativeSourceProject('', {profile: null});
+// @ts-expect-error Reopened project options retain the strict dialect type.
+project.options.profile = 'default';
 // @ts-expect-error Executable fields are not accepted as project render settings.
 createNativeSourceProject('', {bindings: 'code'});
 // @ts-expect-error Project output is data, not native rendering output.
@@ -50,7 +68,7 @@ createNativeSourceProject('', {microtype: 'automatic'});
 readNativeSourceProject(new Blob());
 // @ts-expect-error The source result binding cannot be replaced accidentally.
 project.source = 'changed';
-void [mime, format, size, directPdf, render, publication];
+void [mime, format, size, directPdf, render, publication, dialect];
 
 // @ts-expect-error Running image positioning is restricted to the native sides.
 createNativeSourceProject('', {running: {header: {image: {dest: 'chart.png', position: 'center'}}}});

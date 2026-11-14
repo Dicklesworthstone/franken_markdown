@@ -320,7 +320,14 @@ dialect invalidates retained output; successful rendered book outputs include
 one-shot helpers require `renderBookPdfConfiguredProfiled` and
 `renderBookSitePublicationProfiled`, reporting `UNSUPPORTED_WASM_PACKAGE` for
 older packages. See [book authoring dialects and saved projects](BOOK.md#markdown-authoring-dialects).
-Editable interactive HTML does not accept this option.
+Native editable workspaces also accept `profile` in `renderOfflineWorkspace`,
+`createNativeWorkspaceExporter().render()` and source projects. Their
+**Document settings → Markdown dialect** choice reaches native preview,
+HTML/PDF/EPUB/SVG publication and Document Lab analysis, and survives Save HTML
+and source-project reopening. Clearing the choice preserves omitted legacy
+behavior. See [native workspace dialects](NATIVE_WORKSPACE.md#change-markdown-dialect-typography-and-publishing-in-the-editor).
+The smaller JavaScript-only `renderInteractiveHtml` workspace does not accept
+this option.
 
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
 (including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and

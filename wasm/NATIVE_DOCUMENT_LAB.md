@@ -15,15 +15,23 @@ Flesch scores, structural inventory, outline and document findings. This is
 separate from the lightweight editor's existing quick statistics. Readability
 scores remain the engine's estimates, not language-independent measurements.
 
+An explicit **Document settings → Markdown dialect** selects the same grammar
+used by preview and publication, including definition-list and page-break
+semantics. It requires the additive `documentStatsProfiled` and
+`accessibilityAuditProfiled` bindings; an older engine fails explicitly rather
+than analyzing a different dialect. Omitting the profile preserves the original
+analysis calls and reports. Source byte and line totals still describe the exact
+input, including comments that become print directives.
+
 Outline buttons render the current revision when necessary and navigate to the
 native heading ID **inside the sandboxed preview**. IDs are opaque values, never
 CSS selectors or URLs; a heading cannot activate an identically named editor
 control. Reports do not supply source spans, so no source line numbers are
 invented. Missing preview headings produce a visible message.
 
-**Audit accessibility** uses the existing native audit ABI, which runs with
-**engine-default PDF options**. It does not inspect this workspace's configured
-paper, supplied fonts or image resources. Its findings are authoring assistance,
+**Audit accessibility** uses the selected Markdown dialect with
+**engine-default PDF layout and resources**. It does not inspect this workspace's
+configured paper, supplied fonts or image resources. Its findings are authoring assistance,
 not certification of the exported PDF, PDF/UA conformance, or a complete
 accessibility evaluation. The panel labels that distinction explicitly.
 

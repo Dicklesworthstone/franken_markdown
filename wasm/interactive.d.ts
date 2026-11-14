@@ -16,7 +16,7 @@ export interface FmdOfflineRuntime {
  * CSS are not enabled in this offline, safe-parsed workspace API.
  */
 export interface FmdOfflineWorkspaceOptions extends Pick<FmdPdfRenderOptions,
-  'font' | 'darkMode' | 'title' | 'lang' | 'toc' | 'tocDepth' | 'author' |
+  'font' | 'darkMode' | 'title' | 'lang' | 'toc' | 'tocDepth' | 'author' | 'profile' |
   'metadataEpochSeconds' | 'pageNumbers' | 'codeLineNumbers' | 'pdfImages' | 'fontAssets' |
   'typography' | 'optimalPagination' | 'strictPagination' | 'footnoteBacklinks' | 'splitFootnotes' | 'baselineGridPt' |
   'microtype' | 'microtypeProtrusion' | 'fitToPages' | 'pdfA' | 'pdfAStrict' | 'page' | 'running'> {

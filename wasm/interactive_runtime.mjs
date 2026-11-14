@@ -18,9 +18,20 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   const exportFormats = Object.freeze(['html', 'pdf', ...Object.keys(publications)
     .filter(format => typeof bindings[publications[format]] === 'function')]);
   function publicationBinding(format) {
-    const render = bindings[publications[format]];
-    if (typeof render !== 'function') throw Object.assign(new Error(
-      format.toUpperCase() + ' publication requires matching resource-capable WASM bindings',
+    const profiled = options.profile !== undefined;
+    let name = publications[format], needed = 0;
+    if (format === 'svg' && (options.toc || options.tocDepth !== undefined)) {
+      name = 'renderSvgConfiguredNavigation'; needed = 17;
+    } else if (profiled && format === 'svg') {
+      name = 'renderSvgConfiguredProfiled'; needed = 15;
+    } else if (profiled && format === 'epub') {
+      name = publications.epub === 'renderEpubConfiguredMetadata'
+        ? 'renderEpubConfiguredMetadata' : 'renderEpubConfiguredProfiled';
+      needed = name === 'renderEpubConfiguredMetadata' ? 21 : 20;
+    }
+    const render = bindings[name];
+    if (typeof render !== 'function' || render.length < needed) throw Object.assign(new Error(
+      format.toUpperCase() + ' publication requires matching resource, authoring-profile and navigation WASM bindings',
     ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
     return render;
   }
@@ -32,15 +43,22 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       throw Object.assign(new Error('Document analysis requires matching native WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
-    // The existing audit ABI uses engine-default PDF options. It is an authoring
-    // check, not a certification of the workspace's configured PDF or assets.
+    // The audit uses the selected grammar with engine-default PDF layout and
+    // resources, not a certification of the workspace's configured PDF or assets.
     // Keep reports separate from render diagnostics and from saved document data.
-    const json = bindings[analyses[kind]](source(markdown));
+    const name = analyses[kind] + (options.profile === undefined ? '' : 'Profiled');
+    const analyze = bindings[name];
+    if (typeof analyze !== 'function' || (options.profile !== undefined && analyze.length < 2)) {
+      throw Object.assign(new Error('Profile-aware document analysis requires matching WASM bindings'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    const json = options.profile === undefined ? analyze(source(markdown))
+      : analyze(source(markdown), options.profile);
     if (typeof json !== 'string' || !json.length) throw new TypeError('Invalid native analysis report');
     settingsText(json, 8 * 1024 * 1024, 'analysis report');
     return json;
   }
-  const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang',
+  const settingKeys = ['font', 'darkMode', 'fontScale', 'title', 'author', 'lang', 'profile',
     'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'toc', 'tocDepth', 'pageGeometry',
     'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
     'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'running'];
@@ -116,6 +134,9 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   }
   function captureSettings(input) {
     const value = settingData(input);
+    if (value.profile !== undefined && !['commonmark-gfm', 'gfm-plus'].includes(value.profile)) {
+      throw new TypeError('profile must be commonmark-gfm or gfm-plus');
+    }
     if (!['sans', 'serif'].includes(value.font)) throw new TypeError('font must be sans or serif');
     if (!['auto', 'disabled'].includes(value.darkMode)) throw new TypeError('darkMode must be auto or disabled');
     if (!Number.isFinite(value.fontScale) || value.fontScale < 0.5 || value.fontScale > 3) throw new RangeError('fontScale must be 0.5..3');
@@ -186,6 +207,7 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     // A positional ABI can silently ignore a new trailing argument. Admit the
     // exact requested capability before decoding saved assets or staging state.
     pdfBinding(value);
+    htmlBinding(value);
     // Omitted optional fields remain omitted across JSON save/reopen cycles.
     return Object.freeze(Object.fromEntries(settingKeys.filter(key => value[key] !== undefined).map(key => [key, value[key]])));
   }
@@ -219,15 +241,25 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
   function pdfBinding(settings) {
     const grid = settings.baselineGridPt > 0;
     const archival = settings.pdfA === '2b';
+    const profiled = settings.profile !== undefined;
     const running = runningArguments(settings.running), typography = typographyTokens(settings);
-    const binding = bindings[archival ? 'renderPdfConfiguredArchival' : grid ? 'renderPdfConfiguredGrid'
+    const binding = bindings[profiled ? 'renderPdfConfiguredProfiled' : archival ? 'renderPdfConfiguredArchival' : grid ? 'renderPdfConfiguredGrid'
       : running?.hasImages ? 'renderPdfConfiguredRunningImages' : running ? 'renderPdfConfiguredRunning'
       : settings.pageGeometry ? 'renderPdfConfiguredPage' : 'renderPdfConfiguredMulti'];
-    const needed = archival ? grid ? 39 : 38 : grid ? 37
+    const needed = profiled ? 40 : archival ? grid ? 39 : 38 : grid ? 37
       : running ? (running.hasImages ? 35 : 32) + (typography === undefined ? 0 : 1)
       : typography === undefined ? 0 : settings.pageGeometry ? 29 : 28;
     if (typeof binding !== 'function' || binding.length < needed) {
-      throw Object.assign(new Error('PDF running headers/footers, archival, typography, pagination and baseline grids require matching WASM bindings'),
+      throw Object.assign(new Error('PDF authoring profiles, running headers/footers, archival, typography, pagination and baseline grids require matching WASM bindings'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    return binding;
+  }
+  function htmlBinding(settings) {
+    const profiled = settings.profile !== undefined;
+    const binding = bindings[profiled ? 'renderHtmlConfiguredProfiled' : 'renderHtmlConfiguredAdvanced'];
+    if (typeof binding !== 'function' || (profiled && binding.length < 22)) {
+      throw Object.assign(new Error('HTML authoring profiles require matching WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
     return binding;
@@ -692,10 +724,11 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     const scale = Math.min(3, Math.max(0.5, settings.fontScale * (display.scale ?? 1)));
     const mode = display.theme === 'light' ? 'disabled'
       : display.theme === 'dark' ? 'auto' : settings.darkMode;
-    const bytes = take(bindings.renderHtmlConfiguredAdvanced(
+    const bytes = take(htmlBinding(settings)(
       source(markdown), settings.font, mode, settings.title, undefined, false, scale,
       ...fontBytes, weights, images.destinations, images.flat, images.lengths,
       settings.lang, settings.toc, settings.tocDepth,
+      ...(settings.profile === undefined ? [] : [undefined, undefined, settings.profile]),
     ), 'text/html');
     let html = decoder.decode(bytes);
     // Only generated styles are transformed; Markdown/code remains data.
@@ -738,7 +771,8 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
         source(markdown), options.font, options.darkMode, options.title, options.lang,
         options.fontScale, undefined, options.toc, options.tocDepth,
         images.destinations, images.flat, images.lengths, ...fontBytes, weights,
-        ...(hasMetadata ? [undefined, undefined, options.author] : []),
+        ...(hasMetadata ? [undefined, options.profile, options.author]
+          : options.profile === undefined ? [] : [undefined, options.profile]),
       ), 'application/epub+zip');
     },
     svg(markdown) {
@@ -748,6 +782,8 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       return take(render(
         source(markdown), options.font, options.darkMode, options.fontScale, undefined,
         images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+        ...(options.toc || options.tocDepth !== undefined ? [options.profile, options.toc, options.tocDepth]
+          : options.profile === undefined ? [] : [options.profile]),
       ), 'image/svg+xml');
     },
     pdf(markdown) {
@@ -762,12 +798,13 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
       ];
       let result;
       try {
-        if (options.pdfA === '2b') {
+        if (options.profile !== undefined || options.pdfA === '2b') {
           result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
             running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
             running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array(),
-            typography, '2b', options.pdfAStrict ?? false,
-            ...(options.baselineGridPt > 0 ? [options.baselineGridPt] : []));
+            typography, options.pdfA ?? 'off', options.pdfAStrict ?? false,
+            ...(options.profile !== undefined ? [options.baselineGridPt, options.profile]
+              : options.baselineGridPt > 0 ? [options.baselineGridPt] : []));
         } else if (options.baselineGridPt > 0) {
           result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
             running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,

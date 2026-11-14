@@ -3,11 +3,11 @@ import { bootNativeWorkspace, createNativeWorkspaceRenderer } from './interactiv
 import {createWorkspacePreviewWorker} from './interactive_preview.mjs';
 import {pdfPageGeometry} from './pdf_page.mjs';
 import {normalizePdfRunning} from './pdf_running.mjs';
-import {normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
+import {normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeMicrotype, normalizePdfArchival, normalizePdfTypography, validateBaselineGridFit} from './render_typography.mjs';
 
 const MiB = 1024 * 1024;
 const slots = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];
-const fields = ['font', 'darkMode', 'title', 'lang', 'fontScale', 'toc', 'tocDepth',
+const fields = ['font', 'darkMode', 'title', 'lang', 'profile', 'fontScale', 'toc', 'tocDepth',
   'author', 'metadataEpochSeconds', 'pageNumbers', 'codeLineNumbers', 'pdfImages', 'fontAssets',
   'typography', 'optimalPagination', 'strictPagination', 'footnoteBacklinks', 'splitFootnotes', 'baselineGridPt',
   'microtype', 'microtypeProtrusion', 'fitToPages', 'pdfA', 'pdfAStrict', 'page', 'running'];
@@ -59,6 +59,9 @@ function capture(markdown, runtime, input) {
   for (const key of Reflect.ownKeys(input)) {
     if (!fields.includes(key)) throw new TypeError(`Unsupported offline workspace option: ${String(key)}`);
   }
+  // Admit and own the dialect once before source coercion, resource getters or
+  // asynchronous initialization can change the caller's request.
+  const profile = normalizeAuthoringProfile(input.profile);
   const source = String(markdown);
   const sourceLength = textBytes(source, 32 * MiB, 'source');
   const { bindings, wasm } = runtime;
@@ -68,13 +71,14 @@ function capture(markdown, runtime, input) {
   if (wasmView.length < 8 || ![0, 97, 115, 109, 1, 0, 0, 0].every((byte, i) => wasmView[i] === byte)) {
     throw new TypeError('WASM must contain a version-1 WebAssembly module');
   }
-  const captured = Object.fromEntries(fields.map(key => [key, input[key]]));
+  const captured = Object.fromEntries(fields.map(key => [key, key === 'profile' ? profile : input[key]]));
   const options = {
     font: captured.font ?? 'sans', darkMode: captured.darkMode ?? 'auto',
     title: captured.title, lang: captured.lang, fontScale: captured.fontScale ?? 1,
     toc: captured.toc ?? false, tocDepth: captured.tocDepth,
     author: captured.author, metadataEpochSeconds: captured.metadataEpochSeconds,
     pageNumbers: captured.pageNumbers ?? false, codeLineNumbers: captured.codeLineNumbers ?? false,
+    ...(profile === undefined ? {} : {profile}),
   };
   const geometry = pdfPageGeometry(captured.page);
   if (geometry.length) options.pageGeometry = Array.from(geometry);
@@ -170,17 +174,40 @@ export async function renderOfflineWorkspace(markdown, runtime, options = {}) {
   const shellOptions = Object.fromEntries(['title', 'lang']
     .map(key => [key, prepared.payload.options[key]]));
   const shell = await renderInteractiveHtml(prepared.source, shellOptions);
-  const html = shell.text();
+  let html = shell.text();
   // Inspect only the compiled controller, never user source or preview text.
   // A pre-worker controller treats render() as synchronous and can save stale
   // HTML when paired with this Promise-returning preview bootstrap.
-  const appStart = html.lastIndexOf('<script>\n');
+  let appStart = html.lastIndexOf('<script>\n');
   const footer = '\n</script>\n</body>\n</html>\n';
   if (appStart < 0 || !html.endsWith(footer)
       || !html.slice(appStart).includes("window.addEventListener('fmd-native-ready'")
       || !html.slice(appStart).includes('fmd-async-preview-v1')) {
     throw Object.assign(new Error('Rebuild the matching WASM package: its interactive controller lacks background preview support'),
       {code: 'UNSUPPORTED_WASM_PACKAGE'});
+  }
+  if (prepared.payload.options.profile !== undefined) {
+    // This one-shot helper has not rendered the selected native dialect yet.
+    // Replace only the verified shell preview, leaving exact source and controls
+    // intact. A failed native startup must not leave a different grammar visible.
+    const sourceOpen = '<script type="application/json" id="fmd-raw-source">';
+    const sourceStart = html.indexOf(sourceOpen), sourceEnd = html.indexOf('</script>', sourceStart + sourceOpen.length);
+    const previewOpen = '<div class="fmd-content" id="fmd-content">';
+    const previewClose = '</div>\n  </main>\n</div>\n';
+    const previewStart = html.indexOf(previewOpen), previewEnd = html.lastIndexOf(previewClose, sourceStart);
+    let sourceMatches = false;
+    if (sourceStart >= 0 && sourceEnd > sourceStart && sourceEnd < appStart) {
+      try { sourceMatches = JSON.parse(html.slice(sourceStart + sourceOpen.length, sourceEnd)) === prepared.source; }
+      catch { /* A mismatched shell cannot authorize replacing its preview. */ }
+    }
+    if (!sourceMatches || previewStart < 0 || previewEnd < previewStart + previewOpen.length
+        || previewEnd + previewClose.length > sourceStart) {
+      throw Object.assign(new Error('Rebuild the matching WASM package: its interactive shell lacks a verified source preview'),
+        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    const notice = '<p role="status">Preview pending: the selected Markdown dialect will render when the document engine is ready.</p>';
+    html = html.slice(0, previewStart + previewOpen.length) + notice + html.slice(previewEnd);
+    appStart = html.lastIndexOf('<script>\n');
   }
   const json = JSON.stringify(prepared.payload).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -197,6 +224,9 @@ export async function renderOfflineWorkspace(markdown, runtime, options = {}) {
   const bytes = new TextEncoder().encode(document);
   if (bytes.length > 256 * MiB) throw new RangeError('Generated workspace exceeds 256 MiB');
   const output = {...shell, bytes, sourceLength: prepared.sourceLength,
+    // Default-dialect shell findings do not describe a profiled document. Its
+    // authoritative diagnostics become available after native preview startup.
+    ...(prepared.payload.options.profile === undefined ? {} : {diagnostics: []}),
     text() { return new TextDecoder().decode(bytes); },
     blob() { return new Blob([bytes], {type: shell.mimeType}); },
   };

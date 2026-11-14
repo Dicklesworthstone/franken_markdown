@@ -44,6 +44,10 @@ export const renderPdfConfiguredMulti = (...args) => render('pdf', args);
 export const renderPdfConfiguredPage = (...args) => render('pdf', args);
 export const renderEpubConfiguredAdvanced = (...args) => render('epub', args);
 export const renderSvgConfiguredResources = (...args) => render('svg', args);
+export function renderSvgConfiguredNavigation(
+  markdown, font, darkMode, fontScale, width, imageDestinations, imageBytes, imageLengths,
+  bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monospace, weights, profile, toc, tocDepth
+) { return render('svg', [...arguments]); }
 '''
 
 
@@ -52,6 +56,7 @@ def fixture(path: Path, *, legacy: bool = False) -> None:
     if legacy:
         bindings = bindings.replace('export const renderEpubConfiguredAdvanced', 'const renderEpubConfiguredAdvanced')
         bindings = bindings.replace('export const renderSvgConfiguredResources', 'const renderSvgConfiguredResources')
+        bindings = bindings.replace('export function renderSvgConfiguredNavigation', 'function renderSvgConfiguredNavigation')
     payload = {'version': 1, 'wasm': 'AGFzbQEAAAA=', 'bindings': bindings,
                'options': {'font': 'serif', 'darkMode': 'disabled', 'fontScale': 1.25,
                            'title': 'Fixture', 'lang': 'fr', 'toc': True, 'tocDepth': 3,
@@ -157,6 +162,7 @@ def main() -> None:
         page.locator('#btn-zoom-in').click(); page.locator('#btn-theme-toggle').click()
         svg = export(page, 'svg', 'Fixture.svg')
         assert svg['args'][:8] == [SOURCE, 'serif', 'disabled', 1.25, None, ['chart.png'], [1, 2, 3], [3]]
+        assert svg['args'][14:] == [None, True, 3]
         check('SVG uses document typography, not viewing zoom or theme')
         page.locator('#btn-document-settings').click()
         page.locator('[name="title"]').fill('Revised')
@@ -175,6 +181,7 @@ def main() -> None:
         svg = export(reopened, 'svg', 'Revised.svg')
         assert svg['args'][0] == SOURCE and svg['args'][3] == 1.5
         assert svg['args'][6] == [1, 2, 3] and svg['args'][8] == [4, 5]
+        assert svg['args'][14:] == [None, True, 3]
         check('Save HTML/reopen restores one working control per format and retained resources')
         for action in ['cancel', 'edit', 'silent-edit']:
             reopened.locator('#fmd-editor').fill('SLOW ' + action)
@@ -198,6 +205,7 @@ def main() -> None:
             check(action + ' blocks stale downloads and restores all publication controls')
         svg = export(reopened, 'svg', 'Revised.svg')
         assert svg['args'][0] == '# Silent newer revision'
+        assert svg['args'][14:] == [None, True, 3]
         check('a fresh SVG export succeeds after cancellation without replaying stale source')
         legacy = open_page(old)
         assert legacy.locator('#btn-export-epub').count() == 0

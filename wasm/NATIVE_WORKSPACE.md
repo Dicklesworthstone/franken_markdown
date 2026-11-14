@@ -127,7 +127,7 @@ embedded editor scripts. Existing exported documents do not upgrade themselves.
 A new editor paired with an old native runtime rejects unsupported imports
 explicitly instead of silently selecting the lightweight parser.
 
-## Change typography, navigation and PDF publishing in the editor
+## Change Markdown dialect, typography and publishing in the editor
 
 Native workspaces expose **Document settings** after engine initialization.
 Choose sans/serif, a document type scale, automatic/light document color mode,
@@ -135,6 +135,28 @@ title, author and language. Enable a table of contents with depth 1..6, PDF page
 numbers or PDF code line numbers. Existing embedded font assets and weight pins
 remain in use; changing settings does not replace fonts or image resources.
 The creation-time `metadataEpochSeconds`, including zero, is preserved.
+
+**Markdown dialect** selects **CommonMark + GFM** (`profile: 'commonmark-gfm'`)
+or **GFM Plus** (`profile: 'gfm-plus'`). The CommonMark/GFM grammar keeps
+definition-list-shaped source in ordinary paragraphs; GFM Plus recognizes
+definition lists and printed page-break comments. Selection happens before
+parsing, so code, emphasis and links spanning those lines retain the selected
+grammar's ownership. It applies to preview, HTML/PDF/EPUB/SVG publication and
+Document Lab analysis. It is separate from the archival `pdfA` setting.
+
+**Default (GFM Plus)** removes the explicit option and preserves legacy calls
+and reports. Both workspace creation APIs accept `profile`; Save HTML and source
+projects retain an explicit selection without changing source or resource bytes.
+Applying a selection uses the existing cancellable preview transaction. A
+runtime missing the corresponding profiled binding reports
+`UNSUPPORTED_WASM_PACKAGE`, preserving the committed document. Explicit SVG
+TOC/depth settings similarly require the native navigation binding, so exports
+retain them instead of silently dropping them.
+
+The reusable exporter embeds a completed native preview. The older one-shot
+`renderOfflineWorkspace()` entry initializes native preview when the saved file
+opens; an explicit dialect shows a pending-render notice until that preview is
+ready, rather than displaying the shell's default-dialect content or findings.
 
 Select Letter, A4, A5, US Legal, Tabloid or custom dimensions, rotate
 portrait/landscape, and edit each margin in PDF points (72 points per inch).
@@ -192,7 +214,7 @@ Lightweight workspaces do not show controls for unsupported native settings.
 
 ## Settings and limits
 
-Supported options are `font`, `darkMode`, numeric `fontScale` (0.5..3), `title`,
+Supported options are `profile`, `font`, `darkMode`, numeric `fontScale` (0.5..3), `title`,
 `author`, `lang`, `metadataEpochSeconds`, `pageNumbers`, `codeLineNumbers`, `toc`,
 `tocDepth`, `pdfImages`, `fontAssets`, `page`, `running`, `typography`,
 `optimalPagination`, `strictPagination`, `footnoteBacklinks`, `splitFootnotes`,

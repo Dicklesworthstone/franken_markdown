@@ -172,6 +172,12 @@ The selected runtime must support the requested running PDF binding.
 An omitted page remains omitted. Optional metadata and TOC depth remain omitted;
 an explicit metadata epoch of zero is never replaced by the clock.
 
+An explicit `profile: 'commonmark-gfm'` or `profile: 'gfm-plus'` is retained as
+document data and reaches the selected native workspace's preview, publications
+and analysis. An omitted profile stays omitted. Older codecs reject the unknown
+option, and older rendering bindings report an unsupported capability instead
+of silently reopening the document with a different grammar.
+
 The codec admits at most 32 MiB UTF-8 source, 32 MiB per resource, 128 MiB combined
 images/fonts, 4096 images, five unique font slots, 8 KiB per destination and
 64 KiB total destination text. Final JSON is bounded at 256 MiB. Unpaired Unicode

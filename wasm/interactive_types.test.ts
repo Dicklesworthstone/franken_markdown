@@ -3,7 +3,7 @@ import {renderOfflineWorkspace, type FmdOfflineRuntime, type FmdOfflineWorkspace
 import {renderInteractiveHtml} from './franken_markdown.js';
 const bytes = new Uint8Array([0,97,115,109,1,0,0,0]);
 const runtime: FmdOfflineRuntime = {bindings:'trusted generated module source',wasm:bytes};
-const options: FmdOfflineWorkspaceOptions = {font:'serif',fontScale:1.125,lang:'fr',toc:true,
+const options: FmdOfflineWorkspaceOptions = {font:'serif',fontScale:1.125,lang:'fr',toc:true,profile:'commonmark-gfm',
   metadataEpochSeconds:0,pdfImages:[{destination:'a.png',bytes:new DataView(bytes.buffer)}],
   fontAssets:[{slot:'body-regular',bytes,weight:550}],pdfA:'2b',pdfAStrict:true,footnoteBacklinks:true,baselineGridPt:13.125,
   page:{size:'a4',orientation:'landscape',margins:{topPt:24,rightPt:36,bottomPt:48,leftPt:60}},
@@ -17,6 +17,16 @@ void [data,blob,filename];
 void renderOfflineWorkspace('source',runtime,{pdfA:'off',pdfAStrict:false,footnoteBacklinks:false});
 void renderOfflineWorkspace('source',runtime,{splitFootnotes:true});
 void renderOfflineWorkspace('source',runtime,{splitFootnotes:false});
+void renderOfflineWorkspace('source',runtime,{profile:'gfm-plus',pdfA:'off'});
+void renderOfflineWorkspace('source',runtime,{profile:undefined});
+// @ts-expect-error Authoring profiles use canonical names rather than CLI aliases.
+renderOfflineWorkspace('source',runtime,{profile:'gfm'});
+// @ts-expect-error The Markdown dialect is distinct from the archival PDF profile.
+renderOfflineWorkspace('source',runtime,{profile:'2b'});
+// @ts-expect-error A dialect must not be accepted through boolean coercion.
+renderOfflineWorkspace('source',runtime,{profile:true});
+// @ts-expect-error Omit the authoring profile to use the default; null is not a dialect.
+renderOfflineWorkspace('source',runtime,{profile:null});
 // @ts-expect-error Explicit bytes, not an ambient runtime URL.
 renderOfflineWorkspace('source',{bindings:'x',wasm:new URL('https://example.invalid/runtime.wasm')});
 // @ts-expect-error Safe-only API does not admit raw HTML.
@@ -35,6 +45,8 @@ renderOfflineWorkspace('source',runtime,{footnoteBacklinks:'true'});
 renderOfflineWorkspace('source',runtime,{splitFootnotes:'true'});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF continuation.
 renderInteractiveHtml('source',{splitFootnotes:true});
+// @ts-expect-error Only the native offline workspace retains an explicit authoring profile.
+renderInteractiveHtml('source',{profile:'commonmark-gfm'});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF backlinks.
 renderInteractiveHtml('source',{footnoteBacklinks:true});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF archival policy.

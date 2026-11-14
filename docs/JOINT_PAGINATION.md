@@ -37,6 +37,15 @@ accepted only when the existing page planner reproduces the selected page
 boundaries from those final lines. Both streaming and monolithic PDF emission use
 that same result.
 
+Exact and strict page planning also honor explicit page breaks after headings.
+The inferred keep with the next block stops when the heading's list item or
+quotation ends; a sibling item or content outside that quotation is not its
+subject. Nested content within the same source ancestors still satisfies the
+keep. The title and its underline remain indivisible, and an impossible
+same-scope heading/subject group still produces the existing strict refusal.
+Generated Notes also start a separate section, while their heading keeps the
+first note. An authored heading called Notes retains ordinary heading rules.
+
 ### Current admission limits
 
 The integration offers alternatives for ordinary, blockquoted and list paragraphs,

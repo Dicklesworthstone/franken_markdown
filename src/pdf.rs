@@ -464,6 +464,20 @@ struct Line {
     image: Option<ImageLine>,
 }
 
+/// A heading may introduce nested content in its own quotation and list item,
+/// but cannot capture a sibling item or content outside an enclosing quote.
+/// Quotes are stamped inside-out, so membership rather than vector order
+/// establishes whether all source ancestors still apply. A heading inside a
+/// note must also stay within that note's source ownership.
+fn heading_scope_contains(before: &Line, after: &Line) -> bool {
+    before
+        .quote_bars
+        .iter()
+        .all(|(id, _)| after.quote_bars.iter().any(|(next, _)| id == next))
+        && after.list_path.starts_with(&before.list_path)
+        && (before.flow.note_owner == 0 || before.flow.note_owner == after.flow.note_owner)
+}
+
 /// The semantic row survives even when none of its cells paints a glyph.
 /// Carrying the width separately from `table_cols` preserves blank grid slots
 /// without adding dummy text segments or changing measurement and placement.
@@ -4138,6 +4152,28 @@ fn layout_pdf_notes(blocks: &[Block], out: &mut Vec<Line>, cx: &mut LayoutCx<'_>
     }
 }
 
+/// Preserve explicit provenance for the generated endnote section. Its title
+/// and ordinary heading geometry stay unchanged; only the incoming inferred
+/// keep is suppressed, while this heading still keeps its first note.
+fn layout_endnotes_heading(out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    let start = out.len();
+    layout_block(
+        &Block::Heading {
+            level: 2,
+            inlines: vec![Inline::Text("Notes".to_string())],
+        },
+        0.0,
+        out,
+        cx,
+    );
+    if let Some(source) = out
+        .get_mut(start)
+        .and_then(|line| line.heading_source.as_deref_mut())
+    {
+        source.starts_note_section = true;
+    }
+}
+
 /// Lays out each prepared note at footnote size into a region that trails the
 /// body lines (see [`FlowMark::note`]). A note goes to the trailing Notes
 /// section instead when no body line references it (it is unreferenced or
@@ -4223,15 +4259,7 @@ fn layout_pdf_page_notes(defs: &[(&str, &[Block])], out: &mut Vec<Line>, cx: &mu
         // This second pass only tightens capacity, so an endnote still exists.
         admit_page_notes(&mut notes, out, capacity, separator_height, true);
         gap(out, ENDNOTES_GAP_BEFORE);
-        layout_block(
-            &Block::Heading {
-                level: 2,
-                inlines: vec![Inline::Text("Notes".to_string())],
-            },
-            0.0,
-            out,
-            cx,
-        );
+        layout_endnotes_heading(out, cx);
         for note in notes.iter().filter(|note| !note.at_foot) {
             let start = out.len();
             layout_pdf_note_body(note.body, out, cx);
@@ -25844,6 +25872,9 @@ struct HeadingSource {
     /// Immutable AST identity used only for navigation lookup within this render.
     /// Addresses never enter document bytes or persistent metadata.
     source_identity: Option<usize>,
+    /// Renderer-generated Notes starts a new semantic section. An authored
+    /// heading with the same title must not acquire this boundary.
+    starts_note_section: bool,
     slug: String,
     title: String,
 }
@@ -25855,6 +25886,7 @@ impl HeadingSource {
         let title = title.trim();
         Self {
             source_identity: None,
+            starts_note_section: false,
             slug: crate::anchors::heading_slug(inlines),
             title: if title.is_empty() { "Section" } else { title }.to_string(),
         }

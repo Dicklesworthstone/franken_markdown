@@ -5,9 +5,8 @@
 //! therefore admits reservations that cannot fit, even on an ordinary page.
 
 use super::{
-    Block, ENDNOTES_GAP_BEFORE, Inline, LayoutCx, Line, PAGE_NOTE_MAX_SHARE, PageNoteLayout,
-    admit_page_notes, baseline_grid, heading_gap_before, layout_block, layout_pdf_note_body,
-    line_leading,
+    ENDNOTES_GAP_BEFORE, LayoutCx, Line, PAGE_NOTE_MAX_SHARE, PageNoteLayout, admit_page_notes,
+    baseline_grid, heading_gap_before, layout_endnotes_heading, layout_pdf_note_body, line_leading,
 };
 
 /// Each pass is linear in the retained lines. Migration only goes from the
@@ -42,15 +41,7 @@ pub(super) fn finish(
             if let Some(last) = body.last_mut() {
                 baseline_grid::add_natural_gap(last, ENDNOTES_GAP_BEFORE + heading_gap_before(2));
             }
-            layout_block(
-                &Block::Heading {
-                    level: 2,
-                    inlines: vec![Inline::Text("Notes".to_string())],
-                },
-                0.0,
-                &mut heading,
-                cx,
-            );
+            layout_endnotes_heading(&mut heading, cx);
         }
         for (note, endnote) in notes.iter_mut().zip(&mut endnotes) {
             if !note.at_foot && endnote.is_none() {

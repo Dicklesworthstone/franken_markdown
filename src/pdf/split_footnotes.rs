@@ -376,7 +376,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
         }
     }
     if before.flow.kind == FlowKind::Heading
-        && (before.flow.group == after.flow.group || same_heading_scope(before, after))
+        && (before.flow.group == after.flow.group || heading_scope_contains(before, after))
     {
         return true;
     }
@@ -405,18 +405,6 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
         || !after.list_path.is_empty()
         || note_label_only(after))
         && note_label_only(before)
-}
-
-/// A heading can introduce nested content in its own quotation and list item,
-/// but cannot capture a sibling item or content outside an enclosing quote.
-/// Quotes are stamped inside-out, so membership rather than vector order
-/// establishes whether all of the heading's source ancestors still apply.
-fn same_heading_scope(before: &Line, after: &Line) -> bool {
-    before
-        .quote_bars
-        .iter()
-        .all(|(id, _)| after.quote_bars.iter().any(|(next, _)| id == next))
-        && after.list_path.starts_with(&before.list_path)
 }
 
 /// The smallest consecutive unit that may end a fragment. Heading, label and

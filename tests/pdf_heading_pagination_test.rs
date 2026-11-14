@@ -7,8 +7,8 @@
 mod pdf_content;
 
 use franken_markdown::{
-    Block, PageMargins, PdfEmitOptions, PdfImageAsset, PdfOptions, parse_markdown, render_pdf,
-    render_pdf_document, render_pdf_document_emitted,
+    BaselineGrid, Block, PageMargins, PdfEmitOptions, PdfImageAsset, PdfOptions, parse_markdown,
+    render_pdf, render_pdf_document, render_pdf_document_emitted, render_pdf_document_reported,
 };
 use std::collections::BTreeMap;
 
@@ -587,4 +587,175 @@ fn explicit_breaks_win_and_oversized_headings_still_make_progress() {
         words.join("") + "BODYAFTER"
     );
     assert_eq!(pages.iter().map(|page| page.rules.len()).sum::<usize>(), 1);
+}
+
+#[test]
+fn exact_heading_keeps_yield_to_explicit_document_and_chapter_breaks() {
+    let mut chapter_break = parse_markdown("# BEFORE\n\n# AFTER\n\nBODY\n");
+    chapter_break.blocks.insert(1, Block::PageBreak);
+    let authored_break = parse_markdown("# BEFORE\n\n<!-- pagebreak -->\n\n# AFTER\n\nBODY\n");
+    for document in [&chapter_break, &authored_break] {
+        for strict in [false, true] {
+            let options = PdfOptions {
+                optimal_pagination: !strict,
+                strict_pagination: strict,
+                ..PdfOptions::default()
+            };
+            let rendered =
+                render_pdf_document_reported(document, &options, PdfEmitOptions::default())
+                    .expect("an explicit break must not conflict with inferred heading keeps");
+            assert!(rendered.pagination.page_breaks.is_exact());
+            let pages = painted_pages(&rendered.bytes);
+            assert_eq!(pages.len(), 2);
+            assert_eq!(page_of(&pages, "BEFORE"), 0);
+            assert_eq!(page_of(&pages, "AFTER"), 1);
+            assert_eq!(page_of(&pages, "BODY"), 1);
+            assert_eq!(pages[0].rules.len(), 1);
+            assert_eq!(pages[1].rules.len(), 1);
+            assert_eq!(
+                rendered,
+                render_pdf_document_reported(document, &options, PdfEmitOptions::monolithic())
+                    .unwrap(),
+                "both emitters must honor the same explicit boundary"
+            );
+        }
+    }
+}
+
+fn tight_exact_options() -> PdfOptions {
+    let mut options = small_options();
+    options.strict_pagination = true;
+    options.theme.page.size.height_pt = 120.0;
+    options
+}
+
+#[test]
+fn exact_heading_keeps_end_at_quote_and_list_item_boundaries() {
+    // The heading and three-line paragraph each fit in the 72pt body, but
+    // cannot fit together. Paragraph widow/orphan minima keep all three lines.
+    let mut documents = vec![
+        parse_markdown("> ## ALPHA\n\nONE  \nTWO  \nTHREE"),
+        parse_markdown("- ## ALPHA\n- ONE  \n  TWO  \n  THREE"),
+        parse_markdown("> > ## ALPHA\n>\n> ONE  \n> TWO  \n> THREE"),
+    ];
+    // Equal indentation and quote depth do not make sibling quotes one scope.
+    let mut sibling_quotes = parse_markdown("> ## ALPHA");
+    sibling_quotes
+        .blocks
+        .extend(parse_markdown("> ONE  \n> TWO  \n> THREE").blocks);
+    documents.push(sibling_quotes);
+
+    let options = tight_exact_options();
+    for document in &documents {
+        let rendered =
+            render_pdf_document_reported(document, &options, PdfEmitOptions::default())
+                .expect("a trailing heading cannot capture an unrelated source container");
+        assert!(rendered.pagination.page_breaks.is_exact());
+        let pages = painted_pages(&rendered.bytes);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(page_of(&pages, "ALPHA"), 0);
+        for word in ["ONE", "TWO", "THREE"] {
+            assert_eq!(page_of(&pages, word), 1);
+        }
+        assert_eq!(pages[0].rules.len(), 1);
+        assert!(pages[1].rules.is_empty());
+        assert_eq!(
+            rendered,
+            render_pdf_document_reported(document, &options, PdfEmitOptions::monolithic())
+                .unwrap()
+        );
+        let best_effort = PdfOptions {
+            strict_pagination: false,
+            optimal_pagination: true,
+            ..options.clone()
+        };
+        assert_eq!(
+            rendered.bytes,
+            render_pdf_document_reported(document, &best_effort, PdfEmitOptions::default())
+                .unwrap()
+                .bytes
+        );
+    }
+}
+
+#[test]
+fn exact_heading_keeps_remain_hard_for_same_scope_and_nested_subjects() {
+    let sources = [
+        "## ALPHA\n\nONE  \nTWO  \nTHREE",
+        "> ## ALPHA\n>\n> ONE  \n> TWO  \n> THREE",
+        "- ## ALPHA\n\n  ONE  \n  TWO  \n  THREE",
+        "## ALPHA\n\n> ONE  \n> TWO  \n> THREE",
+        "> ## ALPHA\n>\n> > ONE  \n> > TWO  \n> > THREE",
+        "- ## ALPHA\n\n  - ONE  \n    TWO  \n    THREE",
+    ];
+    for source in sources {
+        let options = tight_exact_options();
+        let error = render_pdf(source, &options)
+            .expect_err("an impossible heading/subject group must retain its strict refusal");
+        assert_eq!(error.code(), "pagination_infeasible", "{source}");
+        let mut roomy = options;
+        roomy.theme.page.size.height_pt = 300.0;
+        let pages = painted_pages(&render_pdf(source, &roomy).unwrap());
+        assert_eq!(pages.len(), 1);
+        for word in ["ALPHA", "ONE", "TWO", "THREE"] {
+            assert_eq!(page_of(&pages, word), 0);
+        }
+    }
+
+    // A final heading has no subject to keep, but retains its complete title
+    // and underline under the same strict policy.
+    let pages = painted_pages(&render_pdf("## ALPHA", &tight_exact_options()).unwrap());
+    assert_eq!(pages.len(), 1);
+    assert_eq!(page_of(&pages, "ALPHA"), 0);
+    assert_eq!(pages[0].rules.len(), 1);
+}
+
+#[test]
+fn generated_notes_start_a_new_section_but_keep_the_first_note() {
+    let source = "## ALPHA\n\n[^n]: ONE  \n    TWO  \n    THREE";
+    let document = parse_markdown(source);
+    for grid in [None, Some(BaselineGrid::from_points(1.0).unwrap())] {
+        let mut options = tight_exact_options();
+        // Notes + its indivisible three-line paragraph fit in 120pt; adding
+        // the preceding source heading and section spacing does not.
+        options.theme.page.size.height_pt = 168.0;
+        options.theme.page.baseline_grid = grid;
+        for strict in [false, true] {
+            options.strict_pagination = strict;
+            options.optimal_pagination = !strict;
+            let rendered =
+                render_pdf_document_reported(&document, &options, PdfEmitOptions::default())
+                    .expect("a generated Notes section must not bind the preceding heading");
+            assert!(rendered.pagination.page_breaks.is_exact());
+            let pages = painted_pages(&rendered.bytes);
+            assert_eq!(pages.len(), 2);
+            assert_eq!(page_of(&pages, "ALPHA"), 0);
+            for word in ["Notes", "ONE", "TWO", "THREE"] {
+                assert_eq!(page_of(&pages, word), 1);
+            }
+            assert_eq!(pages[0].rules.len(), 1);
+            assert_eq!(pages[1].rules.len(), 1);
+            assert_eq!(
+                rendered,
+                render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic())
+                    .unwrap()
+            );
+        }
+
+        options.strict_pagination = true;
+        options.optimal_pagination = false;
+        let authored = "## ALPHA\n\n## Notes\n\nONE  \nTWO  \nTHREE";
+        assert_eq!(
+            render_pdf(authored, &options).unwrap_err().code(),
+            "pagination_infeasible",
+            "an authored title named Notes must retain its ordinary heading keeps"
+        );
+
+        options.theme.page.size.height_pt = 120.0;
+        assert_eq!(
+            render_pdf(source, &options).unwrap_err().code(),
+            "pagination_infeasible",
+            "the generated Notes heading must still keep its first complete note fragment"
+        );
+    }
 }

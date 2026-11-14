@@ -231,6 +231,24 @@ fn short_introduction_keeps_next(lines: &[Line], start: usize) -> bool {
             .all(|(before, after)| before.list == after.list && before.item == after.item)
 }
 
+/// Explicit page boundaries outrank an inferred heading-to-subject bond. The
+/// heading itself remains indivisible, even when its source container ends or
+/// it has no following subject. Use the first heading row's provenance: an
+/// H1/H2 underline may not carry the list ancestry of its visible title.
+fn heading_keeps_next(lines: &[Line], start: usize) -> bool {
+    let first = &lines[start];
+    let Some(after) = lines.get(pdf_height_block_end(lines, start)) else {
+        return false;
+    };
+    !after.page_break_before
+        && !after
+            .heading_source
+            .as_ref()
+            .is_some_and(|source| source.starts_note_section)
+        && first.flow.note == after.flow.note
+        && heading_scope_contains(first, after)
+}
+
 pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
     let first = &lines[start];
     let mut policy = if first.flow.kind == FlowKind::Paragraph {
@@ -244,7 +262,10 @@ pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
     } else {
         break_penalty(lines, start).round() as i64
     };
-    if first.flow.kind == FlowKind::Heading || short_introduction_keeps_next(lines, start) {
+    if first.flow.kind == FlowKind::Heading {
+        policy.keep_together = true;
+        policy.keep_with_next = heading_keeps_next(lines, start);
+    } else if short_introduction_keeps_next(lines, start) {
         policy.keep_together = true;
         policy.keep_with_next = true;
     }

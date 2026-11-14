@@ -150,6 +150,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Optimal and strict PDF pagination honor explicit document and chapter breaks
+  after headings. Heading keeps stay within their source list item and quotation
+  ancestry, so trailing container headings cannot make an otherwise feasible
+  page plan fail. Generated Notes start their own section while retaining the
+  first note. Complete titles, underlines and same-scope subjects retain their
+  existing hard constraints.
 - Footnote completion offers no edit when a lexical candidate straddles a
   literal code boundary and parser ownership cannot be proven. Rename keeps
   its strict refusal, and completion budget failures remain explicit.

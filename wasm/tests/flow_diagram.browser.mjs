@@ -92,7 +92,7 @@ export async function run(fixture, runtime, mode = "enabled") {
   equal(fixture?.schema, "fmd-flow-diagram-native-v1", "actual native diagram fixture required");
   assert(runtime && typeof runtime.createFlowSession === "function", "matching generated WASM is required");
   assert(["enabled", "lean"].includes(mode), "unknown build profile");
-  equal(fixture.scenes.map(scene => scene.name), ["flowchart", "class", "sequence", "pie", "unsupported", "ascii"]);
+  equal(fixture.scenes.map(scene => scene.name), ["flowchart", "class", "er", "sequence", "pie", "unsupported", "ascii"]);
   const results = [], evidence = { mode, scenes: {}, browserTextCalls: 0, fetchCalls: 0 };
   const restore = [], currentPaths = new WeakMap();
   let trace = null;

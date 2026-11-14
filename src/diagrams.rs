@@ -1,12 +1,13 @@
 //! Zero-dependency pure-Rust diagram compiler.
 //!
-//! Compiles Mermaid flowcharts, state diagrams, class diagrams, sequence diagrams,
-//! pie charts, and ASCII art into standalone SVG for the shared rendering backends.
+//! Compiles Mermaid flowcharts, state, class, entity-relationship, and sequence
+//! diagrams, pie charts, and ASCII art into standalone SVG for the shared renderers.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 mod class;
+mod er;
 mod flowchart;
 mod pie;
 mod sequence;
@@ -27,7 +28,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();
     if matches!(
         trimmed_lang.as_str(),
-        "mermaid" | "flowchart" | "state" | "class" | "sequence" | "pie" | "ditaa"
+        "mermaid" | "flowchart" | "state" | "class" | "er" | "sequence" | "pie" | "ditaa"
     ) {
         return true;
     }
@@ -40,6 +41,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     names_flowchart(first_directive)
         || state::is_header(first_directive)
         || class::is_header(first_directive)
+        || er::is_header(first_directive)
         || sequence::is_header(first_directive)
         || pie::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
@@ -63,6 +65,8 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         state::render(trimmed)
     } else if lower_lang == "class" {
         class::render(trimmed)
+    } else if lower_lang == "er" {
+        er::render(trimmed)
     } else if lower_lang == "sequence" || sequence::is_header(first_directive) {
         sequence::render(trimmed)
     } else if lower_lang == "ditaa"
@@ -77,8 +81,10 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         state::render(trimmed)
     } else if class::is_header(first_directive) {
         class::render(trimmed)
+    } else if er::is_header(first_directive) {
+        er::render(trimmed)
     } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
-        // gantt, erDiagram and other Mermaid
+        // gantt and other Mermaid
         // types this compiler does not draw stay readable source code instead
         // of being misread as flowchart nodes.
         None
@@ -106,6 +112,8 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
         "State diagram"
     } else if svg.contains("class=\"fmd-diagram fmd-class\"") {
         "Class diagram"
+    } else if svg.contains("class=\"fmd-diagram fmd-er\"") {
+        "Entity relationship diagram"
     } else if svg.contains("class=\"fmd-diagram fmd-flowchart\"") {
         "Diagram"
     } else {

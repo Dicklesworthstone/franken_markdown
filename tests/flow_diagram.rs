@@ -46,6 +46,12 @@ const CLASS: &str = concat!(
     "Renderer <|.. HtmlRenderer : implements\n",
     "Document \"1\" *-- \"1\" HtmlRenderer : renders & caches\n",
 );
+const ER: &str = concat!(
+    "erDiagram\ndirection LR\n",
+    "CUSTOMER {\n  int id PK\n  string email UK\n}\n",
+    "ORDER {\n  int id PK\n  int customer_id FK\n}\n",
+    "CUSTOMER ||..o{ ORDER : \"places & tracks\"\n",
+);
 // Keep the unsupported-dialect control when class diagrams become native figures.
 const UNSUPPORTED: &str =
     "gantt\ntitle Publication schedule\nsection Rendering\nCompile :2026-01-01, 1d\n";
@@ -779,6 +785,7 @@ fn browser_wire_preserves_paths_strokes_real_label_outlines_and_source_only_path
         let mut scenes = vec![original.clone()];
         for (name, language, code, supported) in [
             ("class", "mermaid", CLASS, true),
+            ("er", "mermaid", ER, true),
             ("sequence", "mermaid", SEQUENCE, true),
             ("pie", "mermaid", PIE, true),
             ("unsupported", "mermaid", UNSUPPORTED, false),
@@ -988,4 +995,56 @@ fn class_diagrams_keep_members_relationships_and_exact_source_in_narrow_flow() {
         assert!(state.pending_assets().is_empty());
         assert_eq!(state.source(), source);
     }
+}
+
+#[test]
+fn er_diagrams_keep_table_cells_cardinality_geometry_and_exact_flow_source() {
+    let source = fence("mermaid", ER);
+    for width in [180.0, 400.0, 900.0] {
+        let state = session(&source, width);
+        assert_scene_bounds(state.display(), &source, ER, width, FontFamily::Sans);
+        let visible = flattened(state.display());
+        for label in [
+            "CUSTOMER",
+            "ORDER",
+            "id",
+            "email",
+            "customer_id",
+            "PK",
+            "FK",
+            "UK",
+            "places & tracks",
+        ] {
+            assert!(visible.contains(label), "lost ER diagram label {label:?}");
+        }
+        assert!(!visible.contains("Diagram source fallback:"));
+        assert!(
+            paths(state.display()).iter().any(|path| {
+                path.stroke
+                    .as_ref()
+                    .is_some_and(|stroke| !stroke.dash.is_empty())
+            }),
+            "non-identifying relationships retain their dashed strokes"
+        );
+        assert!(
+            paths(state.display()).iter().any(|path| {
+                path.commands
+                    .iter()
+                    .any(|command| matches!(command, DisplayPathCommand::CubicTo { .. }))
+            }),
+            "optional cardinality keeps a real circle"
+        );
+        assert!(state.pending_assets().is_empty());
+        assert_eq!(state.source(), source);
+    }
+}
+
+#[test]
+fn er_whitespace_labels_keep_the_complete_native_scene() {
+    let code = "erDiagram\nA { string name \"   \" }\nA ||--o{ B : \"  \"\n";
+    let state = session(&fence("mermaid", code), 400.0);
+    assert!(!paths(state.display()).is_empty());
+    assert!(!flattened(state.display()).contains("Diagram source fallback:"));
+    assert!(texts(state.display()).iter().any(|text| text.text == "   "));
+    assert_eq!(diagram(state.display(), code).text, code);
 }

@@ -1,7 +1,8 @@
 # Native diagrams in browser Flow
 
-Flow sessions render supported Mermaid flowcharts, state diagrams, class diagrams,
-sequence diagrams and pie charts as native vector paths with measured, bundled-font labels. This is part
+Flow sessions render supported Mermaid flowcharts, state, class, entity-relationship
+and sequence diagrams, and pie charts as native vector paths with measured,
+bundled-font labels. This is part
 of every `wasm-flow` build; it needs no additional feature flag. Rebuild the
 generated WASM package and use the matching in-tree Canvas and reader modules.
 
@@ -59,6 +60,7 @@ and [Canvas presentation](../wasm/CANVAS.md).
 | `graph` / `flowchart` | Native rectangles, rounded nodes, circles, diamonds, forward and return routes, labeled solid/dotted/thick links, and arrowheads |
 | `stateDiagram` / `stateDiagram-v2` | Flat state machines with descriptions, initial/final markers, choices, fork/join bars, guarded transitions and separate feedback/parallel routes |
 | `classDiagram` | Class names, attributes, methods, stereotypes, multiplicities, UML relationship endpoints and distinct routed connections |
+| `erDiagram` | Entity attribute tables, primary/foreign/unique keys, comments, identifying/dashed links and actual zero/one/many crow-foot endpoints |
 | `sequenceDiagram` | Participants and actors, solid/dashed message lines, arrowheads, activations, self-messages, frames, notes and labels |
 | `pie` | Native curved slices, title, percentages, legend colors and optional original values |
 | Unsupported or malformed recognized diagram DSL | A visible explanation followed by the complete source |

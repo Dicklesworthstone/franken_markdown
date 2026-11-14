@@ -1526,3 +1526,34 @@ fn class_diagrams_reach_single_and_book_epubs_with_members_and_declared_svg() {
         assert!(opf.contains("properties=\"svg\""));
     }
 }
+
+#[test]
+fn er_diagrams_reach_single_and_book_epubs_with_attribute_tables_and_declared_svg() {
+    use franken_markdown::BookInput;
+    use franken_markdown::book::BookRenderer;
+    let source = "# Data model\n\n```mermaid\nerDiagram\nCUSTOMER {\nint id PK\nstring email UK\n}\nORDER {\nint customer_id FK\n}\nCUSTOMER ||--o{ ORDER : \"places & tracks\"\n```\n";
+    let doc = parse_markdown(source);
+    let single = epub::render_epub(&doc, &HtmlOptions::default()).unwrap();
+    assert_eq!(
+        single,
+        epub::render_epub(&doc, &HtmlOptions::default()).unwrap()
+    );
+    let renderer = BookRenderer::new(&[BookInput {
+        path: "data-model.md".into(),
+        source: source.into(),
+    }])
+    .unwrap();
+    for archive in [single, renderer.render_epub().unwrap()] {
+        let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
+        assert_well_formed_xml(&chapter);
+        assert!(chapter.contains("class=\"fmd-diagram fmd-er\""));
+        for cell in ["CUSTOMER", "ORDER", "email", "customer_id", "PK", "FK", "UK"] {
+            assert!(chapter.contains(&format!(">{cell}</text>")), "{cell}");
+        }
+        assert!(chapter.contains("places &amp; tracks"));
+        assert!(!chapter.contains("language-mermaid"));
+        let opf = entry_text(&archive, "OEBPS/content.opf");
+        assert_well_formed_xml(&opf);
+        assert!(opf.contains("properties=\"svg\""));
+    }
+}

@@ -3,8 +3,8 @@
 Mermaid fences use the same first-party SVG compiler in HTML, PDF, SVG posters,
 and EPUB. Rendering does not load Mermaid.js, execute scripts, or contact the
 network. Flowcharts (`graph`/`flowchart`), state diagrams
-(`stateDiagram`/`stateDiagram-v2`), class diagrams (`classDiagram`), sequence
-diagrams (`sequenceDiagram`), and pie charts are supported. Other diagram types retain their source as a
+(`stateDiagram`/`stateDiagram-v2`), class diagrams (`classDiagram`), entity-relationship
+diagrams (`erDiagram`), sequence diagrams (`sequenceDiagram`), and pie charts are supported. Other diagram types retain their source as a
 highlighted code block.
 
 ## Flowcharts
@@ -156,6 +156,70 @@ Flow's native vector scene. Flow retains the exact source as its accessible
 transcript. The supported syntax is described by the
 [official Mermaid class reference](https://mermaid.js.org/syntax/classDiagram.html).
 See [the class diagram examples](../examples/class-diagrams.md).
+
+## Entity-relationship diagrams
+
+````markdown
+```mermaid
+erDiagram
+    direction LR
+    CUSTOMER {
+        int id PK
+        string email UK
+    }
+    ORDER {
+        int id PK
+        int customer_id FK "Account owner"
+    }
+    CUSTOMER ||--o{ ORDER : places
+```
+````
+
+The `erDiagram` header is required, including in an explicitly named `er` fence.
+An entity can stand alone, begin an attribute block or first appear in a
+relationship. Double quotes allow names containing spaces and punctuation;
+`CUSTOMER["Customer account"]` assigns a display alias without changing the
+entity's identity. A later attribute block extends the same entity in source
+order.
+
+Attribute rows contain a type and name, optional `PK`, `FK`, or `UK` keys
+(comma-separated for combinations), and an optional quoted comment. A leading
+`*` on the attribute name also marks a primary key. Nullable type suffixes,
+array notation and numeric type parameters such as `decimal(10,2)` remain
+visible. The renderer sizes separate type, name, key and comment columns,
+wraps long cells, and preserves every row.
+
+Relationships draw their actual crow-foot endpoints:
+
+| Left marker | Right marker | Cardinality |
+|---|---|---|
+| `\|o` | `o\|` | Zero or one |
+| `\|\|` | `\|\|` | Exactly one |
+| `}o` | `o{` | Zero or more |
+| `}\|` | `\|{` | One or more |
+
+Use `--` for an identifying relationship and `..` for a non-identifying,
+dashed relationship. Each relationship requires a colon and label; quote
+multiword labels or punctuation. `direction TB`, `BT`, `LR`, and `RL`
+select the layout. Self-links, parallel edges and cycles keep separate routes
+and captions. Endpoint symbols are ordinary vector paths and circles, so the
+publication and Flow renderers receive the same notation.
+
+Newlines separate declarations and relationships. Attribute rows can share
+a line inside braces. `%%` introduces comments outside quoted text; tabs in
+display labels expand to four spaces. Admission is bounded to 64 KiB of
+source, 256 entities, 1024 relationships, 128 attributes per entity and 2048
+attributes total, 128 UTF-8 bytes per identifier and 512 bytes per label or
+comment. Flow's existing scene budgets still apply to large admitted diagrams.
+
+Labels are escaped plain text; Markdown inside them is not interpreted.
+Word aliases for cardinalities, styles, classes, interactions, configuration
+and semicolon-separated statements are outside this subset. Unsupported syntax, malformed rows and exceeded limits
+retain the **entire source block**. All output remains offline and uses the
+shared native compiler.
+
+See the [official Mermaid ER syntax](https://mermaid.js.org/syntax/entityRelationshipDiagram.html)
+and [the entity diagram examples](../examples/entity-relationships.md).
 
 ## Sequence diagrams
 

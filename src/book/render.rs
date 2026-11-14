@@ -465,14 +465,24 @@ pub(super) fn resolve_site_links(blocks: &mut [Block], source: &str, known: &BTr
 fn resolve_images(blocks: &mut [Block], source: &str, keys: &BTreeSet<&str>) {
     crate::safe_html::visit_destinations(blocks, &mut |dest, kind| {
         if kind == crate::safe_html::UrlKind::Image
-            && let Some((target, suffix)) = paths::destination(source, dest)
+            && let Some(key) = qualified_image_key(source, dest, |key| keys.contains(key))
         {
-            let key = format!("{target}{suffix}");
-            if keys.contains(key.as_str()) {
-                *dest = key;
-            }
+            *dest = key;
         }
     });
+}
+
+/// Source-relative image keys take precedence only when the host supplied that
+/// exact key. Otherwise rendering retains the literal destination for its
+/// direct-key fallback. Source refactoring uses this same selection policy.
+pub(crate) fn qualified_image_key(
+    source: &str,
+    destination: &str,
+    contains: impl FnOnce(&str) -> bool,
+) -> Option<String> {
+    let (target, suffix) = paths::destination(source, destination)?;
+    let key = format!("{target}{suffix}");
+    contains(&key).then_some(key)
 }
 
 // Links and images share structural traversal, not destination semantics.

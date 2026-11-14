@@ -117,6 +117,7 @@ pub fn expand_includes_with_limit_and_profile(
         max_output_bytes,
         mapping: None,
         profile,
+        targets: None,
     };
     expansion.expand(src, 0, "<input>", false, 0)?;
     Ok(expansion.output)
@@ -246,6 +247,7 @@ pub fn expand_includes_mapped_with_limit_and_profile(
         max_output_bytes,
         mapping: Some(ExpansionMapping::default()),
         profile,
+        targets: None,
     };
     expansion.expand(src, 0, root_origin, false, 0)?;
     let mapping = expansion.mapping.unwrap_or_default();
@@ -325,6 +327,37 @@ struct Expansion<'a> {
     max_output_bytes: usize,
     mapping: Option<ExpansionMapping>,
     profile: Option<crate::Profile>,
+    targets: Option<Vec<IncludeTargetSpan>>,
+}
+
+/// Exact path tokens admitted by the ordinary expansion engine. Selectors and
+/// surrounding whitespace are outside `range`; `line` owns the directive so
+/// Markdown-shaped filenames cannot become a separate source-edit authority.
+pub(crate) struct IncludeTargetSpan {
+    pub range: Range<usize>,
+    pub line: Range<usize>,
+    pub path: String,
+}
+
+pub(crate) fn include_target_spans(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> Result<Vec<IncludeTargetSpan>> {
+    if !has_includes(source) {
+        return Ok(Vec::new());
+    }
+    let mut expansion = Expansion {
+        resolver: &|_, _| Err("source inspection cannot resolve includes".into()),
+        output: String::new(),
+        stack: Vec::new(),
+        resolutions: 0,
+        max_output_bytes: source.len(),
+        mapping: None,
+        profile,
+        targets: Some(Vec::new()),
+    };
+    expansion.expand(source, 0, "<source>", false, 0)?;
+    Ok(expansion.targets.unwrap_or_default())
 }
 
 struct ActiveInclude {
@@ -471,6 +504,20 @@ impl Expansion<'_> {
                 )));
             }
             self.resolutions += 1;
+            if let Some(targets) = &mut self.targets {
+                // Both slices borrow this exact line; subtraction recovers its
+                // byte offset without searching for equal-looking path text.
+                let start = original_start + (target.as_ptr().addr() - line.as_ptr().addr());
+                let quoted = target.starts_with(['\'', '"']);
+                let length = path.len() + if quoted { 2 } else { 0 };
+                targets.push(IncludeTargetSpan {
+                    range: start..start + length,
+                    line: original_start..line_offset,
+                    path: path.to_owned(),
+                });
+                self.append(line, source_id, original_start, false)?;
+                continue;
+            }
             let (content, resolved) = match (self.resolver)(path, origin) {
                 Ok(Some(pair)) => pair,
                 Ok(None) => {

@@ -30,6 +30,10 @@ mod render;
 mod workspace;
 pub use workspace::{BookSourceSetUpdate, BookSourceUpdate, BookWorkspace};
 
+#[path = "book/source_rename.rs"]
+mod source_rename;
+pub use source_rename::{BookSourceRename, rename_book_source, rename_book_source_with_images};
+
 #[path = "book/validation.rs"]
 pub mod validation;
 pub use validation::{LinkSourceLocation, LinkSourcePrecision, LocatedLinkReport};

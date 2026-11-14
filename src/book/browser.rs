@@ -12,6 +12,10 @@ mod render_options;
 #[path = "browser_source_set.rs"]
 mod source_set;
 
+#[path = "browser_source_rename.rs"]
+mod source_rename;
+pub use source_rename::rename_book_source;
+
 #[path = "browser_pdf_report.rs"]
 mod pdf_report;
 

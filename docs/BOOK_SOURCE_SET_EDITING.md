@@ -6,6 +6,10 @@ This is an in-memory editing operation, not a filesystem mutation or a source
 link-rewriting service. It requires a matching WASM build with
 `FmdBook.replaceSources`.
 
+For a rename that also repairs source references, first prepare the complete
+capture with [`rename_book_source`](BOOK_SOURCE_RENAME.md). Plain source-set
+replacement continues to accept exactly the caller's supplied text.
+
 ```js
 import { createBook } from "@franken-suite/franken-markdown/book";
 

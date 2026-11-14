@@ -325,7 +325,13 @@ fn render_archival(
         .collect();
     let doc = parsed.into_document();
     let pdf_options = options.pdf_options();
-    for warning in crate::render_warnings(&doc, &pdf_options) {
+    let rendered = crate::render_pdf_document_with_diagnostics(
+        &doc,
+        &pdf_options,
+        settings,
+        crate::PdfEmitOptions::default(),
+    )?;
+    for warning in rendered.warnings {
         diagnostics.push(WasmDiagnostic {
             code: None,
             severity: "warning",
@@ -334,12 +340,11 @@ fn render_archival(
             message: warning.message(),
         });
     }
-    let bytes = crate::render_pdf_document_pdfa(&doc, &pdf_options, settings)?;
     Ok(WasmRenderOutput {
         format: WasmOutputFormat::Pdf,
         mime_type: WasmOutputFormat::Pdf.mime_type(),
         extension: WasmOutputFormat::Pdf.extension(),
-        bytes,
+        bytes: rendered.bytes,
         diagnostics,
         source_len: source.len(),
     })

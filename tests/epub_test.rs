@@ -3,10 +3,10 @@
 //! tests may unwrap/panic for clarity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "epub/data_images.rs"]
-mod epub_data_images;
 #[path = "epub/class_generics.rs"]
 mod epub_class_generics;
+#[path = "epub/data_images.rs"]
+mod epub_data_images;
 #[path = "epub/gif.rs"]
 mod epub_gif;
 #[path = "epub/metadata.rs"]
@@ -1549,7 +1549,15 @@ fn er_diagrams_reach_single_and_book_epubs_with_attribute_tables_and_declared_sv
         let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
         assert_well_formed_xml(&chapter);
         assert!(chapter.contains("class=\"fmd-diagram fmd-er\""));
-        for cell in ["CUSTOMER", "ORDER", "email", "customer_id", "PK", "FK", "UK"] {
+        for cell in [
+            "CUSTOMER",
+            "ORDER",
+            "email",
+            "customer_id",
+            "PK",
+            "FK",
+            "UK",
+        ] {
             assert!(chapter.contains(&format!(">{cell}</text>")), "{cell}");
         }
         assert!(chapter.contains("places &amp; tracks"));

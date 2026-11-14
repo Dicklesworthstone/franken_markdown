@@ -19,6 +19,7 @@ pub(crate) fn render(
     settings: PdfASettings,
     emit: PdfEmitOptions,
     profiled: bool,
+    collect_warnings: bool,
 ) -> Result<Option<NavigationRender>> {
     let mut candidate = false;
     visit_links(&source.blocks, &mut |destination| {
@@ -62,8 +63,13 @@ pub(crate) fn render(
     });
     let prepared =
         crate::footnotes::for_pdf_paged_with_backlinks(&document, options.footnote_backlinks);
-    let mut rendered =
-        source_navigation::render_complete(&prepared, options, settings, emit, profiled)?;
+    let mut rendered = if collect_warnings {
+        source_navigation::render_complete_with_diagnostics(
+            &prepared, options, settings, emit, profiled, true, true,
+        )?
+    } else {
+        source_navigation::render_complete(&prepared, options, settings, emit, profiled)?
+    };
     let targets = tokens
         .into_iter()
         .map(|(target, token)| {

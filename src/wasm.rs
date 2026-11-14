@@ -8,9 +8,9 @@
 
 use crate::{
     DarkModePolicy, DiagnosticSeverity, FontAssetSlot, FontAssets, FontFamily, HtmlFontFormat,
-    HtmlOptions, PdfImageAsset, PdfOptions, RenderError, Result, Theme,
-    parse_markdown_spanned_with_profile, render_html_document, render_pdf_document,
-    render_warnings,
+    HtmlOptions, PdfASettings, PdfEmitOptions, PdfImageAsset, PdfOptions, RenderError, Result,
+    Theme, parse_markdown_spanned_with_profile, render_html_document,
+    render_pdf_document_with_diagnostics,
 };
 
 mod source_metadata;
@@ -648,11 +648,15 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
     let mut diagnostics = wasm_diagnostics(&parsed.diagnostics);
     let doc = parsed.into_document();
     let pdf_options = options.pdf_options();
-    // Surface content the PDF renderer degrades rather than embeds — unresolved
-    // or undecodable images (rendered as alt text) and characters with no glyph
-    // (rendered as .notdef). The native CLI prints these to stderr; a browser
-    // host must get the same signal so degradation is never silent.
-    for warning in render_warnings(&doc, &pdf_options) {
+    // Use findings from the completed render, with its actual profile, fitted
+    // options and measured lines, rather than repeating a warning preflight.
+    let rendered = render_pdf_document_with_diagnostics(
+        &doc,
+        &pdf_options,
+        PdfASettings::OFF,
+        PdfEmitOptions::default(),
+    )?;
+    for warning in rendered.warnings {
         diagnostics.push(WasmDiagnostic {
             code: None,
             severity: "warning",
@@ -661,12 +665,11 @@ pub fn render_pdf(markdown: &str, options: &WasmRenderOptions) -> Result<WasmRen
             message: warning.message(),
         });
     }
-    let bytes = render_pdf_document(&doc, &pdf_options)?;
     Ok(WasmRenderOutput {
         format: WasmOutputFormat::Pdf,
         mime_type: WasmOutputFormat::Pdf.mime_type(),
         extension: WasmOutputFormat::Pdf.extension(),
-        bytes,
+        bytes: rendered.bytes,
         diagnostics,
         source_len: markdown.len(),
     })

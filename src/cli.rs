@@ -32,8 +32,8 @@ use crate::watch::{
 };
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
-    PdfASettings, PdfImageAsset, PdfOptions, RenderError, RenderWarning, Theme,
-    render_html_document, render_pdf_document, render_pdf_document_pdfa, render_warnings,
+    PdfASettings, PdfEmitOptions, PdfImageAsset, PdfOptions, PdfRenderOutput, RenderError,
+    RenderWarning, Theme, render_html_document, render_pdf_document_with_diagnostics,
 };
 use host_fonts::{HostFontError, HostFonts};
 
@@ -2035,7 +2035,7 @@ fn run_render_with_preview(
         match render_pdf_with_pdfa(&doc, &opts, pdf_a, json) {
             // Keep render errors typed with a distinct exit code (70 = render
             // failure/unavailable subsystem) as richer PDF validation lands.
-            Ok(bytes) => Some((opts, bytes)),
+            Ok(rendered) => Some((rendered.warnings, rendered.bytes)),
             Err(code) => return code,
         }
     } else {
@@ -2249,8 +2249,8 @@ fn run_render_with_preview(
         report_write("search-index", path, bytes.len(), json);
     }
 
-    if let Some((opts, bytes)) = pdf_render.as_ref() {
-        report_pdf_warnings(&doc, opts, json);
+    if let Some((warnings, bytes)) = pdf_render.as_ref() {
+        report_pdf_warnings(warnings, json);
         if let Some(path) = pdf_path.as_deref() {
             report_write("pdf", path, bytes.len(), json);
         } else if let Err(code) = emit_document_stdout(bytes, json) {
@@ -4075,17 +4075,14 @@ fn render_pdf_with_pdfa(
     opts: &PdfOptions,
     settings: PdfASettings,
     json: bool,
-) -> std::result::Result<Vec<u8>, ExitCode> {
+) -> std::result::Result<PdfRenderOutput, ExitCode> {
     report_pdf_a(settings, json);
-    let rendered = if settings.mode.is_a2b() {
-        render_pdf_document_pdfa(doc, opts, settings)
-    } else {
-        render_pdf_document(doc, opts)
-    };
-    let bytes = rendered.map_err(|e| fail_render(e, json))?;
-    page_budget::check(&bytes, opts.fit_to_pages)
+    let rendered =
+        render_pdf_document_with_diagnostics(doc, opts, settings, PdfEmitOptions::default())
+            .map_err(|e| fail_render(e, json))?;
+    page_budget::check(&rendered.bytes, opts.fit_to_pages)
         .map_err(|error| fail_json(70, error.code, &error.message, json))?;
-    Ok(bytes)
+    Ok(rendered)
 }
 
 fn report_pdf_a(settings: PdfASettings, json: bool) {
@@ -4101,8 +4098,8 @@ fn report_pdf_a(settings: PdfASettings, json: bool) {
 /// Print non-fatal PDF render warnings (degraded content that would otherwise be
 /// dropped silently) so they are never invisible. In `--json` mode each warning
 /// is its own JSONL object before the `wrote` envelope; otherwise a plain line.
-fn report_pdf_warnings(doc: &Document, opts: &PdfOptions, json: bool) {
-    for warning in render_warnings(doc, opts) {
+fn report_pdf_warnings(warnings: &[RenderWarning], json: bool) {
+    for warning in warnings {
         if json {
             eprintln!(
                 "{{\"ok\":true,\"event\":\"warning\",\"warning\":\"{}\",\"detail\":\"{}\"}}",

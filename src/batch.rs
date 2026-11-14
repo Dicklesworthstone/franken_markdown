@@ -1223,38 +1223,46 @@ fn render_one(
         ) {
             return failed(input, FileErrorKind::Input, e);
         }
-        if let Some(shell) = &options.shell {
-            if shared_images.is_none()
-                && let Some(timeout_secs) = shell.remote_image_timeout_secs
-                && !append_remote_image_assets_for_input(
-                    input,
-                    &doc,
-                    &mut pdf_opts.image_assets,
-                    options.max_pdf_image_bytes,
-                    timeout_secs,
-                    cancelled,
-                    warnings,
-                )
-            {
-                return FileEntry::skipped(input);
-            }
-            warnings.extend(
-                crate::render_warnings(&doc, &pdf_opts)
-                    .into_iter()
-                    .map(|warning| BatchWarning {
-                        input: input.to_path_buf(),
-                        code: warning.code(),
-                        message: warning.message(),
-                    }),
-            );
+        if let Some(shell) = &options.shell
+            && shared_images.is_none()
+            && let Some(timeout_secs) = shell.remote_image_timeout_secs
+            && !append_remote_image_assets_for_input(
+                input,
+                &doc,
+                &mut pdf_opts.image_assets,
+                options.max_pdf_image_bytes,
+                timeout_secs,
+                cancelled,
+                warnings,
+            )
+        {
+            return FileEntry::skipped(input);
         }
-        let pdf_result = if options.pdf_a.mode.is_a2b() {
-            render_pdf_document_pdfa(&doc, &pdf_opts, options.pdf_a)
+        let pdf_result = if options.shell.is_some() {
+            crate::render_pdf_document_with_diagnostics(
+                &doc,
+                &pdf_opts,
+                options.pdf_a,
+                crate::PdfEmitOptions::default(),
+            )
+            .map(|rendered| (rendered.bytes, rendered.warnings))
         } else {
-            render_pdf_document(&doc, &pdf_opts)
+            // Pure library batch calls have no warning recipient. Preserve
+            // their bytes-only path and avoid collecting unused diagnostics.
+            let bytes = if options.pdf_a.mode.is_a2b() {
+                render_pdf_document_pdfa(&doc, &pdf_opts, options.pdf_a)
+            } else {
+                render_pdf_document(&doc, &pdf_opts)
+            };
+            bytes.map(|bytes| (bytes, Vec::new()))
         };
         match pdf_result {
-            Ok(bytes) => {
+            Ok((bytes, render_warnings)) => {
+                warnings.extend(render_warnings.into_iter().map(|warning| BatchWarning {
+                    input: input.to_path_buf(),
+                    code: warning.code(),
+                    message: warning.message(),
+                }));
                 // The native CLI promises a hard page budget. Library batch
                 // calls keep the renderer's adaptive-target semantics. Check
                 // before staging any output, including a combined HTML file.

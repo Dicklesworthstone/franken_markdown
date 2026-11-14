@@ -2616,6 +2616,21 @@ pub(crate) fn render_prepared_reported(
     })
 }
 
+/// Retain diagnostics from the same prepared document, loaded faces, fitted
+/// options and final measured lines that produced the PDF bytes.
+pub(crate) fn render_prepared_with_diagnostics(
+    doc: &crate::footnotes::PreparedPdfDocument<'_>,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<PdfRenderOutput> {
+    render_inner(doc, opts, pdf_a, false, emit, false, true).map(|rendered| PdfRenderOutput {
+        bytes: rendered.bytes,
+        pagination: rendered.pagination,
+        warnings: rendered.warnings,
+    })
+}
+
 pub(crate) fn render_prepared_profiled(
     doc: &crate::footnotes::PreparedPdfDocument<'_>,
     opts: &PdfOptions,
@@ -3471,6 +3486,20 @@ impl PdfEmitOptions {
             verbose: false,
         }
     }
+}
+
+/// PDF bytes, pagination provenance and fidelity warnings from one render.
+///
+/// Warnings describe the prepared content and final fitted layout that produced
+/// these bytes. Collecting them reuses loaded fonts and measured lines instead
+/// of running a separate layout preflight. No timing instrumentation is enabled.
+/// Use [`crate::render_pdf_document_with_diagnostics`] for parsed documents or
+/// [`crate::render_pdf_with_diagnostics`] for Markdown source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdfRenderOutput {
+    pub bytes: Vec<u8>,
+    pub pagination: PdfPaginationReport,
+    pub warnings: Vec<RenderWarning>,
 }
 
 /// PDF bytes plus the profiling ledger collected by [`render_profiled`].

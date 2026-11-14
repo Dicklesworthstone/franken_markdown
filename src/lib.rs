@@ -188,8 +188,8 @@ pub use parse::{ParseProfile, ParseStageSummary, SpannedParseProfile};
 pub use pdf::{
     PdfCompression, PdfEmitOptions, PdfPageBreakReport, PdfPageEmission, PdfPaginationFailure,
     PdfPaginationReport, PdfPaginationStrategy, PdfParagraphVariantReport,
-    PdfParagraphVariantStatus, PdfProfile, PdfRenderReport, PdfStageSummary, RenderWarning,
-    render_warnings,
+    PdfParagraphVariantStatus, PdfProfile, PdfRenderOutput, PdfRenderReport, PdfStageSummary,
+    RenderWarning, render_warnings,
 };
 pub use pdfa::{PdfAMode, PdfASettings};
 pub use resume::{
@@ -1218,7 +1218,7 @@ pub fn render_pdf_document_emitted(
 ) -> Result<Vec<u8>> {
     opts.font_assets.validate()?;
     if let Some(rendered) =
-        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false)?
+        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false, false)?
     {
         return Ok(rendered.bytes);
     }
@@ -1243,7 +1243,7 @@ pub fn render_pdf_document_reported(
 ) -> Result<PdfRenderReport> {
     opts.font_assets.validate()?;
     if let Some(rendered) =
-        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false)?
+        book::render_document_note_links(doc, opts, PdfASettings::OFF, emit, false, false)?
     {
         return Ok(PdfRenderReport {
             bytes: rendered.bytes,
@@ -1263,6 +1263,54 @@ pub fn render_pdf_reported(src: &str, opts: &PdfOptions) -> Result<PdfRenderRepo
     render_pdf_document_reported(
         &parse_markdown_with_profile(src, opts.profile),
         opts,
+        PdfEmitOptions::default(),
+    )
+}
+
+/// Render a parsed document and collect fidelity warnings from that exact PDF.
+///
+/// Uses the same profile selection, footnote preparation, fitting and writer as
+/// [`render_pdf_document`]. Diagnostics reuse the loaded fonts and final lines;
+/// they do not repeat layout or page fitting. The returned bytes and pagination
+/// are unchanged by diagnostic collection. Explicit archival and emission
+/// settings cover ordinary PDF, PDF/A, chunked and monolithic output.
+///
+/// [`render_warnings`] remains available as a standalone inspection API when
+/// PDF bytes are not needed. Consumers publishing a PDF should use this result
+/// so warnings describe the content and options actually rendered.
+///
+/// # Errors
+/// See [`render_pdf_document_emitted`] and [`render_pdf_document_pdfa`].
+pub fn render_pdf_document_with_diagnostics(
+    doc: &Document,
+    opts: &PdfOptions,
+    pdf_a: PdfASettings,
+    emit: PdfEmitOptions,
+) -> Result<PdfRenderOutput> {
+    opts.font_assets.validate()?;
+    if pdf_a.strict {
+        validate_doc_pdfa_strict(doc)?;
+    }
+    if let Some(rendered) = book::render_document_note_links(doc, opts, pdf_a, emit, false, true)? {
+        return Ok(PdfRenderOutput {
+            bytes: rendered.bytes,
+            pagination: rendered.pagination,
+            warnings: rendered.warnings,
+        });
+    }
+    let doc = transform_footnotes_for_pdf(doc, opts);
+    pdf::render_prepared_with_diagnostics(&doc, opts, pdf_a, emit)
+}
+
+/// Render Markdown to PDF bytes and diagnostics using default page emission.
+///
+/// # Errors
+/// See [`render_pdf_document_with_diagnostics`].
+pub fn render_pdf_with_diagnostics(src: &str, opts: &PdfOptions) -> Result<PdfRenderOutput> {
+    render_pdf_document_with_diagnostics(
+        &parse_markdown_with_profile(src, opts.profile),
+        opts,
+        PdfASettings::OFF,
         PdfEmitOptions::default(),
     )
 }
@@ -1293,7 +1341,7 @@ pub fn render_pdf_document_pdfa(
         validate_doc_pdfa_strict(doc)?;
     }
     if let Some(rendered) =
-        book::render_document_note_links(doc, opts, pdf_a, PdfEmitOptions::default(), false)?
+        book::render_document_note_links(doc, opts, pdf_a, PdfEmitOptions::default(), false, false)?
     {
         return Ok(rendered.bytes);
     }
@@ -1414,6 +1462,7 @@ pub fn render_pdf_document_profiled(doc: &Document, opts: &PdfOptions) -> Result
         PdfASettings::OFF,
         PdfEmitOptions::default(),
         true,
+        false,
     )? {
         return Ok(PdfProfile {
             bytes: rendered.bytes,

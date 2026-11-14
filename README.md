@@ -924,6 +924,16 @@ diagnostics. Hosts can supply their own fonts as bytes through
 deterministic fonts. Image assets are supplied as bytes through `PdfImageAsset`
 for HTML and PDF, so the core never reads files or the network.
 
+When an export needs both PDF bytes and fidelity diagnostics, use
+`render_pdf_with_diagnostics(src, &opts)`. Its `PdfRenderOutput` contains
+`bytes`, `pagination`, and `warnings` from the same completed render. The
+parsed-document form,
+`render_pdf_document_with_diagnostics(&doc, &opts, pdf_a, emit_options)`, also
+supports PDF/A and explicit page-emission policies. Diagnostics reuse the
+loaded fonts and final fitted layout, including prepared footnotes and profile
+selection. Native render/watch/batch and browser PDF exports use this path;
+standalone `render_warnings` remains available for inspection without PDF output.
+
 ### Browser / WASM
 
 The same core powers the browser package. The WASM build provides a wasm-bindgen

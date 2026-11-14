@@ -125,13 +125,25 @@ state-cell limits, and rejected joint searches. Exact page breaks for the final
 measured lines do not imply that every paragraph layout was explored. Counts
 refer to the final layout pass, excluding earlier TOC passes and fit probes.
 
-The existing `render_warnings` surface reports `pagination_infeasible`,
-`pagination_budget_exceeded`, or another typed failure code when exact page
-planning falls back, and `paragraph_pagination_limited` when paragraph choices
-were restricted. The CLI surfaces these on stderr (JSONL with `--json`), and
-browser/WASM output includes the corresponding diagnostics. Warning preflight
-uses the same prepared numbered footnotes and fitted page geometry as rendering.
-Default rendering without an optimal request does not run that extra preflight.
+`render_pdf_with_diagnostics(source, &options)` returns `PdfRenderOutput` with
+the emitted `bytes`, `pagination` report and fidelity `warnings`. The
+parsed-document form is
+`render_pdf_document_with_diagnostics(&doc, &options, pdf_a, emit_options)`.
+It supports ordinary PDF, PDF/A and both emission modes without changing their
+bytes. Existing report-only and bytes-only APIs retain their original behavior.
+
+Warnings include `pagination_infeasible`, `pagination_budget_exceeded`, or
+another typed failure code when exact page planning falls back, and
+`paragraph_pagination_limited` when paragraph choices were restricted. They use
+the actual final page plan, loaded fonts and fitted lines from that render,
+including profile selection, footnote preparation and ordinary links to notes.
+Native render/watch/batch surface them on stderr (JSONL with `--json`), and
+browser/WASM PDF and PDF/A output includes the corresponding diagnostics.
+These exports no longer repeat fitting or layout to predict their warnings.
+
+The standalone `render_warnings` API remains available for source inspection
+without producing PDF bytes. Its optional pagination/math preflight is separate
+from a completed render; use the diagnostic render result when publishing output.
 
 ### Require the supported hard pagination rules
 

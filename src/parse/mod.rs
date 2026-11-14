@@ -3806,9 +3806,9 @@ struct ListSplit<'a> {
 enum TailContainer {
     Quote,
     List {
-        indent: usize,
         content_indent: usize,
         ordered: bool,
+        marker_char: char,
     },
 }
 
@@ -3848,9 +3848,34 @@ struct ContainerTail {
 }
 
 impl ContainerTail {
+    /// A blank belongs to a direct nested list only when the following line
+    /// stays inside one of its items or begins a sibling of the same list.
+    /// Merely having an open nested list is insufficient: a dedented paragraph
+    /// or a differently marked list starts a new direct block of the parent.
+    fn nested_list_owns_gap_before(&self, line: &str) -> bool {
+        let Some(TailContainer::List {
+            content_indent,
+            ordered,
+            marker_char,
+            ..
+        }) = self.containers.first()
+        else {
+            return false;
+        };
+        leading_spaces(line) >= *content_indent
+            || list_marker(line).is_some_and(|marker| {
+                marker.ordered == *ordered && marker.marker_char == *marker_char
+            })
+    }
+
     fn can_continue_lazily(&self, line: &str) -> bool {
         matches!(self.leaf, TailLeaf::Paragraph { .. })
             && !is_blank_line(line)
+            // This line has already failed to match an enclosing container.
+            // A list marker here begins a new block, including empty items and
+            // ordered starts other than 1. The start-at-1 restriction applies
+            // only to interruption of a paragraph in the same container.
+            && list_marker(line).is_none()
             && !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line)))
     }
 
@@ -3915,19 +3940,12 @@ impl ContainerTail {
                     }
                     false
                 }
-                TailContainer::List {
-                    indent,
-                    content_indent,
-                    ordered,
-                } => {
+                TailContainer::List { content_indent, .. } => {
                     if is_blank_line(line) || leading_spaces(line) >= content_indent {
                         self.observe_at(strip_n(line, content_indent), depth + 1);
                         return;
                     }
-                    list_marker(line).is_some_and(|next| {
-                        (next.indent == indent && next.ordered == ordered)
-                            || marker_interrupts_paragraph(&next)
-                    })
+                    list_marker(line).is_some()
                 }
             };
             if !sibling && self.can_continue_lazily(line) {
@@ -4053,9 +4071,9 @@ impl ContainerTail {
             if depth < MAX_BLOCK_NESTING_DEPTH {
                 self.reference_scan = None;
                 self.containers.push(TailContainer::List {
-                    indent: marker.indent,
                     content_indent: marker.content_indent,
                     ordered: marker.ordered,
+                    marker_char: marker.marker_char,
                 });
                 self.observe_at(split_task_marker(marker.rest.as_ref()).1, depth + 1);
             }
@@ -4160,10 +4178,8 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 // and a list inside a quote cannot own a gap outside that quote.
                 if j < lines.len() {
                     let next_indent = leading_spaces(lines[j]);
-                    let has_open_nested_list =
-                        matches!(tail.containers.first(), Some(TailContainer::List { .. }));
-                    if next_indent == m.content_indent
-                        || (!has_open_nested_list && next_indent >= m.content_indent)
+                    if next_indent >= m.content_indent
+                        && !tail.nested_list_owns_gap_before(strip_n(lines[j], m.content_indent))
                     {
                         tight = false;
                     }
@@ -4175,18 +4191,11 @@ fn split_list_items_with_first_marker_tracked<'a>(
             }
 
             if let Some(next) = list_marker(lines[i]) {
-                let is_item_break = if next.indent <= m.indent {
-                    if next.indent == m.indent && next.ordered == ordered {
-                        true
-                    } else {
-                        marker_interrupts_paragraph(&next)
-                    }
-                } else if next.indent < m.content_indent {
-                    marker_interrupts_paragraph(&next)
-                } else {
-                    false
-                };
-                if is_item_break {
+                // A marker not indented enough for this item's content is a
+                // sibling, irrespective of its type, number, or empty body.
+                // Only sufficiently indented markers can be paragraph text
+                // inside the item (CommonMark 5.3, examples 310-313).
+                if next.indent < m.content_indent {
                     break;
                 }
             }

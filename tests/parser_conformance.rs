@@ -369,11 +369,21 @@ fn ordered_list_start_other_than_one_can_start_a_block() {
 }
 
 #[test]
-fn lazy_ordered_marker_start_other_than_one_stays_in_list_paragraph() {
+fn unindented_ordered_marker_starts_a_sibling_list() {
+    // CommonMark 5.3 assigns markers that cannot fit in the previous item to
+    // sibling lists. Upstream cmark also emits these two separate lists; the
+    // start-at-1 paragraph-interruption rule does not make this marker lazy.
     let out = html("- The year\n1986. was memorable");
 
-    assert!(out.contains("<li>The year\n1986. was memorable</li>"));
-    assert!(!out.contains("<ol start=\"1986\">"));
+    assert!(out.contains(
+        "<ul>\n<li>The year</li>\n</ul>\n<ol start=\"1986\">\n<li>was memorable</li>\n</ol>"
+    ));
+
+    // With enough indentation the marker belongs to the existing paragraph,
+    // so the restriction on starting a nested ordered list still applies.
+    let indented = html("- The year\n  1986. was memorable");
+    assert!(indented.contains("<li>The year\n1986. was memorable</li>"));
+    assert!(!indented.contains("<ol start=\"1986\">"));
 }
 
 #[test]

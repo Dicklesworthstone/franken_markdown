@@ -158,6 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Saved editable HTML retains footnotes cited inside link labels, without nested
+  anchors, and preserves complete note bodies and return links. Note targets use
+  source names with exact fragment encoding and collision-safe Unicode handling;
+  heading anchors remain stable when citation numbering changes.
 - PDF accessibility verification audits the selected authoring profile and the
   same supported HTML semantics that publication renders. HTML headings, links,
   images and tables now receive the existing authoring findings while source

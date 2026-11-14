@@ -84,8 +84,8 @@ test('footnote identities and heading IDs retain their separate existing rules',
   const html = render('# ﬃ\n\n# FFI\n\nOne[^ﬃ] two[^ffi]\n\n[^ﬃ]: ligature note\n[^ffi]: ordinary note');
   assert.match(html, /<h1 id="ﬃ">ﬃ<\/h1>/);
   assert.match(html, /<h1 id="ffi">FFI<\/h1>/);
-  assert.match(html, /id="fn-1"/);
-  assert.match(html, /id="fn-2"/);
+  assert.match(html, /id="fn-ﬃ"/);
+  assert.match(html, /id="fn-ffi"/);
   assert.match(html, /ligature note/);
   assert.match(html, /ordinary note/);
 });

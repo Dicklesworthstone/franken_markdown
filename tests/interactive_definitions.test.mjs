@@ -120,7 +120,7 @@ test('definitions following closed code, headings and rules are collected at blo
 test('first-line nested footnote definitions are resolved once with repeated backlinks', () => {
   for (const [name, wrap] of containers) {
     const html = render('One[^n], two[^n].\n\n' + wrap('[^n]: **Note**'));
-    assert.equal((html.match(/id="fn-1"/g) || []).length, 1, name);
+    assert.equal((html.match(/id="fn-n"/g) || []).length, 1, name);
     assert.match(html, /<strong>Note<\/strong>/, name);
     assert.match(html, /href="#fnref-1"/, name);
     assert.match(html, /href="#fnref-1-2"/, name);

@@ -953,15 +953,44 @@ function parseMarkdownClient(source, imageAssets) {
     headings.set(slug, suffix); headings.set(id, 0);
     return id;
   }
-  function noteReference(label) {
+  function noteFragment(id) {
+    let fragment = '';
+    for (const scalar of id) {
+      charge();
+      const code = scalar.codePointAt(0);
+      // Encode an identifier, not an already encoded URL. In particular, '%'
+      // belongs to the source name and must never select a different note.
+      // Lone UTF-16 surrogates use the browser's replacement scalar rather
+      // than letting encodeURIComponent throw on an editable JavaScript string.
+      const encoded = /[A-Za-z0-9._~-]/.test(scalar) ? scalar
+        : code >= 0xd800 && code <= 0xdfff ? '%EF%BF%BD'
+        : encodeURIComponent(scalar).replace(/[!'()*]/g, ch => '%' + ch.charCodeAt(0).toString(16).toUpperCase());
+      fragment = append(fragment, encoded);
+    }
+    return fragment;
+  }
+  function noteReference(label, linked = true) {
     const key = noteKey(label), note = notes.get(key);
     if (!note) return null;
-    if (!note.number) { note.number = usedNotes.length + 1; note.id = uniqueId('fn-' + note.number); note.referenceIds = []; usedNotes.push(note); }
+    if (!note.number) {
+      note.number = usedNotes.length + 1;
+      // Public note destinations use exact source identity, independently of
+      // citation order. Keep the existing collision guard shared with headings.
+      // DOM/URL identifiers need Unicode scalars. Keep the exact logical key,
+      // but normalize lone UTF-16 surrogates before collision allocation so
+      // two malformed names and an authored U+FFFD cannot share a destination.
+      charge(key.length);
+      note.id = uniqueId('fn-' + key.replace(/[\ud800-\udfff]/gu, '\ufffd'));
+      note.fragment = noteFragment(note.id);
+      note.referenceIds = [];
+      usedNotes.push(note);
+    }
     allocate(); charge();
     note.references++;
     const id = uniqueId('fnref-' + note.number + (note.references > 1 ? '-' + note.references : ''));
     note.referenceIds.push(id);
-    return '<sup class="footnote-ref" id="' + id + '"><a href="#' + note.id + '" role="doc-noteref">' + note.number + '</a></sup>';
+    const content = linked ? '<a href="#' + note.fragment + '" role="doc-noteref">' + note.number + '</a>' : String(note.number);
+    return '<sup class="footnote-ref" id="' + id + '">' + content + '</sup>';
   }
   function emailAddress(label) {
     // Match the native CommonMark email production, not the broader bare-GFM
@@ -1397,7 +1426,7 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return events;
   }
-  function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false) {
+  function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false, noteLinks = links) {
     charge(text.length + 1);
     if (depth > MAX_DEPTH) return escape(text);
     const atoms = inlineIndex(text, links), emphasis = emphasisIndex(text, atoms);
@@ -1432,17 +1461,23 @@ function parseMarkdownClient(source, imageAssets) {
         } else if (atom.kind === 'html' || atom.kind === 'math') {
           out = append(out, escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'note') {
-          out = append(out, footnotes ? noteReference(atom.label) : escape(text.slice(i, atom.end)));
+          out = append(out, footnotes ? noteReference(atom.label, noteLinks) : escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'autolink') {
           const url = links ? safeUrl(atom.url, false, true) : null;
           out = append(out, !links ? escape(atom.label) : url === null ? escape(text.slice(i, atom.end))
             : '<a href="' + escape(url) + '">' + escape(atom.label) + '</a>');
         } else {
           const image = atom.kind === 'image';
-          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + styles + 1, false, false, images && !image, table);
+          let url = !image && links ? safeUrl(atom.url, false) : null;
+          // Citations inside a real link still own their note bodies and return
+          // anchors, but their marks cannot nest another anchor. If URL policy
+          // removes the enclosing link, the citation keeps its own destination.
+          // Image descriptions stay plain alt text and never activate notes.
+          const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + styles + 1,
+            false, footnotes && !image, images && !image, table, noteLinks && url === null && !image);
           // Only emitted images consult embedded assets. Nested images in alt
           // text contribute their own readable labels without hidden expansion.
-          const url = (image ? images : links) ? safeUrl(atom.url, image) : null;
+          if (image && images) url = safeUrl(atom.url, true);
           const title = atom.title ? ' title="' + escape(atom.title) + '"' : '';
           if (image) {
             const alt = content.replace(/<[^>]*>/g, '');
@@ -2251,7 +2286,11 @@ function parseMarkdownClient(source, imageAssets) {
           out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
           const content = inline(node.title, 0, true, footnotes);
-          const slug = decode(content.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
+          // Native heading identity omits citation marks. Remove only our
+          // generated superscripts; escaped/code source remains visible text.
+          charge(content.length);
+          const title = content.replace(/<sup class="footnote-ref" id="[^"]*">(?:<a href="[^"]*" role="doc-noteref">)?[0-9]+(?:<\/a>)?<\/sup>/g, '');
+          const slug = decode(title.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
           out = append(out, '<h' + node.level + ' id="' + escape(uniqueId(slug)) + '">' + content + '</h' + node.level + '>\n'); break;
         }
         case 'rule': out = append(out, '<hr>\n'); break;
@@ -2370,7 +2409,7 @@ function parseMarkdownClient(source, imageAssets) {
       const id = note.referenceIds[ref - 1];
       backlinks = append(backlinks, ' <a href="#' + id + '" class="footnote-backref" role="doc-backlink" aria-label="Back to reference ' + note.number + (ref > 1 ? '-' + ref : '') + '">↩</a>');
     }
-    footer = append(footer, '<li id="' + note.id + '">' + renderedNotes[index] + backlinks + '</li>\n');
+    footer = append(footer, '<li id="' + escape(note.id) + '">' + renderedNotes[index] + backlinks + '</li>\n');
   });
   return append(append(body, footer), '</ol></section>\n');
 }

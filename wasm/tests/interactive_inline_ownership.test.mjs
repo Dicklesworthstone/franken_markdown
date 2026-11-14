@@ -110,10 +110,16 @@ test('an unresolved full reference blocks shortcut fallback but malformed suffix
   }
 });
 
-test('raw footnote identifiers stay opaque without publishing speculative references', () => {
+test('raw footnote identifiers own their backticks inside real link labels', () => {
   const html = render('[label [^n`q]](/outer) [later](/later) `\n\n[^n`q]: Private body');
-  assert.equal(html, '<p><a href="/outer">label [^n`q]</a> <a href="/later">later</a> `</p>\n');
-  assert.doesNotMatch(html, /Private body|footnote-ref/);
+  // Native HTML keeps this valid citation and its body, with a nonlinked mark
+  // inside the outer anchor. Its raw backtick still cannot swallow /later.
+  assert.ok(html.startsWith('<p><a href="/outer">label <sup class="footnote-ref" id="fnref-1">1</sup></a> <a href="/later">later</a> `</p>\n'));
+  assert.equal((html.match(/Private body/g) || []).length, 1);
+  assert.doesNotMatch(html, /<code>/);
+  const alt = render('![label [^n`q]](image.png) [later](/later) `\n\n[^n`q]: Private body');
+  assert.doesNotMatch(alt, /Private body|footnote-ref/);
+  assert.ok(alt.includes('<a href="/later">later</a> `'));
   const visible = render('*before [^n`q] after*\n\n[^n`q]: One body');
   assert.equal((visible.match(/class="footnote-ref"/g) || []).length, 1);
   assert.equal((visible.match(/One body/g) || []).length, 1);

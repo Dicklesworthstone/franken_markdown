@@ -110,7 +110,7 @@ test('footnotes resolve forward references once and provide unique repeated back
   assert.match(html, /id="fnref-1"/);
   assert.match(html, /id="fnref-1-2"/);
   assert.match(html, /id="fnref-1-3"/);
-  assert.equal((html.match(/id="fn-1"/g) || []).length, 1);
+  assert.equal((html.match(/id="fn-n"/g) || []).length, 1);
   for (const id of ['fnref-1', 'fnref-1-2', 'fnref-1-3']) assert.match(html, new RegExp('href="#' + id + '"'));
   assert.match(html, /<strong>Important<\/strong> <a href="\/guide">guide<\/a>/);
   assert.match(html, /<p>Second paragraph\.<\/p>/);
@@ -120,7 +120,7 @@ test('footnotes resolve forward references once and provide unique repeated back
 test('unused and cyclic footnotes neither leak definitions nor recurse forever', () => {
   assert.equal(render('text\n\n[^unused]: hidden'), '<p>text</p>\n');
   const html = render('ref[^cycle]\n\n[^cycle]: recursive[^cycle]');
-  assert.equal((html.match(/id="fn-1"/g) || []).length, 1);
+  assert.equal((html.match(/id="fn-cycle"/g) || []).length, 1);
   assert.match(html, /recursive<sup/);
   assert.match(html, /href="#fnref-1-2"/);
 });
@@ -152,13 +152,13 @@ test('deep containers have a bounded fallback instead of overflowing the stack',
 
 test('nested notes expand once, including cycles and backlinks from later notes', () => {
   const html = render('first[^a] second[^b]\n\n[^a]: A to B[^b].\n[^b]: B to A[^a].');
-  assert.equal((html.match(/id="fn-1"/g) || []).length, 1);
-  assert.equal((html.match(/id="fn-2"/g) || []).length, 1);
+  assert.equal((html.match(/id="fn-a"/g) || []).length, 1);
+  assert.equal((html.match(/id="fn-b"/g) || []).length, 1);
   for (const id of ['fnref-1', 'fnref-1-2', 'fnref-2', 'fnref-2-2']) assert.match(html, new RegExp('href="#' + id + '"'));
 });
 
 test('heading and footnote IDs cannot collide', () => {
-  const html = render('# fn-1\n\n# fnref-1\n\nText[^n].\n\n[^n]: note');
+  const html = render('# fn-n\n\n# fnref-1\n\nText[^n].\n\n[^n]: note');
   const ids = [...html.matchAll(/ id="([^"]+)"/g)].map(match => match[1]);
   assert.equal(new Set(ids).size, ids.length);
   for (const match of html.matchAll(/href="#([^"]+)"/g)) assert.ok(ids.includes(match[1]));
@@ -289,7 +289,7 @@ test('heading and footnote IDs cannot collide', () => {
 
   test('footnotes still expand once with every published backlink', () => {
     const text = render('ref[^n] '.repeat(1800) + '\n\n[^n]: body');
-    assert.equal((text.match(/<li id="fn-1">/g) || []).length, 1);
+    assert.equal((text.match(/<li id="fn-n">/g) || []).length, 1);
     assert.equal((text.match(/class="footnote-backref"/g) || []).length, 1800);
   });
 

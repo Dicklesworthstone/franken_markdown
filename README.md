@@ -551,8 +551,8 @@ Future browser package publication must use DSR and its configured hosts.
    target/release/fmd README.md --out README.html
    ```
 
-3. **Render a PDF.** PDF cannot stream to stdout, so it needs a real path (or it
-   derives one from the input name).
+3. **Render a PDF.** Choose a file path, or use `--out -` to send PDF bytes
+   through a pipe. Without `--out`, it derives a path from the input name.
 
    ```bash
    target/release/fmd README.md --to pdf --out README.pdf
@@ -620,8 +620,8 @@ options, never to their text values; `--` protects option-shaped input filenames
 |---|---|
 | `<input>` (positional) | Input `.md` path, or `-` to read Markdown from stdin |
 | `--text <markdown>` | Render a raw Markdown string directly, with no input file |
-| `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` writes a single-file EPUB 3 e-book and `svg` a single-page vector poster (both require a real `--out` path like PDF) |
-| `--out, -o <path>` | Output path. HTML with no `--out` (or `--out -`) writes to stdout. PDF and `--to both` always write files |
+| `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` produces a single-file EPUB 3 e-book and `svg` a single-page vector poster. Each single format supports `--out -` |
+| `--out, -o <path>` | Output path, or `-` for one HTML, SVG, PDF or EPUB document on stdout. Without `--out`, HTML/SVG use stdout and PDF/EPUB derive filenames. `--to both` writes two files |
 | `--font sans\|serif` | Override the body font for this render |
 | `--html-font-format woff1\|woff2\|ttf` | Container for embedded HTML fonts: `woff1` (default), `woff2` (clean-room Brotli), or `ttf` (raw TrueType/CFF OpenType data URLs). Independent of the subset/full policy. |
 | `--font-embedding subset\|full` | HTML/EPUB font policy: compact subsets by default; `full` preserves the complete character map and OpenType shaping tables for ligatures, kerning and combining marks, with larger output. Also available for book publishing. |
@@ -658,6 +658,22 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--remote-image-timeout-secs <n>` | Per-image timeout for authorized remote image fetches (default `20`; zero uses one second). Book commands require `--embed-remote-images` when setting this timeout |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
+
+### PDF and EPUB pipelines
+
+Use an explicit `--out -` to send one finished binary document through stdout:
+
+```bash
+fmd report.md --to pdf --out - > report.pdf
+fmd - --to epub --out - < report.md > report.epub
+fmd report.md --to pdf --pdf-a 2b --json --out - > archive.pdf
+```
+
+These commands use the same renderer, fonts, assets, metadata and options as file
+exports. PDF/EPUB rendering and any requested search-index write finish before
+the first document byte is sent. A render or sidecar failure leaves stdout
+empty. A consumer that closes its pipe early exits cleanly; other stdout errors
+return exit code 74. Omitting `--out` keeps the existing derived-file behavior.
 
 ### Portable image exports
 
@@ -739,10 +755,13 @@ unsupported SVG constructs while keeping stdout reserved for document bytes.
 
 Output-path rules:
 
-- HTML with no `--out`, or `--out -`, streams to stdout.
-- PDF and `--to both` require a real file. With no `--out`, the path derives from
+- HTML/SVG with no `--out` stream to stdout. `--out -` explicitly selects stdout
+  for any single format, including binary PDF and EPUB. The stream contains only
+  document bytes; diagnostics and JSON status remain on stderr.
+- PDF/EPUB without `--out`, and `--to both`, write files. The path derives from
   the input stem (`doc.md` -> `doc.pdf`), or `document.*` for stdin/`--text`.
-- `--out -` is refused for PDF and `--to both` (they cannot stream).
+- `--out -` requires a single document: `--to both` and interactive HTML
+  combined with another format require file destinations.
 
 ```bash
 fmd README.md --out README.html
@@ -1068,8 +1087,7 @@ Core modules:
 
 | Symptom | Fix |
 |---|---|
-| `--out -` writes HTML to stdout only; PDF and --to both require a real output path | PDF cannot stream. Omit `--out` to derive a path (`doc.md` -> `doc.pdf`, stdin/`--text` -> `document.pdf`), or pass one: `fmd doc.md --to pdf --out doc.pdf` |
-| `PDF output requires --out <path>` | A PDF render needs a destination file; add `--out doc.pdf` |
+| `--out -` writes one document to stdout | Choose one format (`--to pdf`, `--to epub`, `--to svg` or `--to html`), or give `--to both` a real output path. Interactive HTML combined with another format also requires files |
 | Input is refused as too large (exit 66) | Raise the guard explicitly, for example `fmd --max-input-bytes 134217728 big.md --out big.html` |
 | `SOURCE_DATE_EPOCH must be non-negative decimal seconds` | Use plain decimal seconds: `SOURCE_DATE_EPOCH=1700000000 fmd doc.md --to pdf --out doc.pdf` |
 | HTML printed to the terminal | That is stdout. Pass `--out file.html` or redirect: `fmd doc.md > doc.html` |

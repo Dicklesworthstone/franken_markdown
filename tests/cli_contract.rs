@@ -202,7 +202,8 @@ fn discovery_surfaces_are_json_data_on_stdout() {
     assert!(stdout.contains("\"shared_theme_model\":\"structured_v1\""));
     assert!(stdout.contains("\"input_size_limit\":\"available\""));
     assert!(stdout.contains("\"html_stdout_dash\":\"available\""));
-    assert!(stdout.contains("\"pdf_stdout_dash\":\"refused_usage_error\""));
+    assert!(stdout.contains("\"pdf_stdout_dash\":\"available\""));
+    assert!(stdout.contains("\"epub_stdout_dash\":\"available\""));
     assert!(stdout.contains("\"pdf\":\"available_v0_embedded_subset_fonts\""));
     assert!(stdout.contains("\"font_subsetting_pdf\":\"available\""));
     assert!(stdout.contains("\"embedded_subset_fonts_pdf\":\"available\""));
@@ -282,8 +283,8 @@ fn robot_docs_describe_current_pdf_capability_without_stale_base14_claims() {
     assert!(stdout.contains("--author"));
     assert!(stdout.contains("--max-input-bytes"));
     assert!(stdout.contains("fmd --text '# Hello' --out - > hello.html"));
-    assert!(stdout.contains("`--out -` writes HTML document data to stdout only"));
-    assert!(stdout.contains("PDF and --to both require a real output path"));
+    assert!(stdout.contains("`--out -` writes one HTML, SVG, PDF or EPUB document to stdout"));
+    assert!(stdout.contains("--to both requires a real output path"));
     assert!(stdout.contains("SOURCE_DATE_EPOCH"));
     assert!(stdout.contains("hierarchical accessible tagged-PDF structure tree"));
     assert!(stdout.contains("Knuth-Plass paragraph layout"));
@@ -379,7 +380,7 @@ fn html_out_dash_writes_document_data_to_stdout_without_dash_file() {
 }
 
 #[test]
-fn pdf_out_dash_is_rejected_before_creating_literal_dash_file() {
+fn pdf_out_dash_writes_binary_document_without_creating_literal_dash_file() {
     let cwd = temp_dir("out-dash-pdf");
     fs::create_dir_all(&cwd).unwrap();
 
@@ -388,14 +389,15 @@ fn pdf_out_dash_is_rejected_before_creating_literal_dash_file() {
         &cwd,
     );
 
-    assert_eq!(out.status.code(), Some(64));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.starts_with(b"%PDF-"));
+    assert!(out.stdout.ends_with(b"%%EOF\n"));
     let stderr = text(&out.stderr);
-    assert!(stderr.contains("\"code\":\"usage_error\""));
-    assert!(stderr.contains("`--out -` writes HTML/SVG to stdout only"));
+    assert!(!stderr.contains("\"ok\":false"), "{stderr}");
+    assert!(!stderr.contains("\"event\":\"wrote\""), "{stderr}");
     assert!(
         !cwd.join("-").exists(),
-        "PDF refusal must not create a literal dash file"
+        "PDF stdout must not create a literal dash file"
     );
 }
 
@@ -413,7 +415,7 @@ fn both_out_dash_is_rejected_before_creating_dash_derived_files() {
     assert!(out.stdout.is_empty());
     let stderr = text(&out.stderr);
     assert!(stderr.contains("\"code\":\"usage_error\""));
-    assert!(stderr.contains("PDF and --to both require a real output path"));
+    assert!(stderr.contains("`--out -` writes one document to stdout"));
     assert!(!cwd.join("-").exists());
     assert!(!cwd.join("-.html").exists());
     assert!(!cwd.join("-.pdf").exists());
@@ -421,8 +423,7 @@ fn both_out_dash_is_rejected_before_creating_dash_derived_files() {
 
 #[test]
 fn pdf_and_both_without_out_derive_paths_from_the_input_filename() {
-    // mwm.8: PDF/both cannot stream to stdout, but omitting --out is NOT an
-    // error — the output path is derived from the input stem (file input) or
+    // Omitting --out still derives the output path from the input stem (file input) or
     // `document.*` (stdin/--text). This pins the documented default behavior.
     let cwd = temp_dir("default-out-derive");
     fs::create_dir_all(&cwd).unwrap();

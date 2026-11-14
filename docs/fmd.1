@@ -109,6 +109,12 @@ Paper and margin flags are also available in watch, batch and book.
 .TP
 \fB\-\-fit\-to\-pages\fR, \fB\-\-target\-pages\fR \fIPAGES\fR
 Adaptive binary-search solver to fit PDF content strictly within \fIPAGES\fR page budget.
+PAGES must be positive, and the target must be PDF or combined output.
+The actual emitted page count is checked before publication.
+An unmet budget reports page_budget_unmet with the achieved count and exits 70
+for render and book, preserving existing outputs and sidecars and sending no
+document bytes to stdout. Watch retains its last successful output; batch
+records a per-file render failure.
 .TP
 \fB\-\-microtype\fR \fIoff|protrusion|expansion|all\fR
 Opt-in microtypography for justified PDF paragraphs: optical-margin hanging punctuation and font expansion.

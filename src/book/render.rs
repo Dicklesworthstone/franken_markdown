@@ -271,6 +271,13 @@ pub fn render_book_pdf_reported(book: &Book, options: &PdfOptions) -> Result<Boo
     pdf_links::render_reported(book, document, options, crate::PdfASettings::OFF)
 }
 
+/// Read the page count from our writer's final catalog and page-tree objects.
+/// Native publication budgets include generated contents and all note pages.
+#[cfg(feature = "cli")]
+pub(crate) fn emitted_pdf_page_count(bytes: &[u8]) -> Option<u64> {
+    pdf_links::page_count(bytes)
+}
+
 /// Render once and read the actual emitted page count for the CLI receipt.
 /// This includes generated contents/landing pages and all footnote pages.
 #[cfg(feature = "cli")]
@@ -290,7 +297,7 @@ pub(super) fn render_book_pdf_counted_configured(
 ) -> Result<(Vec<u8>, u64, Vec<crate::RenderWarning>)> {
     let document = book_pdf_document_with_assets(book, &options.image_assets)?;
     let report = pdf_links::render_reported(book, document, options, settings)?;
-    let pages = pdf_links::page_count(&report.bytes)
+    let pages = emitted_pdf_page_count(&report.bytes)
         .ok_or_else(|| invalid("could not read the emitted PDF page count"))?;
     Ok((report.bytes, pages, report.warnings))
 }

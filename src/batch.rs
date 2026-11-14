@@ -1255,6 +1255,19 @@ fn render_one(
         };
         match pdf_result {
             Ok(bytes) => {
+                // The native CLI promises a hard page budget. Library batch
+                // calls keep the renderer's adaptive-target semantics. Check
+                // before staging any output, including a combined HTML file.
+                if options.shell.is_some()
+                    && let Err(error) =
+                        crate::cli::page_budget::check(&bytes, pdf_opts.fit_to_pages)
+                {
+                    return failed(
+                        input,
+                        FileErrorKind::Render,
+                        format!("{}: {}", error.code, error.message),
+                    );
+                }
                 let path = output_path(input, out_dir, "pdf");
                 rendered.push(PendingOutput {
                     kind: "pdf",

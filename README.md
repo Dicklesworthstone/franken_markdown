@@ -633,7 +633,7 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--pdf-theme-spacing[=true\|false]` | Apply shared theme body leading and per-side table-cell padding to PDF output. Default off; `=false` overrides `pdf_theme_spacing=true` in config. Available in render, watch, batch and book |
 | `--toc`, `--toc-depth <N>` | Insert a table of contents (HTML nav; PDF with dot leaders and page numbers). A `[[_TOC_]]` marker places it explicitly |
 | `--font-scale <xs\|sm\|md\|lg\|xl\|2xl\|FLOAT\|PERCENT>` | Uniform typographic scale for HTML and PDF (alias `--type-size`) |
-| `--fit-to-pages <N>` | Shrink type and spacing until the PDF fits in `N` pages (alias `--target-pages`) |
+| `--fit-to-pages <N>` | Fit within a positive PDF page budget (alias `--target-pages`); fail with `page_budget_unmet` before publication when the emitted PDF still exceeds it |
 | `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` | Fine-grained PDF type sizes |
 | `--pdf-font SLOT=PATH`, `--pdf-font-weight` | Host TrueType/CFF1 OpenType faces for HTML/PDF/SVG/EPUB and variable-font weight pins |
 | `--pdf-font-face INDEX\|SLOT=INDEX` | Explicit zero-based face from a mapped TTC/OTC collection; bare index selects body regular. Available for render, watch, batch and book. See [font collections](docs/FONT_COLLECTIONS.md) |
@@ -658,6 +658,14 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--remote-image-timeout-secs <n>` | Per-image timeout for authorized remote image fetches (default `20`; zero uses one second). Book commands require `--embed-remote-images` when setting this timeout |
 | `--max-input-bytes <n>` | Refuse file/stdin/`--text` input above `n` bytes before parsing (default `67108864`, 64 MiB) |
 | `--json` | Emit a stable JSON status envelope to stderr after writing outputs |
+
+Native render, watch, batch and book commands check a requested page budget
+against the completed PDF, including generated contents and footnote pages.
+An unmet budget reports the achieved count and preserves existing combined
+outputs and sidecars. Render and book exit 70 without sending document bytes to
+stdout; watch keeps its last successful output, and batch records a per-file
+render failure. The Rust and browser rendering APIs retain their adaptive
+page-target behavior.
 
 ### PDF and EPUB pipelines
 

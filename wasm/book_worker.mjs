@@ -3,6 +3,7 @@ import { BOOK_LINK_REPORT_MAX_BYTES, bookAuthoringProfileReceipt, bookFontEmbedd
 import { createRetainedBook } from "./book_retained.mjs";
 import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "./book_source_diagnostics.mjs";
+import { bookInspectionOptions } from "./book_inspection.mjs";
 import { BOOK_SOURCE_RENAME_MAX_BYTES, prepareBookSourceRename, parseBookSourceRename } from "./book_source_rename.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
@@ -498,7 +499,7 @@ export function createBookWorkerClient({
           if (data.bookAuthoringProfile !== authoringProfile)
             throw bookError("UNSUPPORTED_BOOK_PROFILE", "The worker did not acknowledge the captured authoring profile; rebuild the matching package.");
           const profileReceipt = bookAuthoringProfileReceipt(data,
-            retainedFormats.has(format) ? authoringProfile : undefined);
+            retainedFormats.has(format) || format === "inspection" ? authoringProfile : undefined);
           const fontReceipt = bookFontEmbeddingReceipt(data,
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength, sourceOutputLimit(format, maxOutputBytes));
@@ -595,7 +596,7 @@ export function createBookWorkerClient({
             .reduce((size, file) => size + bookTextBytes(file.source), 0);
         } else if (!sourceOnly) input = prepareBookInput(
           files,
-          format === "inspection" ? {} : sourceFormats.has(format) ? bookLinkOptions(options) : options,
+          format === "inspection" ? bookInspectionOptions(options) : sourceFormats.has(format) ? bookLinkOptions(options) : options,
         );
         if (settled) return;
         if (signal?.aborted) {
@@ -784,7 +785,7 @@ export function installBookWorker(scope, engine) {
         if (capture && capture.mode !== mode) releaseCapture();
         input = rename ? prepareBookSourceRename(data.files, rename.oldPath, rename.newPath, data.options) : prepareBookInput(
           data.files,
-          data.format === "inspection" ? {} : sourceFormats.has(data.format)
+          data.format === "inspection" ? bookInspectionOptions(data.options) : sourceFormats.has(data.format)
             ? bookLinkOptions(data.options) : data.options,
         );
       }
@@ -799,7 +800,7 @@ export function installBookWorker(scope, engine) {
         throw bookError("UNSUPPORTED_BOOK_SOURCE_RENAME", "Rebuild the matching book worker and renderer for source renaming.");
       const result = await engine[method](...args);
       const profileReceipt = bookAuthoringProfileReceipt(result,
-        retainedFormats.has(data.format) ? authoringProfile : undefined);
+        retainedFormats.has(data.format) || data.format === "inspection" ? authoringProfile : undefined);
       const fontReceipt = bookFontEmbeddingReceipt(result,
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength, sourceOutputLimit(data.format, data.maxOutputBytes));

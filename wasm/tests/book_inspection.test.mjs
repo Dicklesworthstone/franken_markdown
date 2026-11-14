@@ -316,3 +316,154 @@ test("ordinary long Unicode sources are counted as exact UTF-8 bytes", async () 
     result.sourceLength,
   );
 });
+
+
+test("explicit book inspection profiles reach both native analysis stages and every report surface", async () => {
+  for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+    const calls = [], options = { profile };
+    const e = engine({
+      documentStats(s, analysis) {
+        calls.push(["stats", s, analysis]);
+        return { ...stats(s), profile: analysis.profile };
+      },
+      accessibilityAudit(s, analysis) {
+        calls.push(["audit", s, analysis]);
+        return { ...audit(), profile: analysis.profile };
+      },
+    });
+    const output = await inspectBook(e, files(), options);
+    const report = await readBookInspection(output.bytes, files(), options);
+    assert.equal(output.profile, profile);
+    assert.equal(report.profile, profile);
+    assert.equal(parsed(output).profile, profile);
+    assert.equal(JSON.parse(await inspectionDownload(report).text()).profile, profile);
+    assert.deepEqual(calls.map(([kind, s]) => [kind, s]),
+      [["stats", source], ["audit", source], ["stats", "# Next"], ["audit", "# Next"]]);
+    for (const [, , analysis] of calls) {
+      assert.deepEqual(analysis, { profile });
+      assert(Object.isFrozen(analysis));
+    }
+    assert.equal(report.summary.verdict, "no-findings");
+  }
+});
+
+test("omitted inspection profile preserves legacy native arguments and exact JSON layout", async () => {
+  const arities = [];
+  const output = await inspectBook(engine({
+    documentStats(...args) { arities.push(args.length); return stats(args[0]); },
+    accessibilityAudit(...args) { arities.push(args.length); return audit(); },
+  }), files());
+  const report = await readBookInspection(output.bytes, files());
+  assert.deepEqual(arities, [1, 1, 1, 1]);
+  assert(!Object.hasOwn(output, "profile"));
+  assert(!Object.hasOwn(report, "profile"));
+  assert.equal(new TextDecoder().decode(output.bytes),
+    '{"schema":"fmd-book-inspection-v1","scope":"unexpanded-source-chapters","chapters":['
+    + report.chapters.map(chapter => JSON.stringify(chapter)).join(",")
+    + '],"summary":' + JSON.stringify(report.summary) + "}\n");
+});
+
+test("inspection captures the authoring profile and original source before asynchronous analysis", async () => {
+  const f = files(), original = files(), options = { profile: "commonmark-gfm" };
+  const hold = gate(), seen = [];
+  const pending = inspectBook(engine({
+    async documentStats(s, analysis) {
+      seen.push([s, analysis.profile]);
+      await hold.promise;
+      return { ...stats(s), profile: analysis.profile };
+    },
+    accessibilityAudit(s, analysis) {
+      seen.push([s, analysis.profile]);
+      return { ...audit(), profile: analysis.profile };
+    },
+  }), f, options);
+  options.profile = "gfm-plus";
+  f[0].source = "changed"; f.reverse();
+  hold.resolve();
+  const result = await pending;
+  const readingOptions = { profile: "commonmark-gfm" };
+  const reading = readBookInspection(result.bytes, original, readingOptions);
+  readingOptions.profile = "gfm-plus";
+  const report = await reading;
+  assert.equal(report.profile, "commonmark-gfm");
+  assert.deepEqual(seen, [source, source, "# Next", "# Next"].map(s => [s, "commonmark-gfm"]));
+});
+
+test("explicit inspection refuses an old or wrong-dialect successful native stage", async () => {
+  for (const stage of ["documentStats", "accessibilityAudit"]) {
+    for (const receipt of [undefined, "gfm-plus", "future"]) {
+      const e = engine({
+        documentStats: s => ({ ...stats(s), profile: "commonmark-gfm" }),
+        accessibilityAudit: () => ({ ...audit(), profile: "commonmark-gfm" }),
+      });
+      e[stage] = s => ({ ...(stage === "documentStats" ? stats(s) : audit()),
+        ...(receipt === undefined ? {} : { profile: receipt }) });
+      await assert.rejects(inspectBook(e, files(), { profile: "commonmark-gfm" }),
+        { code: "UNSUPPORTED_WASM_PACKAGE" });
+    }
+  }
+  await assert.rejects(inspectBook({}, files(), { profile: "gfm-plus" }),
+    { code: "UNSUPPORTED_WASM_PACKAGE" });
+});
+
+test("profile capability errors refuse inspection while ordinary stage failures remain incomplete", async () => {
+  const profile = "gfm-plus";
+  await assert.rejects(inspectBook(engine({
+    documentStats() {
+      throw Object.assign(new Error("Rebuild profiled analysis"), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    },
+  }), files(), { profile }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  const result = await inspectBook(engine({
+    documentStats() { throw new Error("Temporary analysis failure"); },
+    accessibilityAudit: () => ({ ...audit(), profile }),
+  }), files(), { profile });
+  const report = await readBookInspection(result.bytes, files(), { profile });
+  assert.equal(report.summary.failedChecks, 2);
+  assert.equal(report.summary.verdict, "incomplete");
+  assert.equal(report.chapters[0].accessibility.status, "ok");
+});
+
+test("same-source inspection identity includes the requested dialect and refuses unrequested receipts", async () => {
+  const profile = "commonmark-gfm", options = { profile };
+  const output = await inspectBook(engine({
+    documentStats: s => ({ ...stats(s), profile }),
+    accessibilityAudit: () => ({ ...audit(), profile }),
+  }), files(), options);
+  await assert.rejects(readBookInspection(output.bytes, files(), { profile: "gfm-plus" }),
+    { code: "STALE_INSPECTION" });
+  await assert.rejects(readBookInspection(output.bytes, files()), { code: "STALE_INSPECTION" });
+  const raw = parsed(output);
+  delete raw.profile;
+  await assert.rejects(readBookInspection(encode(raw), files(), options), { code: "STALE_INSPECTION" });
+  raw.profile = "future";
+  await assert.rejects(readBookInspection(encode(raw), files(), options), { code: "STALE_INSPECTION" });
+});
+
+test("inspection admits only a data-valued dialect without reading source expansion or resource getters", async () => {
+  const profile = "gfm-plus", options = { profile };
+  for (const key of ["images", "fontAssets", "includeSources", "expandIncludes", "page",
+    "typography", "title", "customCss", "fontEmbedding", "pdfA"])
+    Object.defineProperty(options, key, { get() { throw new Error("Resource getter: " + key); } });
+  const output = await inspectBook(engine({
+    documentStats: s => ({ ...stats(s), profile }),
+    accessibilityAudit: () => ({ ...audit(), profile }),
+  }), files(), options);
+  assert.equal((await readBookInspection(output.bytes, files(), options)).profile, profile);
+  let reads = 0, calls = 0;
+  for (const bad of [{ profile: "future" }, { get profile() { reads++; return profile; } }]) {
+    await assert.rejects(inspectBook(engine({
+      documentStats() { calls++; return stats(source); },
+    }), files(), bad), { code: "INVALID_OPTIONS" });
+  }
+  assert.equal(reads, 0);
+  assert.equal(calls, 0);
+});
+
+test("native profile receipts cannot hide behind getters", async () => {
+  let reads = 0;
+  const value = stats(source);
+  Object.defineProperty(value, "profile", { get() { reads++; return "gfm-plus"; } });
+  await assert.rejects(inspectBook(engine({ documentStats: () => value }), files(),
+    { profile: "gfm-plus" }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(reads, 0);
+});

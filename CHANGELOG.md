@@ -168,6 +168,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Book source inspection retains the selected Markdown dialect through the
+  workbench, worker, statistics and accessibility checks. Reports and downloads
+  retain that grammar identity, and matching source hashes cannot revive a
+  report from another dialect. Unsupported native profiles fail explicitly;
+  source-only inspection still grants no publication assets or include access.
 - Saved editable HTML retains footnotes cited inside link labels, without nested
   anchors, and preserves complete note bodies and return links. Note targets use
   source names with exact fragment encoding and collision-safe Unicode handling;

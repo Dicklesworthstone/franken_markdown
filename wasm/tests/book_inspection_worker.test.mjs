@@ -157,3 +157,125 @@ test("malformed source and a pre-aborted signal do not allocate an inspection wo
   });
   assert.equal(h.workers.length, 0);
 });
+
+
+function acknowledgedInspection(profile) {
+  return { ...output(), ...(profile === undefined ? {} : { profile }) };
+}
+function inspectionOptions(profile) {
+  const options = { profile };
+  for (const key of ["images", "fontAssets", "includeSources", "expandIncludes", "page",
+    "typography", "title", "customCss", "fontEmbedding", "pdfA"])
+    Object.defineProperty(options, key, { get() { throw new Error("Resource getter: " + key); } });
+  return options;
+}
+
+test("inspection worker captures explicit dialect without image, font or include authority", async (t) => {
+  for (const profile of ["commonmark-gfm", "gfm-plus", undefined]) {
+    const calls = [];
+    const h = setup(t, { inspectBook(f, options) {
+      calls.push({ f, options });
+      return acknowledgedInspection(options.profile);
+    } });
+    const options = inspectionOptions(profile), f = files();
+    const pending = h.client.render(f, "inspection", options);
+    options.profile = profile === "gfm-plus" ? "commonmark-gfm" : "gfm-plus";
+    f[0].source = "# Changed";
+    const result = await pending;
+    assert.equal(result.profile, profile);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.profile, profile);
+    assert.deepEqual(calls[0].f, files());
+    assert.deepEqual(calls[0].options.images, []);
+    assert.deepEqual(calls[0].options.fontAssets, []);
+    assert.deepEqual(calls[0].options.includeSources, []);
+    assert.equal(calls[0].options.typography, undefined);
+    assert.equal(h.workers[0].input.options.profile, profile);
+    assert(h.workers[0].terminated);
+    assert.equal(Object.hasOwn(result, "profile"), profile !== undefined);
+  }
+});
+
+test("inspection worker refuses a renderer that ignores or changes the requested profile", async (t) => {
+  for (const receipt of [undefined, "gfm-plus", "future"]) {
+    const h = setup(t, { inspectBook: () => acknowledgedInspection(receipt) });
+    await assert.rejects(h.client.render(files(), "inspection", { profile: "commonmark-gfm" }),
+      { code: "UNSUPPORTED_BOOK_PROFILE" });
+    assert(h.workers[0].terminated);
+  }
+  const unrequested = setup(t, { inspectBook: () => acknowledgedInspection("gfm-plus") });
+  await assert.rejects(unrequested.client.render(files(), "inspection"),
+    { code: "UNSUPPORTED_BOOK_PROFILE" });
+});
+
+test("inspection client independently rejects missing exporter receipts even if the worker echoes captured profile", async (t) => {
+  class UnacknowledgedWorker extends EventTarget {
+    postMessage(input) {
+      queueMicrotask(() => this.dispatchEvent(Object.assign(new Event("message"), {
+        data: { schemaVersion: 1, id: input.id, format: input.format,
+          bookAuthoringProfile: input.options.profile, ...output() },
+      })));
+    }
+    terminate() { this.terminated = true; }
+  }
+  const endpoint = new UnacknowledgedWorker();
+  const client = createBookWorkerClient({ workerFactory: () => endpoint });
+  t.after(() => client.dispose());
+  await assert.rejects(client.render(files(), "inspection", { profile: "gfm-plus" }),
+    { code: "UNSUPPORTED_BOOK_PROFILE" });
+  assert(endpoint.terminated);
+});
+
+test("inspection worker ingress independently projects the profile without invoking resource getters", async () => {
+  let receive, reply, called = 0;
+  installBookWorker({
+    addEventListener: (_, listener) => { receive = listener; },
+    postMessage: data => { reply = data; },
+  }, { inspectBook(f, options) {
+    called++;
+    assert.deepEqual(f, files());
+    assert.equal(options.profile, "gfm-plus");
+    assert.deepEqual(options.images, []);
+    assert.deepEqual(options.fontAssets, []);
+    assert.deepEqual(options.includeSources, []);
+    return acknowledgedInspection(options.profile);
+  } });
+  await receive({ data: { schemaVersion: 1, id: 1, format: "inspection",
+    files: files(), options: inspectionOptions("gfm-plus"), maxOutputBytes: 4096 } });
+  assert.equal(called, 1);
+  assert.equal(reply.profile, "gfm-plus");
+  assert.equal(reply.bookAuthoringProfile, "gfm-plus");
+  assert.equal(reply.error, undefined);
+});
+
+test("invalid inspection profile is rejected before an endpoint is allocated", async (t) => {
+  const h = setup(t, { inspectBook: output });
+  let reads = 0;
+  for (const options of [{ profile: "future" },
+    { get profile() { reads++; return "gfm-plus"; } }])
+    await assert.rejects(h.client.render(files(), "inspection", options), { code: "INVALID_OPTIONS" });
+  assert.equal(reads, 0);
+  assert.equal(h.workers.length, 0);
+});
+
+
+test("worker and report adapter forward the captured grammar to both source checks", async (t) => {
+  const seen = [], profile = "commonmark-gfm";
+  const h = setup(t, { inspectBook: (f, options) => inspectBook({
+    documentStats(s, analysis) {
+      seen.push(["stats", s, analysis]);
+      throw new Error("Statistics fixture unavailable");
+    },
+    accessibilityAudit(s, analysis) {
+      seen.push(["audit", s, analysis]);
+      return { schema_version: "1", target: "pdf", findings: [], profile: analysis.profile };
+    },
+  }, f, options) });
+  const result = await h.client.render(files(), "inspection", { profile });
+  const report = await readBookInspection(result.bytes, files(), { profile });
+  assert.equal(result.profile, profile);
+  assert.equal(report.profile, profile);
+  assert.equal(report.summary.verdict, "incomplete");
+  assert.deepEqual(seen.map(([kind, source, options]) => [kind, source, options]),
+    files().flatMap(file => [["stats", file.source, { profile }], ["audit", file.source, { profile }]]));
+});

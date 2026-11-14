@@ -44,7 +44,7 @@ test("actual publisher and worker entry retain previous features and attach the 
     "createBookLibraryControls",
   ])
     assert(entry.includes(name));
-  assert.match(worker, /inspectBook:\s*\(files\)\s*=>\s*inspectBook\(documents, files\)/);
+  assert.match(worker, /inspectBook:\s*\(files, options\)\s*=>\s*inspectBook\(documents, files, options\)/);
   assert(worker.includes('from "./franken_markdown.js"'));
   assert(read("wasm/book-worker.d.ts").includes("Promise<BookInspectionOutput>"));
 });

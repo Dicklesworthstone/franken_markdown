@@ -1,4 +1,5 @@
-import { inspectionDownload, readBookInspection } from "../book_inspection.mjs";
+import { bookInspectionOptions, inspectionDownload, readBookInspection } from "../book_inspection.mjs";
+import { analysisAuthoringProfileReceipt } from "../render_typography.mjs";
 import { parseBookLinkReport, parseBookSourceDiagnosticsReport } from "../book_session.mjs";
 import { bookSourceSelections } from "../book_source_diagnostics.mjs";
 
@@ -236,7 +237,9 @@ export function createBookInspectionControls({ root, controls, collection, worke
       retire();
       const project = controls.captureProject(),
         captured = controls.checkpoint();
-      const files = project.files.filter((file) => file.role !== "include");
+      const files = project.files.filter((file) => file.role !== "include")
+        .map(({ path, source }) => ({ path, source }));
+      const analysis = bookInspectionOptions(project.options);
       if (!files.length)
         throw fail("EMPTY_BOOK", "Add a published chapter before running chapter inspection.");
       ticket = ++generation;
@@ -244,9 +247,10 @@ export function createBookInspectionControls({ root, controls, collection, worke
       buttons();
       el["inspection-status"].textContent =
         "Running Rust source-structure and accessibility checks in a separate worker. Cancel remains available; no export is being created.";
-      // No image bytes, font grants, or publication settings cross this route:
-      // the current engine audit is source-only with default PDF options.
-      const result = await worker.render(files, "inspection");
+      // Only the captured source dialect crosses this source-only route.
+      // Image/font grants, include expansion and PDF layout remain excluded.
+      const result = await worker.render(files, "inspection",
+        analysis.profile === undefined ? undefined : analysis);
       const fence = () => {
         if (disposed || suspended || ticket !== generation || captured !== controls.checkpoint())
           throw fail("STALE_INSPECTION", "The book changed while inspection was running.");
@@ -254,7 +258,8 @@ export function createBookInspectionControls({ root, controls, collection, worke
       fence();
       if (result.format !== "book-inspection")
         throw fail("INVALID_INSPECTION", "The worker returned a different result type.");
-      const checked = await readBookInspection(result.bytes, files);
+      analysisAuthoringProfileReceipt(result, analysis.profile, "INVALID_INSPECTION");
+      const checked = await readBookInspection(result.bytes, files, analysis);
       fence();
       report = checked;
       stamp = captured;

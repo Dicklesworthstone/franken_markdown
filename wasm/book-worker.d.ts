@@ -35,6 +35,8 @@ export interface BookChapterWorkerOutput extends Omit<BookChapterPreviewOutput, 
 export interface BookRetainedLinksOutput extends Omit<BookLinksOutput, "filename">, BookWorkerCapture {}
 export interface BookInspectionOutput {
   readonly format: "book-inspection";
+  /** Verified source dialect; absent when the legacy default was requested. */
+  readonly profile?: BookOptions["profile"];
   readonly mimeType: "application/json";
   readonly extension: "json";
   readonly sourceLength: number;
@@ -105,8 +107,10 @@ export interface BookWorker {
     options?: BookOptions,
     request?: BookChapterPreviewRequest,
   ): Promise<BookChapterWorkerOutput>;
-  /** Source-only structural/accessibility inspection. Publication options,
-   * images and fonts are ignored and are not transferred to the worker. */
+  /** Source-only structural/accessibility inspection under the captured profile.
+   * Other publication options, images, fonts and include sources are ignored
+   * and are not transferred to the worker. Explicit profiles require matching
+   * native analysis and worker receipts; they never silently use a default. */
   render(
     files: readonly BookFile[],
     format: "inspection",

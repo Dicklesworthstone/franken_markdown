@@ -3,7 +3,9 @@
 Open `demo/book.html` from the assembled package and use **Inspect source quality
 and accessibility**, immediately before the publication controls. **Inspect all
 source chapters** runs the existing Rust `documentStats` and `accessibilityAudit`
-APIs for each chapter in reading order. No alternate Markdown parser is added.
+APIs for each chapter in reading order, using the book’s captured authoring
+profile (`commonmark-gfm` or `gfm-plus`) when one is selected. No alternate
+Markdown parser is added.
 
 The panel shows per-chapter structural findings, accessibility findings, word and
 source counts, reading/speaking estimates, readability estimates and outlines.
@@ -19,8 +21,9 @@ Source-structure findings are those produced by the Rust document-intelligence
 API, including its heading, anchor and footnote checks. Accessibility findings
 come from the engine's filtered authoring-time audit: missing alternative text,
 heading-level skips, generic link text and missing table-header text. This ABI
-runs with default PDF options; it does not accept the publisher's image/font
-assets or presentation settings. Those inputs are not transmitted for inspection.
+runs with default PDF options under the selected Markdown grammar; it does not
+accept the publisher's image/font assets, include sources or presentation
+settings. Those inputs are not read or transmitted for inspection.
 
 The scope is **original, unexpanded source chapters**, not the assembled book.
 Transclusions can change which headings and links exist in publication. This
@@ -31,7 +34,10 @@ inspection result never blocks exporting.
 
 The summary distinguishes `no-findings`, `findings`, and **`incomplete`**. A failed
 or invalid engine response is a failed check, not an empty successful result.
-Other checks and later chapters still run. Aggregate statistics cover only
+Other checks and later chapters still run. A missing or mismatched authoring
+profile receipt instead refuses the complete inspection: an older engine must
+not report a successful check under a dialect it did not acknowledge. Aggregate
+statistics cover only
 chapters whose statistics completed; coverage is displayed explicitly. Missing
 statistics are not replaced with zeros in the chapter view. Readability and
 reading times are estimates from the existing engine, not universal quality
@@ -49,8 +55,11 @@ returning from the back/forward cache does not restore a stale report.
 
 Every captured chapter is fingerprinted with SHA-256 over its exact UTF-8 source,
 including BOM and original line endings. The host revalidates chapter order,
-paths, byte counts, fingerprints and report schema before displaying the report.
-It also recomputes aggregate verdicts instead of trusting a response's claimed
+paths, byte counts, fingerprints, report schema and the captured authoring
+profile before displaying the report. Identical source under a different dialect
+is a stale report. The profile is captured before asynchronous hashing or analysis,
+and changing the applied dialect retires the report along with source edits.
+The host also recomputes aggregate verdicts instead of trusting a response's claimed
 summary. Editor checkpoints are checked after asynchronous validation and before
 navigation or download activation. Late replies cannot replace newer results.
 
@@ -64,12 +73,37 @@ not an encrypted or anonymized report, nor a source backup.
 ## API and limits
 
 The existing book worker accepts `render(files, "inspection", options, request)`.
-For this source-only route, publication options are ignored and assets are not
-copied or transferred. The result has format `book-inspection`, JSON MIME type,
-UTF-8 bytes and the original source-byte count. Its schema is
-`fmd-book-inspection-v1`, with `scope: "unexpanded-source-chapters"`, ordered
-`chapters`, independent `statistics`/`accessibility` check states, and a summary.
-Each failed check is represented as `status: "error"` with a bounded message.
+For this source-only route, only an own, data-valued `options.profile` is
+admitted. It must be `commonmark-gfm` or `gfm-plus` when supplied. All other
+publication options are ignored without invoking their getters; assets and include
+sources are not copied or transferred. The result has format `book-inspection`,
+JSON MIME type, UTF-8 bytes and the original source-byte count. An explicit
+profile is included in both the result and its JSON report only after the
+successful native checks and worker have acknowledged it. Packages lacking the
+profile-aware analysis APIs must be rebuilt; there is no fallback to another
+dialect.
+
+Its schema remains `fmd-book-inspection-v1`, with
+`scope: "unexpanded-source-chapters"`, ordered `chapters`, independent
+`statistics`/`accessibility` check states, and a summary. Each failed check is
+represented as `status: "error"` with a bounded message. Omitting the profile
+preserves the existing native call arguments, wire metadata and JSON layout.
+
+The report adapter accepts `inspectBook(engine, files, options)`; the host
+reader accepts `readBookInspection(bytes, files, options)`. Pass the same
+captured profile to both the worker and reader:
+
+```js
+const inspectionOptions = Object.freeze({ profile: "gfm-plus" });
+const result = await worker.render(chapters, "inspection", inspectionOptions);
+const report = await readBookInspection(result.bytes, chapters, inspectionOptions);
+```
+
+The reader rejects a missing, different or unrequested report profile with
+`STALE_INSPECTION`, even when all chapter source hashes match. Downloading the
+validated report retains its profile. Inspection continues to analyze the
+original source chapters; selecting a dialect does not enable transclusion
+expansion or grant publication resources.
 
 The workbench admits up to 128 chapters, 4 MiB per chapter and 16 MiB total source
 plus paths. A check admits at most 4096 findings, 4096 outline entries, 4096 UTF-8

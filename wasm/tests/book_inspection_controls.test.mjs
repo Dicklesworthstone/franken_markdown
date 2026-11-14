@@ -116,7 +116,7 @@ function engine(count = 1) {
     },
   };
 }
-function setup(t) {
+function setup(t, options) {
   const el = {},
     root = {
       createElement: (tag) => new Element(tag, el),
@@ -169,7 +169,7 @@ function setup(t) {
     checkpoint,
     captureProject() {
       if (invalid) throw new Error("Invalid current input");
-      return { files: structuredClone(files) };
+      return { files: structuredClone(files), options };
     },
     subscribeSourceState(fn) {
       stateListeners.add(fn);
@@ -235,7 +235,7 @@ function setup(t) {
 async function complete(h, e = engine()) {
   const p = h.view.run();
   const job = h.jobs.at(-1);
-  job.resolve({ format: "book-inspection", ...(await inspectBook(e, job.files)) });
+  job.resolve({ format: "book-inspection", ...(await inspectBook(e, job.files, job.options)) });
   return p;
 }
 function choose(el, value) {
@@ -390,4 +390,83 @@ test("dispose terminates inspection and prevents late publication", async (t) =>
   await assert.rejects(pending, { code: "STALE_INSPECTION" });
   assert(h.disposed);
   assert(h.el["inspection-download"].hidden);
+});
+
+
+function profiledControlsEngine(profile) {
+  const native = engine();
+  return {
+    documentStats(source, options) {
+      assert.deepEqual(options, profile === undefined ? undefined : { profile });
+      return { ...native.documentStats(source), ...(profile === undefined ? {} : { profile }) };
+    },
+    accessibilityAudit(source, options) {
+      assert.deepEqual(options, profile === undefined ? undefined : { profile });
+      return { ...native.accessibilityAudit(source), ...(profile === undefined ? {} : { profile }) };
+    },
+  };
+}
+
+test("inspection panel captures the selected dialect without granting resources or include sources", async (t) => {
+  for (const profile of ["commonmark-gfm", "gfm-plus", undefined]) {
+    const options = { profile };
+    for (const key of ["images", "fontAssets", "includeSources", "expandIncludes", "page",
+      "typography", "title", "customCss"])
+      Object.defineProperty(options, key, { get() { throw new Error("Resource getter: " + key); } });
+    const h = setup(t, options);
+    h.files.push({ path: "part.md", source: "# Included only", role: "include" });
+    const report = await complete(h, profiledControlsEngine(profile));
+    assert.equal(report.profile, profile);
+    assert.equal(Object.hasOwn(report, "profile"), profile !== undefined);
+    assert.deepEqual(h.jobs[0].options, profile === undefined ? undefined : { profile });
+    assert.deepEqual(h.jobs[0].files, h.files.slice(0, 2));
+    assert.equal(report.chapters.length, 2);
+    if (profile !== undefined) assert(Object.isFrozen(h.jobs[0].options));
+  }
+});
+
+test("inspection panel captures source and profile before a pending worker reply", async (t) => {
+  const options = { profile: "commonmark-gfm" }, h = setup(t, options);
+  const original = structuredClone(h.files), pending = h.view.run(), job = h.jobs[0];
+  options.profile = "gfm-plus";
+  h.files[0].source = "# Changed";
+  assert.deepEqual(job.files, original);
+  assert.deepEqual(job.options, { profile: "commonmark-gfm" });
+  job.resolve({ format: "book-inspection",
+    ...(await inspectBook(profiledControlsEngine("commonmark-gfm"), job.files, job.options)) });
+  assert.equal((await pending).profile, "commonmark-gfm");
+});
+
+test("inspection panel refuses a same-source wrong-dialect JSON report even with a matching envelope", async (t) => {
+  const h = setup(t, { profile: "commonmark-gfm" }), pending = h.view.run();
+  const rejected = assert.rejects(pending, { code: "STALE_INSPECTION" });
+  const wrong = await inspectBook(profiledControlsEngine("gfm-plus"), h.jobs[0].files,
+    { profile: "gfm-plus" });
+  h.jobs[0].resolve({ format: "book-inspection", ...wrong, profile: "commonmark-gfm" });
+  await rejected;
+  assert(h.el["inspection-save"].disabled);
+  assert(h.el["inspection-download"].hidden);
+});
+
+test("inspection panel refuses an old worker that omits the requested profile receipt", async (t) => {
+  const h = setup(t, { profile: "gfm-plus" }), pending = h.view.run();
+  const rejected = assert.rejects(pending, { code: "INVALID_INSPECTION" });
+  h.jobs[0].resolve({ format: "book-inspection", ...(await inspectBook(engine(), h.jobs[0].files)) });
+  await rejected;
+  assert(h.el["inspection-save"].disabled);
+});
+
+test("dialect changes retire pending inspection and the next run captures the new grammar", async (t) => {
+  const options = { profile: "commonmark-gfm" }, h = setup(t, options);
+  const pending = h.view.run(), old = h.jobs[0];
+  const rejected = assert.rejects(pending, { code: "STALE_INSPECTION" });
+  options.profile = "gfm-plus"; h.change();
+  const current = await complete(h, profiledControlsEngine("gfm-plus"));
+  assert.equal(current.profile, "gfm-plus");
+  assert.deepEqual(old.options, { profile: "commonmark-gfm" });
+  old.resolve({ format: "book-inspection",
+    ...(await inspectBook(profiledControlsEngine("commonmark-gfm"), old.files, old.options)) });
+  await rejected;
+  assert.equal(h.jobs[1].options.profile, "gfm-plus");
+  assert.equal(h.el["inspection-save"].disabled, false);
 });

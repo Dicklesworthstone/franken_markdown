@@ -19,5 +19,5 @@ installBookWorker(self, {
   renderRetainedBookPreview: (files, options, selected) => retained.render(files, options,
     selected === undefined ? "preview" : "chapter-preview", selected),
   clearRetainedBookPreview: retained.clear,
-  inspectBook: (files) => inspectBook(documents, files),
+  inspectBook: (files, options) => inspectBook(documents, files, options),
 });

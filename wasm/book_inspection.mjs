@@ -1,5 +1,6 @@
 // Report orchestration only: the existing Rust documentStats/accessibilityAudit
 // APIs own Markdown interpretation. No JS parser, network or asset resolver.
+import { analysisAuthoringProfileReceipt, normalizeAnalysisOptions } from "./render_typography.mjs";
 export const BOOK_INSPECTION_LIMITS = Object.freeze({
   chapters: 128,
   chapterBytes: 4 * 1024 * 1024,
@@ -43,6 +44,18 @@ const structures = [
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const invalid = () =>
   fail("INVALID_INSPECTION", "The engine returned an invalid inspection report.");
+
+/** Inspection admits only the selected source dialect. Publication settings and
+ * resource getters are not read, even when passed a complete book capture. */
+export function bookInspectionOptions(options = {}) {
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options)))
+    throw fail("INVALID_OPTIONS", "Inspection options must be a plain data object.");
+  const field = Object.getOwnPropertyDescriptor(options, "profile");
+  if (field && !Object.hasOwn(field, "value"))
+    throw fail("INVALID_OPTIONS", "Inspection requires a data-valued authoring profile.");
+  return normalizeAnalysisOptions(field ? { profile: field.value } : {});
+}
 function text(value, maximum) {
   if (typeof value !== "string") throw invalid();
   let size = 0;
@@ -197,7 +210,9 @@ function serialize(report) {
   // Admission before concatenating all escaped findings. Source bodies, assets,
   // font bytes and the PDF audit's text layer are deliberately not included.
   const parts = [
-    '{"schema":"fmd-book-inspection-v1","scope":"unexpanded-source-chapters","chapters":[',
+    '{"schema":"fmd-book-inspection-v1","scope":"unexpanded-source-chapters"'
+      + (report.profile === undefined ? "" : ',"profile":' + JSON.stringify(report.profile))
+      + ',"chapters":[',
   ];
   let size = parts[0].length;
   for (const [index, chapter] of report.chapters.entries()) {
@@ -214,9 +229,13 @@ function serialize(report) {
  * engine allocations; independent stage failures preserve useful other results.
  * This analyzes original source chapters, not transclusion-expanded publication.
  */
-export async function inspectBook(engine, files) {
-  const input = sourceSnapshot(files),
+export async function inspectBook(engine, files, options = {}) {
+  const analysis = bookInspectionOptions(options),
+    input = sourceSnapshot(files),
     chapters = [];
+  if (analysis.profile !== undefined
+      && (typeof engine?.documentStats !== "function" || typeof engine?.accessibilityAudit !== "function"))
+    throw fail("UNSUPPORTED_WASM_PACKAGE", "Profile-aware inspection requires matching document analysis APIs.");
   let retainedBytes = 0;
   for (const file of input) {
     const chapter = {
@@ -225,20 +244,31 @@ export async function inspectBook(engine, files) {
       sourceSha256: await fingerprint(file.source),
     };
     try {
-      chapter.statistics = statistics(await engine.documentStats(file.source), file.sourceBytes);
+      const value = analysis.profile === undefined
+        ? await engine.documentStats(file.source)
+        : await engine.documentStats(file.source, analysis);
+      analysisAuthoringProfileReceipt(value, analysis.profile);
+      chapter.statistics = statistics(value, file.sourceBytes);
     } catch (error) {
+      if (analysis.profile !== undefined && error?.code === "UNSUPPORTED_WASM_PACKAGE") throw error;
       chapter.statistics = failure(error);
     }
     try {
-      chapter.accessibility = accessibility(await engine.accessibilityAudit(file.source));
+      const value = analysis.profile === undefined
+        ? await engine.accessibilityAudit(file.source)
+        : await engine.accessibilityAudit(file.source, analysis);
+      analysisAuthoringProfileReceipt(value, analysis.profile);
+      chapter.accessibility = accessibility(value);
     } catch (error) {
+      if (analysis.profile !== undefined && error?.code === "UNSUPPORTED_WASM_PACKAGE") throw error;
       chapter.accessibility = failure(error);
     }
     retainedBytes += text(JSON.stringify(chapter), L.reportBytes - retainedBytes);
     chapters.push(chapter);
   }
-  const report = { chapters, summary: summary(chapters) };
+  const report = { ...analysis, chapters, summary: summary(chapters) };
   return {
+    ...analysis,
     bytes: serialize(report),
     sourceLength: input.reduce((sum, file) => sum + file.sourceBytes, 0),
   };
@@ -270,8 +300,9 @@ function checkedStage(value, bytes, kind) {
 /** Validate the report and its source identities before exposing navigation or
  * downloads. Recompute aggregates instead of trusting an optimistic verdict.
  */
-export async function readBookInspection(bytes, files) {
-  const input = sourceSnapshot(files);
+export async function readBookInspection(bytes, files, options = {}) {
+  const analysis = bookInspectionOptions(options),
+    input = sourceSnapshot(files);
   if (
     !(bytes instanceof Uint8Array) ||
     Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
@@ -293,6 +324,7 @@ export async function readBookInspection(bytes, files) {
     value.chapters.length !== input.length
   )
     throw invalid();
+  analysisAuthoringProfileReceipt(value, analysis.profile, "STALE_INSPECTION");
   const chapters = [];
   for (const [index, file] of input.entries()) {
     const chapter = value.chapters[index];
@@ -314,6 +346,7 @@ export async function readBookInspection(bytes, files) {
   return {
     schema: "fmd-book-inspection-v1",
     scope: value.scope,
+    ...analysis,
     chapters,
     summary: summary(chapters),
   };

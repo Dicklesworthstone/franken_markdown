@@ -28,13 +28,24 @@ fn elements<'a>(svg: &'a str, class: &str) -> Vec<&'a str> {
 }
 
 fn content(element: &str) -> &str {
-    element.split_once('>').unwrap().1.split_once("</").unwrap().0
+    element
+        .split_once('>')
+        .unwrap()
+        .1
+        .split_once("</")
+        .unwrap()
+        .0
 }
 
 fn rect(element: &str) -> [f32; 4] {
     let x = number(element, "x");
     let y = number(element, "y");
-    [x, y, x + number(element, "width"), y + number(element, "height")]
+    [
+        x,
+        y,
+        x + number(element, "width"),
+        y + number(element, "height"),
+    ]
 }
 
 fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
@@ -64,19 +75,33 @@ fn declared_implicit_and_aliased_classes_keep_members_and_compartments() {
     assert_eq!(elements(&svg, "fmd-class-relation").len(), 1);
     assert_eq!(elements(&svg, "fmd-class-inheritance").len(), 1);
     for text in [
-        "Living record", "Duck", "+int age", "+isMammal() bool",
-        "+String beakColor", "#swim(speed) void", "~quack()",
+        "Living record",
+        "Duck",
+        "+int age",
+        "+isMammal() bool",
+        "+String beakColor",
+        "#swim(speed) void",
+        "~quack()",
     ] {
         assert!(svg.contains(&format!(">{text}</text>")), "{text}\n{svg}");
     }
-    assert!(!svg.contains(">Animal</text>"), "the late alias owns the title");
+    assert!(
+        !svg.contains(">Animal</text>"),
+        "the late alias owns the title"
+    );
     assert_eq!(svg, render(source));
     assert_eq!(svg, render(&source.replace('\n', "\r\n")));
 
     let dividers = elements(&svg, "fmd-class-divider");
     let members = elements(&svg, "fmd-class-member");
-    let age = members.iter().find(|line| content(line) == "+int age").unwrap();
-    let method = members.iter().find(|line| content(line) == "+isMammal() bool").unwrap();
+    let age = members
+        .iter()
+        .find(|line| content(line) == "+int age")
+        .unwrap();
+    let method = members
+        .iter()
+        .find(|line| content(line) == "+isMammal() bool")
+        .unwrap();
     assert!(number(age, "y") > number(dividers[0], "y1"));
     assert!(number(age, "y") < number(dividers[1], "y1"));
     assert!(number(method, "y") > number(dividers[1], "y1"));
@@ -85,7 +110,8 @@ fn declared_implicit_and_aliased_classes_keep_members_and_compartments() {
 #[test]
 fn class_block_and_colon_members_have_identical_rendered_meaning() {
     let block = "classDiagram\nclass Account {\n+String owner\n+deposit(amount) bool\n}\n";
-    let colon = "classDiagram\nclass Account\nAccount: +String owner\nAccount: +deposit(amount) bool\n";
+    let colon =
+        "classDiagram\nclass Account\nAccount: +String owner\nAccount: +deposit(amount) bool\n";
     assert_eq!(render(block), render(colon));
     assert_eq!(
         render("classDiagram\nclass A { +name }\n"),
@@ -109,10 +135,20 @@ fn stereotypes_static_fields_and_abstract_methods_remain_meaningful() {
         assert_eq!(svg, render(source));
     }
     assert!(svg.contains(">&lt;&lt;interface&gt;&gt;</text>"));
-    assert!(svg.contains(">+draw()*</text>"), "the abstract classifier stays visible");
+    assert!(
+        svg.contains(">+draw()*</text>"),
+        "the abstract classifier stays visible"
+    );
     assert!(svg.contains(">+int count</text>"));
-    assert_eq!(elements(&svg, "fmd-class-static").len(), 1, "static field has an underline");
-    assert!(!svg.contains("font-style:"), "Flow's existing body/bold text profile is preserved");
+    assert_eq!(
+        elements(&svg, "fmd-class-static").len(),
+        1,
+        "static field has an underline"
+    );
+    assert!(
+        !svg.contains("font-style:"),
+        "Flow's existing body/bold text profile is preserved"
+    );
 }
 
 #[test]
@@ -137,10 +173,16 @@ fn every_standard_relationship_draws_the_correct_endpoint_and_line() {
         assert_eq!(elements(&svg, "fmd-class-node").len(), 2, "{operator}");
         let paths = elements(&svg, "fmd-class-relation");
         assert_eq!(paths.len(), 1, "{operator}");
-        assert_eq!(paths[0].contains("stroke-dasharray=\"5,4\""), dashed, "{operator}");
+        assert_eq!(
+            paths[0].contains("stroke-dasharray=\"5,4\""),
+            dashed,
+            "{operator}"
+        );
         for class in [
-            "fmd-class-inheritance", "fmd-class-composition",
-            "fmd-class-aggregation", "fmd-class-association",
+            "fmd-class-inheritance",
+            "fmd-class-composition",
+            "fmd-class-aggregation",
+            "fmd-class-association",
         ] {
             assert_eq!(
                 elements(&svg, class).len(),
@@ -158,10 +200,14 @@ fn every_standard_relationship_draws_the_correct_endpoint_and_line() {
     assert!(elements(&mixed, "fmd-class-relation")[0].contains("stroke-dasharray"));
 }
 
-
 #[test]
 fn spaced_class_names_starting_with_o_are_not_consumed_as_aggregation_markers() {
-    for (operator, name) in [("--", "order"), ("..", "object"), ("<--", "owner"), ("<|--", "orange")] {
+    for (operator, name) in [
+        ("--", "order"),
+        ("..", "object"),
+        ("<--", "owner"),
+        ("<|--", "orange"),
+    ] {
         let svg = render(&format!("classDiagram\nA {operator} {name}\n"));
         assert_eq!(elements(&svg, "fmd-class-node").len(), 2);
         assert!(svg.contains(&format!(">{name}</text>")), "{svg}");
@@ -176,7 +222,9 @@ fn spaced_class_names_starting_with_o_are_not_consumed_as_aggregation_markers() 
 fn endpoint_shapes_touch_their_authored_class_in_each_direction() {
     for direction in ["TD", "TB", "BT", "LR", "RL"] {
         for (operator, owner) in [("<|--", 0), ("--|>", 1)] {
-            let svg = render(&format!("classDiagram\ndirection {direction}\nParent {operator} Child\n"));
+            let svg = render(&format!(
+                "classDiagram\ndirection {direction}\nParent {operator} Child\n"
+            ));
             let nodes = elements(&svg, "fmd-class-node");
             let a = rect(nodes[0]);
             let b = rect(nodes[1]);
@@ -189,8 +237,12 @@ fn endpoint_shapes_touch_their_authored_class_in_each_direction() {
             }
             let head = elements(&svg, "fmd-class-inheritance")[0];
             let tip: Vec<f32> = attr(head, "points")
-                .split_whitespace().next().unwrap()
-                .split(',').map(|value| value.parse().unwrap()).collect();
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .split(',')
+                .map(|value| value.parse().unwrap())
+                .collect();
             let node = rect(nodes[owner]);
             let expected = match (direction, owner) {
                 ("LR", 0) | ("RL", 1) => [node[2], (node[1] + node[3]) / 2.0],
@@ -215,8 +267,16 @@ fn multiplicities_stay_on_their_own_ends_and_do_not_cover_captions() {
         assert_eq!(content(cards[0]), "1");
         assert_eq!(content(cards[1]), "0..*");
         let label = elements(&svg, "fmd-class-label")[0];
-        let axis = if matches!(direction, "LR" | "RL") { "x" } else { "y" };
-        let (start, middle, end) = (number(cards[0], axis), number(label, axis), number(cards[1], axis));
+        let axis = if matches!(direction, "LR" | "RL") {
+            "x"
+        } else {
+            "y"
+        };
+        let (start, middle, end) = (
+            number(cards[0], axis),
+            number(label, axis),
+            number(cards[1], axis),
+        );
         if matches!(direction, "TD" | "LR") {
             assert!(start < middle && middle < end, "{direction}: {svg}");
         } else {
@@ -244,7 +304,11 @@ fn branches_parallel_relationships_cycles_and_self_links_keep_all_labels_clear()
             let paths = elements(&svg, "fmd-class-relation");
             for (index, path) in paths.iter().enumerate() {
                 for other in &paths[index + 1..] {
-                    assert_ne!(attr(path, "d"), attr(other, "d"), "distinct relationships need distinct routes");
+                    assert_ne!(
+                        attr(path, "d"),
+                        attr(other, "d"),
+                        "distinct relationships need distinct routes"
+                    );
                 }
             }
             assert_scene_bounds(&svg);
@@ -258,18 +322,33 @@ fn assert_scene_bounds(svg: &str) {
     let height = number(root, "height");
     assert!(width.is_finite() && width > 0.0);
     assert!(height.is_finite() && height > 0.0);
-    let nodes: Vec<_> = elements(svg, "fmd-class-node").into_iter().map(rect).collect();
-    let labels: Vec<_> = elements(svg, "fmd-class-label-bg").into_iter().map(rect).collect();
+    let nodes: Vec<_> = elements(svg, "fmd-class-node")
+        .into_iter()
+        .map(rect)
+        .collect();
+    let labels: Vec<_> = elements(svg, "fmd-class-label-bg")
+        .into_iter()
+        .map(rect)
+        .collect();
     for bounds in nodes.iter().chain(&labels) {
         assert!(bounds[0] >= 0.0 && bounds[1] >= 0.0, "{bounds:?}\n{svg}");
-        assert!(bounds[2] <= width + 0.1 && bounds[3] <= height + 0.1, "{bounds:?}\n{svg}");
+        assert!(
+            bounds[2] <= width + 0.1 && bounds[3] <= height + 0.1,
+            "{bounds:?}\n{svg}"
+        );
     }
     for (index, label) in labels.iter().enumerate() {
         for other in &labels[index + 1..] {
-            assert!(!overlap(*label, *other), "caption overlap: {label:?}, {other:?}\n{svg}");
+            assert!(
+                !overlap(*label, *other),
+                "caption overlap: {label:?}, {other:?}\n{svg}"
+            );
         }
         for node in &nodes {
-            assert!(!overlap(*label, *node), "caption covered by node: {label:?}, {node:?}\n{svg}");
+            assert!(
+                !overlap(*label, *node),
+                "caption covered by node: {label:?}, {node:?}\n{svg}"
+            );
         }
     }
 }
@@ -281,7 +360,10 @@ fn long_wide_members_wrap_without_losing_text_or_leaving_the_class_box() {
     let node = rect(elements(&svg, "fmd-class-node")[0]);
     let members = elements(&svg, "fmd-class-member");
     assert!(members.len() > 1);
-    assert_eq!(members.iter().map(|line| content(line)).collect::<String>(), value);
+    assert_eq!(
+        members.iter().map(|line| content(line)).collect::<String>(),
+        value
+    );
     for line in members {
         let x = number(line, "x");
         let y = number(line, "y");
@@ -310,7 +392,169 @@ fn quoted_names_aliases_and_member_text_cannot_inject_svg() {
     assert!(svg.contains("+value: &lt;tag&gt; &amp; two  "));
     assert!(svg.contains("a colon: and an arrow --&gt;"));
     assert!(!svg.contains("complete line comment"));
-    assert!(!svg.contains("<g"), "generated scenes retain the existing flat primitive profile");
+    assert!(
+        !svg.contains("<g"),
+        "generated scenes retain the existing flat primitive profile"
+    );
+}
+
+#[test]
+fn generic_classes_keep_base_identity_and_render_nested_member_types() {
+    let source = concat!(
+        "classDiagram\n",
+        "Square --> Shape: implements\n",
+        "class Square~Shape~ {\n",
+        "  int id\n",
+        "  List~int~ position\n",
+        "  setPoints(List~int~ points)\n",
+        "  getPoints() List~int~\n",
+        "}\n",
+        "Square: -List~string~ messages\n",
+        "Square: +getDistanceMatrix() List~List~int~~\n",
+    );
+    let svg = render(source);
+    assert_eq!(elements(&svg, "fmd-class-node").len(), 2);
+    assert_eq!(elements(&svg, "fmd-class-relation").len(), 1);
+    let names = elements(&svg, "fmd-class-name");
+    assert_eq!(
+        names.iter().map(|name| content(name)).collect::<Vec<_>>(),
+        ["Square&lt;Shape&gt;", "Shape"]
+    );
+    for text in [
+        "int id",
+        "List&lt;int&gt; position",
+        "setPoints(List&lt;int&gt; points)",
+        "getPoints() List&lt;int&gt;",
+        "-List&lt;string&gt; messages",
+        "+getDistanceMatrix() List&lt;List&lt;int&gt;&gt;",
+    ] {
+        // Wrapping may split a long member; concatenating emitted text retains
+        // every source type and member without treating brackets as markup.
+        let members = elements(&svg, "fmd-class-member")
+            .iter()
+            .map(|line| content(line))
+            .collect::<String>();
+        assert!(members.contains(text), "missing {text:?}\n{svg}");
+    }
+    assert_scene_bounds(&svg);
+    assert_eq!(svg, render(&source.replace('\n', "\r\n")));
+    assert_eq!(svg, render_diagram_svg(source, "class").unwrap());
+    assert_eq!(svg, render_diagram_svg(source, "").unwrap());
+}
+
+#[test]
+fn generic_members_preserve_visibility_classifiers_arrays_and_multiple_parameters() {
+    let source = concat!(
+        "classDiagram\nclass A\n",
+        "A: ~List~T~ items$\n",
+        "A: +merge(List~T~ left, List~T~ right) List~List~T~~\n",
+        "A: #array() List~T[]~\n",
+        "A: -nestedArray() List~List~T~[]~\n",
+        "A: +load() List~T~*\n",
+        "A: ~build() List~pkg.Type-Value~$\n",
+    );
+    let svg = render(source);
+    let text = elements(&svg, "fmd-class-member")
+        .iter()
+        .map(|line| content(line))
+        .collect::<String>();
+    for expected in [
+        "~List&lt;T&gt; items",
+        "+merge(List&lt;T&gt; left, List&lt;T&gt; right) List&lt;List&lt;T&gt;&gt;",
+        "#array() List&lt;T[]&gt;",
+        "-nestedArray() List&lt;List&lt;T&gt;[]&gt;",
+        "~build() List&lt;pkg.Type-Value&gt;",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?}\n{svg}");
+    }
+    assert!(svg.contains(">+load() List&lt;T&gt;*</text>"));
+    assert_eq!(elements(&svg, "fmd-class-static").len(), 2);
+    assert_scene_bounds(&svg);
+}
+
+#[test]
+fn generic_declarations_share_identity_but_do_not_silently_replace_type_arguments() {
+    let svg = render(concat!(
+        "classDiagram\nclass Store~Record~\nclass Store\n",
+        "class Store~Record~[\"Account & storage\"]\n",
+        "Store: +save(Record item)\nStore --> Record\n",
+    ));
+    assert_eq!(elements(&svg, "fmd-class-node").len(), 2);
+    let names = elements(&svg, "fmd-class-name")
+        .iter()
+        .map(|line| content(line))
+        .collect::<String>();
+    assert!(names.contains("Account &amp; storage&lt;Record&gt;"));
+    for source in [
+        "classDiagram\nclass Store~A~\nclass Store~B~\n",
+        "classDiagram\nclass Store~A~\nStore~A~ --> A\n",
+    ] {
+        assert!(render_diagram_svg(source, "class").is_none(), "{source}");
+    }
+    let svg =
+        render("classDiagram\nclass `Store <data>`~记录~\n`Store <data>`: ~List~记录~ items\n");
+    assert!(svg.contains("&lt;data&gt;&lt;记录&gt;"));
+    assert!(svg.contains("~List&lt;记录&gt; items"));
+    assert!(!svg.contains("<data>"));
+}
+
+#[test]
+fn generic_depth_and_text_budgets_refuse_whole_diagrams() {
+    for depth in [1, 2, 16] {
+        let generic = format!("{}T{}", "List~".repeat(depth), "~".repeat(depth));
+        let source = format!("classDiagram\nclass A\nA: +{generic} items\n");
+        let svg = render(&source);
+        let displayed = elements(&svg, "fmd-class-member")
+            .iter()
+            .map(|line| content(line))
+            .collect::<String>();
+        let expected = format!(
+            "+{}T{} items",
+            "List&lt;".repeat(depth),
+            "&gt;".repeat(depth)
+        );
+        assert_eq!(displayed, expected);
+    }
+    let excessive = format!("{}T{}", "List~".repeat(17), "~".repeat(17));
+    for source in [
+        format!("classDiagram\nclass A\nA: +{excessive} items\n"),
+        format!("classDiagram\nclass {excessive}\n"),
+        format!("classDiagram\nclass A~{}~\n", "T".repeat(510)),
+        format!(
+            "classDiagram\nclass A[\"{}\"]\nclass A~T~\n",
+            "a".repeat(510)
+        ),
+        format!("classDiagram\nclass A~T~[\"{}\"]\n", "a".repeat(510)),
+    ] {
+        assert!(render_diagram_svg(&source, "class").is_none(), "{source}");
+    }
+    let at_limit = format!("classDiagram\nclass A~{}~\n", "T".repeat(509));
+    assert!(render_diagram_svg(&at_limit, "class").is_some());
+    let aliased_limit = format!(
+        "classDiagram\nclass {}~{}~[\"A\"]\n",
+        "LongIdentifier".repeat(8),
+        "T".repeat(509)
+    );
+    assert!(render_diagram_svg(&aliased_limit, "class").is_some());
+    for invalid in [
+        "class Box~~",
+        "class Box~T",
+        "class Box~T~~",
+        "class Box~T~junk",
+        "class Box~K,V~",
+        "class Box~List~K,V~~",
+        "class Box~ T ~",
+        "A: +List~T items",
+        "A: +List~~ items",
+        "A: +List~T~~ items",
+        "A: +List~<script>~ items",
+        "A: +List~T~ ~List~U~ items",
+        "A: +Map~K,V~ entries",
+        "A: +List~(T)~ values",
+    ] {
+        let source = format!("classDiagram\nclass A\n{invalid}\n");
+        assert!(render_diagram_svg(&source, "class").is_none(), "{source}");
+    }
 }
 
 #[test]
@@ -329,8 +573,6 @@ fn unsupported_and_malformed_syntax_refuses_the_entire_diagram() {
         "accTitle: Required metadata",
         "accDescr: Required metadata",
         "%%{init: { theme: 'dark' }}%%",
-        "class Generic~T~",
-        "A: +List~string~ entries",
         "A ()-- B",
         "A --() B",
         "A -->",
@@ -390,7 +632,6 @@ fn class_fences_and_automatic_headers_share_one_grammar() {
     }
 }
 
-
 #[test]
 fn self_and_return_endpoint_shapes_stay_on_their_terminal_segments() {
     for direction in ["TD", "BT", "LR", "RL"] {
@@ -398,9 +639,14 @@ fn self_and_return_endpoint_shapes_stay_on_their_terminal_segments() {
             "classDiagram\ndirection {direction}\nA o--* A: self\n"
         ));
         let edge = elements(&svg, "fmd-class-relation")[0];
-        let points: Vec<f32> = attr(edge, "d").split_whitespace()
-            .filter_map(|value| value.parse().ok()).collect();
-        for (kind, reverse) in [("fmd-class-aggregation", false), ("fmd-class-composition", true)] {
+        let points: Vec<f32> = attr(edge, "d")
+            .split_whitespace()
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        for (kind, reverse) in [
+            ("fmd-class-aggregation", false),
+            ("fmd-class-composition", true),
+        ] {
             let (tip, corner) = if reverse {
                 (
                     [points[points.len() - 2], points[points.len() - 1]],
@@ -414,9 +660,15 @@ fn self_and_return_endpoint_shapes_stay_on_their_terminal_segments() {
             assert!(length > 0.0);
             let head = elements(&svg, kind)[0];
             for pair in attr(head, "points").split_whitespace() {
-                let xy: Vec<f32> = pair.split(',').map(|value| value.parse().unwrap()).collect();
+                let xy: Vec<f32> = pair
+                    .split(',')
+                    .map(|value| value.parse().unwrap())
+                    .collect();
                 let along = ((xy[0] - tip[0]) * delta[0] + (xy[1] - tip[1]) * delta[1]) / length;
-                assert!((-0.1..=length - 0.5).contains(&along), "{direction}: marker crosses its elbow\n{svg}");
+                assert!(
+                    (-0.1..=length - 0.5).contains(&along),
+                    "{direction}: marker crosses its elbow\n{svg}"
+                );
             }
         }
         assert_scene_bounds(&svg);
@@ -425,7 +677,9 @@ fn self_and_return_endpoint_shapes_stay_on_their_terminal_segments() {
 
 #[test]
 fn limits_admit_boundaries_and_refuse_extra_data_without_partial_scenes() {
-    let classes = (0..256).map(|n| format!("class C{n}\n")).collect::<String>();
+    let classes = (0..256)
+        .map(|n| format!("class C{n}\n"))
+        .collect::<String>();
     let source = format!("classDiagram\n{classes}");
     assert_eq!(elements(&render(&source), "fmd-class-node").len(), 256);
     assert!(render_diagram_svg(&format!("{source}class Excess\n"), "mermaid").is_none());
@@ -445,13 +699,31 @@ fn limits_admit_boundaries_and_refuse_extra_data_without_partial_scenes() {
         source.push_str(&format!("class A{class} {{\n{members}}}\n"));
     }
     assert_eq!(elements(&render(&source), "fmd-class-member").len(), 2048);
-    assert!(render_diagram_svg(&format!("{source}class Excess\nExcess: +member\n"), "mermaid").is_none());
+    assert!(
+        render_diagram_svg(
+            &format!("{source}class Excess\nExcess: +member\n"),
+            "mermaid"
+        )
+        .is_none()
+    );
 
     for (valid, invalid) in [
-        (format!("classDiagram\nclass {}\n", "a".repeat(128)), format!("classDiagram\nclass {}\n", "a".repeat(129))),
-        (format!("classDiagram\nclass A[\"{}\"]\n", "a".repeat(512)), format!("classDiagram\nclass A[\"{}\"]\n", "a".repeat(513))),
-        (format!("classDiagram\nA: {}\n", "a".repeat(512)), format!("classDiagram\nA: {}\n", "a".repeat(513))),
-        (format!("classDiagram\nA \"{}\" --> B\n", "1".repeat(64)), format!("classDiagram\nA \"{}\" --> B\n", "1".repeat(65))),
+        (
+            format!("classDiagram\nclass {}\n", "a".repeat(128)),
+            format!("classDiagram\nclass {}\n", "a".repeat(129)),
+        ),
+        (
+            format!("classDiagram\nclass A[\"{}\"]\n", "a".repeat(512)),
+            format!("classDiagram\nclass A[\"{}\"]\n", "a".repeat(513)),
+        ),
+        (
+            format!("classDiagram\nA: {}\n", "a".repeat(512)),
+            format!("classDiagram\nA: {}\n", "a".repeat(513)),
+        ),
+        (
+            format!("classDiagram\nA \"{}\" --> B\n", "1".repeat(64)),
+            format!("classDiagram\nA \"{}\" --> B\n", "1".repeat(65)),
+        ),
     ] {
         assert!(render_diagram_svg(&valid, "mermaid").is_some());
         assert!(render_diagram_svg(&invalid, "mermaid").is_none());

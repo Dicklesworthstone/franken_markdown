@@ -4,8 +4,8 @@
 //! malformed members or relationships preserve the original source in callers.
 
 use super::{
-    FlowDirection, FlowEdge, FlowNode, NodeShape, SvgNum, assign_flowchart_layers,
-    escape_svg_text, get_edge_endpoints, layout_flowchart_nodes, layout_flowchart_returns,
+    FlowDirection, FlowEdge, FlowNode, NodeShape, SvgNum, assign_flowchart_layers, escape_svg_text,
+    get_edge_endpoints, layout_flowchart_nodes, layout_flowchart_returns,
 };
 use std::collections::BTreeMap;
 
@@ -17,6 +17,7 @@ const MAX_TEXT_BYTES: usize = 512;
 const MAX_CARDINALITY_BYTES: usize = 64;
 const MAX_MEMBERS_PER_CLASS: usize = 64;
 const MAX_MEMBERS: usize = 2048;
+const MAX_GENERIC_DEPTH: usize = 16;
 const ROW: f32 = 18.0;
 const WRAP_WIDTH: f32 = 360.0;
 
@@ -33,6 +34,7 @@ pub(super) fn render(source: &str) -> Option<String> {
 struct Class {
     label: String,
     explicit_label: bool,
+    generic: String,
     annotation: Option<String>,
     attributes: Vec<Member>,
     methods: Vec<Member>,
@@ -75,12 +77,10 @@ struct Diagram {
 
 fn parse(source: &str) -> Option<Diagram> {
     if source.len() > MAX_SOURCE_BYTES
-        || source
-            .chars()
-            .any(|ch| {
-                (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
-                    || matches!(ch, '\u{fffe}' | '\u{ffff}')
-            })
+        || source.chars().any(|ch| {
+            (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+                || matches!(ch, '\u{fffe}' | '\u{ffff}')
+        })
     {
         return None;
     }
@@ -179,17 +179,32 @@ impl Diagram {
         let mut cursor = Cursor(source);
         let id = cursor.id()?;
         self.class(id)?;
+        if cursor.0.starts_with('~') {
+            let (generic, rest) = generic_suffix(cursor.0, 0)?;
+            let class = self.classes.get_mut(id)?;
+            if (!class.generic.is_empty() && class.generic != generic)
+                || generic.len() > MAX_TEXT_BYTES
+            {
+                return None;
+            }
+            class.generic = generic;
+            cursor.0 = rest.trim_start();
+        }
         if cursor.take("[") {
             let label = text(cursor.quoted()?, MAX_TEXT_BYTES)?;
             if !cursor.take("]") {
                 return None;
             }
             let class = self.classes.get_mut(id)?;
-            if class.explicit_label {
+            if class.explicit_label || label.len() + class.generic.len() > MAX_TEXT_BYTES {
                 return None;
             }
             class.label = label;
             class.explicit_label = true;
+        }
+        let class = self.classes.get(id)?;
+        if class.label.len() + class.generic.len() > MAX_TEXT_BYTES {
+            return None;
         }
         if cursor.0.starts_with("<<") {
             let annotation = cursor.annotation()?;
@@ -233,18 +248,22 @@ impl Diagram {
         }
         if source.contains(['{', '}', ';'])
             || source.starts_with("::")
-            || ["class", "namespace", "direction", "note", "style", "click", "classDef"]
-                .iter()
-                .any(|word| keyword(source, word).is_some())
+            || [
+                "class",
+                "namespace",
+                "direction",
+                "note",
+                "style",
+                "click",
+                "classDef",
+            ]
+            .iter()
+            .any(|word| keyword(source, word).is_some())
         {
             return None;
         }
         let mut value = text(source, MAX_TEXT_BYTES)?;
-        // Tilde generic notation needs a separate type grammar. A leading
-        // tilde is the ordinary package/internal visibility marker.
-        if value.strip_prefix('~').unwrap_or(&value).contains('~') {
-            return None;
-        }
+        value = member_generics(&value)?;
         let mut depth = 0usize;
         let mut method = false;
         for ch in value.chars() {
@@ -345,6 +364,65 @@ fn text(source: &str, limit: usize) -> Option<String> {
     Some(source.replace('\t', "    "))
 }
 
+/// Convert Mermaid's symmetric tilde delimiters into plain display brackets.
+/// The grammar admits one named type argument, optionally itself generic or
+/// array-valued. No recursion follows authored whitespace or arbitrary member
+/// syntax; the depth budget is independent of the source-byte budget.
+fn generic_suffix(source: &str, depth: usize) -> Option<(String, &str)> {
+    if depth == MAX_GENERIC_DEPTH {
+        return None;
+    }
+    let source = source.strip_prefix('~')?;
+    let first = source.chars().next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    let end = source
+        .find(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')))
+        .unwrap_or(source.len());
+    let mut value = source[..end].to_owned();
+    let mut rest = &source[end..];
+    // An opening delimiter has a named argument after it; the remaining
+    // tildes close the innermost type first (List~List~int~~ -> List<List<int>>).
+    if rest.strip_prefix('~').is_some_and(|tail| {
+        tail.chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+    }) {
+        let (nested, tail) = generic_suffix(rest, depth + 1)?;
+        value.push_str(&nested);
+        rest = tail;
+    }
+    while let Some(tail) = rest.strip_prefix("[]") {
+        value.push_str("[]");
+        rest = tail;
+    }
+    let rest = rest.strip_prefix('~')?;
+    Some((format!("<{value}>"), rest))
+}
+
+fn member_generics(source: &str) -> Option<String> {
+    // A leading tilde is UML package visibility, never a generic delimiter.
+    let mut start = usize::from(source.starts_with('~'));
+    let mut value = source[..start].to_owned();
+    while let Some(offset) = source[start..].find('~') {
+        let offset = start + offset;
+        if !source[..offset]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        let (generic, rest) = generic_suffix(&source[offset..], 0)?;
+        value.push_str(&source[start..offset]);
+        value.push_str(&generic);
+        start = source.len() - rest.len();
+    }
+    value.push_str(&source[start..]);
+    Some(value)
+}
+
 struct Cursor<'a>(&'a str);
 
 impl<'a> Cursor<'a> {
@@ -377,9 +455,19 @@ impl<'a> Cursor<'a> {
             self.0 = self.0[end..].trim_start();
             if matches!(
                 id,
-                "classDiagram" | "class" | "direction" | "namespace" | "note"
-                    | "style" | "classDef" | "cssClass" | "click" | "link"
-                    | "callback" | "accTitle" | "accDescr"
+                "classDiagram"
+                    | "class"
+                    | "direction"
+                    | "namespace"
+                    | "note"
+                    | "style"
+                    | "classDef"
+                    | "cssClass"
+                    | "click"
+                    | "link"
+                    | "callback"
+                    | "accTitle"
+                    | "accDescr"
             ) {
                 return None;
             }
@@ -510,11 +598,7 @@ impl Text {
 fn char_width(ch: char, size: f32) -> f32 {
     // Conservative envelope shared by browser and bundled-font consumers.
     // It is a layout bound, not a claim to shape arbitrary scripts.
-    if ch.is_ascii() {
-        size
-    } else {
-        size * 1.5
-    }
+    if ch.is_ascii() { size } else { size * 1.5 }
 }
 
 fn text_width(value: &str, size: f32) -> f32 {
@@ -539,7 +623,7 @@ struct ClassLayout<'a> {
 
 impl<'a> ClassLayout<'a> {
     fn new(class: &'a Class) -> Self {
-        let name = Text::new(&class.label, 14.0);
+        let name = Text::new(&format!("{}{}", class.label, class.generic), 14.0);
         let annotation = class
             .annotation
             .as_ref()
@@ -563,7 +647,11 @@ impl<'a> ClassLayout<'a> {
             width = width.max(member.text.width);
         }
         let compartment = |members: &[MemberLayout<'_>]| {
-            members.iter().map(|member| member.text.height()).sum::<f32>() + 12.0
+            members
+                .iter()
+                .map(|member| member.text.height())
+                .sum::<f32>()
+                + 12.0
         };
         let header = name.height() + annotation.as_ref().map_or(0.0, Text::height) + 16.0;
         let attributes_height = compartment(&attributes);
@@ -624,8 +712,13 @@ impl Label<'_> {
         ));
         svg.push_str(&format!(
             "<text x=\"{}\" y=\"{}\" class=\"{}\" text-anchor=\"middle\">{}</text>\n",
-            SvgNum(self.x), SvgNum(self.y + 4.0),
-            if self.cardinality { "fmd-class-cardinality" } else { "fmd-class-label" },
+            SvgNum(self.x),
+            SvgNum(self.y + 4.0),
+            if self.cardinality {
+                "fmd-class-cardinality"
+            } else {
+                "fmd-class-label"
+            },
             escape_svg_text(self.text)
         ));
     }
@@ -704,7 +797,10 @@ fn draw(diagram: &Diagram) -> Option<String> {
         .fold(0.0f32, f32::max);
         let node = nodes.get_mut(&relation.from)?;
         if horizontal {
-            let label = relation.label.as_ref().map_or(0.0, |value| text_width(value, 11.0) + 8.0);
+            let label = relation
+                .label
+                .as_ref()
+                .map_or(0.0, |value| text_width(value, 11.0) + 8.0);
             node.width = node.width.max(2.0 * largest + label + 80.0);
         } else {
             node.height = node.height.max(134.0);
@@ -906,7 +1002,10 @@ fn draw(diagram: &Diagram) -> Option<String> {
     height -= min_y;
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-class\" role=\"img\" font-family=\"Arial,Helvetica,sans-serif\" xml:space=\"preserve\">\n<title>Class diagram</title>\n",
-        SvgNum(width), SvgNum(height), SvgNum(width), SvgNum(height)
+        SvgNum(width),
+        SvgNum(height),
+        SvgNum(width),
+        SvgNum(height)
     );
     svg.push_str(STYLE);
     for (relation, scene) in diagram.relations.iter().zip(&scenes) {
@@ -935,21 +1034,38 @@ fn draw(diagram: &Diagram) -> Option<String> {
         let layout = layouts.get(id)?;
         svg.push_str(&format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"fmd-class-node\"/>\n",
-            SvgNum(node.x), SvgNum(node.y), SvgNum(node.width), SvgNum(node.height)
+            SvgNum(node.x),
+            SvgNum(node.y),
+            SvgNum(node.width),
+            SvgNum(node.height)
         ));
         for offset in [layout.header, layout.header + layout.attributes_height] {
             svg.push_str(&format!(
                 "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"fmd-class-divider\"/>\n",
-                SvgNum(node.x), SvgNum(node.y + offset),
-                SvgNum(node.x + node.width), SvgNum(node.y + offset)
+                SvgNum(node.x),
+                SvgNum(node.y + offset),
+                SvgNum(node.x + node.width),
+                SvgNum(node.y + offset)
             ));
         }
         let mut y = node.y + 21.0;
         if let Some(annotation) = &layout.annotation {
-            annotation.draw(&mut svg, node.x + node.width / 2.0, y, "fmd-class-annotation", "middle");
+            annotation.draw(
+                &mut svg,
+                node.x + node.width / 2.0,
+                y,
+                "fmd-class-annotation",
+                "middle",
+            );
             y += annotation.height();
         }
-        layout.name.draw(&mut svg, node.x + node.width / 2.0, y, "fmd-class-name", "middle");
+        layout.name.draw(
+            &mut svg,
+            node.x + node.width / 2.0,
+            y,
+            "fmd-class-name",
+            "middle",
+        );
         let mut y = node.y + layout.header + 17.0;
         for (members, start) in [
             (&layout.attributes, y),
@@ -961,7 +1077,11 @@ fn draw(diagram: &Diagram) -> Option<String> {
                     &mut svg,
                     node.x + 14.0,
                     y,
-                    if member.member.abstract_method { "fmd-class-abstract" } else { "fmd-class-member" },
+                    if member.member.abstract_method {
+                        "fmd-class-abstract"
+                    } else {
+                        "fmd-class-member"
+                    },
                     "start",
                 );
                 if member.member.static_member {
@@ -1007,10 +1127,7 @@ fn endpoint(svg: &mut String, points: &[(f32, f32)], end: End, reverse: bool) {
         _ => 10.0,
     };
     let scale = ((length - 1.0) / extent).clamp(0.0, 1.0);
-    let (dx, dy) = (
-        (next_x - x) / length * scale,
-        (next_y - y) / length * scale,
-    );
+    let (dx, dy) = ((next_x - x) / length * scale, (next_y - y) / length * scale);
     let point = |along: f32, across: f32| {
         format!(
             "{},{}",
@@ -1022,18 +1139,30 @@ fn endpoint(svg: &mut String, points: &[(f32, f32)], end: End, reverse: bool) {
         End::None => {}
         End::Arrow => svg.push_str(&format!(
             "<path d=\"M {} {} L {} {} L {} {}\" class=\"fmd-class-association\"/>\n",
-            SvgNum(x + 10.0 * dx - 5.0 * dy), SvgNum(y + 10.0 * dy + 5.0 * dx),
-            SvgNum(x), SvgNum(y),
-            SvgNum(x + 10.0 * dx + 5.0 * dy), SvgNum(y + 10.0 * dy - 5.0 * dx)
+            SvgNum(x + 10.0 * dx - 5.0 * dy),
+            SvgNum(y + 10.0 * dy + 5.0 * dx),
+            SvgNum(x),
+            SvgNum(y),
+            SvgNum(x + 10.0 * dx + 5.0 * dy),
+            SvgNum(y + 10.0 * dy - 5.0 * dx)
         )),
         End::Triangle => svg.push_str(&format!(
             "<polygon points=\"{} {} {}\" class=\"fmd-class-inheritance\"/>\n",
-            point(0.0, 0.0), point(14.0, 7.0), point(14.0, -7.0)
+            point(0.0, 0.0),
+            point(14.0, 7.0),
+            point(14.0, -7.0)
         )),
         End::Aggregation | End::Composition => svg.push_str(&format!(
             "<polygon points=\"{} {} {} {}\" class=\"{}\"/>\n",
-            point(0.0, 0.0), point(8.0, 5.0), point(16.0, 0.0), point(8.0, -5.0),
-            if end == End::Composition { "fmd-class-composition" } else { "fmd-class-aggregation" }
+            point(0.0, 0.0),
+            point(8.0, 5.0),
+            point(16.0, 0.0),
+            point(8.0, -5.0),
+            if end == End::Composition {
+                "fmd-class-composition"
+            } else {
+                "fmd-class-aggregation"
+            }
         )),
     }
 }

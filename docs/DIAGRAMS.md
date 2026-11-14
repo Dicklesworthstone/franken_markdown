@@ -135,6 +135,16 @@ visibility prefixes and return types remain visible. Static members use drawn
 underlines; abstract methods retain their `*` classifier. Stereotypes such as
 `<<interface>>` appear above the class name.
 
+Generic declarations and member types use Mermaid's tilde notation. For example,
+`class Store~T~` displays `Store<T>` while relationships and colon members still
+refer to `Store`. `+List~T~ items` and `+read() List~List~T~~` retain their complete
+types as `+List<T> items` and `+read() List<List<T>>`. A leading `~` still means
+package visibility, so `~List~T~ items` displays `~List<T> items`. Generic arguments
+can contain qualified names, nested single-argument types and array suffixes;
+nesting is bounded to 16 levels. Repeated declarations of the same base class
+must agree on its generic type. Display aliases retain the generic suffix, and
+the combined class title has the same 512-byte limit as other labels.
+
 Relationships retain their UML endpoints: open triangles for inheritance and
 realization, filled diamonds for composition, open diamonds for aggregation,
 and open arrows for association and dependency. Solid and dashed connectors,
@@ -148,8 +158,8 @@ Labels and members are escaped text. Newlines separate statements; standalone
 1024 relationships, 128 UTF-8 bytes per identifier, 512 bytes per label or
 member, 64 bytes per multiplicity, 64 members per class and 2048 members in total. Unsupported syntax or
 exceeded limits preserve the **entire source block**. Namespaces, notes,
-callbacks, custom styles, Mermaid configuration, generic type notation and
-semicolon-separated statements are outside this profile.
+callbacks, custom styles, Mermaid configuration, comma-separated generic type
+arguments and semicolon-separated statements are outside this profile.
 
 The compiler feeds HTML, tagged PDF figures, SVG posters, EPUB chapters and
 Flow's native vector scene. Flow retains the exact source as its accessible

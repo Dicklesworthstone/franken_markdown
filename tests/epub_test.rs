@@ -5,6 +5,8 @@
 
 #[path = "epub/data_images.rs"]
 mod epub_data_images;
+#[path = "epub/class_generics.rs"]
+mod epub_class_generics;
 #[path = "epub/gif.rs"]
 mod epub_gif;
 #[path = "epub/metadata.rs"]

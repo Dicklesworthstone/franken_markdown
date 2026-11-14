@@ -214,7 +214,9 @@ test('heading and footnote IDs cannot collide', () => {
 
   test('many short links are admitted without charging their entire remaining tails', () => {
     const count = 6000;
-    assert.equal(render('[x](/ok) '.repeat(count)), '<p>' + '<a href="/ok">x</a> '.repeat(count) + '</p>\n');
+    // CommonMark 645 discards final paragraph spaces; all 6000 links and
+    // their 5999 interior separators must still survive.
+    assert.equal(render('[x](/ok) '.repeat(count)), '<p>' + '<a href="/ok">x</a> '.repeat(count).slice(0, -1) + '</p>\n');
   });
 
   test('dotted invalid email autolinks do not trigger regex backtracking', () => {
@@ -256,7 +258,7 @@ test('heading and footnote IDs cannot collide', () => {
     // A delimiter stack consumes this once; the old repeated suffix search
     // exhausted work. Preserve every unmatched run rather than rejecting it.
     const text = 'start ' + '_x '.repeat(7000);
-    assert.equal(render(text), '<p>' + text + '</p>\n');
+    assert.equal(render(text), '<p>' + text.slice(0, -1) + '</p>\n');
     limited('work', () => render('['.repeat(20000) + ']'.repeat(20000)));
   });
 

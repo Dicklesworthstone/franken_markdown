@@ -704,6 +704,25 @@ function parseMarkdownClient(source, imageAssets) {
   if (!imageAssets) imageAssets = new Map();
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
   const MAX_DEPTH = 64;
+  // A lazy continuation may need protective indentation while containers are
+  // reparsed. Track its own line identity, never its text: an identical authored
+  // line inside a code span must keep its literal spaces.
+  const lazyPadding = new WeakMap();
+  function pushSourceLine(target, line, sourceLines, index, lazy = false) {
+    if (lazy || lazyPadding.get(sourceLines)?.has(index)) {
+      let padded = lazyPadding.get(target);
+      if (!padded) { allocate(); lazyPadding.set(target, padded = new Set()); }
+      allocate(); padded.add(target.length);
+    }
+    target.push(line);
+  }
+  function paragraphSource(lines) {
+    const padded = lazyPadding.get(lines);
+    return lines.map((line, index) => {
+      charge(line.length + 1);
+      return index === 0 || padded?.has(index) ? line.replace(/^[ \t]+/, '') : line;
+    }).join('\n').replace(/[ \t]+$/, '');
+  }
   const escape = text => {
     text = String(text); charge(text.length);
     let length = text.length;
@@ -1213,6 +1232,12 @@ function parseMarkdownClient(source, imageAssets) {
     if (depth > MAX_DEPTH) return escape(text);
     const atoms = inlineIndex(text), emphasis = emphasisIndex(text, atoms);
     let out = '', i = 0, styles = 0;
+    // Only prose newlines discard continuation indentation. Atomic code,
+    // mathematics, markup and link targets have already claimed their source.
+    const afterLineBreak = start => {
+      while (text[start] === ' ' || text[start] === '\t') { charge(); start++; }
+      return start;
+    };
     while (i < text.length) {
       charge();
       const event = emphasis.get(i);
@@ -1257,13 +1282,14 @@ function parseMarkdownClient(source, imageAssets) {
         i = atom.end; continue;
       }
       const ch = text[i];
-      if (ch === '\\' && text[i + 1] === '\n') { out = append(out, '<br>\n'); i += 2; continue; }
+      if (ch === '\\' && text[i + 1] === '\n') { out = append(out, '<br>\n'); i = afterLineBreak(i + 2); continue; }
+      if (ch === '\n') { out = append(out, '\n'); i = afterLineBreak(i + 1); continue; }
       if (ch === '\\' && escapable(text[i + 1])) {
         out = append(out, escape(text[i + 1])); i += 2; continue;
       }
       if (ch === ' ') {
         const end = runEnd(text, i, ' '), run = text.slice(i, end);
-        if (text[end] === '\n') { out = append(out, run.length >= 2 ? '<br>\n' : '\n'); i = end + 1; continue; }
+        if (text[end] === '\n') { out = append(out, run.length >= 2 ? '<br>\n' : '\n'); i = afterLineBreak(end + 1); continue; }
         out = append(out, run); i = end; continue;
       }
       if (ch === '`') {
@@ -1446,18 +1472,6 @@ function parseMarkdownClient(source, imageAssets) {
     && indentation(line).width < 4 && !footnoteMarker(line)
     && !mathBlockStart(line)
     && (line.includes('|') || !line.replace(/^[ \t]+/, '').startsWith('[') || !referenceTail()(line));
-  function lazyLine(line) {
-    const trimmed = line.replace(/^[ \t]+/, '');
-    // Removing indentation must not promote a lazy line into a setext heading
-    // or nested list. Escape a marker's punctuation, not an ordered item's
-    // first digit: only punctuation escapes disappear during inline parsing.
-    const marker = listMarker(trimmed);
-    if (marker && !listMarker(line)) {
-      const delimiter = marker.marker.length - 1;
-      return trimmed.slice(0, delimiter) + '\\' + trimmed.slice(delimiter);
-    }
-    return setextLevel(trimmed) ? '\\' + trimmed : trimmed;
-  }
   function tableCells(line) {
     charge(line.length + 1);
     line = line.trim();
@@ -1736,6 +1750,15 @@ function parseMarkdownClient(source, imageAssets) {
     // including empty items and ordered starts other than 1. Those restrictions
     // apply only when interrupting a paragraph inside the same container.
     const canContinue = line => kind === 'paragraph' && !listMarker(line) && !interruptsParagraph(line);
+    const lazyLine = line => {
+      const trimmed = line.replace(/^[ \t]+/, ''), indent = indentation(line).width;
+      if (indent < 4 && !setextLevel(trimmed) && !(listMarker(trimmed) && !listMarker(line))) return trimmed;
+      // Leave four columns at the actual paragraph leaf after each nested list
+      // strips its own columns. Expanding just this owned padding avoids a tab
+      // changing width when an outer container adds protective spaces.
+      const width = 4 + containers.reduce((sum, container) => sum + (container.kind === 'list' ? container.width : 0), 0);
+      charge(width); return ' '.repeat(width) + trimmed;
+    };
     const nestedListOwnsGapBefore = line => {
       const container = containers[0];
       if (!container || container.kind !== 'list') return false;
@@ -1829,7 +1852,7 @@ function parseMarkdownClient(source, imageAssets) {
       }
       header = tableRowSource(line) ? line : null;
     }
-    return {observe, canContinue, nestedListOwnsGapBefore,
+    return {observe, canContinue, lazyLine, nestedListOwnsGapBefore,
       literalBlank: () => (kind === 'fence' || kind === 'math' || kind === 'html' && htmlKind < 6)
         && !containers.some(container => container.kind === 'quote')};
   }
@@ -1935,16 +1958,18 @@ function parseMarkdownClient(source, imageAssets) {
       if (/^ {0,3}>/.test(line)) {
         const quote = [], tail = containerTail(depth);
         while (i < lines.length) {
-          let inner = stripQuote(lines[i]);
+          let inner = stripQuote(lines[i]), lazy = false;
           if (inner === null) {
             if (!tail.canContinue(lines[i])) break;
-            inner = lazyLine(lines[i]);
+            inner = tail.lazyLine(lines[i]); lazy = true;
           }
-          tail.observe(inner); quote.push(inner); i++;
+          tail.observe(inner); pushSourceLine(quote, inner, lines, i, lazy); i++;
         }
         const callout = quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$/i);
         if (callout) {
           const name = callout[1].toLowerCase(); quote.shift();
+          const padded = lazyPadding.get(quote);
+          if (padded) lazyPadding.set(quote, new Set([...padded].filter(index => index > 0).map(index => index - 1)));
           const label = callout[2] || name[0].toUpperCase() + name.slice(1);
           push({kind: 'callout', name, label, children: parseBlocks(quote, depth + 1)});
         } else push({kind: 'quote', children: parseBlocks(quote, depth + 1)});
@@ -1980,15 +2005,15 @@ function parseMarkdownClient(source, imageAssets) {
               continue;
             }
             if (indentation(lines[i]).width >= next.width) {
-              const inner = stripIndent(lines[i++], next.width);
+              const inner = stripIndent(lines[i], next.width);
               // Preserve real paragraph boundaries: a non-1 marker cannot
               // interrupt prose, and a continued child item needs no new gap.
-              tail.observe(inner); item.push(inner); continue;
+              tail.observe(inner); pushSourceLine(item, inner, lines, i); i++; continue;
             }
             const sibling = listMarker(lines[i]);
             if (sibling || !tail.canContinue(lines[i])) break;
-            const lazy = lazyLine(lines[i++]);
-            tail.observe(lazy); item.push(lazy);
+            const lazy = tail.lazyLine(lines[i]);
+            tail.observe(lazy); pushSourceLine(item, lazy, lines, i, true); i++;
           }
           const task = item[0].match(/^\[([ xX])\](?:\s+|$)(.*)$/);
           if (task) item[0] = task[2];
@@ -2009,16 +2034,18 @@ function parseMarkdownClient(source, imageAssets) {
         }
         push({kind: 'table', aligns, head, rows}); continue;
       }
-      const paragraph = [line]; i++;
+      const paragraph = [];
+      pushSourceLine(paragraph, line, lines, i); i++;
       let underline = 0;
       while (i < lines.length) {
         underline = setextLevel(lines[i]);
         if (underline) { i++; break; }
         if (interruptsParagraph(lines[i]) || (!paragraphOnly && i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) break;
-        paragraph.push(lines[i++]);
+        pushSourceLine(paragraph, lines[i], lines, i); i++;
       }
-      push(underline ? {kind: 'heading', title: paragraph.join('\n'), level: underline}
-        : {kind: 'paragraph', text: paragraph.join('\n')});
+      const text = paragraphSource(paragraph);
+      push(underline ? {kind: 'heading', title: text, level: underline}
+        : {kind: 'paragraph', text});
     }
     return out;
   }

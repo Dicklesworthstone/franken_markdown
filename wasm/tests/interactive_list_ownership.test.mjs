@@ -82,7 +82,9 @@ test('dedented paragraphs and differently marked children give the blank back to
       const html = render(source);
       if (nextIndent < childContent) {
         assert.ok(html.startsWith('<ul>\n<li><p>parent</p>\n<ul>\n<li>child</li>'), source);
-        assert.ok(html.includes(nextIndent >= 6 ? '<pre><code>tail\n</code></pre>' : '<p>' + ' '.repeat(nextIndent - 2) + 'tail</p>'), source);
+        // CommonMark 275/276 discard paragraph indentation; four content
+        // columns still select the unchanged indented-code branch.
+        assert.ok(html.includes(nextIndent >= 6 ? '<pre><code>tail\n</code></pre>' : '<p>tail</p>'), source);
       } else {
         assert.ok(html.startsWith('<ul>\n<li>parent\n<ul>\n<li><p>child</p>'), source);
         assert.equal((html.match(/<p>/g) || []).length, 2, source);

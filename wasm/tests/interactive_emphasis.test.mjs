@@ -134,7 +134,8 @@ test('many unmatched and deeply paired delimiters complete without repeated suff
   vm.runInContext(code, bounded);
   for (const marker of ['*', '_', '**', '__']) {
     bounded.source = 'Before ' + (marker + 'word ').repeat(12000);
-    assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>' + bounded.source + '</p>\n', marker);
+    // CommonMark 645 removes only the paragraph's final source space.
+    assert.equal(vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000}), '<p>' + bounded.source.slice(0, -1) + '</p>\n', marker);
   }
   const marker = '*'.repeat(16000);
   bounded.source = marker + 'deep' + marker;
@@ -145,7 +146,7 @@ test('many unmatched and deeply paired delimiters complete without repeated suff
 test('delimiter events and rendering retain independent work and structure admission', () => {
   const work = vm.createContext({plain: 'a b c '.repeat(2000), formatted: 'a *b* '.repeat(2000)});
   vm.runInContext(code.replace('workUnits: 32 * 1024 * 1024', 'workUnits: 150000'), work);
-  assert.equal(vm.runInContext('parseMarkdownClient(plain)', work, {timeout: 4000}), '<p>' + work.plain + '</p>\n');
+  assert.equal(vm.runInContext('parseMarkdownClient(plain)', work, {timeout: 4000}), '<p>' + work.plain.slice(0, -1) + '</p>\n');
   assert.throws(() => vm.runInContext('parseMarkdownClient(formatted)', work, {timeout: 4000}),
     error => error.code === 'FMD_RENDER_LIMIT' && error.limit === 'work');
   assert.equal(vm.runInContext('parseMarkdownClient("**fresh**")', work), '<p><strong>fresh</strong></p>\n');

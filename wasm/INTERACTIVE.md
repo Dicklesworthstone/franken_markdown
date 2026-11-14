@@ -36,6 +36,19 @@ The table is generated from `src/parse/entities.rs`, without a DOM or external
 entity library. `node scripts/generate-interactive-entities.mjs --check` checks
 that the embedded table matches that native source.
 
+## Paragraphs in lightweight saved documents
+
+Unmarked continuation lines inside lists and blockquotes keep their paragraph
+ownership. An indented hash or fence on such a line cannot create a new heading,
+hide subsequent text in a code block, or activate a reference definition.
+This also preserves inline code that spans nested containers.
+
+Ordinary paragraph indentation and final source spaces follow CommonMark.
+Interior spaces, code, formulas, raw markup and link titles retain their literal
+whitespace; spaces produced by character references stay visible. Source hard
+breaks remain distinct from soft breaks. These changes affect the live preview;
+the editable source and Save Markdown remain unchanged.
+
 ## Example: Node host with a matching local build
 
 ```js

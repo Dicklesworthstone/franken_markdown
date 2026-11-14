@@ -661,6 +661,68 @@ function parseMarkdownClient(source, imageAssets) {
     return email || uri
       ? {kind: 'autolink', label, url: email ? 'mailto:' + label : label, end: close + 1} : null;
   }
+  // HTML atoms own their complete source, including brackets in attributes,
+  // comments and declarations. They remain escaped text in offline output:
+  // recognizing their grammar must not create links, notes or image grants.
+  function inlineHtmlEnd(text, start) {
+    if (text.startsWith('<!-->', start)) return start + 5;
+    if (text.startsWith('<!--->', start)) return start + 6;
+    for (const [opening, closing] of [['<!--', '-->'], ['<?', '?>'], ['<![CDATA[', ']]>']]) {
+      if (text.startsWith(opening, start)) {
+        const end = find(text, closing, start + opening.length);
+        return end < 0 ? -1 : end + closing.length;
+      }
+    }
+    if (text.startsWith('<!', start) && asciiLetter(text.charCodeAt(start + 2))) {
+      const end = find(text, '>', start + 3);
+      return end < 0 ? -1 : end + 1;
+    }
+    let pos = start + 1;
+    const closing = text[pos] === '/';
+    if (closing) pos++;
+    if (!asciiLetter(text.charCodeAt(pos))) return -1;
+    pos++;
+    while (asciiLetter(text.charCodeAt(pos)) || asciiDigit(text.charCodeAt(pos)) || text[pos] === '-') {
+      charge(); pos++;
+    }
+    const space = () => {
+      let newlines = 0;
+      while (text[pos] === ' ' || text[pos] === '\t' || text[pos] === '\n') {
+        charge();
+        if (text[pos++] === '\n' && ++newlines > 1) return false;
+      }
+      return true;
+    };
+    if (closing) return space() && text[pos] === '>' ? pos + 1 : -1;
+    while (pos < text.length) {
+      charge();
+      const beforeSpace = pos;
+      if (!space()) return -1;
+      if (text[pos] === '>') return pos + 1;
+      if (text[pos] === '/') return text[pos + 1] === '>' ? pos + 2 : -1;
+      if (pos === beforeSpace || !(asciiLetter(text.charCodeAt(pos)) || text[pos] === '_' || text[pos] === ':')) return -1;
+      pos++;
+      while (asciiLetter(text.charCodeAt(pos)) || asciiDigit(text.charCodeAt(pos)) || '_.:-'.includes(text[pos] ?? '\0')) {
+        charge(); pos++;
+      }
+      const nameEnd = pos;
+      if (!space()) return -1;
+      if (text[pos] !== '=') { pos = nameEnd; continue; }
+      pos++;
+      if (!space()) return -1;
+      const quote = text[pos];
+      if (quote === '"' || quote === "'") {
+        const end = find(text, quote, pos + 1);
+        if (end < 0) return -1;
+        pos = end + 1;
+      } else {
+        const valueStart = pos;
+        while (pos < text.length && !' \t\n"\'=<>'.includes(text[pos]) && text.charCodeAt(pos) !== 96) { charge(); pos++; }
+        if (pos === valueStart) return -1;
+      }
+    }
+    return -1;
+  }
   function inlineIndex(text) {
     const atoms = new Map(), stack = [];
     let rawBrackets, bareParens;
@@ -682,6 +744,8 @@ function parseMarkdownClient(source, imageAssets) {
           if (stack.length) stack.at(-1).containsLink = true;
           i = link.end; continue;
         }
+        const end = inlineHtmlEnd(text, i);
+        if (end >= 0) { remember(i, {kind: 'html', end}); i = end; continue; }
       }
       const image = ch === '!' && text[i + 1] === '[';
       if (image || ch === '[') {
@@ -727,6 +791,8 @@ function parseMarkdownClient(source, imageAssets) {
           if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
           if (table) code = code.replace(/\\\|/g, '|');
           out = append(out, '<code>' + escape(code) + '</code>');
+        } else if (atom.kind === 'html') {
+          out = append(out, escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'note') {
           out = append(out, footnotes ? noteReference(atom.label) : escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'autolink') {

@@ -955,7 +955,7 @@ function parseMarkdownClient(source, imageAssets) {
     return match && !(match[1][0] === '`' && match[2].includes('`')) ? match : null;
   };
   const fenceEnd = marker => new RegExp('^ {0,3}' + marker[0] + '{' + marker.length + ',}[ \\t]*$');
-  const rule = line => /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);
+  const rule = line => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line);
   const headingMarker = line => line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/);
   const setextLevel = line => /^ {0,3}=+[ \t]*$/.test(line) ? 1 : /^ {0,3}-+[ \t]*$/.test(line) ? 2 : 0;
   const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/);
@@ -1000,8 +1000,14 @@ function parseMarkdownClient(source, imageAssets) {
   function lazyLine(line) {
     const trimmed = line.replace(/^[ \t]+/, '');
     // Removing indentation must not promote a lazy line into a setext heading
-    // or nested list. The escape is consumed by normal inline parsing.
-    return setextLevel(trimmed) || (listMarker(trimmed) && !listMarker(line)) ? '\\' + trimmed : trimmed;
+    // or nested list. Escape a marker's punctuation, not an ordered item's
+    // first digit: only punctuation escapes disappear during inline parsing.
+    const marker = listMarker(trimmed);
+    if (marker && !listMarker(line)) {
+      const delimiter = marker.marker.length - 1;
+      return trimmed.slice(0, delimiter) + '\\' + trimmed.slice(delimiter);
+    }
+    return setextLevel(trimmed) ? '\\' + trimmed : trimmed;
   }
   function tableCells(line) {
     charge(line.length + 1);
@@ -1270,7 +1276,17 @@ function parseMarkdownClient(source, imageAssets) {
   function containerTail(depth) {
     const containers = [];
     let kind = 'boundary', header = null, closing = null, reference = null, htmlKind = 0, padding = null;
-    const canContinue = line => kind === 'paragraph' && !interruptsParagraph(line);
+    // A line that failed to match its enclosing container can start any list,
+    // including empty items and ordered starts other than 1. Those restrictions
+    // apply only when interrupting a paragraph inside the same container.
+    const canContinue = line => kind === 'paragraph' && !listMarker(line) && !interruptsParagraph(line);
+    const nestedListOwnsGapBefore = line => {
+      const container = containers[0];
+      if (!container || container.kind !== 'list') return false;
+      const marker = listMarker(line);
+      return indentation(line).width >= container.width || !rule(line) && marker
+        && marker.ordered === container.ordered && marker.marker.at(-1) === container.marker;
+    };
     function observe(line, level = 0) {
       charge(line.length + 1);
       const container = containers[level];
@@ -1283,8 +1299,7 @@ function parseMarkdownClient(source, imageAssets) {
           if (blankLine(line) || indentation(line).width >= container.width) {
             observe(stripIndent(line, container.width), level + 1); return;
           }
-          const next = listMarker(line);
-          sibling = next && ((next.indent === container.indent && next.ordered === container.ordered) || markerInterrupts(next));
+          sibling = !!listMarker(line);
         }
         if (!sibling && canContinue(line)) return;
         containers.length = level; kind = 'boundary'; reference = null;
@@ -1340,7 +1355,7 @@ function parseMarkdownClient(source, imageAssets) {
       const marker = listMarker(line);
       if (marker) {
         if (depth + level < MAX_DEPTH) {
-          allocate(); containers.push({kind: 'list', indent: marker.indent, width: marker.width, ordered: marker.ordered});
+          allocate(); containers.push({kind: 'list', width: marker.width, ordered: marker.ordered, marker: marker.marker.at(-1)});
           observe(marker.text.replace(/^\[([ xX])\](?:\s+|$)/, ''), level + 1);
         }
         return;
@@ -1352,7 +1367,7 @@ function parseMarkdownClient(source, imageAssets) {
       }
       header = tableRowSource(line) ? line : null;
     }
-    return {observe, canContinue, literal: () => kind === 'fence' || kind === 'code' || kind === 'html',
+    return {observe, canContinue, nestedListOwnsGapBefore,
       literalBlank: () => (kind === 'fence' || kind === 'html' && htmlKind < 6)
         && !containers.some(container => container.kind === 'quote')};
   }
@@ -1462,8 +1477,11 @@ function parseMarkdownClient(source, imageAssets) {
       if (marker) {
         const items = []; let loose = false;
         while (i < lines.length) {
+          // A spaced thematic break also looks like a bullet marker, but it
+          // ends the current list when it is outside the previous item's body.
+          if (rule(lines[i])) break;
           const next = listMarker(lines[i]);
-          if (!next || next.ordered !== marker.ordered || next.indent !== marker.indent || next.marker.at(-1) !== marker.marker.at(-1)) break;
+          if (!next || next.ordered !== marker.ordered || next.marker.at(-1) !== marker.marker.at(-1)) break;
           const item = [next.text], tail = containerTail(depth); i++; let blank = false;
           tail.observe(next.text.replace(/^\[([ xX])\](?:\s+|$)/, ''));
           while (i < lines.length) {
@@ -1473,28 +1491,25 @@ function parseMarkdownClient(source, imageAssets) {
                 tail.observe(inner); item.push(inner); continue;
               }
               let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (!blankLine(lines[j])) break; j++; }
-              const following = j < lines.length && listMarker(lines[j]);
+              const following = j < lines.length && !rule(lines[j]) && listMarker(lines[j]);
               const continued = j < lines.length && indentation(lines[j]).width >= next.width;
-              if (!continued && !(following && following.indent === marker.indent && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1))) break;
-              blank = true;
+              if (!continued && !(following && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1))) break;
+              // Only a gap between direct blocks/items loosens this list. A
+              // child list owns gaps inside its items or between same-marker
+              // siblings; a dedented block or changed marker belongs here.
+              blank ||= !continued || !tail.nestedListOwnsGapBefore(stripIndent(lines[j], next.width));
               // Consume a blank run once; repeated suffix lookahead is quadratic.
               while (i < j) { tail.observe(''); item.push(''); i++; }
               continue;
             }
             if (indentation(lines[i]).width >= next.width) {
               const inner = stripIndent(lines[i++], next.width);
-              const nested = listMarker(inner);
-              // Properly indented ordered children may start at any number.
-              // Keep later items of an existing ordered child list together.
-              if (!tail.literal() && nested && nested.ordered && nested.start !== 1
-                && !blankLine(item.at(-1)) && !listMarker(item.at(-1))) {
-                tail.observe(''); item.push('');
-              }
+              // Preserve real paragraph boundaries: a non-1 marker cannot
+              // interrupt prose, and a continued child item needs no new gap.
               tail.observe(inner); item.push(inner); continue;
             }
             const sibling = listMarker(lines[i]);
-            if ((sibling && sibling.indent === marker.indent && sibling.ordered === marker.ordered)
-              || !tail.canContinue(lines[i])) break;
+            if (sibling || !tail.canContinue(lines[i])) break;
             const lazy = lazyLine(lines[i++]);
             tail.observe(lazy); item.push(lazy);
           }

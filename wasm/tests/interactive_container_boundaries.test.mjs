@@ -115,14 +115,21 @@ test('lazy marker-looking lines stay paragraph text after their indentation is r
   }
 });
 
-test('ordered markers other than one and empty items cannot interrupt an open paragraph', () => {
-  for (const source of ['first\n2. continued', 'first\n1986. continued', 'first\n+', '> first\n2. continued', '- first\n2. continued']) {
+test('ordered markers other than one and empty items cannot interrupt a matched paragraph', () => {
+  for (const source of ['first\n2. continued', 'first\n1986. continued', 'first\n+', '> first\n> 2. continued', '- first\n  2. continued']) {
     const html = render(source);
     assert.doesNotMatch(html, /<ol/, source);
     assert.match(html, /first\n(?:2\. continued|1986\. continued|\+)/, source);
   }
   assert.match(render('first\n1. new list'), /<\/p>\n<ol>/);
   assert.match(render('first\n\n2. new list'), /<ol start="2">/);
+  // CommonMark's start-at-1 restriction applies within a matched paragraph.
+  // These unmarked/dedented markers leave the old container (verified against
+  // upstream cmark); they must not be swallowed as its lazy paragraph text.
+  assert.equal(render('> first\n2. continued'),
+    '<blockquote>\n<p>first</p>\n</blockquote>\n<ol start="2">\n<li>continued</li>\n</ol>\n');
+  assert.equal(render('- first\n2. continued'),
+    '<ul>\n<li>first</li>\n</ul>\n<ol start="2">\n<li>continued</li>\n</ol>\n');
 });
 
 test('multiline reference titles cannot manufacture a fence or heading in container ownership', () => {

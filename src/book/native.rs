@@ -69,7 +69,7 @@ pub(crate) struct BookArgs {
     /// Explicit PDF/EPUB output file. Binary stdout is not supported.
     #[arg(long, conflicts_with = "out_dir")]
     out: Option<PathBuf>,
-    /// HTML site, PDF, both, or one multi-chapter EPUB with packaged images.
+    /// HTML site, PDF, both, EPUB, or all three from one book/resource snapshot.
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
@@ -127,7 +127,7 @@ pub(crate) struct BookArgs {
     #[arg(long)]
     margin_left_pt: Option<f64>,
     /// Opt-in PDF body baseline grid in points (1..=144); 0 disables a configured grid.
-    /// Incompatible with --fit-to-pages. Requires --to pdf or both.
+    /// Incompatible with --fit-to-pages. Requires --to pdf, both or all.
     #[arg(long, value_name = "POINTS")]
     pdf_baseline_grid_pt: Option<f64>,
     /// Render line numbers in the PDF book's fenced code blocks.
@@ -152,6 +152,7 @@ enum BookTarget {
     Pdf,
     Both,
     Epub,
+    All,
 }
 
 impl BookTarget {
@@ -161,7 +162,20 @@ impl BookTarget {
             Self::Pdf => "pdf",
             Self::Both => "both",
             Self::Epub => "epub",
+            Self::All => "all",
         }
+    }
+
+    fn wants_html(self) -> bool {
+        matches!(self, Self::Html | Self::Both | Self::All)
+    }
+
+    fn wants_pdf(self) -> bool {
+        matches!(self, Self::Pdf | Self::Both | Self::All)
+    }
+
+    fn wants_epub(self) -> bool {
+        matches!(self, Self::Epub | Self::All)
     }
 }
 
@@ -277,11 +291,11 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             "book output must be a real path; binary stdout is not supported",
         ));
     }
-    if args.out.is_some() && matches!(args.to, BookTarget::Html | BookTarget::Both) {
+    if args.out.is_some() && args.to.wants_html() {
         return Err(error(
             64,
             "usage_error",
-            "--out is for PDF/EPUB; use --out-dir for HTML or both",
+            "--out is for PDF/EPUB; use --out-dir for HTML, both or all",
         ));
     }
     let config = if no_config {
@@ -381,7 +395,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     }
     let image_count = loaded.images.len();
     let font_assets = typography.load_fonts(&mut loaded.protected_paths)?;
-    if !matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
+    if !args.to.wants_pdf() {
         loaded.warnings.extend(options::font_warnings(&font_assets));
     }
     let mut html_options = HtmlOptions {
@@ -426,7 +440,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     let mut rendered = Vec::new();
     let mut output_bytes = 0usize;
     let mut pages = 0u64;
-    if matches!(args.to, BookTarget::Html | BookTarget::Both) {
+    if args.to.wants_html() {
         let book_lang = html_options.lang.clone();
         let book_title = html_options.title.clone();
         for chapter in &loaded.book.chapters {
@@ -456,8 +470,12 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             )?;
         }
         html_options.lang = book_lang;
-        // Restore the book title before a PDF in a combined export.
+        // Chapter presentation must not leak into the following publication.
+        // In particular, EPUB needs the original book-wide contents defaults,
+        // not the last HTML chapter's frontmatter.
         html_options.title = book_title;
+        html_options.toc = html_toc;
+        html_options.toc_depth = toc_depth;
         let search =
             site_search::index_json(&loaded.book).map_err(|e| error(70, "book_search_error", e))?;
         let search_page = site_search::page(
@@ -491,7 +509,7 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             landing.into_bytes(),
         )?;
     }
-    if matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
+    if args.to.wants_pdf() {
         let mut pdf_options = PdfOptions {
             theme: html_options.theme.clone(),
             title: html_options.title.clone(),
@@ -532,8 +550,15 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             .extend(warnings.iter().map(options::warning_text));
         pages = emitted_pages;
         add_output(&mut rendered, &mut output_bytes, paths.pdf, bytes)?;
+        if args.to.wants_epub() {
+            // Transfer the exact loaded resource snapshot to the next format.
+            // Moving the buffers back avoids cloning fonts/images or opening
+            // files and remote URLs again while constructing one edition.
+            html_options.image_assets = pdf_options.image_assets;
+            html_options.font_assets = pdf_options.font_assets;
+        }
     }
-    if args.to == BookTarget::Epub {
+    if args.to.wants_epub() {
         let bytes = crate::epub::render_book_epub(&loaded.book, &html_options)
             .map_err(|e| error(70, "epub_render_error", e))?;
         add_output(&mut rendered, &mut output_bytes, paths.epub, bytes)?;
@@ -597,8 +622,13 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             } else {
                 chapter.out_name.clone()
             };
+            let epub_name = if args.to == BookTarget::All {
+                format!(",\"epub_name\":\"chapter-{}.xhtml\"", index + 1)
+            } else {
+                String::new()
+            };
             format!(
-                "{{\"path\":{},\"out_name\":{},\"title\":{},\"bytes\":{}}}",
+                "{{\"path\":{},\"out_name\":{},\"title\":{},\"bytes\":{}{epub_name}}}",
                 json_string(&chapter.path),
                 json_string(&out_name),
                 json_string(&chapter.title),

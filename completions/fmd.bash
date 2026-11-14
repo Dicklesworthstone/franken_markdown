@@ -256,7 +256,7 @@ _fmd() {
                     return 0
                     ;;
                 --to)
-                    COMPREPLY=($(compgen -W "html pdf both epub svg" -- "$cur"))
+                    COMPREPLY=($(compgen -W "html pdf both epub all" -- "$cur"))
                     return 0
                     ;;
                 --max-input-bytes)

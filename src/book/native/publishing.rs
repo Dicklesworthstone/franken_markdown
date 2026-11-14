@@ -175,7 +175,7 @@ pub(super) fn prepare(
         || args.pdf_header_rule
         || args.pdf_footer_rule
         || args.pdf_running_skip_first;
-    if !matches!(target, BookTarget::Pdf | BookTarget::Both)
+    if !target.wants_pdf()
         && (running_requested
             || args.microtype.is_some()
             || args.typography_homogeneous.is_some()
@@ -197,26 +197,21 @@ pub(super) fn prepare(
         return Err(error(
             64,
             "unsupported_target_option",
-            "PDF typography, pagination, running content and archival flags require --to pdf or --to both",
+            "PDF typography, pagination, running content and archival flags require --to pdf, --to both or --to all",
         ));
     }
-    if args.html_font_format.is_some() && !matches!(target, BookTarget::Html | BookTarget::Both) {
+    if args.html_font_format.is_some() && !target.wants_html() {
         return Err(error(
             64,
             "unsupported_target_option",
-            "--html-font-format requires --to html or --to both; EPUB uses raw TrueType or CFF OpenType fonts",
+            "--html-font-format requires --to html, --to both or --to all; EPUB uses raw TrueType or CFF OpenType fonts",
         ));
     }
-    if args.font_embedding.is_some()
-        && !matches!(
-            target,
-            BookTarget::Html | BookTarget::Both | BookTarget::Epub
-        )
-    {
+    if args.font_embedding.is_some() && !target.wants_html() && !target.wants_epub() {
         return Err(error(
             64,
             "unsupported_target_option",
-            "--font-embedding requires --to html, --to both or --to epub",
+            "--font-embedding requires --to html, --to both, --to epub or --to all",
         ));
     }
     if args.fit_to_pages == Some(0) {

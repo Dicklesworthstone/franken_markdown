@@ -683,6 +683,22 @@ the first document byte is sent. A render or sidecar failure leaves stdout
 empty. A consumer that closes its pipe early exits cleanly; other stdout errors
 return exit code 74. Omitting `--out` keeps the existing derived-file behavior.
 
+### Complete book editions
+
+Publish the HTML site, PDF book and EPUB together from one source and resource
+snapshot:
+
+```bash
+fmd book chapters --to all --out-dir dist
+fmd book chapters --to all --embed-remote-images --pdf-a 2b --out-dir dist
+```
+
+All formats finish rendering and pass their publication checks before the
+edition is staged for writing. A render, page-budget or protected-input failure
+preserves the previous outputs. Shared images and host fonts are loaded once;
+optional remote images are fetched once per URL for the complete edition.
+Use `--out-dir` for `all`; `both` continues to produce HTML and PDF only.
+
 ### Portable image exports
 
 Use `--embed-remote-images` when a saved HTML document, EPUB, or book should

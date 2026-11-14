@@ -114,7 +114,13 @@ warnings for images that could not load.
 fmd book ./manual --to html --out-dir ./site --json
 fmd book ./manual --to pdf --out ./manual.pdf --json
 fmd book ./manual --to epub --out ./manual.epub --json
+fmd book ./manual --to all --out-dir ./publication --json
 ```
+
+`--to all` renders the site, PDF, and EPUB from the same loaded book and
+resource bytes, then publishes them in one staged transaction. See
+[complete native editions](NATIVE_BOOK_OPTIONS.md#publish-a-complete-edition)
+for destinations, format options, receipts, and failure behavior.
 
 Receipts, the sidebar, site search, and the EPUB spine count only publishing
 chapters. An include-only path is not a navigable chapter URL: link to a heading

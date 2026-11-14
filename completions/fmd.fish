@@ -134,7 +134,7 @@ complete -c fmd -n "__fish_seen_subcommand_from diff" -l max-input-bytes -d "Max
 # Subcommand: book
 complete -c fmd -n "__fish_seen_subcommand_from book" -F
 complete -c fmd -n "__fish_seen_subcommand_from book" -s o -l out-dir -d "Output directory"
-complete -c fmd -n "__fish_seen_subcommand_from book" -l to -a "html pdf both epub svg" -d "Which output(s) to produce"
+complete -c fmd -n "__fish_seen_subcommand_from book" -l to -a "html pdf both epub all" -d "Which output(s) to produce"
 complete -c fmd -n "__fish_seen_subcommand_from book" -l max-input-bytes -d "Maximum Markdown input bytes per file"
 
 # Subcommand: batch

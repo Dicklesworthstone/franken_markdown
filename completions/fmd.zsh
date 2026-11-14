@@ -172,7 +172,7 @@ _fmd() {
                         $global_opts \
                         $page_opts \
                         '(-o --out-dir)'{-o,--out-dir}'=[Output directory]:directory:_files -/' \
-                        '--to=[Which output(s) to produce]:target:(html pdf both epub svg)' \
+                        '--to=[Which output(s) to produce]:target:(html pdf both epub all)' \
                         '--max-input-bytes=[Maximum Markdown input bytes per file]:bytes:' \
                         '1:book directory:_files -/'
                     ;;

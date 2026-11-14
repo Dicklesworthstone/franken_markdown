@@ -239,7 +239,9 @@ fn shadowed_note_definitions_do_not_report_resources_absent_from_the_output() {
 
 #[test]
 fn fitted_math_diagnostics_follow_the_final_font_size_and_measure() {
-    let formula = ["x"; 40].join(" + ");
+    // Keep the full source within the warning excerpt limit without changing
+    // the mathematical spacing or the deliberately oversized geometry.
+    let formula = ["x"; 40].join("+");
     let rows = (0..10)
         .map(|row| format!("Body row {row}.  \n"))
         .collect::<String>();

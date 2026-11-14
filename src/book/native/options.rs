@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use super::{BookArgs, BookTarget, Failure, error};
+use super::{BookArgs, Failure, error};
 use crate::cli::host_fonts::{HostFontError, HostFonts};
 use crate::{FontAssetSlot, FontAssets, FontScale, RenderWarning, Theme};
 
@@ -35,7 +35,7 @@ pub(super) fn prepare(
         args.margin_bottom_pt,
         args.margin_left_pt,
     ];
-    if !matches!(args.to, BookTarget::Pdf | BookTarget::Both)
+    if !args.to.wants_pdf()
         && (args.page_size.is_some()
             || margins.iter().any(Option::is_some)
             || args.pdf_line_numbers
@@ -44,7 +44,7 @@ pub(super) fn prepare(
         return Err(error(
             64,
             "unsupported_target_option",
-            "page size, margins, --pdf-line-numbers and --pdf-baseline-grid-pt require --to pdf or --to both",
+            "page size, margins, --pdf-line-numbers and --pdf-baseline-grid-pt require --to pdf, --to both or --to all",
         ));
     }
     let font_scale = args.font_scale.as_deref().or(defaults.font_scale.as_deref()).map(|value| {
@@ -54,7 +54,7 @@ pub(super) fn prepare(
     if let Some(scale) = font_scale {
         theme = theme.with_font_scale(scale);
     }
-    if matches!(args.to, BookTarget::Pdf | BookTarget::Both) {
+    if args.to.wants_pdf() {
         configure_page(&mut theme, args.page_size.as_deref(), margins)?;
         crate::config::page::configure_baseline_grid(
             &mut theme,

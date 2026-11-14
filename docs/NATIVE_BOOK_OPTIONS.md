@@ -14,6 +14,46 @@ fmd book ./manual --to epub --out ./manual.epub \
   --pdf-font body-regular=./fonts/Body.ttf --font-scale lg
 ```
 
+## Publish a complete edition
+
+Use `--to all` to publish the HTML site, PDF book, and EPUB together:
+
+```sh
+SOURCE_DATE_EPOCH=1700000000 fmd book ./manual --to all --out-dir ./publication \
+  --deny-broken-links --pdf-a 2b --pdf-a-strict --json
+```
+
+The destination contains the chapter HTML pages, `index.html`, the offline
+search page and index, `manual.pdf`, and `manual.epub`. The PDF and EPUB names
+use the input directory's name. Without `--out-dir`, the command retains the
+usual individual locations: `manual-site/`, `manual.pdf`, and `manual.epub`
+beside the input directory. `all` uses `--out-dir`; `--out` remains a PDF/EPUB-only
+option. Books do not support binary stdout. The default target remains `both`,
+which publishes HTML and PDF.
+
+All formats use one loaded and expanded book, one manifest/configuration, and
+the same loaded image and font bytes. An explicitly enabled remote image is
+fetched once across chapters and publication formats. The command does not
+reload a source or resource between formats. HTML chapter titles, languages,
+and contents settings do not replace the book-wide settings used by EPUB.
+
+The entire edition is rendered before publication begins. A broken-link guard,
+PDF page-budget or strict archival refusal, EPUB error, output/input collision,
+or staging failure leaves existing publication files untouched. All files use
+the existing staged writer, input-identity protections, and shared 256 MiB
+rendered-output limit. The write transaction retains the existing rollback
+behavior; it is not a filesystem-wide atomic rename for readers or a
+crash-recovery protocol.
+
+`all` accepts both HTML and PDF presentation flags. PDF-only controls apply to
+the PDF; HTML font containers and EPUB font packaging retain their existing
+format-specific behavior. Successful JSON receipts use `target: "all"`, list
+every publication file in `outputs`, and count the actual PDF pages in `pages`.
+Each chapter keeps its HTML filename in `files[].out_name` and adds its EPUB
+spine filename in `files[].epub_name`. Existing target receipts are unchanged.
+
+## Fonts and metadata
+
 Font paths resolve from the command's working directory. Repeat `--pdf-font`
 for `body-regular`, `body-bold`, `body-italic`, `body-bold-italic`, and
 `mono-regular`. Missing slots use the normal bundled fonts. As in the shared
@@ -90,7 +130,7 @@ Use `fmd config set page_size a4` (or custom dimensions) to persist a default
 paper size for every native PDF route. An explicit `--page-size` overrides it.
 
 `--pdf-line-numbers` numbers fenced code. Paper, margin, and code-numbering
-flags require `--to pdf` or `--to both`. HTML-only and EPUB requests reject
+flags require `--to pdf`, `--to both`, or `--to all`. HTML-only and EPUB requests reject
 those flags with `unsupported_target_option` (exit 64).
 
 `--toc-depth` accepts levels 1–6 and limits generated contents for every
@@ -151,11 +191,11 @@ disables them. The typography switches, `--pdf-optimal-pagination`, and
 override a configured true value. `--no-config` retains the normal
 configuration-free defaults.
 
-`--html-font-format woff1|woff2|ttf` is available for HTML and combined
+`--html-font-format woff1|woff2|ttf` is available for HTML, combined, and complete-edition
 publications. Configured font formats are harmless for PDF/EPUB output;
 an explicit format flag on those targets is rejected because EPUB uses
 its own TrueType subset container. Explicit PDF-only typography,
-pagination, running-content, and archival flags require PDF or combined
+pagination, running-content, and archival flags require PDF, combined, or complete-edition
 output and fail before reading chapter or asset files.
 
 ## Running titles, page counters, and logos
@@ -219,8 +259,8 @@ PDF/A certification.
 Successful JSON receipts identify the selected archival profile and
 strictness in a `pdf_a` object, and `pages` always counts actual emitted
 pages. PDF render warnings continue through the ordinary warnings array.
-If archival rendering fails in a combined publication, no HTML or PDF
-destination is replaced.
+If archival rendering fails in a combined publication or complete edition,
+no HTML, PDF, or EPUB destination is replaced.
 
 ## Diagnostics and input preservation
 

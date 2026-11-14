@@ -1160,17 +1160,18 @@ Honest about what the renderer does not do yet.
   reference, with linked superscript marks. By default, notes taller than 40%
   of a page fall back to a trailing Notes section. `--pdf-split-footnotes`
   continues long prose, code, heading, definition-list, table, list and quotation
-  notes across page feet,
-  including inline equations and images whose complete painted bounds fit.
+  notes across page feet, including inline objects, standalone figures, display
+  equations and compiled diagrams whose complete painted bounds fit.
+  Standalone objects stay whole; galleries can continue between complete figures.
   Tables keep complete logical rows together and repeat their measured headers.
   Headings keep all wrapped lines, their underline and their first following
   content row together within the same source list/quotation scope. Definition
   terms stay with the first row of their description, whose remaining lines may
-  continue. An oversized mandatory group retains the complete endnote fallback.
-  This mode requires greedy pagination without a baseline grid. Standalone
-  figures and display equations retain their existing
-  indivisible-note/endnote handling; unreferenced notes stay in the Notes
-  section. See [PDF footnotes](docs/PDF_FOOTNOTES.md).
+  continue. A note that starts with an object keeps its label and object together
+  on the citation's page. An oversized object or mandatory group retains the
+  complete endnote fallback. This mode requires greedy pagination without a
+  baseline grid. Unreferenced notes stay in the Notes section. See
+  [PDF footnotes](docs/PDF_FOOTNOTES.md).
 - **PDF mathematics.** Display and inline equations use real math glyphs and
   geometry. Inline formulas remain whole and scale down only when needed to fit
   their paragraph, heading, list or table cell; `math_overflow` reports that

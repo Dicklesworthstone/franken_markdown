@@ -833,12 +833,14 @@ pub struct PdfOptions {
     /// inside notes and notes moved to the trailing Notes section. Unreferenced
     /// notes have no return destination. Default false preserves existing output.
     pub footnote_backlinks: bool,
-    /// Continue long text footnotes across physical page feet.
+    /// Continue long footnotes across physical page feet.
     ///
     /// The first fragment stays with its citation; remaining fragments can
     /// continue onto later pages, including note-only pages after the body.
     /// Supports paragraphs, ordinary code, headings, definition lists, tables,
     /// lists and quotations, including inline formulas and images in prose.
+    /// Standalone figures, display formulas and compiled diagrams remain whole;
+    /// galleries can continue between complete figures without shrinking them.
     /// Tables keep complete rows with repeated headers; headings keep their
     /// wrapped text, underline and first subject within their source container.
     /// Definition terms stay with their first description row. Each atomic

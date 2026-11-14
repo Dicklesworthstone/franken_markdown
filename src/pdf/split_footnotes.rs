@@ -1,4 +1,4 @@
-//! Opt-in continuation of text-bearing footnotes in the final physical page walk.
+//! Opt-in continuation of measured footnotes in the final physical page walk.
 //!
 //! Pending work consists only of ranges into the immutable measured note
 //! region. Every consumer creates its own cursor, so counts, running bands,
@@ -21,26 +21,25 @@ pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
     Ok(())
 }
 
-/// Text-bearing containers already retain independently paintable rows and
-/// source-owned list/quote/code identities. Inline formulas and images remain
-/// atomic parts of those rows. Tables split only between complete logical rows
-/// and repeat their measured headers. Standalone figures/formulas, explicit
-/// breaks and generated TOCs keep the complete ordinary-note/endnote fallback.
+/// Source containers retain independently paintable rows and list/quote/code
+/// identities. Inline objects remain parts of those rows; standalone figures,
+/// display formulas and diagrams retain one indivisible measured row apiece.
+/// Tables split only between complete logical rows and repeat their headers.
+/// Explicit breaks and generated TOCs keep the ordinary-note/endnote fallback.
 pub(super) fn eligible(blocks: &[Block]) -> bool {
-    fn text(inlines: &[Inline], cell: bool) -> bool {
+    fn text(inlines: &[Inline]) -> bool {
         let mut pending = vec![inlines];
-        let mut has_image = false;
-        let mut has_content = false;
         while let Some(inlines) = pending.pop() {
             for inline in inlines {
                 match inline {
-                    Inline::Text(text) => has_content |= !text.trim().is_empty(),
-                    Inline::Code(_)
+                    Inline::Text(_)
+                    | Inline::Code(_)
                     | Inline::Math(_)
                     | Inline::DisplayMath(_)
-                    | Inline::FootnoteRef { .. } => has_content = true,
-                    Inline::Image { .. } => has_image = true,
-                    Inline::SoftBreak | Inline::HardBreak => {}
+                    | Inline::FootnoteRef { .. }
+                    | Inline::Image { .. }
+                    | Inline::SoftBreak
+                    | Inline::HardBreak => {}
                     Inline::Emphasis(inner)
                     | Inline::Strong(inner)
                     | Inline::Strikethrough(inner)
@@ -49,10 +48,7 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
                 }
             }
         }
-        // Image-only paragraphs can become full-size figures or galleries.
-        // Preserve their ordinary page-note/endnote admission, including for
-        // styled/linked images and assets whose availability changes later.
-        cell || !has_image || has_content
+        true
     }
 
     if blocks.is_empty() {
@@ -63,23 +59,22 @@ pub(super) fn eligible(blocks: &[Block]) -> bool {
         for block in blocks {
             match block {
                 Block::Paragraph(inlines)
-                    if toc_marker_depth(inlines).is_none() && text(inlines, false) => {}
-                Block::Heading { inlines, .. } if text(inlines, true) => {}
+                    if toc_marker_depth(inlines).is_none() && text(inlines) => {}
+                Block::Heading { inlines, .. } if text(inlines) => {}
                 Block::DefinitionList(items)
                     if items.iter().all(|item| {
                         item.terms
                             .iter()
                             .chain(&item.definitions)
-                            .all(|inlines| text(inlines, true))
+                            .all(|inlines| text(inlines))
                     }) => {}
-                Block::CodeBlock { lang, code }
-                    if !crate::diagrams::is_diagram_code(code, lang.as_deref().unwrap_or("")) => {}
+                Block::CodeBlock { .. } | Block::MathBlock(_) => {}
                 Block::Table(table)
                     if table
                         .head
                         .iter()
                         .chain(table.rows.iter().flatten())
-                        .all(|cell| text(cell, true)) => {}
+                        .all(|cell| text(cell)) => {}
                 Block::BlockQuote(inner) => pending.push(inner),
                 Block::List(list) => {
                     pending.extend(list.items.iter().map(|item| item.blocks.as_slice()));
@@ -116,15 +111,14 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
         } else {
             heading_scope = None;
         }
-        if line.image.is_some()
-            || (line.rule
-                && !matches!(line.flow.kind, FlowKind::TableRule | FlowKind::Heading))
+        if (line.rule && !matches!(line.flow.kind, FlowKind::TableRule | FlowKind::Heading))
             || line.grid.is_some()
             || !matches!(
                 line.flow.kind,
                 FlowKind::Paragraph
                     | FlowKind::Heading
                     | FlowKind::Code
+                    | FlowKind::Image
                     | FlowKind::TableHeader
                     | FlowKind::TableRow
                     | FlowKind::TableRule
@@ -134,10 +128,26 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
         {
             return false;
         }
+        if let Some(image) = &line.image
+            && (line.flow.kind != FlowKind::Image
+                || !image.width_pt.is_finite()
+                || image.width_pt <= 0.0
+                || !image.height_pt.is_finite()
+                || image.height_pt <= 0.0)
+        {
+            return false;
+        }
+        // A figure row's synthetic size describes its height, not its list
+        // label. Measure any marker at the same size used by the PDF painter.
+        let text_size = line
+            .image
+            .as_ref()
+            .and_then(|image| image.marker_size)
+            .unwrap_or(line.size);
         for seg in &line.segs {
             if is_inline_math(seg.slot) {
                 let Some(formula) =
-                    inline_math_fit::placement(&seg.text, line.size, seg.slot == F_DISPLAY_MATH)
+                    inline_math_fit::placement(&seg.text, text_size, seg.slot == F_DISPLAY_MATH)
                 else {
                     return false;
                 };
@@ -146,7 +156,7 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
                 continue;
             }
             if seg.slot == F_IMAGE {
-                let Some(image) = inline_image::image_box(&seg.text, line.size) else {
+                let Some(image) = inline_image::image_box(&seg.text, text_size) else {
                     return false;
                 };
                 line.text_ink.0 = line.text_ink.0.max(image.height - image.descent);
@@ -154,14 +164,14 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
                 continue;
             }
             let face = faces.face(seg.slot);
-            let scale = line.size / f32::from(face.font.units_per_em.max(1));
+            let scale = text_size / f32::from(face.font.units_per_em.max(1));
             line.text_ink.1 = line
                 .text_ink
                 .1
                 .max((-f32::from(face.font.descent) * scale).max(0.0));
             let shaped = shape_run_with_scratch(face, &seg.text, &mut scratch);
             if let Some(positioned) = &shaped.positioned {
-                let (above, below) = positioned.ink(font_size_of(line.size));
+                let (above, below) = positioned.ink(font_size_of(text_size));
                 line.text_ink.0 = line.text_ink.0.max(above);
                 line.text_ink.1 = line.text_ink.1.max(below);
             } else {
@@ -179,14 +189,14 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
             if let Some(done) = seg.task {
                 // The checkbox has a minimum physical size even at small
                 // note type sizes. Its invisible marker text is not its ink.
-                let side = (line.size * 0.72).clamp(5.5, 9.0);
+                let side = (text_size * 0.72).clamp(5.5, 9.0);
                 let stroke = if done {
                     (side * 0.16).max(0.9)
                 } else {
                     (side * 0.11).max(0.8)
                 } * 0.5;
-                line.text_ink.0 = line.text_ink.0.max(side - line.size * 0.07 + stroke);
-                line.text_ink.1 = line.text_ink.1.max(line.size * 0.07 + stroke);
+                line.text_ink.0 = line.text_ink.0.max(side - text_size * 0.07 + stroke);
+                line.text_ink.1 = line.text_ink.1.max(text_size * 0.07 + stroke);
             }
         }
     }
@@ -213,8 +223,23 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
 /// The same painted bounds as the writer. A continuing panel/quote is omitted
 /// at an internal seam; its background intentionally surrounds both rows.
 fn paint_ink(line: &Line, code_edge: bool, quote_edge: bool) -> (f32, f32) {
-    let mut above = line.text_ink.0;
-    let mut below = line.text_ink.1.max(line.size * INLINE_MATH_DESCENT_ROOM);
+    let (mut above, mut below) = if let Some(image) = &line.image {
+        // Figures paint upward from their row baseline. The synthetic font
+        // size must not invent a text descender below an otherwise exact box.
+        let mut above = image.height_pt;
+        let mut below = 0.0_f32;
+        if image.marker_size.is_some() {
+            let (size, y) = line_text_position(line, 0.0);
+            above = above.max(y + line.text_ink.0.max(size * 0.85));
+            below = below.max(line.text_ink.1.max(size * 0.20) - y);
+        }
+        (above, below)
+    } else {
+        (
+            line.text_ink.0,
+            line.text_ink.1.max(line.size * INLINE_MATH_DESCENT_ROOM),
+        )
+    };
     if matches!(line.flow.kind, FlowKind::TableHeader | FlowKind::TableRow) {
         // A shaded cell can paint beyond the glyphs. Include literal theme
         // padding and financial footing strokes at fragment boundaries too.
@@ -280,7 +305,8 @@ fn container_clearance(before: &Line, after: &Line) -> f32 {
             FlowKind::TableHeader | FlowKind::TableRow | FlowKind::TableRule
         )
     });
-    if !code_edge && !closes_quote && !opens_quote && !table_edge {
+    let figure_edge = before.image.is_some() || after.image.is_some();
+    if !code_edge && !closes_quote && !opens_quote && !table_edge && !figure_edge {
         return 0.0;
     }
     let below = paint_ink(before, code_edge, closes_quote).1;
@@ -320,7 +346,8 @@ fn note_label_only(line: &Line) -> bool {
 }
 
 fn marker_only(line: &Line) -> bool {
-    list_labels::has_label(line)
+    line.image.is_none()
+        && list_labels::has_label(line)
         && line
             .segs
             .iter()
@@ -365,14 +392,18 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     }
     // Rich-first notes have an inserted label paragraph. Bind its first
     // source row too, using semantic provenance rather than superscript text.
+    // A separate figure/formula block can resolve to ordinary fallback text;
+    // its source group still makes it the generated label's first subject.
     // Ordinary paragraph-only notes keep their historical row boundaries.
-    (after.bg != 0
+    (before.flow.group != after.flow.group
+        || after.bg != 0
+        || after.image.is_some()
         || after.flow.kind == FlowKind::Heading
         || after.flow.note_definition_keep_next.is_some()
         || matches!(after.flow.kind, FlowKind::TableHeader | FlowKind::TableRule)
         || !after.quote_bars.is_empty()
         || !after.list_path.is_empty()
-        || (before.flow.group == after.flow.group && note_label_only(after)))
+        || note_label_only(after))
         && note_label_only(before)
 }
 

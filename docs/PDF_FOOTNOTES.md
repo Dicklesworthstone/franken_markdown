@@ -44,9 +44,9 @@ HTML and EPUB retain those literal names in their anchor IDs and encode them
 when generating links: a note named `evidence%41` links to
 `#fn-evidence%2541`, keeping it distinct from a note named `evidenceA`.
 
-## Continue long text notes across pages
+## Continue long notes across pages
 
-Enable `--pdf-split-footnotes` to keep long text notes in the page-foot flow
+Enable `--pdf-split-footnotes` to keep long notes in the page-foot flow
 instead of moving them into the trailing Notes section:
 
 ```sh
@@ -65,7 +65,9 @@ with this mode.
 Continuation supports paragraphs with styled text, inline code, inline
 mathematics, images mixed with prose, and ordinary links, as well as ordinary
 fenced or indented code, tables, headings, definition lists,
-ordered/unordered/task lists, and blockquotes (including alerts).
+ordered/unordered/task lists, and blockquotes (including alerts). Standalone
+figures, display equations and compiled diagrams can participate as indivisible
+measured rows; image galleries may continue between their complete figures.
 Lists and quotations can nest, and code blocks can appear inside them. Fragments
 retain syntax highlighting, source line numbers, list labels, indentation,
 quotation bars, code backgrounds, links and logical note ownership. Code and
@@ -120,11 +122,23 @@ endnote fallback. The same fallback applies when the first header, row and
 note label cannot fit with the citing body line. No rows are clipped, shrunk
 to satisfy a page, or partially moved into a separate note.
 
-Notes containing standalone figures, display-math blocks, diagrams, generated
-contents, raw HTML blocks, thematic breaks or explicit page breaks retain the full-fidelity endnote fallback when they cannot
+Standalone objects keep their measured dimensions, image bytes or vector paths,
+alternative text, formula source, links and Figure/Formula ownership within the
+same logical note. Continuation does not shrink an object to fit a fragment. A
+first object stays with its generated note label on the citation's page, even
+when that required group exceeds the preferred 40% note share. Figures in list
+items retain their ordinary marker size, and completing a figure does not bind
+unrelated following prose. Quotation backgrounds and actual marker ink are
+included when admitting fragment boundaries. Missing or invalid image assets
+and unsupported display equations retain their complete visible text fallback;
+a separate generated note label stays with its first fallback row.
+
+Notes containing generated contents, raw HTML blocks, thematic breaks or
+explicit page breaks retain the full-fidelity endnote fallback when they cannot
 fit as an ordinary page note. Unreferenced notes remain endnotes. A measured row
 or a required label-and-content group that cannot fit on a note-only page also
-sends its complete note to that fallback.
+sends its complete note to that fallback. The same complete fallback applies
+when the first group and its citing body line cannot fit together.
 
 Continuation requires **greedy pagination without a baseline grid**. Combining
 it with `--pdf-optimal-pagination`, `--pdf-strict-pagination`, or a positive
@@ -233,9 +247,13 @@ not leak into ordinary paragraphs.
 `tests/pdf_footnote_inline_objects_test.rs` decodes emitted glyph maps, vector
 paths, image transforms, annotation rectangles and structure ancestry to check
 inline formulas and linked images across continuation boundaries, including
-complete table cells. It also preserves the existing indivisible-figure,
-oversized-row and unreferenced-note behavior.
-
+complete table cells. Its standalone-object cases check first-label keeps,
+whole gallery members, equations and diagrams, ordinary nested list markers,
+actual transformed drawing bounds, preserved source order and one logical note.
+Missing/invalid assets and unsupported equations keep their visible fallback
+with the first label under a tight citation-page budget. Verification page counts
+and monolithic/chunked output use the same physical pages. Exact-paint comparisons retain the existing short-figure behavior and
+complete oversized-object, oversized-row and unreferenced-note fallback.
 
 `tests/pdf_page_footnotes_test.rs` pins placement (every note on its
 reference's page, below the body, smaller than body text), linking without

@@ -1,4 +1,4 @@
-//! Inline objects in continued notes retain painted geometry and source ownership.
+//! Continued notes retain inline and indivisible block object geometry and ownership.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "support/pdf_content.rs"]
@@ -649,4 +649,447 @@ fn continued_table_cells_preserve_inline_objects_links_and_note_ancestry() {
         )
         .unwrap()
     );
+}
+
+fn atomic_options() -> PdfOptions {
+    let mut options = options();
+    options.image_assets.push(PdfImageAsset::new(
+        "figure.svg",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="140"><rect width="160" height="140" fill="#125abc"/></svg>"##.to_vec(),
+    ));
+    options
+}
+
+fn atomic_note_source(body: &str) -> String {
+    let mut source = String::from("CITATION.[^objects]\n\n");
+    for index in 0..8 {
+        source.push_str(&format!("BODY{index:03} ordinary source paragraph.\n\n"));
+    }
+    source.push_str("[^objects]:\n");
+    for line in body.lines() {
+        source.push_str("    ");
+        source.push_str(line);
+        source.push('\n');
+    }
+    source
+}
+
+fn continued_rows(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("NOTE{index:03} complete source row."))
+        .collect::<Vec<_>>()
+        .join("  \n")
+}
+
+fn assert_atomic_continuation(pdf: &Pdf, count: usize) {
+    let runs = pdf
+        .pages
+        .iter()
+        .map(|&page| pdf.runs(page))
+        .collect::<Vec<_>>();
+    let text: String = runs.iter().flatten().map(|run| run.text.as_str()).collect();
+    assert!(!text.contains("Notes"), "keep the complete note at page feet");
+    let mut previous = 0;
+    let mut note_pages = BTreeSet::new();
+    for index in 0..count {
+        let marker = format!("NOTE{index:03}");
+        assert_eq!(text.matches(&marker).count(), 1, "retain {marker} once");
+        let position = text.find(&marker).unwrap();
+        assert!(position >= previous, "preserve the note's source order");
+        previous = position;
+        let (page, run) = runs
+            .iter()
+            .enumerate()
+            .find_map(|(page, runs)| {
+                runs.iter()
+                    .find(|run| run.text.contains(&marker))
+                    .map(|run| (page, run))
+            })
+            .unwrap();
+        assert!((run.size - 9.35).abs() < 0.015, "retain note typography");
+        assert!(run.y - run.size * 0.3 >= 36.0 - 0.03);
+        assert!(run.y + run.size <= 264.0 + 0.03);
+        note_pages.insert(page);
+    }
+    assert!(note_pages.len() >= 3, "exercise later and note-only pages");
+    assert_eq!(
+        pdf.objects
+            .values()
+            .filter(|object| object.dictionary.contains("/S /Note "))
+            .count(),
+        1,
+        "one logical note across every physical fragment"
+    );
+}
+
+/// Inspect transformed PDF path coordinates inside each Figure/Formula mark.
+/// Block formulas use local outlines under cm; inline formula assumptions about
+/// absolute coordinates would miss their physical placement.
+fn atomic_ink(content: &str) -> Vec<(String, Rect)> {
+    let mut matrix = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut matrices = Vec::new();
+    let mut marks = Vec::<Option<usize>>::new();
+    let mut ink = Vec::<(String, Rect, usize)>::new();
+    for operation in pdf_content::operations(content) {
+        match operation.operator {
+            "q" => matrices.push(matrix),
+            "Q" => matrix = matrices.pop().expect("balanced graphics state"),
+            "cm" => {
+                let [a, b, c, d, e, f]: [f64; 6] =
+                    std::array::from_fn(|i| operation.operands[i].parse().unwrap());
+                let [aa, bb, cc, dd, ee, ff] = matrix;
+                matrix = [
+                    aa * a + cc * b,
+                    bb * a + dd * b,
+                    aa * c + cc * d,
+                    bb * c + dd * d,
+                    aa * e + cc * f + ee,
+                    bb * e + dd * f + ff,
+                ];
+            }
+            "BDC" | "BMC" => {
+                let tag = operation.operands[0];
+                let owner = if matches!(tag, "/Figure" | "/Formula") {
+                    let owner = ink.len();
+                    ink.push((
+                        tag[1..].to_owned(),
+                        [
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::NEG_INFINITY,
+                        ],
+                        0,
+                    ));
+                    Some(owner)
+                } else {
+                    marks.last().copied().flatten()
+                };
+                marks.push(owner);
+            }
+            "EMC" => {
+                marks.pop().expect("balanced marked content");
+            }
+            "m" | "l" | "c" | "re" => {
+                let Some(index) = marks.last().copied().flatten() else {
+                    continue;
+                };
+                let coordinates: Vec<f64> = operation
+                    .operands
+                    .iter()
+                    .map(|number| number.parse().unwrap())
+                    .collect();
+                let points = if operation.operator == "re" {
+                    let [x, y, w, h]: [f64; 4] = coordinates.try_into().unwrap();
+                    vec![(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+                } else {
+                    assert!(matches!(coordinates.len(), 2 | 6));
+                    coordinates
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| (pair[0], pair[1]))
+                        .collect()
+                };
+                let [a, b, c, d, e, f] = matrix;
+                let bounds = &mut ink[index].1;
+                for (x, y) in points {
+                    let (x, y) = (a * x + c * y + e, b * x + d * y + f);
+                    bounds[0] = bounds[0].min(x);
+                    bounds[1] = bounds[1].min(y);
+                    bounds[2] = bounds[2].max(x);
+                    bounds[3] = bounds[3].max(y);
+                }
+            }
+            "f" | "f*" | "S" | "s" | "B" | "B*" | "b" | "b*" => {
+                if let Some(index) = marks.last().copied().flatten() {
+                    ink[index].2 += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(marks.is_empty());
+    assert!(matrices.is_empty());
+    ink.into_iter()
+        .map(|(tag, bounds, paints)| {
+            assert!(paints > 0, "{tag} must contain actual vector paint");
+            assert!(bounds.iter().all(|value| value.is_finite()));
+            (tag, bounds)
+        })
+        .collect()
+}
+
+fn assert_atomic_geometry(pdf: &Pdf) {
+    for &page in &pdf.pages {
+        let painted = atomic_ink(pdf.content(page));
+        let body_bottom = pdf
+            .runs(page)
+            .iter()
+            .filter(|run| run.text.contains("BODY") || run.text.contains("CITATION"))
+            .map(|run| run.y - run.size * 0.3)
+            .fold(f64::INFINITY, f64::min);
+        for tag in ["Figure", "Formula"] {
+            let tagged = pdf
+                .elements(tag)
+                .into_iter()
+                .filter(|(_, owner_page, _)| *owner_page == page)
+                .collect::<Vec<_>>();
+            let paths = painted
+                .iter()
+                .filter(|(painted_tag, _)| painted_tag == tag)
+                .collect::<Vec<_>>();
+            assert_eq!(tagged.len(), paths.len(), "every {tag} paints exactly once");
+            for ((id, _, bounds), (_, ink)) in tagged.into_iter().zip(paths) {
+                assert!(pdf.ancestry(id).contains(&"Note"));
+                inside(bounds, [36.0, 36.0, 324.0, 264.0]);
+                inside(*ink, bounds);
+                assert!(bounds[3] < body_bottom, "{tag} overlaps body text");
+            }
+        }
+    }
+}
+
+#[test]
+fn standalone_figures_continue_with_their_first_label_and_exact_dimensions() {
+    for first in [
+        "![evidence](figure.svg)",
+        "**[![evidence](figure.svg)](https://example.org/figure)**",
+    ] {
+        let source = atomic_note_source(&format!("{first}\n\n{}", continued_rows(36)));
+        let options = atomic_options();
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pdf = Pdf::new(&bytes);
+        assert_atomic_continuation(&pdf, 36);
+        assert_atomic_geometry(&pdf);
+        let figures = pdf.elements("Figure");
+        assert_eq!(figures.len(), 1);
+        let (_, page, bounds) = figures[0];
+        // This 105pt figure exceeds the preferred 40% note share. Its first
+        // label must bind the whole row on the citation page, not strand alone.
+        assert_eq!(page, pdf.pages[0]);
+        assert!((bounds[2] - bounds[0] - 120.0).abs() < 0.03);
+        assert!((bounds[3] - bounds[1] - 105.0).abs() < 0.03);
+        let links = pdf
+            .objects
+            .values()
+            .filter(|object| {
+                object
+                    .dictionary
+                    .contains("/URI (https://example.org/figure)")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), usize::from(first.contains("https://")));
+        for link in links {
+            let link = rect(&link.dictionary, "/Rect [");
+            inside(bounds, link);
+            inside(link, bounds);
+        }
+        let destinations = pdf
+            .objects
+            .values()
+            .filter(|object| object.dictionary.contains("/Subtype /Link"))
+            .filter_map(|object| object.dictionary.split_once("/Dest ["))
+            .map(|(_, destination)| {
+                let words = destination.split_whitespace().collect::<Vec<_>>();
+                (
+                    words[0].parse::<usize>().unwrap(),
+                    words[5].parse::<f64>().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(destinations.len(), 2, "citation and first-citation return");
+        assert!(destinations.iter().all(|(owner, _)| *owner == page));
+        assert!(destinations.iter().all(|(_, y)| *y > bounds[3]));
+
+        let doc = parse_markdown(&source);
+        let before = doc.clone();
+        let report = franken_markdown::verify::verify_pdf(&doc, &options).unwrap();
+        assert_eq!(report.page_count, pdf.pages.len());
+        assert_eq!(doc, before);
+        assert_eq!(bytes, render_pdf(&source, &options).unwrap());
+        assert_eq!(
+            bytes,
+            render_pdf_document_emitted(&doc, &options, PdfEmitOptions::monolithic()).unwrap()
+        );
+
+        let mut ordinary = options.clone();
+        ordinary.split_footnotes = false;
+        let previous = Pdf::new(&render_pdf(&source, &ordinary).unwrap());
+        assert!(
+            previous
+                .objects
+                .values()
+                .any(|object| object.dictionary.contains("/Title (Notes)"))
+        );
+    }
+}
+
+#[test]
+fn standalone_gallery_members_remain_atomic_across_note_fragments() {
+    let source = atomic_note_source(&format!(
+        "![first](figure.svg) ![second](figure.svg)\n\n{}",
+        continued_rows(36)
+    ));
+    let bytes = render_pdf(&source, &atomic_options()).unwrap();
+    let pdf = Pdf::new(&bytes);
+    assert_atomic_continuation(&pdf, 36);
+    assert_atomic_geometry(&pdf);
+    let figures = pdf.elements("Figure");
+    assert_eq!(figures.len(), 2);
+    assert_eq!(figures[0].1, pdf.pages[0]);
+    assert_ne!(figures[1].1, pdf.pages[0], "gallery may break between figures");
+    for (_, _, bounds) in figures {
+        assert!((bounds[2] - bounds[0] - 120.0).abs() < 0.03);
+        assert!((bounds[3] - bounds[1] - 105.0).abs() < 0.03);
+    }
+}
+
+#[test]
+fn display_formulas_and_compiled_diagrams_continue_without_endnotes() {
+    for (first, tag) in [
+        ("$$\n\\frac{x^2}{y_3}\n$$", "Formula"),
+        ("~~~mermaid\nflowchart LR\n A[Start] --> B[Done]\n~~~", "Figure"),
+    ] {
+        let source = atomic_note_source(&format!("{first}\n\n{}", continued_rows(36)));
+        let options = atomic_options();
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pdf = Pdf::new(&bytes);
+        assert_atomic_continuation(&pdf, 36);
+        assert_atomic_geometry(&pdf);
+        let objects = pdf.elements(tag);
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].1, pdf.pages[0]);
+        if tag == "Formula" {
+            let content = pdf.content(objects[0].1);
+            assert!(content.contains("/ActualText "));
+            assert!(content.contains("frac{x^2}{y_3}"), "retain exact formula source");
+        }
+        let report =
+            franken_markdown::verify::verify_pdf(&parse_markdown(&source), &options).unwrap();
+        assert_eq!(report.page_count, pdf.pages.len());
+        assert_eq!(
+            bytes,
+            render_pdf_document_emitted(
+                &parse_markdown(&source),
+                &options,
+                PdfEmitOptions::monolithic()
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn continued_quoted_list_figures_do_not_turn_their_marker_into_a_keep_chain() {
+    let rows = continued_rows(36).replace('\n', "\n>    ");
+    let source = atomic_note_source(&format!(
+        "> 1. [![nested evidence](figure.svg)](https://example.org/figure)\n>\n>    {rows}"
+    ));
+    let options = atomic_options();
+    let bytes = render_pdf(&source, &options).unwrap();
+    let pdf = Pdf::new(&bytes);
+    assert_atomic_continuation(&pdf, 36);
+    assert_atomic_geometry(&pdf);
+    let figures = pdf.elements("Figure");
+    assert_eq!(figures.len(), 1);
+    let (id, page, bounds) = figures[0];
+    assert_eq!(page, pdf.pages[0]);
+    let ancestry = pdf.ancestry(id);
+    assert!(ancestry.contains(&"BlockQuote"));
+    assert!(ancestry.contains(&"LBody"));
+    let first = pdf.runs(page);
+    let marker = first.iter().find(|run| run.text == "1.").unwrap();
+    assert!((marker.size - 9.35).abs() < 0.015, "use normal list type size");
+    assert!(marker.y > bounds[1] && marker.y < bounds[3]);
+    assert!(
+        !first.iter().any(|run| run.text.contains("NOTE000")),
+        "an image row already contains its subject; its marker cannot bind later prose"
+    );
+}
+
+#[test]
+fn oversized_atomic_units_and_unreferenced_figures_keep_complete_fallback() {
+    let mut options = atomic_options();
+    options.image_assets.push(PdfImageAsset::new(
+        "tall.svg",
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="1000"><rect width="160" height="1000" fill="blue"/></svg>"#.to_vec(),
+    ));
+    for source in [
+        atomic_note_source(&format!("![tall evidence](tall.svg)\n\n{}", continued_rows(36))),
+        format!(
+            "Body without a citation.\n\n[^orphan]: ![orphan evidence](figure.svg)\n\n    {}",
+            continued_rows(36).replace('\n', "\n    ")
+        ),
+    ] {
+        let bytes = render_pdf(&source, &options).unwrap();
+        let mut ordinary = options.clone();
+        ordinary.split_footnotes = false;
+        let expected = render_pdf(&source, &ordinary).unwrap();
+        pdf_content::assert_same_paint(&bytes, &expected);
+        let pdf = Pdf::new(&bytes);
+        assert!(
+            pdf.objects
+                .values()
+                .any(|object| object.dictionary.contains("/Title (Notes)"))
+        );
+        assert_eq!(pdf.elements("Figure").len(), 1);
+        let text: String = pdf
+            .pages
+            .iter()
+            .flat_map(|&page| pdf.runs(page))
+            .map(|run| run.text)
+            .collect();
+        for index in 0..36 {
+            assert_eq!(text.matches(&format!("NOTE{index:03}")).count(), 1);
+        }
+    }
+}
+
+#[test]
+fn unresolved_atomic_blocks_keep_their_visible_fallback_with_the_first_label() {
+    for (first, marker) in [
+        ("![IMAGEFALLBACK](missing.svg)", "IMAGEFALLBACK"),
+        ("![BROKENFALLBACK](broken.svg)", "BROKENFALLBACK"),
+        ("$$\n\\notacommand{MATHFALLBACK}\n$$", "MATHFALLBACK"),
+    ] {
+        let body = format!("{first}\n\n{}", continued_rows(12));
+        let mut source = String::from("C[^objects]\n\n[^objects]:\n");
+        for line in body.lines() {
+            source.push_str("    ");
+            source.push_str(line);
+            source.push('\n');
+        }
+        let mut options = atomic_options();
+        options.base_font_size = Some(24.0);
+        options.theme.page.size.height_pt = 192.0;
+        options
+            .image_assets
+            .push(PdfImageAsset::new("broken.svg", b"invalid SVG".to_vec()));
+        let bytes = render_pdf(&source, &options).unwrap();
+        let pdf = Pdf::new(&bytes);
+        // The label alone fits the preferred 40% share, but its first fallback
+        // row does not. Their required group and the citation fit the full
+        // 120pt body, so resolution failure must not strand the label.
+        let first: String = pdf
+            .runs(pdf.pages[0])
+            .into_iter()
+            .map(|run| run.text)
+            .collect();
+        assert!(first.contains(marker), "keep the visible fallback on page one");
+        assert!(!first.contains("NOTE000"), "exercise the mandatory first unit");
+        assert!(pdf.elements("Figure").is_empty());
+        assert!(pdf.elements("Formula").is_empty());
+        let text: String = pdf
+            .pages
+            .iter()
+            .flat_map(|&page| pdf.runs(page))
+            .map(|run| run.text)
+            .collect();
+        assert!(!text.contains("Notes"));
+        assert_eq!(text.matches(marker).count(), 1);
+        for index in 0..12 {
+            assert_eq!(text.matches(&format!("NOTE{index:03}")).count(), 1);
+        }
+    }
 }

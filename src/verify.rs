@@ -53,7 +53,8 @@ pub struct VerifyReport {
 /// [`verify_pdf_result`] to retain the renderer's specific error.
 /// Layout, anchors and render warnings
 /// inspect the prepared PDF document, including complete numbered footnotes;
-/// authoring-time accessibility checks still inspect the original source AST.
+/// authoring-time accessibility checks apply the same profile and safe HTML
+/// lowering while preserving source note scopes and excluding generated notes.
 #[must_use]
 pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
     verify_pdf_result(doc, opts).ok()
@@ -119,7 +120,12 @@ pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<Ver
         }
     }
 
-    findings.extend(audit_accessibility(doc));
+    // Audit the semantics that publication paints, including supported HTML
+    // headings, links and images. Keep the source note boundaries: generated
+    // Notes headings and numbered references are not authoring problems.
+    let profiled = crate::apply_profile(doc, opts.profile);
+    let authored = crate::safe_html::lower(&profiled);
+    findings.extend(audit_accessibility(&authored));
 
     let verdict = if findings.is_empty() {
         "clean"

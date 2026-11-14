@@ -158,6 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PDF accessibility verification audits the selected authoring profile and the
+  same supported HTML semantics that publication renders. HTML headings, links,
+  images and tables now receive the existing authoring findings while source
+  note scopes and literal code remain intact.
 - Saved editable HTML trims paragraph endings with bounded linear work, avoiding
   preview stalls on long interior space/tab runs while retaining literal bytes.
 - Automatic book previews resume after completed text composition and imports,

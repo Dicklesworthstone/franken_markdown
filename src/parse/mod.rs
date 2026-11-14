@@ -7392,7 +7392,10 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::FootnoteRef { id } => out.push_str(&format!("[^{id}]")),
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
-            Inline::Html(h) => out.push_str(h),
+            // Raw tags and comments are not image-description text. Visible
+            // text between tags has its own inline node; escaped markup and
+            // code spans remain literal through the Text/Code arms above.
+            Inline::Html(_) => {}
         }
     }
 }

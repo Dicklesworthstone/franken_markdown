@@ -1350,19 +1350,16 @@ fn link_text_may_contain_an_escaped_closing_bracket() {
 
 #[test]
 fn image_alt_text_flattens_every_inline_kind() {
-    // The alt text is built by flattening every inline variant to plain text:
-    // emphasis/strong/strike, code, nested link, nested image, raw HTML, and a
-    // soft break (the embedded newline) all contribute.
+    // CommonMark image descriptions use visible text, including the body of
+    // raw HTML. Tags and comments are omitted; emphasis/strong/strike, code,
+    // nested links/images and the soft break retain their plain content.
     let src = "![start *em* **str** ~~strike~~ `code` [link](/l) ![img](/i) <span>h</span> and\nmore](/dest)";
     match only_block(src) {
         Block::Paragraph(inlines) => match inlines.as_slice() {
             [Inline::Image { dest, title, alt }] => {
                 assert_eq!(dest, "/dest");
                 assert_eq!(*title, None);
-                assert_eq!(
-                    alt,
-                    "start em str strike code link img <span>h</span> and more"
-                );
+                assert_eq!(alt, "start em str strike code link img h and more");
             }
             other => panic!("expected a single image, got {other:?}"),
         },

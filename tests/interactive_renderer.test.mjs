@@ -35,7 +35,10 @@ test('heading hashes without separating whitespace remain text', () => {
 });
 
 test('ordered lists preserve start numbers and nested lists', () => {
-  assert.equal(render('3. first\n4. second\n   - inner\n     7. deep\n   - again\n5. third'), '<ol start="3">\n<li>first</li>\n<li>second\n<ul>\n<li>inner\n<ol start="7">\n<li>deep</li>\n</ol></li>\n<li>again</li>\n</ul></li>\n<li>third</li>\n</ol>\n');
+  // Upstream cmark keeps a non-1 marker inside the item's open paragraph.
+  // At a real block boundary, that same start number creates a nested list.
+  assert.equal(render('3. first\n4. second\n   - inner\n     7. deep\n   - again\n5. third'), '<ol start="3">\n<li>first</li>\n<li>second\n<ul>\n<li>inner\n7. deep</li>\n<li>again</li>\n</ul></li>\n<li>third</li>\n</ol>\n');
+  assert.equal(render('3. first\n4. second\n   - 7. deep\n   - again\n5. third'), '<ol start="3">\n<li>first</li>\n<li>second\n<ul>\n<li><ol start="7">\n<li>deep</li>\n</ol></li>\n<li>again</li>\n</ul></li>\n<li>third</li>\n</ol>\n');
 });
 
 test('loose lists retain continuation paragraphs, fences and task state', () => {

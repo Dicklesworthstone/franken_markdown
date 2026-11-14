@@ -653,6 +653,50 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return {end: content};
   }
+  // Share the native dollar-edge grammar between inline ownership and table
+  // columns. Unicode whitespace is TeX content; only ASCII space/tab/newline
+  // disqualifies an edge. Index runs once so failed openers cannot repeatedly
+  // scan the suffix, and retain ineligible runs for conservative price columns.
+  function mathDelimiters(text, table = false) {
+    const runs = [[], []], next = [0, 0];
+    let lastPipe = -1;
+    for (let i = 0; i < text.length;) {
+      charge();
+      if (text[i] === '\\') { i += i + 1 < text.length ? 2 : 1; continue; }
+      if (text[i] === '$') {
+        const end = runEnd(text, i, '$'), width = end - i;
+        if (width <= 2) {
+          const afterPipe = i > 0 && lastPipe === i - 1, after = text[end];
+          const startsPrice = width === 1 && /[0-9]/.test(after || '');
+          const startsCell = afterPipe && after !== undefined && /[a-zA-Z0-9\\\u0080-\uffff]/.test(after);
+          allocate(); runs[width - 1].push({start: i, afterPipe,
+            closes: i > 0 && !' \t\n'.includes(text[i - 1]) && (!table || !startsPrice && !startsCell)});
+        }
+        i = end; continue;
+      }
+      if (text[i] === '|') lastPipe = i;
+      i++;
+    }
+    return (start, width) => {
+      const content = start + width;
+      if (content >= text.length || ' \t\n'.includes(text[content])) return -1;
+      const candidates = runs[width - 1];
+      while (next[width - 1] < candidates.length) {
+        charge();
+        const candidate = candidates[next[width - 1]];
+        if (candidate.start <= content || !table && !candidate.closes) next[width - 1]++;
+        else break;
+      }
+      const close = candidates[next[width - 1]];
+      if (!close || !close.closes) return -1;
+      // A price cell cannot borrow a following cell's dollar. Table matching
+      // stops at the first same-width run, even if it is an ineligible closer;
+      // ordinary inline math may continue to a later valid closing delimiter.
+      const numeric = width === 1 && (/^[0-9]/.test(text[content])
+        || '+-'.includes(text[content]) && /[0-9]/.test(text[content + 1] || ''));
+      return table && numeric && close.afterPipe ? -1 : close.start + width;
+    };
+  }
   function autolinkAt(text, start) {
     const close = find(text, '>', start + 1);
     if (close < 0) return null;
@@ -725,7 +769,7 @@ function parseMarkdownClient(source, imageAssets) {
   }
   function inlineIndex(text) {
     const atoms = new Map(), stack = [];
-    let rawBrackets, bareParens;
+    let rawBrackets, bareParens, math;
     const bareParenEnd = start => (bareParens ??= bareParenthesisPairs(text)).get(start);
     const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
     for (let i = 0; i < text.length;) {
@@ -736,6 +780,14 @@ function parseMarkdownClient(source, imageAssets) {
         const code = codeExtent(text, i);
         if (code.kind) remember(i, code);
         i = code.end; continue;
+      }
+      if (ch === '$') {
+        const width = runEnd(text, i, '$') - i;
+        // Native parsing leaves a long run's prefix literal, then tries its
+        // last double/single suffix. Skip the literal prefix in one step.
+        if (width > 2) { i += width - 2; continue; }
+        const end = (math ??= mathDelimiters(text))(i, width);
+        if (end >= 0) { remember(i, {kind: 'math', end}); i = end; continue; }
       }
       if (ch === '<') {
         const link = autolinkAt(text, i);
@@ -791,7 +843,7 @@ function parseMarkdownClient(source, imageAssets) {
           if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
           if (table) code = code.replace(/\\\|/g, '|');
           out = append(out, '<code>' + escape(code) + '</code>');
-        } else if (atom.kind === 'html') {
+        } else if (atom.kind === 'html' || atom.kind === 'math') {
           out = append(out, escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'note') {
           out = append(out, footnotes ? noteReference(atom.label) : escape(text.slice(i, atom.end)));
@@ -979,6 +1031,27 @@ function parseMarkdownClient(source, imageAssets) {
     if (rest[0] === '\t') return stripIndent(rest, 1, marker[0].length);
     return rest[0] === ' ' ? rest.slice(1) : rest;
   }
+  // Display dollars are block syntax only at an existing block boundary.
+  // Mirror native Unicode trimming without treating an interior BOM as space.
+  // Return 1 for a complete single line, 2 for an opening multiline block.
+  function mathBlockStart(line) {
+    if (indentation(line).width >= 4) return 0;
+    let start = 0, end = line.length;
+    while (start < end && /\p{White_Space}/u.test(line[start])) { charge(); start++; }
+    if (line[start] !== '$' || line[start + 1] !== '$') return 0;
+    while (end > start && /\p{White_Space}/u.test(line[end - 1])) { charge(); end--; }
+    if (end >= start + 4 && line[end - 1] === '$' && line[end - 2] === '$') return 1;
+    for (let i = start + 2; i + 1 < end; i++) {
+      charge();
+      if (line[i] === '$' && line[i + 1] === '$') return 0;
+    }
+    return 2;
+  }
+  function mathBlockClose(line) {
+    let end = line.length;
+    while (end > 0 && /\p{White_Space}/u.test(line[end - 1])) { charge(); end--; }
+    return end >= 2 && line[end - 1] === '$' && line[end - 2] === '$';
+  }
   const listMarker = line => {
     const m = line.match(/^( {0,3})([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/);
     if (!m) return null;
@@ -996,6 +1069,7 @@ function parseMarkdownClient(source, imageAssets) {
   // the table; a pipe-bearing reference-shaped row remains literal cell text.
   const tableRowSource = line => !startsBlock(line)
     && indentation(line).width < 4 && !footnoteMarker(line)
+    && !mathBlockStart(line)
     && (line.includes('|') || !line.replace(/^[ \t]+/, '').startsWith('[') || !referenceTail()(line));
   function lazyLine(line) {
     const trimmed = line.replace(/^[ \t]+/, '');
@@ -1027,6 +1101,7 @@ function parseMarkdownClient(source, imageAssets) {
       } else i++;
     }
     const cells = [];
+    let math;
     let start = 0, i = 0;
     while (i < line.length) {
       charge();
@@ -1041,6 +1116,12 @@ function parseMarkdownClient(source, imageAssets) {
           else high = middle;
         }
         i = low < runs.length ? runs[low] + size : end; continue;
+      }
+      if (line[i] === '$') {
+        const width = runEnd(line, i, '$') - i;
+        if (width > 2) { i += width - 2; continue; }
+        const end = (math ??= mathDelimiters(line, true))(i, width);
+        if (end >= 0) { i = end; continue; }
       }
       if (line[i] === '|') {
         allocate(); cells.push(line.slice(start, i).trim()); start = i + 1;
@@ -1321,6 +1402,10 @@ function parseMarkdownClient(source, imageAssets) {
         if (closing.test(line)) kind = 'boundary';
         return;
       }
+      if (kind === 'math') {
+        if (mathBlockClose(line)) kind = 'boundary';
+        return;
+      }
       if ((kind === 'code' || kind === 'footnote') && (blankLine(line) || indentation(line).width >= 4)) return;
       if (kind === 'table' && tableRowSource(line)) {
         if (!padding(tableCells(line).length)) { kind = 'paragraph'; header = null; }
@@ -1338,6 +1423,8 @@ function parseMarkdownClient(source, imageAssets) {
       if (fm) {
         kind = 'fence'; closing = fenceEnd(fm[1]); return;
       }
+      const math = mathBlockStart(line);
+      if (math) { kind = math === 2 ? 'math' : 'boundary'; return; }
       if (indentation(line).width >= 4) { kind = 'code'; return; }
       if (footnoteMarker(line)) { kind = 'footnote'; return; }
       const inner = stripQuote(line);
@@ -1368,7 +1455,7 @@ function parseMarkdownClient(source, imageAssets) {
       header = tableRowSource(line) ? line : null;
     }
     return {observe, canContinue, nestedListOwnsGapBefore,
-      literalBlank: () => (kind === 'fence' || kind === 'html' && htmlKind < 6)
+      literalBlank: () => (kind === 'fence' || kind === 'math' || kind === 'html' && htmlKind < 6)
         && !containers.some(container => container.kind === 'quote')};
   }
   // Parse container structure exactly once, before rendering any inline text.
@@ -1398,6 +1485,18 @@ function parseMarkdownClient(source, imageAssets) {
         if (i < lines.length) i++;
         const lang = unescape(fm[2].trim().split(/\s+/)[0]);
         push({kind: 'code', lang, text: code.join('\n') + (code.length ? '\n' : '')}); continue;
+      }
+      const math = mathBlockStart(line);
+      if (math) {
+        const start = i++;
+        if (math === 2) {
+          while (i < lines.length) {
+            if (mathBlockClose(lines[i++])) break;
+          }
+        }
+        // Keep delimiters, TeX escapes and blank lines visible. Only the native
+        // engine typesets mathematics; fallback never reparses formula source.
+        push({kind: 'math', text: lines.slice(start, i).join('\n')}); continue;
       }
       if (/^( {4}|\t)/.test(line)) {
         const code = [];
@@ -1560,6 +1659,8 @@ function parseMarkdownClient(source, imageAssets) {
           // inert. Its literal body must never pass through Markdown inlining,
           // definition collection, image resolution, or heading-ID allocation.
           out = append(out, '<p>' + escape(node.text) + '</p>\n'); break;
+        case 'math':
+          out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
           const content = inline(node.title, 0, true, footnotes);
           const slug = decode(content.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';

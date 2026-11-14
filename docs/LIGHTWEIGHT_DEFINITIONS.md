@@ -87,21 +87,24 @@ does not change container ownership. Fences share closing rules with block
 parsing, and retain their literal blank lines. Tab indentation uses four-column
 stops when removing list and quote containers.
 
-Paragraph interruption follows the same rules inside and outside containers:
-empty list markers and ordered markers starting above one do not interrupt an
-open paragraph. Properly indented nested lists retain their own start numbers.
+Inside a matched container, empty list markers and ordered markers starting
+above one do not interrupt an open paragraph. A marker that is insufficiently
+indented for an existing list item, or leaves an unmarked quote, begins a new
+sibling block regardless of its number or empty body. Properly indented nested
+lists retain their own start numbers when they begin at a real block boundary.
 Setext underlines apply to their complete paragraph; removing a container cannot
-promote an unmarked lazy line into a heading or nested list. Raw HTML and math
-retain the standalone renderer's existing escaped-text behavior.
+promote an unmarked lazy line into a heading or nested list. Raw HTML remains
+visible escaped source; mathematical source has the ownership rules below.
 
 ## Table cell and block ownership
 
 Matched code spans retain their internal pipes as part of the same cell,
-following the native renderer's established extension. Delimiters must have
-the same maximal backtick-run length; an unmatched opener cannot hide later
-columns. Escaped final pipes remain cell content, and actual final separators
-remain optional. Code delimiter positions are indexed once per row and their
-allocation shares the existing structure budget.
+following the native renderer's established extension. Code delimiters must
+have the same maximal backtick-run length; an unmatched opener cannot hide
+later columns. Escaped final pipes remain cell content, and actual final
+separators remain optional. Code delimiter positions are indexed once per row
+and their allocation shares the existing structure budget. Dollar formulas
+protect their pipes using the mathematical source rules below.
 
 Cell source stays intact until inline parsing, preserving escaped reference
 labels and normal destination/title decoding. The table-specific `\|` decoding
@@ -113,6 +116,43 @@ block openers retain their priority, including pipe-bearing indented code and
 footnote definitions after a table. A reference-shaped pipe row remains literal
 cell content rather than defining a global link. Subsequent fences keep their
 definitions literal, and real definitions after those fences remain usable.
+
+## Mathematical source ownership
+
+The lightweight renderer preserves admitted `$...$` and `$$...$$` formulas as
+complete, escaped source. It keeps their delimiters, TeX backslashes, entities,
+and internal line breaks. Display blocks use a `pre` element with the
+`math-source` class. Typesetting remains available through the native renderer
+and the embedded WASM workspace.
+
+Formula contents are opaque to Markdown. Link, image, and footnote spellings
+inside a formula cannot create navigation, request an image binding, or publish
+a reference definition. Code, accepted link destinations/titles, and inline
+HTML that start before a formula retain ownership of their own dollars.
+Malformed or escaped math openers keep their ordinary Markdown meaning.
+
+At a block boundary, `$$` opens a display block that can contain blank lines.
+A complete single-line block, or a following line ending in `$$`, releases
+subsequent definitions and prose. An unterminated block owns its remaining
+source only within its list, quote, or footnote container; definitions outside
+that container remain usable. Display-looking text inside an open paragraph
+does not create a new block, and four-column indented code remains code.
+
+Inline and table recognition share the native dollar-edge grammar: one- or
+two-dollar delimiters require nonempty contents without ASCII space, tab, or
+newline at their edges. Unicode whitespace is formula content. Tables add the
+native conservative currency rule: an ineligible next delimiter cannot be
+skipped to borrow a later formula's closing dollar. Thus `$12.50`, `$19.95`, and
+`$P(A|B)$` retain their separate columns; the conditional-probability pipe does
+not discard a later result or link cell.
+
+Dollar positions are indexed once per buffer with advancing lookup cursors.
+Scans, indexes, block collection, and escaped output share the normal work,
+structure, and output budgets. No external parser, typesetter, or network
+resource is added. `wasm/tests/interactive_math_ownership.test.mjs` executes the
+production renderer using the native contracts in `tests/parser_table_math.rs`
+and `tests/parser_math_boundaries.rs`, including currency, container, Unicode,
+escaped-delimiter, and resource-limit controls.
 
 ## Multiline reference definitions
 

@@ -140,9 +140,35 @@ fn malformed_generic_publications_retain_all_authored_source() {
     let html = render_html(&source, &HtmlOptions::default()).unwrap();
     assert!(html.contains("language-mermaid"));
     assert!(!html.contains("class=\"fmd-diagram fmd-class\""));
-    for text in ["Before", "After", "Map~K,V~"] {
-        assert!(html.contains(text), "source fallback lost {text}");
+    // Highlighting may wrap punctuation in spans. Compare the entire visible
+    // code source, rather than require an unbroken substring of HTML markup.
+    let code_html = html
+        .split_once("<code class=\"language-mermaid\">")
+        .unwrap()
+        .1
+        .split_once("</code>")
+        .unwrap()
+        .0;
+    let mut visible = String::new();
+    let mut rest = code_html;
+    while let Some(start) = rest.find('<') {
+        visible.push_str(&rest[..start]);
+        let end = start + rest[start..].find('>').unwrap() + 1;
+        let tag = &rest[start..end];
+        assert!(
+            tag == "</span>" || tag.starts_with("<span class=\"tok-"),
+            "unexpected fallback markup: {tag}"
+        );
+        rest = &rest[end..];
     }
+    visible.push_str(rest);
+    let visible = visible
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    assert_eq!(visible, code, "fallback preserves every source character");
     let layer = verification_text_layer(&parse_markdown(&source), &PdfOptions::default()).unwrap();
     let runs: Vec<_> = layer.pages.iter().flat_map(|page| &page.runs).collect();
     assert!(runs.iter().all(|run| run.kind != "image"));

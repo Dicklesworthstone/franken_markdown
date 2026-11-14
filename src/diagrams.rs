@@ -9,6 +9,7 @@ use std::fmt;
 mod class;
 mod er;
 mod flowchart;
+mod flowchart_groups;
 mod pie;
 mod sequence;
 mod state;
@@ -309,7 +310,12 @@ struct FlowEdge {
 }
 
 fn render_flowchart(src: &str) -> Option<String> {
-    Some(render_flow_graph(flowchart::parse(src)?, false))
+    let parsed = flowchart::parse(src)?;
+    if parsed.subgraphs.is_empty() {
+        Some(render_flow_graph(parsed.graph, false))
+    } else {
+        flowchart_groups::render(parsed)
+    }
 }
 
 fn render_flow_graph(graph: flowchart::Graph, state: bool) -> String {

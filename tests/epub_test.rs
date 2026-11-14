@@ -7,6 +7,8 @@
 mod epub_class_generics;
 #[path = "epub/data_images.rs"]
 mod epub_data_images;
+#[path = "epub/flowchart_subgraphs.rs"]
+mod epub_flowchart_subgraphs;
 #[path = "epub/gif.rs"]
 mod epub_gif;
 #[path = "epub/metadata.rs"]

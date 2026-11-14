@@ -463,7 +463,7 @@ fn fitted_diagrams_preserve_container_indentation_markers_and_following_block_se
 fn unsupported_diagrams_show_complete_source_without_partial_paths_and_ascii_stays_code() {
     for code in [
         UNSUPPORTED,
-        "graph TD\nA-->B\nsubgraph omitted\nC-->D\nend\n",
+        "graph TD\nA-->B\nsubgraph omitted\ndirection LR\nC-->D\nend\n",
         "%%{init: {}}%%\ngraph TD\nA-->B\n",
     ] {
         let source = fence("mermaid", code);

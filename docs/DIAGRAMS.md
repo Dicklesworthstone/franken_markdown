@@ -47,10 +47,61 @@ the routes and labels visible in every direction. Horizontal layer spacing
 reserves caption widths. Parallel transitions and conflicting captions also
 receive separate lanes, so one transition's label cannot hide another.
 
+### Subgraphs
+
+Named subgraphs organize architecture diagrams into real containing boxes:
+
+````markdown
+```mermaid
+flowchart LR
+    subgraph Client[Client apps]
+        UI[Browser]
+    end
+    subgraph Backend[Application]
+        API[API] --> Worker[Worker]
+        subgraph Data["Data & storage"]
+            Cache[Cache]
+        end
+        Worker --> Cache
+    end
+    UI -->|request| API
+    Cache -. reply .-> UI
+```
+````
+
+Use `subgraph Identifier` or `subgraph Identifier[Title]`, with optional spaces
+before the title. Quoted titles retain literal arrows, brackets, semicolons and
+`%%` text. Each group ends with `end`; groups may be nested. The global graph
+direction applies throughout. Ordinary node-to-node links work within a group,
+between groups, and across several nesting levels, including self-links,
+feedback, parallel links, labels, dotted lines and thick lines.
+
+The layout measures nested groups before placing their parents. Sibling groups
+remain disjoint, and unrelated nodes stay outside their boxes. Titles have a
+reserved band. Connections cross the necessary group boundaries through
+reserved gaps and side channels, without routing through unrelated nodes or
+groups. The same boxes, labels and paths reach HTML, PDF, SVG posters, EPUB and
+browser Flow; Flow also preserves the exact authored source transcript.
+
+Node identifiers remain global. An inner group claims its members before its
+parent; when later groups reference a node already owned by an earlier closed
+group, that ownership stays unchanged. A node first referenced outside any
+group can subsequently be included in one. Later explicit node labels still
+update that node. Group IDs must be unique and distinct from node IDs.
+
+This subset admits at most 64 groups and 16 nesting levels. Each group must
+contain a node or a populated child group. Local `direction` statements, links
+to a group ID itself, repeated group declarations, unnamed multiword group
+headings, collapsed groups and group styling retain the entire source block.
+Grouped layouts additionally stop at a canvas dimension of 1,000,000 units or
+4 MiB of generated SVG. These limits prevent deeply expanded routing from
+producing unbounded output. Graphs without subgraphs retain their existing
+layout and rendering behavior.
+
 Admission is bounded to 64 KiB of source, 256 nodes, 1024 expanded edges,
 128 UTF-8 bytes per identifier, and 512 bytes per label. Malformed statements,
 exceeded limits, and unsupported constructs retain the **entire source block**.
-This includes subgraphs, style/class/click directives, Mermaid configuration,
+This includes style/class/click directives, Mermaid configuration,
 extended shapes, and edge metadata. Labels are single-line plain text, escaped
 for SVG. No part of an unsupported graph is silently discarded or replaced
 with an invented node.

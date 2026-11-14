@@ -5,13 +5,15 @@
 //! statement rejects the whole graph so callers can retain its source.
 
 use super::{FlowDirection, FlowEdge, FlowNode, NodeShape};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
 const MAX_NODES: usize = 256;
 const MAX_EDGES: usize = 1024;
 const MAX_ID_BYTES: usize = 128;
 const MAX_LABEL_BYTES: usize = 512;
+const MAX_SUBGRAPHS: usize = 64;
+const MAX_SUBGRAPH_DEPTH: usize = 16;
 
 pub(super) struct Graph {
     pub dir: FlowDirection,
@@ -20,7 +22,19 @@ pub(super) struct Graph {
     pub edges: Vec<FlowEdge>,
 }
 
-pub(super) fn parse(source: &str) -> Option<Graph> {
+pub(super) struct Subgraph {
+    pub id: String,
+    pub label: String,
+    pub parent: Option<usize>,
+}
+
+pub(super) struct ParsedGraph {
+    pub graph: Graph,
+    pub subgraphs: Vec<Subgraph>,
+    pub owners: BTreeMap<String, usize>,
+}
+
+pub(super) fn parse(source: &str) -> Option<ParsedGraph> {
     if source.len() > MAX_SOURCE_BYTES
         || source
             .chars()
@@ -35,6 +49,11 @@ pub(super) fn parse(source: &str) -> Option<Graph> {
         order: Vec::new(),
         edges: Vec::new(),
     };
+    let mut subgraphs = Vec::new();
+    let mut group_ids = BTreeSet::new();
+    let mut members: Vec<BTreeSet<String>> = Vec::new();
+    let mut stack = Vec::new();
+    let mut owners = BTreeMap::new();
     parser.separators()?;
     if super::names_flowchart(parser.rest()) {
         parser.word()?;
@@ -55,11 +74,59 @@ pub(super) fn parse(source: &str) -> Option<Graph> {
         parser.separators()?;
     }
     while !parser.rest().is_empty() {
+        if parser.keyword("subgraph") {
+            if subgraphs.len() == MAX_SUBGRAPHS || stack.len() == MAX_SUBGRAPH_DEPTH {
+                return None;
+            }
+            let id = parser.identifier()?.to_owned();
+            parser.spaces();
+            let label = if parser.take("[") {
+                parser.label("]", true)?
+            } else {
+                id.clone()
+            };
+            parser.spaces();
+            if label.trim().is_empty()
+                || !parser.at_end_of_statement()
+                || !group_ids.insert(id.clone())
+            {
+                return None;
+            }
+            subgraphs.push(Subgraph {
+                id,
+                label,
+                parent: stack.last().copied(),
+            });
+            members.push(BTreeSet::new());
+            stack.push(subgraphs.len() - 1);
+            parser.separators()?;
+            continue;
+        }
+        if parser.keyword("end") {
+            if !parser.at_end_of_statement() {
+                return None;
+            }
+            let group = stack.pop()?;
+            // Mermaid closes inner groups first and keeps an earlier group's
+            // membership when a later group references the same node. Root
+            // references never remove a node from its owning subgraph.
+            for node in &members[group] {
+                owners.entry(node.clone()).or_insert(group);
+            }
+            parser.separators()?;
+            continue;
+        }
         let mut from = parser.group(&mut graph)?;
+        if let Some(&group) = stack.last() {
+            members[group].extend(from.iter().cloned());
+        }
         parser.spaces();
         while !parser.at_end_of_statement() {
             let (dashed, thick, arrow, label) = parser.edge()?;
             let to = parser.group(&mut graph)?;
+            if let Some(&group) = stack.last() {
+                members[group].extend(to.iter().cloned());
+            }
             let count = from.len().checked_mul(to.len())?;
             if graph.edges.len().checked_add(count)? > MAX_EDGES {
                 return None;
@@ -81,7 +148,30 @@ pub(super) fn parse(source: &str) -> Option<Graph> {
         }
         parser.separators()?;
     }
-    (!graph.nodes.is_empty()).then_some(graph)
+    if graph.nodes.is_empty()
+        || !stack.is_empty()
+        // A group ID used as a node or relationship endpoint would need a
+        // different routing contract. Reject even forward references.
+        || subgraphs.iter().any(|group| graph.nodes.contains_key(&group.id))
+    {
+        return None;
+    }
+    let mut populated = vec![false; subgraphs.len()];
+    for &owner in owners.values() {
+        let mut group = Some(owner);
+        while let Some(index) = group {
+            populated[index] = true;
+            group = subgraphs[index].parent;
+        }
+    }
+    if populated.iter().any(|populated| !populated) {
+        return None;
+    }
+    Some(ParsedGraph {
+        graph,
+        subgraphs,
+        owners,
+    })
 }
 
 struct Parser<'a> {
@@ -97,6 +187,21 @@ impl<'a> Parser<'a> {
     fn take(&mut self, token: &str) -> bool {
         if self.rest().starts_with(token) {
             self.pos += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn keyword(&mut self, token: &str) -> bool {
+        if let Some(rest) = self.rest().strip_prefix(token)
+            && (rest.is_empty()
+                || rest.starts_with(char::is_whitespace)
+                || rest.starts_with(';')
+                || rest.starts_with("%%"))
+        {
+            self.pos += token.len();
+            self.spaces();
             true
         } else {
             false
@@ -158,7 +263,7 @@ impl<'a> Parser<'a> {
         Some(nodes)
     }
 
-    fn node(&mut self, graph: &mut Graph) -> Option<String> {
+    fn identifier(&mut self) -> Option<&'a str> {
         self.spaces();
         let start = self.pos;
         while let Some(c) = self.rest().chars().next() {
@@ -191,6 +296,11 @@ impl<'a> Parser<'a> {
         {
             return None;
         }
+        Some(id)
+    }
+
+    fn node(&mut self, graph: &mut Graph) -> Option<String> {
+        let id = self.identifier()?;
         self.spaces();
         if ["[[", "[(", "[/", "[\\", "{{", "((("]
             .iter()

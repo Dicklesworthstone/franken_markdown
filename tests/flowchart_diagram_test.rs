@@ -192,7 +192,7 @@ fn malformed_or_unsupported_statements_preserve_the_entire_source() {
         "B-->C ::: red",
         "B[[Subroutine]]",
         "B[/Slanted/]",
-        "subgraph Group\nB-->C\nend",
+        "subgraph Group\ndirection LR\nB-->C\nend",
         "classDef blue fill:blue",
         "click B callback",
         "%%{init: {theme: 'dark'}}%%",
@@ -261,7 +261,7 @@ fn complete_graphs_reach_html_pdf_and_svg_and_fallback_remains_source() {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
 
-    let unsupported = "```mermaid\nflowchart TD\nA-->B\nsubgraph KeepMe\nB-->C\nend\n```";
+    let unsupported = "```mermaid\nflowchart TD\nA-->B\nsubgraph KeepMe\ndirection LR\nB-->C\nend\n```";
     let layer = franken_markdown::pdf::verification_text_layer(
         &parse_markdown(unsupported),
         &PdfOptions::default(),

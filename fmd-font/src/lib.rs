@@ -74,6 +74,102 @@ pub fn variable_triangle_fixture() -> Vec<u8> {
 /// iterations or gigabytes of retained state — a CPU-hang / OOM-kill DoS.
 const MAX_LAYOUT_GLYPHS: usize = 65_536;
 
+/// Aggregate traversal and retained-entry ceiling for one OpenType layout
+/// table. Per-structure glyph limits alone do not bound aliased offsets:
+/// every retained ligature component and expanded coverage entry consumes
+/// this shared budget before allocation.
+const MAX_LAYOUT_WORK: usize = 1_048_576;
+
+struct LayoutBudget {
+    remaining: usize,
+    exhausted: bool,
+}
+
+impl LayoutBudget {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_LAYOUT_WORK,
+            exhausted: false,
+        }
+    }
+
+    fn spend(&mut self, amount: usize) -> Option<()> {
+        if self.exhausted {
+            return None;
+        }
+        if let Some(remaining) = self.remaining.checked_sub(amount) {
+            self.remaining = remaining;
+            Some(())
+        } else {
+            self.exhaust()
+        }
+    }
+
+    fn exhaust(&mut self) -> Option<()> {
+        self.remaining = 0;
+        self.exhausted = true;
+        None
+    }
+
+    fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
+/// Collect selected feature lookups in their first source order. All offsets
+/// are relative to this layout-table slice, never to the complete font. Both
+/// feature aliases and lookup membership use bounded ordered sets rather than
+/// repeated linear scans. Malformed records retain the tolerant reader's
+/// established behavior; exhausting the shared budget refuses the full table.
+fn collect_layout_lookups(
+    d: &[u8],
+    feature_tag: &[u8; 4],
+    budget: &mut LayoutBudget,
+) -> Option<(usize, Vec<u16>)> {
+    budget.spend(1)?;
+    let feature_list = usize::from(be_u16_at(d, 0, 6)?);
+    let lookup_list = usize::from(be_u16_at(d, 0, 8)?);
+    let feature_count = usize::from(be_u16(d, feature_list)?);
+    let mut seen_features = std::collections::BTreeSet::new();
+    let mut seen_indices = std::collections::BTreeSet::new();
+    let mut lookup_indices = Vec::new();
+    for i in 0..feature_count {
+        budget.spend(1)?;
+        let rec = off_mul(off(feature_list, 2)?, i, 6)?;
+        let Some(tag) = bytes_at(d, rec, 4) else {
+            break;
+        };
+        if tag != feature_tag {
+            continue;
+        }
+        let Some(feature_offset) = be_u16_at(d, rec, 4) else {
+            continue;
+        };
+        let Some(feature) = off(feature_list, usize::from(feature_offset)) else {
+            continue;
+        };
+        if !seen_features.insert(feature) {
+            continue;
+        }
+        let Some(count) = be_u16_at(d, feature, 2) else {
+            continue;
+        };
+        for j in 0..usize::from(count) {
+            budget.spend(1)?;
+            let Some(index) = off_mul(off(feature, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
+            else {
+                // Later slots cannot become readable after this contiguous
+                // lookup-index array has reached the table boundary.
+                break;
+            };
+            if seen_indices.insert(index) {
+                lookup_indices.push(index);
+            }
+        }
+    }
+    Some((lookup_list, lookup_indices))
+}
+
 /// Alias of the layout ceiling used specifically for Coverage-table expansion.
 const MAX_COVERAGE_GLYPHS: usize = MAX_LAYOUT_GLYPHS;
 /// Sentinel in the dense glyph remap returned by
@@ -2132,40 +2228,52 @@ fn value_record_x_advance(d: &[u8], off: usize, value_format: u16) -> Option<i16
 /// Parses a Coverage table at `cov`, returning glyph ids ordered by coverage
 /// index (index `i` -> returned vec position `i`).
 fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
+    parse_coverage_glyphs_budgeted(d, cov, &mut LayoutBudget::new())
+}
+
+fn parse_coverage_glyphs_budgeted(
+    d: &[u8],
+    cov: usize,
+    budget: &mut LayoutBudget,
+) -> Option<Vec<u16>> {
+    budget.spend(1)?;
     let format = be_u16(d, cov)?;
     match format {
         1 => {
-            let count = be_u16_at(d, cov, 2)? as usize;
-            let mut v = Vec::with_capacity(count.min(d.len() / 2 + 1));
-            for i in 0..count {
-                v.push(be_u16(d, off_mul(off(cov, 4)?, i, 2)?)?);
-            }
-            Some(v)
+            let count = usize::from(be_u16_at(d, cov, 2)?);
+            let start = off(cov, 4)?;
+            let bytes = d.get(start..off_mul(start, count, 2)?)?;
+            budget.spend(count)?;
+            Some(
+                bytes
+                    .chunks_exact(2)
+                    .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                    .collect(),
+            )
         }
         2 => {
-            let range_count = be_u16_at(d, cov, 2)? as usize;
-            // Key by coverage index so the result is correctly ordered even if
-            // ranges are listed out of order.
+            let range_count = usize::from(be_u16_at(d, cov, 2)?);
+            budget.spend(range_count)?;
+            // Coverage indices, rather than source range order, determine
+            // the result. Charge every claimed span before expansion, even
+            // if ranges overlap or reuse the same coverage indices.
             let mut by_index: std::collections::BTreeMap<u32, u16> =
                 std::collections::BTreeMap::new();
-            // A well-formed Coverage cannot enumerate more glyphs than exist in a
-            // font (<= 65536). Each 6-byte RangeRecord can otherwise claim up to
-            // 65536 ids, so without a cap a small malicious table drives billions
-            // of iterations (a CPU-hang DoS on an untrusted host font). Cap the
-            // total span and bail before expanding an over-claiming table.
-            let mut total: usize = 0;
+            let mut total = 0usize;
             for i in 0..range_count {
                 let rec = off_mul(off(cov, 4)?, i, 6)?;
-                let start = be_u16(d, rec)? as u32;
-                let end = be_u16_at(d, rec, 2)? as u32;
-                let start_idx = be_u16_at(d, rec, 4)? as u32;
+                let start = u32::from(be_u16(d, rec)?);
+                let end = u32::from(be_u16_at(d, rec, 2)?);
+                let start_idx = u32::from(be_u16_at(d, rec, 4)?);
                 if end < start {
                     continue;
                 }
-                total = total.checked_add((end - start + 1) as usize)?;
+                let span = (end - start + 1) as usize;
+                total = total.checked_add(span)?;
                 if total > MAX_COVERAGE_GLYPHS {
                     return None;
                 }
+                budget.spend(span)?;
                 let mut g = start;
                 let mut idx = start_idx;
                 while g <= end {
@@ -2572,162 +2680,159 @@ impl Ligatures {
 impl Font {
     /// Parse the GSUB `liga` standard-ligature substitutions once.
     ///
-    /// Returns empty [`Ligatures`] when the font has no GSUB / no `liga` feature
-    /// or the relevant offsets are malformed.
+    /// Returns empty [`Ligatures`] when the font has no GSUB / no `liga` feature,
+    /// the relevant offsets are malformed, or the shared layout budget is
+    /// exhausted. A budget refusal never exposes a partially collected feature.
     #[must_use]
     pub fn gsub_ligatures(&self) -> Ligatures {
         self.parse_gsub_ligatures().unwrap_or_default()
     }
 
     fn parse_gsub_ligatures(&self) -> Option<Ligatures> {
-        let d = &self.data;
-        let (gsub, _) = find_table_full(d, b"GSUB")?;
-        let feature_list = off(gsub, be_u16_at(d, gsub, 6)? as usize)?;
-        let lookup_list = off(gsub, be_u16_at(d, gsub, 8)? as usize)?;
-
-        // Collect every 'liga' feature's lookup indices.
-        let feature_count = be_u16(d, feature_list)? as usize;
-        let mut lookup_indices: Vec<u16> = Vec::new();
-        for i in 0..feature_count {
-            let rec = off_mul(off(feature_list, 2)?, i, 6)?;
-            let Some(tag) = bytes_at(d, rec, 4) else {
-                break;
-            };
-            if tag != b"liga" {
-                continue;
-            }
-            let Some(feat_off) = be_u16_at(d, rec, 4) else {
-                continue;
-            };
-            let Some(feat) = off(feature_list, feat_off as usize) else {
-                continue;
-            };
-            let Some(n) = be_u16_at(d, feat, 2) else {
-                continue;
-            };
-            for j in 0..n as usize {
-                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
-                    && !lookup_indices.contains(&idx)
-                {
-                    lookup_indices.push(idx);
-                }
-            }
-        }
-
-        let lookup_count = be_u16(d, lookup_list)? as usize;
-        let mut rules: std::collections::BTreeMap<u16, Vec<LigRule>> =
-            std::collections::BTreeMap::new();
-        for &li in &lookup_indices {
-            let li = li as usize;
-            if li >= lookup_count {
-                continue;
-            }
-            let Some(lookup_off) =
-                off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
-            else {
-                continue;
-            };
-            let Some(lookup) = off(lookup_list, lookup_off as usize) else {
-                continue;
-            };
-            let Some(lookup_type) = be_u16(d, lookup) else {
-                continue;
-            };
-            let Some(sub_count) = be_u16_at(d, lookup, 4) else {
-                continue;
-            };
-            for s in 0..sub_count as usize {
-                let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
-                else {
-                    continue;
-                };
-                let Some(sub) = off(lookup, sub_off as usize) else {
-                    continue;
-                };
-                match lookup_type {
-                    4 => parse_ligature_subst(d, sub, &mut rules),
-                    // Extension Substitution -> a real type-4 subtable.
-                    7 => {
-                        if let Some((ext_type, real)) = resolve_extension(d, sub)
-                            && ext_type == 4
-                        {
-                            parse_ligature_subst(d, real, &mut rules);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // Greedy longest match: try the longest ligature first.
-        for v in rules.values_mut() {
-            v.sort_by_key(|r| std::cmp::Reverse(r.components.len()));
-        }
-        Some(Ligatures { rules })
+        let (start, length) = find_table_full(&self.data, b"GSUB")?;
+        let d = self.data.get(start..off(start, length)?)?;
+        parse_gsub_ligature_table(d, &mut LayoutBudget::new())
     }
 }
 
-/// Parse one Ligature Substitution subtable (GSUB `lookupType` 4) at `sub`.
+fn parse_gsub_ligature_table(d: &[u8], budget: &mut LayoutBudget) -> Option<Ligatures> {
+    let (lookup_list, lookup_indices) = collect_layout_lookups(d, b"liga", budget)?;
+    let lookup_count = usize::from(be_u16(d, lookup_list)?);
+    let mut seen_lookups = std::collections::BTreeSet::new();
+    let mut seen_subtables = std::collections::BTreeSet::new();
+    let mut rules: std::collections::BTreeMap<u16, Vec<LigRule>> =
+        std::collections::BTreeMap::new();
+    for li in lookup_indices {
+        budget.spend(1)?;
+        let li = usize::from(li);
+        if li >= lookup_count {
+            continue;
+        }
+        let Some(lookup_off) =
+            off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
+        else {
+            continue;
+        };
+        let Some(lookup) = off(lookup_list, usize::from(lookup_off)) else {
+            continue;
+        };
+        if !seen_lookups.insert(lookup) {
+            continue;
+        }
+        let Some(lookup_type) = be_u16(d, lookup) else {
+            continue;
+        };
+        let Some(sub_count) = be_u16_at(d, lookup, 4) else {
+            continue;
+        };
+        if !matches!(lookup_type, 4 | 7) {
+            continue;
+        }
+        for s in 0..usize::from(sub_count) {
+            budget.spend(1)?;
+            let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
+            else {
+                break;
+            };
+            let Some(sub) = off(lookup, usize::from(sub_off)) else {
+                continue;
+            };
+            let real = if lookup_type == 7 {
+                let Some((4, real)) = resolve_extension(d, sub) else {
+                    continue;
+                };
+                real
+            } else {
+                sub
+            };
+            // Re-reading an identical subtable cannot change this reader's
+            // greedy first-rule semantics. Deduplicate resolved offsets, so
+            // distinct extension wrappers cannot retain the same rules again.
+            if !seen_subtables.insert(real) {
+                continue;
+            }
+            let _ = parse_ligature_subst_budgeted(d, real, &mut rules, budget);
+            if budget.exhausted() {
+                return None;
+            }
+        }
+    }
+    // Stable sorting preserves the first authored rule on equal lengths.
+    for value in rules.values_mut() {
+        value.sort_by_key(|rule| std::cmp::Reverse(rule.components.len()));
+    }
+    Some(Ligatures { rules })
+}
+
+/// Retained for focused malformed-table tests of the tolerant subtable reader.
+#[cfg(test)]
 fn parse_ligature_subst(
     d: &[u8],
     sub: usize,
     rules: &mut std::collections::BTreeMap<u16, Vec<LigRule>>,
 ) {
-    let Some(format) = be_u16(d, sub) else {
-        return;
-    };
-    if format != 1 {
-        return;
+    let _ = parse_ligature_subst_budgeted(d, sub, rules, &mut LayoutBudget::new());
+}
+
+/// Parse one Ligature Substitution subtable with the table-wide budget.
+fn parse_ligature_subst_budgeted(
+    d: &[u8],
+    sub: usize,
+    rules: &mut std::collections::BTreeMap<u16, Vec<LigRule>>,
+    budget: &mut LayoutBudget,
+) -> Option<()> {
+    budget.spend(1)?;
+    if be_u16(d, sub)? != 1 {
+        return None;
     }
-    let Some(cov_off) = be_u16_at(d, sub, 2) else {
-        return;
-    };
-    let Some(set_count) = be_u16_at(d, sub, 4) else {
-        return;
-    };
-    let Some(coverage) = off(sub, cov_off as usize).and_then(|cov| parse_coverage_glyphs(d, cov))
-    else {
-        return;
-    };
-    let Some(set_offsets) = off(sub, 6) else {
-        return;
-    };
-    // Bound total work: LigatureSet/Ligature offsets may all alias one target, so
-    // a font of O(set_count + lig_count) bytes can otherwise drive set_count *
-    // lig_count iterations (and retained `LigRule`s) — an OOM-kill DoS. A valid
-    // font has far fewer ligature entries than the glyph ceiling.
-    let mut work: usize = 0;
-    for i in 0..set_count as usize {
+    let cov_off = usize::from(be_u16_at(d, sub, 2)?);
+    let set_count = usize::from(be_u16_at(d, sub, 4)?);
+    let coverage = parse_coverage_glyphs_budgeted(d, off(sub, cov_off)?, budget)?;
+    let set_offsets = off(sub, 6)?;
+    let mut seen_sets = std::collections::BTreeSet::new();
+    let mut seen_rules = std::collections::BTreeSet::new();
+    let mut work = 0usize;
+    for i in 0..set_count {
+        budget.spend(1)?;
         work += 1;
         if work > MAX_LAYOUT_GLYPHS {
-            return;
+            return budget.exhaust();
         }
-        // LigatureSet i is for coverage glyph i (the ligature's first component).
         let Some(first) = coverage.get(i).copied() else {
             continue;
         };
         let Some(set_off) = off_mul(set_offsets, i, 2).and_then(|slot| be_u16(d, slot)) else {
             continue;
         };
-        let Some(lig_set) = off(sub, set_off as usize) else {
+        let Some(lig_set) = off(sub, usize::from(set_off)) else {
             continue;
         };
+        // The same suffix set may legitimately serve distinct first glyphs.
+        if !seen_sets.insert((first, lig_set)) {
+            continue;
+        }
         let Some(lig_count) = be_u16(d, lig_set) else {
             continue;
         };
         let Some(lig_offsets) = off(lig_set, 2) else {
             continue;
         };
-        for j in 0..lig_count as usize {
+        for j in 0..usize::from(lig_count) {
+            budget.spend(1)?;
             work += 1;
             if work > MAX_LAYOUT_GLYPHS {
-                return;
+                return budget.exhaust();
             }
-            let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot)) else {
+            let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot))
+            else {
+                break;
+            };
+            let Some(lig) = off(lig_set, usize::from(lig_off)) else {
                 continue;
             };
-            let Some(lig) = off(lig_set, lig_off as usize) else {
+            if !seen_rules.insert((first, lig)) {
                 continue;
-            };
+            }
             let Some(lig_glyph) = be_u16(d, lig) else {
                 continue;
             };
@@ -2737,30 +2842,33 @@ fn parse_ligature_subst(
             if comp_count == 0 {
                 continue;
             }
-            // componentGlyphIDs holds comp_count-1 entries (the first is `first`).
-            let mut components = Vec::with_capacity(comp_count as usize - 1);
-            let mut ok = true;
+            let count = usize::from(comp_count - 1);
             let Some(component_base) = off(lig, 4) else {
                 continue;
             };
-            for k in 0..(comp_count as usize - 1) {
-                match off_mul(component_base, k, 2).and_then(|slot| be_u16(d, slot)) {
-                    Some(g) => components.push(g),
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                rules.entry(first).or_default().push(LigRule {
-                    components,
-                    ligature: lig_glyph,
-                });
-            }
+            let Some(component_end) = off_mul(component_base, count, 2) else {
+                continue;
+            };
+            let Some(component_bytes) = d.get(component_base..component_end) else {
+                continue;
+            };
+            // Count retained components, not just the rule that references
+            // them. Validate the entire array before allocating; a truncated
+            // declaration must not allocate its claimed maximum first.
+            budget.spend(count + 1)?;
+            let components = component_bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .collect();
+            rules.entry(first).or_default().push(LigRule {
+                components,
+                ligature: lig_glyph,
+            });
         }
     }
+    Some(())
 }
+
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -4907,6 +5015,205 @@ mod synthetic_font_tests {
             parse_ligature_subst(&d, 0, &mut rules);
             assert!(rules.is_empty(), "lig_count={lig_count}");
         }
+    }
+
+    /// Build a table whose distinct type-4 subtables share one lookup.
+    fn bounded_gsub_table(subtables: &[Vec<u8>]) -> Vec<u8> {
+        let mut table = Vec::new();
+        push32(&mut table, 0x0001_0000);
+        push16(&mut table, 0);
+        push16(&mut table, 10);
+        push16(&mut table, 24);
+        push16(&mut table, 1);
+        table.extend_from_slice(b"liga");
+        push16(&mut table, 8);
+        push16(&mut table, 0);
+        push16(&mut table, 1);
+        push16(&mut table, 0);
+        push16(&mut table, 1);
+        push16(&mut table, 4);
+        push16(&mut table, 4);
+        push16(&mut table, 0);
+        push16(&mut table, u16::try_from(subtables.len()).unwrap());
+        let mut offset = 6 + 2 * subtables.len();
+        for subtable in subtables {
+            push16(&mut table, u16::try_from(offset).unwrap());
+            offset += subtable.len();
+        }
+        for subtable in subtables {
+            table.extend_from_slice(subtable);
+        }
+        table
+    }
+
+    fn bounded_ligature_subtable(first: u16, ligature: u16, components: &[u16]) -> Vec<u8> {
+        let mut table = Vec::new();
+        for value in [1, 8, 1, 14, 1, 1, first, 1, 4, ligature] {
+            push16(&mut table, value);
+        }
+        push16(&mut table, u16::try_from(components.len() + 1).unwrap());
+        for &glyph in components {
+            push16(&mut table, glyph);
+        }
+        table
+    }
+
+    /// Every distinct ligature record starts one word later in the same
+    /// backing array. The input stays small while its claimed retained
+    /// component count grows as rule_count * (component_count - 1).
+    fn overlapping_ligature_components(rule_count: u16, component_count: u16) -> Vec<u8> {
+        let mut table = Vec::new();
+        for value in [1, 8, 1, 14, 1, 1, 10, rule_count] {
+            push16(&mut table, value);
+        }
+        for i in 0..rule_count {
+            push16(&mut table, 2 + 2 * rule_count + 2 * i);
+        }
+        for _ in 0..usize::from(rule_count) + usize::from(component_count) {
+            push16(&mut table, component_count);
+        }
+        table
+    }
+
+    #[test]
+    fn gsub_component_amplification_refuses_the_complete_feature() {
+        let ordinary = bounded_ligature_subtable(10, 77, &[11]);
+        let amplified = overlapping_ligature_components(300, 4096);
+        let table = bounded_gsub_table(&[ordinary, amplified]);
+        assert!(table.len() < 12_000);
+        let ligatures = gsub_ligatures_of(table);
+        assert!(ligatures.is_empty());
+        assert_eq!(
+            ligatures.substitute(&[10, 11]),
+            vec![10, 11],
+            "budget refusal must not retain the earlier ordinary rule"
+        );
+    }
+
+    #[test]
+    fn gsub_component_budget_is_shared_across_distinct_subtables() {
+        let subtable = overlapping_ligature_components(140, 4096);
+        let one = gsub_ligatures_of(bounded_gsub_table(&[subtable.clone()]));
+        assert_eq!(one.rules[&10].len(), 140);
+        assert_eq!(one.max_rule_len(), 4096);
+        let mut input = vec![4096; 4096];
+        input[0] = 10;
+        assert_eq!(one.substitute(&input), vec![4096]);
+        let both = gsub_ligatures_of(bounded_gsub_table(&[subtable.clone(), subtable]));
+        assert!(both.is_empty(), "each subtable must use the same budget");
+    }
+
+    #[test]
+    fn gsub_feature_lookup_and_subtable_aliases_retain_one_rule() {
+        let features = 64u16;
+        let lookups = 16u16;
+        let subtables = 32u16;
+        let mut table = Vec::new();
+        let feature_body = 10 + 2 + 6 * features;
+        let lookup_list = feature_body + 4 + 2 * lookups;
+        push32(&mut table, 0x0001_0000);
+        push16(&mut table, 0);
+        push16(&mut table, 10);
+        push16(&mut table, lookup_list);
+        push16(&mut table, features);
+        for _ in 0..features {
+            table.extend_from_slice(b"liga");
+            push16(&mut table, feature_body - 10);
+        }
+        push16(&mut table, 0);
+        push16(&mut table, lookups);
+        for index in 0..lookups {
+            push16(&mut table, index);
+        }
+        push16(&mut table, lookups);
+        for _ in 0..lookups {
+            push16(&mut table, 2 + 2 * lookups);
+        }
+        push16(&mut table, 4);
+        push16(&mut table, 0);
+        push16(&mut table, subtables);
+        for _ in 0..subtables {
+            push16(&mut table, 6 + 2 * subtables);
+        }
+        table.extend_from_slice(&bounded_ligature_subtable(10, 77, &[11, 12]));
+        let ligatures = gsub_ligatures_of(table);
+        assert_eq!(ligatures.rules[&10].len(), 1);
+        assert_eq!(ligatures.substitute(&[10, 11, 12]), vec![77]);
+    }
+
+    #[test]
+    fn gsub_ligature_record_aliases_retain_one_component_vector() {
+        let mut table = Vec::new();
+        for value in [1, 8, 1, 14, 1, 1, 10, 64] {
+            push16(&mut table, value);
+        }
+        for _ in 0..64 {
+            push16(&mut table, 130);
+        }
+        push16(&mut table, 77);
+        push16(&mut table, 1025);
+        for _ in 0..1024 {
+            push16(&mut table, 11);
+        }
+        let ligatures = gsub_ligatures_of(bounded_gsub_table(&[table]));
+        assert_eq!(ligatures.rules[&10].len(), 1);
+        assert_eq!(ligatures.max_rule_len(), 1025);
+        let mut input = vec![11; 1025];
+        input[0] = 10;
+        assert_eq!(ligatures.substitute(&input), vec![77]);
+    }
+
+    #[test]
+    fn gsub_extension_aliases_resolve_before_deduplication() {
+        let mut table = gsub_table(1, 4, 0);
+        table[32..34].copy_from_slice(&2u16.to_be_bytes());
+        // Grow the offset array, then insert a second extension wrapper.
+        drop(table.splice(36..36, [0, 18]));
+        table[34..36].copy_from_slice(&10u16.to_be_bytes());
+        drop(table.splice(46..46, [0, 1, 0, 4, 0, 0, 0, 8]));
+        table[42..46].copy_from_slice(&16u32.to_be_bytes());
+        let ligatures = gsub_ligatures_of(table);
+        assert_eq!(ligatures.rules[&10].len(), 2);
+        assert_eq!(ligatures.substitute(&[10, 11, 12, 10, 11]), vec![99, 77]);
+    }
+
+    #[test]
+    fn gsub_shared_suffixes_keep_distinct_first_glyphs_and_source_order() {
+        let mut shared = Vec::new();
+        for value in [1, 10, 2, 18, 18, 1, 2, 10, 20, 1, 4, 77, 2, 11] {
+            push16(&mut shared, value);
+        }
+        let later = bounded_ligature_subtable(10, 88, &[11]);
+        let first = gsub_ligatures_of(bounded_gsub_table(&[shared.clone(), later.clone()]));
+        assert_eq!(first.substitute(&[10, 11, 20, 11]), vec![77, 77]);
+        assert_eq!(first.rules[&10].len(), 2);
+        assert_eq!(first.rules[&20].len(), 1);
+        let reverse = gsub_ligatures_of(bounded_gsub_table(&[later, shared]));
+        assert_eq!(reverse.substitute(&[10, 11, 20, 11]), vec![88, 77]);
+    }
+
+    #[test]
+    fn gsub_offsets_cannot_read_past_the_declared_sfnt_table() {
+        let mut tables = base_tables(
+            2,
+            2,
+            1000,
+            hmtx_long(&[(600, 0), (600, 0)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"GSUB", gsub_table(1, 4, 0)));
+        let mut bytes = sfnt(0x0001_0000, &tables);
+        let count = be_u16(&bytes, 4).unwrap();
+        let record = (0..usize::from(count))
+            .map(|index| 12 + 16 * index)
+            .find(|&record| &bytes[record..record + 4] == b"GSUB")
+            .unwrap();
+        bytes[record + 12..record + 16].copy_from_slice(&36u32.to_be_bytes());
+        let font = Font::parse(bytes).unwrap();
+        assert!(
+            font.gsub_ligatures().is_empty(),
+            "bytes after the declared GSUB boundary are not layout data"
+        );
     }
 
     // --- fvar / avar --------------------------------------------------------

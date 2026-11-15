@@ -2227,6 +2227,7 @@ fn value_record_x_advance(d: &[u8], off: usize, value_format: u16) -> Option<i16
 
 /// Parses a Coverage table at `cov`, returning glyph ids ordered by coverage
 /// index (index `i` -> returned vec position `i`).
+#[cfg(test)]
 fn parse_coverage_glyphs(d: &[u8], cov: usize) -> Option<Vec<u16>> {
     parse_coverage_glyphs_budgeted(d, cov, &mut LayoutBudget::new())
 }
@@ -2289,33 +2290,41 @@ fn parse_coverage_glyphs_budgeted(
 }
 
 /// Parses a ClassDef table at `cd`.
+#[cfg(test)]
 fn parse_class_def(d: &[u8], cd: usize) -> Option<ClassDef> {
+    parse_class_def_budgeted(d, cd, &mut LayoutBudget::new())
+}
+
+fn parse_class_def_budgeted(d: &[u8], cd: usize, budget: &mut LayoutBudget) -> Option<ClassDef> {
     let format = be_u16(d, cd)?;
     match format {
         1 => {
             let start = be_u16_at(d, cd, 2)?;
             let count = be_u16_at(d, cd, 4)? as usize;
-            let mut classes = Vec::with_capacity(count.min(d.len() / 2 + 1));
+            let base = off(cd, 6)?;
+            bytes_at(d, base, count.checked_mul(2)?)?;
+            budget.spend(count)?;
+            let mut classes = Vec::with_capacity(count);
             for i in 0..count {
-                classes.push(be_u16(d, off_mul(off(cd, 6)?, i, 2)?)?);
+                classes.push(be_u16(d, off_mul(base, i, 2)?)?);
             }
             Some(ClassDef::Format1 { start, classes })
         }
         2 => {
             let range_count = be_u16_at(d, cd, 2)? as usize;
-            let mut ranges = Vec::with_capacity(range_count.min(d.len() / 6 + 1));
+            let base = off(cd, 4)?;
+            bytes_at(d, base, range_count.checked_mul(6)?)?;
+            budget.spend(range_count)?;
+            let mut ranges = Vec::with_capacity(range_count);
             for i in 0..range_count {
-                let rec = off_mul(off(cd, 4)?, i, 6)?;
+                let rec = off_mul(base, i, 6)?;
                 let s = be_u16(d, rec)?;
                 let e = be_u16_at(d, rec, 2)?;
                 let c = be_u16_at(d, rec, 4)?;
                 ranges.push((s, e, c));
             }
-            // The spec orders ranges by ascending startGlyphID without
-            // overlap; detect that shape so `class()` can binary-search.
-            // Sorting keeps a merely unsorted (still well-formed) table on
-            // the fast path; overlapping ranges leave `dense` off and
-            // preserve the original first-match-wins linear scan.
+            // Preserve the existing first-match behavior for overlapping
+            // ranges; well-formed disjoint ranges retain binary lookup.
             ranges.sort_by_key(|&(s, _, _)| s);
             let dense = ranges
                 .windows(2)
@@ -2327,17 +2336,26 @@ fn parse_class_def(d: &[u8], cd: usize) -> Option<ClassDef> {
 }
 
 /// Parses a Pair Adjustment subtable (`lookupType` 2) whose start is `sub`.
+#[cfg(test)]
 fn parse_pair_subtable(d: &[u8], sub: usize) -> Option<KernSubtable> {
+    parse_pair_subtable_budgeted(d, sub, &mut LayoutBudget::new())
+}
+
+fn parse_pair_subtable_budgeted(
+    d: &[u8],
+    sub: usize,
+    budget: &mut LayoutBudget,
+) -> Option<KernSubtable> {
     let pos_format = be_u16(d, sub)?;
     match pos_format {
-        1 => parse_pair_format1(d, sub),
-        2 => parse_pair_format2(d, sub),
+        1 => parse_pair_format1(d, sub, budget),
+        2 => parse_pair_format2(d, sub, budget),
         _ => None,
     }
 }
 
 /// Pair Adjustment format 1 (specific pairs).
-fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
+fn parse_pair_format1(d: &[u8], sub: usize, budget: &mut LayoutBudget) -> Option<KernSubtable> {
     let cov_off = be_u16_at(d, sub, 2)? as usize;
     let vf1 = be_u16_at(d, sub, 4)?;
     let vf2 = be_u16_at(d, sub, 6)?;
@@ -2348,7 +2366,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
     // Each PairValueRecord: secondGlyph(2) + valueRecord1 + valueRecord2.
     let pair_rec_size = off(2, off(rec1_size, rec2_size)?)?;
 
-    let coverage = parse_coverage_glyphs(d, off(sub, cov_off)?)?;
+    let coverage = parse_coverage_glyphs_budgeted(d, off(sub, cov_off)?, budget)?;
 
     let mut pairs: PairMap = std::collections::HashMap::default();
 
@@ -2357,6 +2375,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
     // in iterations — a CPU-hang DoS on an untrusted host font.
     let mut work: usize = 0;
     for i in 0..pair_set_count {
+        budget.spend(1)?;
         work += 1;
         if work > MAX_LAYOUT_GLYPHS {
             break;
@@ -2378,6 +2397,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
             continue;
         };
         for _ in 0..pair_value_count {
+            budget.spend(1)?;
             work += 1;
             if work > MAX_LAYOUT_GLYPHS {
                 break;
@@ -2401,7 +2421,7 @@ fn parse_pair_format1(d: &[u8], sub: usize) -> Option<KernSubtable> {
 }
 
 /// Pair Adjustment format 2 (class-based).
-fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
+fn parse_pair_format2(d: &[u8], sub: usize, budget: &mut LayoutBudget) -> Option<KernSubtable> {
     let cov_off = be_u16_at(d, sub, 2)? as usize;
     let vf1 = be_u16_at(d, sub, 4)?;
     let vf2 = be_u16_at(d, sub, 6)?;
@@ -2430,6 +2450,7 @@ fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
             // Matrix cannot fit -> malformed; drop this subtable.
             return None;
         }
+        budget.spend(cell_count)?;
         let mut m = Vec::with_capacity(cell_count);
         for idx in 0..cell_count {
             let cell = off_mul(matrix_base, idx, class_rec_size)?;
@@ -2440,11 +2461,11 @@ fn parse_pair_format2(d: &[u8], sub: usize) -> Option<KernSubtable> {
         m
     };
 
-    let mut coverage = parse_coverage_glyphs(d, off(sub, cov_off)?)?;
+    let mut coverage = parse_coverage_glyphs_budgeted(d, off(sub, cov_off)?, budget)?;
     coverage.sort_unstable();
 
-    let class1 = parse_class_def(d, off(sub, class_def1_off)?)?;
-    let class2 = parse_class_def(d, off(sub, class_def2_off)?)?;
+    let class1 = parse_class_def_budgeted(d, off(sub, class_def1_off)?, budget)?;
+    let class2 = parse_class_def_budgeted(d, off(sub, class_def2_off)?, budget)?;
 
     Some(KernSubtable::Format2 {
         coverage,
@@ -2473,108 +2494,83 @@ impl Font {
     ///
     /// Returns an empty `Kerning` (every `pair()` -> 0) when the font has no
     /// GPOS table, no `kern` feature, or the relevant offsets are malformed.
+    /// Excessive aggregate layout work also returns the empty fallback.
     #[must_use]
     pub fn gpos_kerning(&self) -> Kerning {
         self.parse_gpos_kerning().unwrap_or_default()
     }
 
     fn parse_gpos_kerning(&self) -> Option<Kerning> {
-        let d = &self.data;
-        let (gpos, _gpos_len) = find_table_full(d, b"GPOS")?;
+        let (start, len) = find_table_full(&self.data, b"GPOS")?;
+        let d = bytes_at(&self.data, start, len)?;
+        parse_gpos_table(d, &mut LayoutBudget::new())
+    }
+}
 
-        // GPOS header: major(0) minor(2) scriptList(4) featureList(6) lookupList(8).
-        let feature_list_off = be_u16_at(d, gpos, 6)? as usize;
-        let lookup_list_off = be_u16_at(d, gpos, 8)? as usize;
-        let feature_list = off(gpos, feature_list_off)?;
-        let lookup_list = off(gpos, lookup_list_off)?;
+/// Read only the declared GPOS bytes. One budget covers all selected features,
+/// lookups and expanded pair/class data, including failed subtable attempts.
+fn parse_gpos_table(d: &[u8], budget: &mut LayoutBudget) -> Option<Kerning> {
+    // GPOS header: major(0) minor(2) scriptList(4) featureList(6) lookupList(8).
+    let (lookup_list, lookup_indices) = collect_layout_lookups(d, b"kern", budget)?;
+    let lookup_count = be_u16(d, lookup_list)? as usize;
+    let mut seen_lookups = std::collections::BTreeSet::new();
+    let mut seen_subtables = std::collections::BTreeSet::new();
+    let mut subtables = Vec::new();
 
-        // --- Collect every 'kern' feature's lookup indices (deduplicated). ---
-        let feature_count = be_u16(d, feature_list)? as usize;
-        let mut lookup_indices: Vec<u16> = Vec::new();
-        for i in 0..feature_count {
-            // FeatureRecord: tag[4] + featureOffset(2), from FeatureList.
-            let rec = off_mul(off(feature_list, 2)?, i, 6)?;
-            let Some(tag) = bytes_at(d, rec, 4) else {
+    for li in lookup_indices {
+        budget.spend(1)?;
+        let li = usize::from(li);
+        if li >= lookup_count {
+            continue;
+        }
+        let Some(lookup_off) =
+            off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
+        else {
+            continue;
+        };
+        let lookup = off(lookup_list, usize::from(lookup_off))?;
+        if !seen_lookups.insert(lookup) {
+            continue;
+        }
+        let Some(lookup_type) = be_u16(d, lookup) else {
+            continue;
+        };
+        let Some(sub_count) = be_u16_at(d, lookup, 4) else {
+            continue;
+        };
+        if !matches!(lookup_type, 2 | 9) {
+            continue;
+        }
+        for s in 0..usize::from(sub_count) {
+            budget.spend(1)?;
+            let Some(sub_off) =
+                off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
+            else {
                 break;
             };
-            if tag != b"kern" {
-                continue;
-            }
-            let Some(feat_off) = be_u16_at(d, rec, 4) else {
-                continue;
-            };
-            let Some(feat) = off(feature_list, feat_off as usize) else {
-                continue;
-            };
-            // Feature: featureParams(0) lookupIndexCount(2) lookupIndices(4..).
-            let Some(lookup_index_count) = be_u16_at(d, feat, 2) else {
-                continue;
-            };
-            for j in 0..lookup_index_count as usize {
-                if let Some(idx) = off_mul(off(feat, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
-                    && !lookup_indices.contains(&idx)
-                {
-                    lookup_indices.push(idx);
-                }
-            }
-        }
-
-        // --- Walk the gathered lookups, collecting pair subtables. ---
-        let lookup_count = be_u16(d, lookup_list)? as usize;
-        let mut subtables: Vec<KernSubtable> = Vec::new();
-
-        for &li in &lookup_indices {
-            let li = li as usize;
-            if li >= lookup_count {
-                continue;
-            }
-            let Some(lookup_off) =
-                off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
-            else {
-                continue;
-            };
-            let Some(lookup) = off(lookup_list, lookup_off as usize) else {
-                continue;
-            };
-            // Lookup: lookupType(0) lookupFlag(2) subTableCount(4) offsets(6..).
-            let Some(lookup_type) = be_u16(d, lookup) else {
-                continue;
-            };
-            let Some(sub_count) = be_u16_at(d, lookup, 4) else {
-                continue;
-            };
-
-            for s in 0..sub_count as usize {
-                let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
-                else {
+            let sub = off(lookup, usize::from(sub_off))?;
+            let real_sub = if lookup_type == 9 {
+                let Some((2, real_sub)) = resolve_extension(d, sub) else {
                     continue;
                 };
-                let Some(sub) = off(lookup, sub_off as usize) else {
-                    continue;
-                };
-
-                match lookup_type {
-                    2 => {
-                        if let Some(st) = parse_pair_subtable(d, sub) {
-                            subtables.push(st);
-                        }
-                    }
-                    9 => {
-                        // Extension: resolve, then handle a real type-2 subtable.
-                        if let Some((ext_type, real_sub)) = resolve_extension(d, sub)
-                            && ext_type == 2
-                            && let Some(st) = parse_pair_subtable(d, real_sub)
-                        {
-                            subtables.push(st);
-                        }
-                    }
-                    _ => {}
-                }
+                real_sub
+            } else {
+                sub
+            };
+            // Keep the first occurrence, including failed parses. Kerning uses
+            // first-match precedence, so aliases cannot add a new adjustment.
+            if !seen_subtables.insert(real_sub) {
+                continue;
+            }
+            if let Some(st) = parse_pair_subtable_budgeted(d, real_sub, budget) {
+                subtables.push(st);
+            }
+            if budget.exhausted() {
+                return None;
             }
         }
-
-        Some(Kerning { subtables })
     }
+    Some(Kerning { subtables })
 }
 
 // ===========================================================================
@@ -4835,6 +4831,156 @@ mod synthetic_font_tests {
         push16(&mut big, 0xFFFF);
         push16(&mut big, 0xFFFF);
         assert!(parse_pair_subtable(&big, 0).is_none());
+    }
+
+    /// Two lookup IDs, repeated extension slots and a direct PairPos alias.
+    /// Setting `same_lookup` makes the second ID alias the first lookup too.
+    fn aliased_gpos_table(same_lookup: bool) -> Vec<u8> {
+        let mut g = Vec::new();
+        push32(&mut g, 0x0001_0000);
+        push16(&mut g, 0);
+        push16(&mut g, 10); // feature list
+        push16(&mut g, 26); // lookup list
+        push16(&mut g, 1);
+        g.extend_from_slice(b"kern");
+        push16(&mut g, 8);
+        push16(&mut g, 0);
+        push16(&mut g, 2); // selected lookup IDs
+        push16(&mut g, 0);
+        push16(&mut g, 1);
+        push16(&mut g, 2); // lookup count
+        push16(&mut g, 6); // lookup 0 @32
+        push16(&mut g, if same_lookup { 6 } else { 16 });
+        push16(&mut g, 9); // extension lookup @32
+        push16(&mut g, 0);
+        push16(&mut g, 2);
+        push16(&mut g, 18); // extension @50
+        push16(&mut g, 18); // same extension again
+        push16(&mut g, 2); // direct lookup @42
+        push16(&mut g, 0);
+        push16(&mut g, 1);
+        push16(&mut g, 16); // same PairPos @58
+        push16(&mut g, 1); // extension format
+        push16(&mut g, 2);
+        push32(&mut g, 8); // PairPos @58
+        assert_eq!(g.len(), 58);
+        g.extend_from_slice(&gpos_table(1, 2, 0, 1)[44..]);
+        g
+    }
+
+    #[test]
+    fn gpos_deduplicates_lookup_and_resolved_subtable_aliases() {
+        for same_lookup in [false, true] {
+            let kern = gpos_kerning_of(aliased_gpos_table(same_lookup));
+            assert_eq!(kern.subtables.len(), 1);
+            assert_eq!(kern.pair(5, 6), -40);
+            assert_eq!(kern.pair(5, 7), 0);
+        }
+    }
+
+    #[test]
+    fn gpos_shared_pair_sets_keep_each_distinct_left_glyph() {
+        let mut d = Vec::new();
+        for word in [1, 14, 4, 0, 2, 22, 22, 1, 2, 5, 6, 1, 7] {
+            push16(&mut d, word);
+        }
+        push_i16(&mut d, -25);
+        let st = parse_pair_subtable(&d, 0).expect("shared PairSet parses");
+        assert_eq!(st.lookup(5, 7), Some(-25));
+        assert_eq!(st.lookup(6, 7), Some(-25));
+        assert_eq!(st.lookup(7, 7), None);
+    }
+
+    #[test]
+    fn gpos_alias_dedup_preserves_earlier_defined_zero() {
+        let mut g = aliased_gpos_table(false);
+        // First PairPos @58 has its xAdvance at +16.
+        g[74..76].copy_from_slice(&0i16.to_be_bytes());
+        let later = g.len();
+        g[48..50].copy_from_slice(&u16::try_from(later - 42).unwrap().to_be_bytes());
+        g.extend_from_slice(&gpos_table(1, 2, 0, 1)[44..]);
+        let kern = gpos_kerning_of(g);
+        assert_eq!(kern.subtables.len(), 2);
+        assert_eq!(kern.pair(5, 6), 0);
+        let mut emitted = Vec::new();
+        kern.for_each_ascii_pair(u16::from, |l, r, value| emitted.push((l, r, value)));
+        assert!(emitted.is_empty(), "a later adjustment cannot replace a defined zero");
+    }
+
+    #[test]
+    fn gpos_aggregate_matrix_budget_discards_partial_kerning() {
+        // Two different PairPos headers overlap large matrix windows. The font
+        // stores about 1.2 MB, but each header independently claims 600,000
+        // matrix cells. Both fit the bytes; their aggregate exceeds the budget.
+        let mut g = aliased_gpos_table(false);
+        g.truncate(58);
+        g[48..50].copy_from_slice(&32u16.to_be_bytes()); // second PairPos @74
+        for word in [2, 32, 4, 0, 38, 38, 600, 1000] {
+            push16(&mut g, word); // first PairPos @58, matrix @74
+        }
+        for word in [2, 16, 4, 0, 22, 22, 600, 1000] {
+            push16(&mut g, word); // second PairPos @74, matrix @90
+        }
+        for word in [1, 1, 5, 1, 0, 0] {
+            push16(&mut g, word); // shared coverage and empty class definition
+        }
+        g.resize(90 + 600_000 * 2, 0);
+
+        // Each subtable is independently admissible with a fresh budget.
+        for sub in [58, 74] {
+            let st = parse_pair_subtable(&g, sub).expect("one matrix fits");
+            assert_eq!(st.lookup(5, 6), Some(if sub == 58 { 2 } else { 1 }));
+        }
+        // Public font parsing must not retain only an arbitrary early prefix.
+        let kern = gpos_kerning_of(g);
+        assert!(kern.subtables.is_empty());
+        assert_eq!(kern.pair(5, 6), 0);
+    }
+
+    #[test]
+    fn gpos_empty_value_matrix_does_not_spend_its_class_product() {
+        let mut d = Vec::new();
+        for word in [2, 16, 0, 0, 22, 22, u16::MAX, u16::MAX, 1, 1, 5, 1, 0, 0] {
+            push16(&mut d, word);
+        }
+        let mut budget = LayoutBudget::new();
+        budget.spend(MAX_LAYOUT_WORK - 8).unwrap();
+        let st = parse_pair_subtable_budgeted(&d, 0, &mut budget)
+            .expect("empty value records require no matrix allocation");
+        assert_eq!(st.lookup(5, 6), Some(0));
+        assert!(!budget.exhausted());
+    }
+
+    #[test]
+    fn gpos_class_arrays_share_the_layout_budget() {
+        let mut d = Vec::new();
+        for word in [1, 5, 3, 0, 1, 2] {
+            push16(&mut d, word);
+        }
+        let mut budget = LayoutBudget::new();
+        budget.spend(MAX_LAYOUT_WORK - 5).unwrap();
+        assert!(parse_class_def_budgeted(&d, 0, &mut budget).is_some());
+        assert!(parse_class_def_budgeted(&d, 0, &mut budget).is_none());
+        assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn gpos_offsets_cannot_escape_the_declared_sfnt_table() {
+        let mut tables = base_tables(
+            2,
+            2,
+            1000,
+            hmtx_long(&[(600, 0), (600, 0)]),
+            cmap4_simple(&[]),
+        );
+        tables.push((b"GPOS", gpos_table(1, 2, 0, 1)));
+        let mut bytes = sfnt(0x0001_0000, &tables);
+        // Keep the physical bytes but declare only the GPOS header. Previously
+        // feature/lookup offsets could still reach the undeclared trailing data.
+        let record = 12 + (tables.len() - 1) * 16;
+        bytes[record + 12..record + 16].copy_from_slice(&10u32.to_be_bytes());
+        let font = Font::parse(bytes).expect("base font remains valid");
+        assert!(font.gpos_kerning().subtables.is_empty());
     }
 
     // --- GSUB -----------------------------------------------------------

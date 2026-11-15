@@ -98,6 +98,7 @@ pub struct DependencyGraph {
     source: String,
     document: SpannedDocument,
     context: Vec<RenderContext>,
+    profile: Option<crate::Profile>,
 }
 
 impl DependencyGraph {
@@ -106,7 +107,19 @@ impl DependencyGraph {
     /// discovery only and NEVER used to prove that a subtree is unchanged.
     #[must_use]
     pub fn scan(source: &str) -> Self {
-        Self::from_document(source, crate::parse_markdown_spanned(source))
+        Self::scan_with_profile(source, None)
+    }
+
+    /// Capture source and AST under the selected authoring grammar. Grammar
+    /// identity participates in reuse even when plain-text ASTs compare equal.
+    #[must_use]
+    pub fn scan_with_profile(source: &str, profile: Option<crate::Profile>) -> Self {
+        let mut graph = Self::from_document(
+            source,
+            crate::parse_markdown_spanned_with_profile(source, profile),
+        );
+        graph.profile = profile;
+        graph
     }
 
     pub(crate) fn from_document(source: &str, document: SpannedDocument) -> Self {
@@ -216,6 +229,7 @@ impl DependencyGraph {
             source: source.to_owned(),
             document,
             context,
+            profile: None,
         }
     }
 
@@ -255,7 +269,7 @@ impl DependencyGraph {
     pub fn compare(&self, next: &Self) -> DocumentChangeSet {
         let old = self.document.blocks();
         let new = next.document.blocks();
-        let global_context_changed = self.context != next.context;
+        let global_context_changed = self.profile != next.profile || self.context != next.context;
         let pairs = if global_context_changed {
             Vec::new()
         } else {

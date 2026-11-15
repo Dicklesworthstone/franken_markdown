@@ -64,6 +64,7 @@ impl FlowSession {
             self.engine.batch_size(),
             self.revision(),
             self.engine.limits(),
+            self.profile(),
         )?;
         // Previously retained payloads are copied once for the entire batch,
         // never once per result. Nothing below mutates the published engine.

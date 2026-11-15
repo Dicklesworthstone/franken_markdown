@@ -251,6 +251,7 @@ struct PreparedBlock {
 #[derive(Debug)]
 pub struct ResumableFlowDisplay {
     source: String,
+    profile: Option<crate::Profile>,
     lines: VecDeque<SourceLine>,
     current_line: usize,
     source_frontier: usize,
@@ -292,6 +293,7 @@ impl ResumableFlowDisplay {
     fn empty(batch_size: usize, generation: u64, limits: FlowDisplayLimits) -> Self {
         Self {
             source: String::new(),
+            profile: None,
             lines: VecDeque::new(),
             current_line: 0,
             source_frontier: 0,
@@ -313,6 +315,12 @@ impl ResumableFlowDisplay {
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Immutable authoring grammar. `None` retains the legacy extension-enabled grammar.
+    #[must_use]
+    pub const fn profile(&self) -> Option<crate::Profile> {
+        self.profile
     }
 
     #[must_use]
@@ -446,7 +454,7 @@ impl ResumableFlowDisplay {
             return Ok(None);
         }
         if self.prepared.is_none() {
-            match prepare_document(&self.source, &self.limits) {
+            match prepare_document(&self.source, &self.limits, self.profile) {
                 Ok(prepared) => self.prepared = Some(prepared),
                 Err(error) => {
                     // Publish nothing and do not repeat an expensive failed
@@ -883,8 +891,9 @@ enum Work<'a> {
 fn prepare_document(
     source: &str,
     limits: &FlowDisplayLimits,
+    profile: Option<crate::Profile>,
 ) -> Result<VecDeque<PreparedBlock>, FlowDisplayError> {
-    let document = crate::parse_markdown_spanned(source);
+    let document = crate::parse_markdown_spanned_with_profile(source, profile);
     limits::audit_document(&document, source, limits)?;
     let notes = footnotes::Footnotes::new(&document);
     let mut work = Vec::new();
@@ -1157,7 +1166,10 @@ fn prepare_document(
                     block: DisplayBlock::Rule,
                     meta,
                 })?,
-                Block::HtmlBlock(html) if crate::parse::is_page_break_marker(html) => {
+                Block::HtmlBlock(html)
+                    if profile != Some(crate::Profile::CommonMarkGfm)
+                        && crate::parse::is_page_break_marker(html) =>
+                {
                     output.push_back(PreparedBlock {
                         block: DisplayBlock::Rule,
                         meta,

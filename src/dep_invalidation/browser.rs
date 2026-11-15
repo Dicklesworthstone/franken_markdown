@@ -203,6 +203,17 @@ impl BrowserFlowSession {
         font: &str,
         options: FlowLayoutOptions,
     ) -> Result<Self, BrowserFlowError> {
+        Self::new_with_profile(source, font, options, None)
+    }
+
+    /// Choose an immutable authoring profile before parsing. The original
+    /// constructor retains its extension-enabled default and wire format.
+    pub fn new_with_profile(
+        source: &str,
+        font: &str,
+        options: FlowLayoutOptions,
+        profile: Option<crate::Profile>,
+    ) -> Result<Self, BrowserFlowError> {
         let family = FontFamily::parse(font).ok_or(BrowserFlowError::InvalidFont)?;
         let limits = FlowDisplayLimits {
             max_source_bytes: MAX_BROWSER_SOURCE_BYTES,
@@ -223,9 +234,14 @@ impl BrowserFlowSession {
             .into());
         }
         let mut fonts = FlowShapeCache::new(family, FlowShapeCacheLimits::default())?;
-        let session = FlowSession::new(source, 64, limits, options, |text, size, role, style| {
-            fonts.shape(text, size, role, style)
-        })?;
+        let session = FlowSession::new_with_profile(
+            source,
+            64,
+            limits,
+            options,
+            profile,
+            |text, size, role, style| fonts.shape(text, size, role, style),
+        )?;
         Ok(Self {
             session,
             fonts,
@@ -236,6 +252,10 @@ impl BrowserFlowSession {
     #[must_use]
     pub fn source(&self) -> &str {
         self.session.source()
+    }
+    #[must_use]
+    pub const fn profile(&self) -> Option<crate::Profile> {
+        self.session.profile()
     }
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -471,6 +491,9 @@ impl BrowserFlowSession {
         wire::selection(self, text, item, range)
     }
 }
+
+#[cfg(test)]
+mod profile_tests;
 
 #[cfg(test)]
 mod tests {

@@ -125,9 +125,25 @@ impl FlowSession {
     where
         F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
     {
-        let engine = completed(source, batch_size, 1, limits)?;
+        Self::new_with_profile(source, batch_size, limits, options, None, shape)
+    }
+
+    /// Create a session whose authoring grammar remains fixed across edits,
+    /// reflows, and asset transactions. `None` preserves the legacy grammar.
+    pub fn new_with_profile<F>(
+        source: &str,
+        batch_size: usize,
+        limits: FlowDisplayLimits,
+        options: FlowLayoutOptions,
+        profile: Option<crate::Profile>,
+        shape: F,
+    ) -> Result<Self, FlowSessionError>
+    where
+        F: FnMut(&str, f32, FlowTextRole, FlowInlineStyle) -> Result<OwnedTextRun, String>,
+    {
+        let engine = completed(source, batch_size, 1, limits, profile)?;
         let display = engine.to_styled_display_list(options, shape)?;
-        let graph = DependencyGraph::scan(source);
+        let graph = DependencyGraph::scan_with_profile(source, profile);
         Ok(Self {
             engine,
             graph,
@@ -141,6 +157,10 @@ impl FlowSession {
     #[must_use]
     pub fn source(&self) -> &str {
         self.engine.source()
+    }
+    #[must_use]
+    pub const fn profile(&self) -> Option<crate::Profile> {
+        self.engine.profile()
     }
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -230,8 +250,9 @@ impl FlowSession {
             self.engine.batch_size(),
             revision,
             self.engine.limits(),
+            self.profile(),
         )?;
-        let graph = DependencyGraph::scan(source);
+        let graph = DependencyGraph::scan_with_profile(source, self.profile());
         let changes = self.graph.compare(&graph);
         let reused_assets = if reuse == FlowAssetReuse::HostVerifiedUnchanged {
             reuse_assets(&self.engine, &mut candidate, &changes)?
@@ -307,6 +328,7 @@ impl FlowSession {
             self.engine.batch_size(),
             revision,
             self.engine.limits(),
+            self.profile(),
         )?;
         let display = self.render_candidate(&candidate, self.options, shape)?;
         self.engine = candidate;
@@ -348,8 +370,10 @@ fn completed(
     batch: usize,
     revision: u64,
     limits: FlowDisplayLimits,
+    profile: Option<crate::Profile>,
 ) -> Result<ResumableFlowDisplay, FlowDisplayError> {
-    let mut engine = ResumableFlowDisplay::try_with_limits(source, batch, revision, limits)?;
+    let mut engine =
+        ResumableFlowDisplay::try_with_limits_and_profile(source, batch, revision, limits, profile)?;
     // Do not collect another copy of all emitted blocks as process_all does.
     while engine.step()?.is_some() {}
     Ok(engine)

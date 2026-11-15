@@ -126,8 +126,21 @@ impl ResumableFlowDisplay {
         generation: u64,
         limits: FlowDisplayLimits,
     ) -> Result<Self, FlowDisplayError> {
+        Self::try_with_limits_and_profile(source, batch_size, generation, limits, None)
+    }
+
+    /// Select the immutable authoring grammar before parsing and span ownership.
+    /// `None` preserves the existing extension-enabled behavior.
+    pub fn try_with_limits_and_profile(
+        source: &str,
+        batch_size: usize,
+        generation: u64,
+        limits: FlowDisplayLimits,
+        profile: Option<crate::Profile>,
+    ) -> Result<Self, FlowDisplayError> {
         limits.check_source(source)?;
         let mut engine = Self::empty(batch_size, generation, limits);
+        engine.profile = profile;
         engine.source = source.to_owned();
         let mut offset = 0;
         for segment in logical_lines_inclusive(source) {

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Persistent Flow sessions accept an explicit CommonMark/GFM or GFM Plus
+  dialect before parsing. The selected grammar survives edits, asset reloads,
+  reflow and source replacement; dependency reuse and browser read receipts
+  retain its identity. The original constructors keep their existing behavior.
 - Browser statistics and accessibility APIs accept an explicit Markdown dialect.
   Cancellable document inspection carries it through both native analyses and
   portable JSON, verifies matching engine/worker receipts, and captures source

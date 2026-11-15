@@ -54,6 +54,34 @@ impl FmdFlowSession {
             .map_err(js_error)
     }
 
+    /// Additive constructor with an explicit, canonical authoring profile.
+    #[wasm_bindgen(js_name = withProfile)]
+    pub fn with_profile(
+        source: &str,
+        font: &str,
+        width: f32,
+        body: f32,
+        code: f32,
+        leading: f32,
+        profile: &str,
+    ) -> Result<FmdFlowSession, JsValue> {
+        let profile = crate::wasm_abi::parse_authoring_profile(Some(profile))
+            .map_err(JsValue::from_str)?;
+        BrowserFlowSession::new_with_profile(
+            source,
+            font,
+            options(width, body, code, leading),
+            profile,
+        )
+        .map(|inner| Self { inner })
+        .map_err(js_error)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn profile(&self) -> Option<String> {
+        self.inner.profile().map(|profile| profile.as_str().to_owned())
+    }
+
     #[wasm_bindgen(getter)]
     pub fn revision(&self) -> String {
         self.inner.revision().to_string()

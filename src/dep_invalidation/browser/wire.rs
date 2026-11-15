@@ -98,7 +98,12 @@ fn header(w: &mut Json, state: &BrowserFlowSession) -> fmt::Result {
     w.write_str("{\"schemaVersion\":1,\"revision\":")?;
     w.identity(state.revision())?;
     w.write_str(",\"layoutRevision\":")?;
-    w.identity(state.layout_revision())
+    w.identity(state.layout_revision())?;
+    if let Some(profile) = state.profile() {
+        w.write_str(",\"profile\":")?;
+        w.string(profile.as_str())?;
+    }
+    Ok(())
 }
 fn pagination(w: &mut Json, range: &Range<usize>, count: usize) -> fmt::Result {
     write!(

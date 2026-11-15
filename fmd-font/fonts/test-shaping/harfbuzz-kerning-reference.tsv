@@ -1,0 +1,13 @@
+# HarfBuzz 10.2.0 independent first-glyph xAdvance minus hmtx advance.
+# All 9,025 ASCII pairs (U+0020..U+007E), left-major order, signed i16 LE.
+# Font scale = unitsPerEm; kern=1, liga=0, clig=0; guessed segment properties.
+# Each shaped pair must retain both original cmap glyphs.
+# font_path	font_fnv1a64	kerning_fnv1a64	nonzero_pairs
+ibm-plex-sans/IBMPlexSans-Regular.ttf	3f4163ae05c529ff	dffd7791e4b89041	1228
+ibm-plex-sans/IBMPlexSans-Bold.ttf	db14ba1d2d8e3df1	24f0ba72e1623e6d	1244
+ibm-plex-sans/IBMPlexSans-Italic.ttf	b762e6ae62f67eab	ca898a84b17dbce9	1323
+ibm-plex-sans/IBMPlexSans-BoldItalic.ttf	c5657e1ef9a3c937	2ed5cfa61fa1049b	1406
+computer-modern/cmunrm.ttf	1333f982913bfe52	1621e0b6c3ee0135	243
+computer-modern/cmunbx.ttf	87725af8476afafa	c6ce8bb936e3c2fe	243
+computer-modern/cmunti.ttf	f79e9ccffa738aeb	d1cddbe647ff69e7	187
+computer-modern/cmunbi.ttf	bb809def4f429a00	e950e7891f99ee04	187

@@ -7,6 +7,9 @@ use franken_markdown::{
     PdfOptions, parse_markdown, render_pdf, render_pdf_document, render_pdf_document_profiled,
 };
 
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
+
 const DOC: &str = "# Embedding\n\nA paragraph with **bold** and *italic* words, plus \
 `inline code`.\n\n```rust\nfn main() {}\n```\n\n- alpha\n- beta\n";
 
@@ -166,6 +169,35 @@ fn pdf_applies_gpos_kerning_via_tj() {
         nonzero > 0,
         "expected GPOS kern adjustments in the content stream"
     );
+}
+
+#[test]
+fn pdf_retains_kerning_from_later_gpos_lookups() {
+    // Live HarfBuzz reference: bundled Plex Sans Regular places U+0022/U+002C
+    // with -90 design units at 1000 units/em. Earlier class lookups explicitly
+    // define zero for this pair; those zeros cannot suppress a later lookup.
+    // Check the actual page operators, not a second use of the font API.
+    let source = "\",";
+    let options = PdfOptions::default();
+    let pdf = render_pdf(source, &options).unwrap();
+    assert_eq!(pdf, render_pdf(source, &options).unwrap());
+    let pages = pdf_content::page_content_streams(&pdf);
+    assert_eq!(pages.len(), 1);
+    let mut glyphs = 0;
+    let mut adjustments = Vec::new();
+    for operation in pdf_content::operations(&pages[0]) {
+        if matches!(operation.operator, "TJ" | "Tj") {
+            glyphs += pdf_content::glyph_ids(&operation).len();
+            adjustments.extend(
+                operation
+                    .operands
+                    .iter()
+                    .filter_map(|operand| operand.parse::<f64>().ok()),
+            );
+        }
+    }
+    assert_eq!(glyphs, 2, "both source characters must remain painted");
+    assert_eq!(adjustments, [90.0], "negative kerning becomes positive TJ");
 }
 
 #[test]

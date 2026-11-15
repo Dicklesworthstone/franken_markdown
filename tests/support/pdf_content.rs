@@ -287,6 +287,29 @@ fn array_after(source: &str, key: &str) -> Vec<String> {
     panic!("complete array {key}");
 }
 
+/// Decode page content through the page tree and actual stream lengths, without
+/// accidentally treating embedded font programs or CMaps as painted operators.
+pub fn page_content_streams(pdf: &[u8]) -> Vec<String> {
+    let objects = objects(pdf);
+    let pages = objects
+        .values()
+        .find(|object| object.dictionary.contains("/Type /Pages "))
+        .unwrap();
+    let kids = array_after(&pages.dictionary, "/Kids [");
+    let (kids, remainder) = kids.as_chunks::<3>();
+    assert!(remainder.is_empty());
+    kids.iter()
+        .map(|kid| {
+            let page = &objects[&kid[0].parse().unwrap()];
+            let stream = objects[&number_after(&page.dictionary, "/Contents ")]
+                .stream
+                .as_ref()
+                .unwrap();
+            String::from_utf8(stream.clone()).unwrap()
+        })
+        .collect()
+}
+
 fn resources(source: &str, key: &str) -> Vec<(String, usize)> {
     let Some((_, source)) = source.split_once(key) else {
         return Vec::new();

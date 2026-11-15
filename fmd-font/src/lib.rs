@@ -1970,6 +1970,22 @@ enum ClassDef {
 }
 
 impl ClassDef {
+    /// Upper bound for the 128 class lookups used by the ASCII projection.
+    fn ascii_work(&self) -> usize {
+        let per_glyph = match self {
+            Self::Format1 { .. } => 1,
+            Self::Format2 {
+                ranges,
+                dense: true,
+            } => (usize::BITS - ranges.len().leading_zeros()) as usize + 1,
+            Self::Format2 {
+                ranges,
+                dense: false,
+            } => ranges.len().max(1),
+        };
+        128usize.saturating_mul(per_glyph)
+    }
+
     /// Class of `g`; glyphs not covered by any entry are class 0.
     fn class(&self, g: u16) -> u16 {
         match self {
@@ -2030,6 +2046,30 @@ enum KernSubtable {
 }
 
 impl KernSubtable {
+    /// Charge the expanded lookup graph, not merely unique parsed bytes. One
+    /// subtable can emit at most 128² ASCII cells even with duplicate cmap
+    /// mappings. Reusing a large subtable in many lookup/feature alternatives
+    /// must not multiply scalar or ASCII initialization work without a bound.
+    fn ascii_work(&self) -> usize {
+        match self {
+            Self::Format1 { pairs } if pairs.is_empty() => 1,
+            Self::Format1 { pairs } => pairs.len().saturating_add(128 * 128),
+            Self::Format2 { coverage, .. } if coverage.is_empty() => 1,
+            Self::Format2 {
+                coverage,
+                class1,
+                class2,
+                ..
+            } => {
+                let coverage_work = (usize::BITS - coverage.len().leading_zeros()) as usize + 1;
+                (128 * 128usize)
+                    .saturating_add(128 * coverage_work)
+                    .saturating_add(class1.ascii_work())
+                    .saturating_add(class2.ascii_work())
+            }
+        }
+    }
+
     /// Returns `Some(xAdvance)` if this subtable defines `(left, right)`.
     ///
     /// For format 2 a `Some(0)` is returned when `left` is covered but the
@@ -2079,17 +2119,40 @@ impl KernSubtable {
 #[derive(Clone, Debug, Default)]
 pub struct Kerning {
     subtables: Vec<KernSubtable>,
+    /// First matching subtable wins within each lookup. Shared subtable bytes
+    /// are retained once even when distinct lookups refer to the same data.
+    lookups: Vec<Vec<usize>>,
+    /// Separate `kern` feature records are alternatives (often script-specific).
+    /// Each entry selects a lookup and its number of distinct LookupList indices.
+    /// Collapsing aliases retains additive semantics without repeated traversal.
+    features: Vec<Vec<(usize, u32)>>,
 }
 
 impl Kerning {
     /// x-advance adjustment (font design units) applied between `left` and
-    /// `right` glyph ids; 0 if no kern pair applies. First matching subtable
-    /// wins.
+    /// `right` glyph ids; 0 if no kern pair applies.
+    ///
+    /// The first `kern` feature defining this pair is used. Its separate
+    /// lookups accumulate; only the first matching subtable within a lookup
+    /// wins, including a defined zero. This focused API does not select a
+    /// script/language; use [`Font::shape`] for explicit shaping context.
+    /// Results outside the public `i16` range are clamped after accumulation.
     #[must_use]
     pub fn pair(&self, left: u16, right: u16) -> i16 {
-        for st in &self.subtables {
-            if let Some(v) = st.lookup(left, right) {
-                return v;
+        for feature in &self.features {
+            let mut matched = false;
+            let mut value = 0i64;
+            for &(lookup, count) in feature {
+                for &subtable in &self.lookups[lookup] {
+                    if let Some(adjustment) = self.subtables[subtable].lookup(left, right) {
+                        matched = true;
+                        value += i64::from(adjustment) * i64::from(count);
+                        break;
+                    }
+                }
+            }
+            if matched {
+                return clamp_kerning(value);
             }
         }
         0
@@ -2101,8 +2164,8 @@ impl Kerning {
     /// For every byte pair `(l, r)` with `pair(glyph_of(l), glyph_of(r)) != 0`
     /// — where `glyph_of` maps the 128 ASCII bytes to glyph ids, possibly
     /// several bytes to one glyph — calls `emit(l, r, v)` with `v` exactly
-    /// equal to that `pair` result (first matching subtable wins, defined
-    /// zeros shadow later subtables just like `pair`). Pairs resolving to 0
+    /// equal to that `pair` result (separate lookups accumulate, defined zeros
+    /// shadow only later subtables in the same lookup). Pairs resolving to 0
     /// are never emitted: a zero-initialized matrix already holds their value,
     /// so `emit` fires once per nonzero cell. The order of `emit` calls across
     /// distinct pairs is unspecified (format-1 pair maps hash-scatter), so
@@ -2116,6 +2179,9 @@ impl Kerning {
         glyph_of: impl Fn(u8) -> u16,
         mut emit: impl FnMut(u8, u8, i16),
     ) {
+        if self.features.is_empty() {
+            return;
+        }
         let glyphs: [u16; 128] = std::array::from_fn(|b| glyph_of(b as u8));
         // Byte index sorted by glyph id so a subtable pair locates its bytes
         // with two binary searches; duplicate gids stay as duplicate entries.
@@ -2126,78 +2192,128 @@ impl Kerning {
             .collect();
         by_glyph.sort_unstable();
 
-        // A defined zero must still shadow later subtables, so track which
-        // cells any subtable has defined — not which are nonzero.
-        let mut defined = [[false; 128]; 128];
+        // Scratch lives on the heap, including on the small WASM stack. Sparse
+        // touched cells avoid clearing/scanning an ASCII matrix per feature.
+        let mut resolved = vec![false; 128 * 128];
+        let mut unresolved_rows = [128u16; 128];
+        let mut lookup_seen = vec![0usize; 128 * 128];
+        let mut feature_seen = vec![false; 128 * 128];
+        let mut values = vec![0i64; 128 * 128];
+        let mut touched = Vec::new();
+        let mut epoch = 0usize;
 
-        for st in &self.subtables {
-            match st {
-                KernSubtable::Format1 { pairs } => {
-                    for (&key, &v) in pairs {
-                        let left = (key >> 16) as u16;
-                        let right = (key & 0xFFFF) as u16;
-                        let ls = by_glyph.partition_point(|&(g, _)| g < left);
-                        let le = by_glyph.partition_point(|&(g, _)| g <= left);
-                        let rs = by_glyph.partition_point(|&(g, _)| g < right);
-                        let re = by_glyph.partition_point(|&(g, _)| g <= right);
-                        for &(_, l) in &by_glyph[ls..le] {
-                            for &(_, r) in &by_glyph[rs..re] {
-                                let row = &mut defined[usize::from(l)];
-                                if row[usize::from(r)] {
-                                    continue;
-                                }
-                                row[usize::from(r)] = true;
-                                if v != 0 {
-                                    emit(l, r, v);
-                                }
+        for feature in &self.features {
+            for &(lookup, count) in feature {
+                epoch += 1;
+                for &subtable in &self.lookups[lookup] {
+                    self.subtables[subtable].for_each_ascii_match(
+                        &glyphs,
+                        &by_glyph,
+                        &unresolved_rows,
+                        |l, r, adjustment| {
+                            let index = usize::from(l) * 128 + usize::from(r);
+                            if resolved[index] || lookup_seen[index] == epoch {
+                                return;
                             }
+                            lookup_seen[index] = epoch;
+                            if !feature_seen[index] {
+                                feature_seen[index] = true;
+                                touched.push(index);
+                            }
+                            values[index] += i64::from(adjustment) * i64::from(count);
+                        },
+                    );
+                }
+            }
+            for index in touched.drain(..) {
+                resolved[index] = true;
+                let l = index / 128;
+                unresolved_rows[l] -= 1;
+                let value = clamp_kerning(values[index]);
+                if value != 0 {
+                    emit(l as u8, (index % 128) as u8, value);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn from_subtables(subtables: Vec<KernSubtable>) -> Self {
+        Self {
+            lookups: vec![(0..subtables.len()).collect()],
+            features: vec![vec![(0, 1)]],
+            subtables,
+        }
+    }
+}
+
+fn clamp_kerning(value: i64) -> i16 {
+    value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+}
+
+impl KernSubtable {
+    /// Enumerate defined cells, including zero. Lookup and feature precedence
+    /// are applied by the caller; duplicate cmap glyphs retain distinct bytes.
+    fn for_each_ascii_match(
+        &self,
+        glyphs: &[u16; 128],
+        by_glyph: &[(u16, u8)],
+        unresolved_rows: &[u16; 128],
+        mut emit: impl FnMut(u8, u8, i16),
+    ) {
+        match self {
+            Self::Format1 { pairs } => {
+                for (&key, &value) in pairs {
+                    let left = (key >> 16) as u16;
+                    let right = (key & 0xFFFF) as u16;
+                    let ls = by_glyph.partition_point(|&(g, _)| g < left);
+                    let le = by_glyph.partition_point(|&(g, _)| g <= left);
+                    let rs = by_glyph.partition_point(|&(g, _)| g < right);
+                    let re = by_glyph.partition_point(|&(g, _)| g <= right);
+                    for &(_, l) in &by_glyph[ls..le] {
+                        if unresolved_rows[usize::from(l)] == 0 {
+                            continue;
+                        }
+                        for &(_, r) in &by_glyph[rs..re] {
+                            emit(l, r, value);
                         }
                     }
                 }
-                KernSubtable::Format2 {
-                    coverage,
-                    class1,
-                    class2,
-                    class1_count,
-                    class2_count,
-                    matrix,
-                } => {
-                    // A covered first glyph defines an adjustment for every
-                    // second glyph, so walk the 128x128 cells but hoist the
-                    // coverage search and both class lookups out of the walk.
-                    let c2_of: [u16; 128] = std::array::from_fn(|b| class2.class(glyphs[b]));
-                    let c1_count = usize::from(*class1_count);
-                    let c2_count = usize::from(*class2_count);
-                    for l in 0..128u8 {
-                        if coverage.binary_search(&glyphs[usize::from(l)]).is_err() {
-                            continue;
-                        }
-                        let c1 = usize::from(class1.class(glyphs[usize::from(l)]));
-                        for r in 0..128u8 {
-                            let row = &mut defined[usize::from(l)];
-                            if row[usize::from(r)] {
-                                continue;
-                            }
-                            // Mirror `lookup` exactly: out-of-range classes
-                            // and empty value records are a defined zero; an
-                            // index that cannot be computed leaves the pair
-                            // undefined for this subtable.
-                            let value = if c1 >= c1_count
-                                || usize::from(c2_of[usize::from(r)]) >= c2_count
-                                || matrix.is_empty()
-                            {
-                                Some(0)
-                            } else {
-                                c1.checked_mul(c2_count)
-                                    .and_then(|m| m.checked_add(usize::from(c2_of[usize::from(r)])))
-                                    .map(|idx| matrix.get(idx).copied().unwrap_or(0))
-                            };
-                            if let Some(v) = value {
-                                row[usize::from(r)] = true;
-                                if v != 0 {
-                                    emit(l, r, v);
-                                }
-                            }
+            }
+            Self::Format2 {
+                coverage,
+                class1,
+                class2,
+                class1_count,
+                class2_count,
+                matrix,
+            } => {
+                if coverage.is_empty() {
+                    return;
+                }
+                let c2_of: [u16; 128] = std::array::from_fn(|b| class2.class(glyphs[b]));
+                let c1_count = usize::from(*class1_count);
+                let c2_count = usize::from(*class2_count);
+                for l in 0..128u8 {
+                    if unresolved_rows[usize::from(l)] == 0
+                        || coverage.binary_search(&glyphs[usize::from(l)]).is_err()
+                    {
+                        continue;
+                    }
+                    let c1 = usize::from(class1.class(glyphs[usize::from(l)]));
+                    for r in 0..128u8 {
+                        let value = if c1 >= c1_count
+                            || usize::from(c2_of[usize::from(r)]) >= c2_count
+                            || matrix.is_empty()
+                        {
+                            Some(0)
+                        } else {
+                            c1.checked_mul(c2_count)
+                                .and_then(|m| m.checked_add(usize::from(c2_of[usize::from(r)])))
+                                .map(|idx| matrix.get(idx).copied().unwrap_or(0))
+                        };
+                        if let Some(value) = value {
+                            emit(l, r, value);
                         }
                     }
                 }
@@ -2510,67 +2626,169 @@ impl Font {
 /// Read only the declared GPOS bytes. One budget covers all selected features,
 /// lookups and expanded pair/class data, including failed subtable attempts.
 fn parse_gpos_table(d: &[u8], budget: &mut LayoutBudget) -> Option<Kerning> {
-    // GPOS header: major(0) minor(2) scriptList(4) featureList(6) lookupList(8).
-    let (lookup_list, lookup_indices) = collect_layout_lookups(d, b"kern", budget)?;
+    let (lookup_list, feature_indices) = collect_kern_features(d, budget)?;
     let lookup_count = be_u16(d, lookup_list)? as usize;
-    let mut seen_lookups = std::collections::BTreeSet::new();
-    let mut seen_subtables = std::collections::BTreeSet::new();
-    let mut subtables = Vec::new();
+    let mut parsed_lookups = std::collections::BTreeMap::new();
+    let mut parsed_subtables = std::collections::BTreeMap::new();
+    let mut lookup_shapes = std::collections::BTreeMap::new();
+    let mut seen_features = std::collections::BTreeSet::new();
+    let mut kerning = Kerning::default();
 
-    for li in lookup_indices {
-        budget.spend(1)?;
-        let li = usize::from(li);
-        if li >= lookup_count {
-            continue;
-        }
-        let Some(lookup_off) =
-            off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
-        else {
-            continue;
-        };
-        let lookup = off(lookup_list, usize::from(lookup_off))?;
-        if !seen_lookups.insert(lookup) {
-            continue;
-        }
-        let Some(lookup_type) = be_u16(d, lookup) else {
-            continue;
-        };
-        let Some(sub_count) = be_u16_at(d, lookup, 4) else {
-            continue;
-        };
-        if !matches!(lookup_type, 2 | 9) {
-            continue;
-        }
-        for s in 0..usize::from(sub_count) {
+    for indices in feature_indices {
+        let mut multiplicities = std::collections::BTreeMap::<usize, u32>::new();
+        for li in indices {
             budget.spend(1)?;
-            let Some(sub_off) =
-                off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot))
-            else {
-                break;
-            };
-            let sub = off(lookup, usize::from(sub_off))?;
-            let real_sub = if lookup_type == 9 {
-                let Some((2, real_sub)) = resolve_extension(d, sub) else {
-                    continue;
-                };
-                real_sub
-            } else {
-                sub
-            };
-            // Keep the first occurrence, including failed parses. Kerning uses
-            // first-match precedence, so aliases cannot add a new adjustment.
-            if !seen_subtables.insert(real_sub) {
+            let li = usize::from(li);
+            if li >= lookup_count {
                 continue;
             }
-            if let Some(st) = parse_pair_subtable_budgeted(d, real_sub, budget) {
-                subtables.push(st);
-            }
+            let Some(lookup_off) =
+                off_mul(off(lookup_list, 2)?, li, 2).and_then(|slot| be_u16(d, slot))
+            else {
+                continue;
+            };
+            let lookup = off(lookup_list, usize::from(lookup_off))?;
+            let parsed = if let Some(&parsed) = parsed_lookups.get(&lookup) {
+                parsed
+            } else {
+                let parsed =
+                    parse_kern_lookup(d, lookup, budget, &mut kerning, &mut parsed_subtables).map(
+                        |subtables| {
+                            if let Some(&index) = lookup_shapes.get(&subtables) {
+                                index
+                            } else {
+                                let index = kerning.lookups.len();
+                                lookup_shapes.insert(subtables.clone(), index);
+                                kerning.lookups.push(subtables);
+                                index
+                            }
+                        },
+                    );
+                parsed_lookups.insert(lookup, parsed);
+                parsed
+            };
             if budget.exhausted() {
                 return None;
             }
+            if let Some(index) = parsed {
+                // Different LookupList indices are distinct positioning
+                // actions even when their offsets alias identical bytes.
+                *multiplicities.entry(index).or_default() += 1;
+            }
+        }
+        let feature: Vec<_> = multiplicities.into_iter().collect();
+        if !feature.is_empty() && seen_features.insert(feature.clone()) {
+            let mut expanded_work = 0usize;
+            for &(lookup, _) in &feature {
+                for &subtable in &kerning.lookups[lookup] {
+                    expanded_work =
+                        expanded_work.checked_add(kerning.subtables[subtable].ascii_work())?;
+                }
+            }
+            budget.spend(expanded_work)?;
+            kerning.features.push(feature);
         }
     }
-    Some(Kerning { subtables })
+    Some(kerning)
+}
+
+/// Preserve alternative feature records instead of combining their script
+/// policies. Duplicate references to one lookup index within a feature apply
+/// once; separate indices still accumulate. Shared feature bytes are read once.
+fn collect_kern_features(d: &[u8], budget: &mut LayoutBudget) -> Option<(usize, Vec<Vec<u16>>)> {
+    budget.spend(1)?;
+    let feature_list = usize::from(be_u16_at(d, 0, 6)?);
+    let lookup_list = usize::from(be_u16_at(d, 0, 8)?);
+    let feature_count = usize::from(be_u16(d, feature_list)?);
+    let mut seen_features = std::collections::BTreeSet::new();
+    let mut features = Vec::new();
+    for i in 0..feature_count {
+        budget.spend(1)?;
+        let rec = off_mul(off(feature_list, 2)?, i, 6)?;
+        let Some(tag) = bytes_at(d, rec, 4) else {
+            break;
+        };
+        if tag != b"kern" {
+            continue;
+        }
+        let Some(offset) = be_u16_at(d, rec, 4) else {
+            continue;
+        };
+        let feature = off(feature_list, usize::from(offset))?;
+        if !seen_features.insert(feature) {
+            continue;
+        }
+        let Some(count) = be_u16_at(d, feature, 2) else {
+            continue;
+        };
+        let mut indices = std::collections::BTreeSet::new();
+        for j in 0..usize::from(count) {
+            budget.spend(1)?;
+            let Some(index) = off_mul(off(feature, 4)?, j, 2).and_then(|slot| be_u16(d, slot))
+            else {
+                break;
+            };
+            indices.insert(index);
+        }
+        features.push(indices.into_iter().collect());
+    }
+    Some((lookup_list, features))
+}
+
+fn parse_kern_lookup(
+    d: &[u8],
+    lookup: usize,
+    budget: &mut LayoutBudget,
+    kerning: &mut Kerning,
+    parsed_subtables: &mut std::collections::BTreeMap<usize, Option<usize>>,
+) -> Option<Vec<usize>> {
+    let lookup_type = be_u16(d, lookup)?;
+    let sub_count = be_u16_at(d, lookup, 4)?;
+    if !matches!(lookup_type, 2 | 9) {
+        return None;
+    }
+    let mut seen_subtables = std::collections::BTreeSet::new();
+    let mut subtables = Vec::new();
+    for s in 0..usize::from(sub_count) {
+        budget.spend(1)?;
+        let Some(sub_off) = off_mul(off(lookup, 6)?, s, 2).and_then(|slot| be_u16(d, slot)) else {
+            break;
+        };
+        let sub = off(lookup, usize::from(sub_off))?;
+        let real_sub = if lookup_type == 9 {
+            let Some((2, real_sub)) = resolve_extension(d, sub) else {
+                continue;
+            };
+            real_sub
+        } else {
+            sub
+        };
+        if !seen_subtables.insert(real_sub) {
+            continue;
+        }
+        let parsed = if let Some(&parsed) = parsed_subtables.get(&real_sub) {
+            parsed
+        } else {
+            let parsed = parse_pair_subtable_budgeted(d, real_sub, budget).map(|subtable| {
+                let index = kerning.subtables.len();
+                kerning.subtables.push(subtable);
+                index
+            });
+            parsed_subtables.insert(real_sub, parsed);
+            parsed
+        };
+        if budget.exhausted() {
+            return None;
+        }
+        if let Some(index) = parsed {
+            subtables.push(index);
+        }
+    }
+    if subtables.is_empty() {
+        None
+    } else {
+        Some(subtables)
+    }
 }
 
 // ===========================================================================
@@ -2819,8 +3037,7 @@ fn parse_ligature_subst_budgeted(
             if work > MAX_LAYOUT_GLYPHS {
                 return budget.exhaust();
             }
-            let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot))
-            else {
+            let Some(lig_off) = off_mul(lig_offsets, j, 2).and_then(|slot| be_u16(d, slot)) else {
                 break;
             };
             let Some(lig) = off(lig_set, usize::from(lig_off)) else {
@@ -2864,7 +3081,6 @@ fn parse_ligature_subst_budgeted(
     }
     Some(())
 }
-
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -3534,6 +3750,72 @@ mod synthetic_font_tests {
 
     fn gpos_font(ext_format: u16, ext_type: u16, lookup_index: u16, pos_format: u16) -> Kerning {
         gpos_kerning_of(gpos_table(ext_format, ext_type, lookup_index, pos_format))
+    }
+
+    /// Each lookup contains ordered format-1 subtables defining (5, 6).
+    /// All lookup headers precede their bodies so aliases can share later data.
+    fn multi_lookup_gpos(features: &[Vec<u16>], adjustments: &[Vec<i16>]) -> Vec<u8> {
+        let mut g = vec![0u8; 10];
+        g[..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        g[6..8].copy_from_slice(&10u16.to_be_bytes());
+        push16(&mut g, u16::try_from(features.len()).unwrap());
+        for _ in features {
+            g.extend_from_slice(b"kern");
+            push16(&mut g, 0);
+        }
+        for (i, feature) in features.iter().enumerate() {
+            let position = 12 + i * 6 + 4;
+            let offset = u16::try_from(g.len() - 10).unwrap();
+            g[position..position + 2].copy_from_slice(&offset.to_be_bytes());
+            push16(&mut g, 0);
+            push16(&mut g, u16::try_from(feature.len()).unwrap());
+            for &index in feature {
+                push16(&mut g, index);
+            }
+        }
+        let lookup_list = g.len();
+        g[8..10].copy_from_slice(&u16::try_from(lookup_list).unwrap().to_be_bytes());
+        push16(&mut g, u16::try_from(adjustments.len()).unwrap());
+        g.resize(g.len() + adjustments.len() * 2, 0);
+        let mut headers = Vec::new();
+        for (i, values) in adjustments.iter().enumerate() {
+            let lookup = g.len();
+            let position = lookup_list + 2 + i * 2;
+            g[position..position + 2]
+                .copy_from_slice(&u16::try_from(lookup - lookup_list).unwrap().to_be_bytes());
+            headers.push(lookup);
+            push16(&mut g, 2);
+            push16(&mut g, 0);
+            push16(&mut g, u16::try_from(values.len()).unwrap());
+            g.resize(g.len() + values.len() * 2, 0);
+        }
+        for (&lookup, values) in headers.iter().zip(adjustments) {
+            for (i, &value) in values.iter().enumerate() {
+                let subtable = g.len();
+                let position = lookup + 6 + i * 2;
+                g[position..position + 2]
+                    .copy_from_slice(&u16::try_from(subtable - lookup).unwrap().to_be_bytes());
+                g.extend_from_slice(&gpos_table(1, 2, 0, 1)[44..]);
+                g[subtable + 16..subtable + 18].copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        g
+    }
+
+    fn test_lookup_offset(g: &[u8], index: usize) -> usize {
+        let list = usize::from(be_u16(g, 8).unwrap());
+        list + usize::from(be_u16(g, list + 2 + index * 2).unwrap())
+    }
+
+    fn assert_gpos_pair_and_ascii(kerning: &Kerning, expected: i16) {
+        assert_eq!(kerning.pair(5, 6), expected);
+        let mut values = Vec::new();
+        kerning.for_each_ascii_pair(u16::from, |l, r, v| values.push((l, r, v)));
+        if expected == 0 {
+            assert!(values.is_empty());
+        } else {
+            assert_eq!(values, [(5, 6, expected)]);
+        }
     }
 
     /// Raw GSUB table: a `liga` feature routing through an Extension (type 7)
@@ -4543,9 +4825,7 @@ mod synthetic_font_tests {
         assert_eq!(empty.lookup(5, 6), Some(0));
 
         // A covered-but-zero first subtable still wins over later subtables.
-        let kerning = Kerning {
-            subtables: vec![empty, st],
-        };
+        let kerning = Kerning::from_subtables(vec![empty, st]);
         assert_eq!(kerning.pair(5, 6), 0);
         assert_eq!(kerning.pair(4, 6), 0);
     }
@@ -4668,15 +4948,13 @@ mod synthetic_font_tests {
             pairs: PairMap::from_iter([(pair_key(6, 6), -77)]),
         };
 
-        let kerning = Kerning {
-            subtables: vec![
-                covered_all_rights,
-                specific,
-                out_of_range_class_zero,
-                defined_zero,
-                shadowed,
-            ],
-        };
+        let kerning = Kerning::from_subtables(vec![
+            covered_all_rights,
+            specific,
+            out_of_range_class_zero,
+            defined_zero,
+            shadowed,
+        ]);
 
         let mut enumerated = [0i16; 128 * 128];
         kerning.for_each_ascii_pair(glyph_of, |l, r, v| {
@@ -4869,13 +5147,89 @@ mod synthetic_font_tests {
     }
 
     #[test]
-    fn gpos_deduplicates_lookup_and_resolved_subtable_aliases() {
+    fn gpos_shared_subtables_preserve_distinct_lookup_actions() {
         for same_lookup in [false, true] {
             let kern = gpos_kerning_of(aliased_gpos_table(same_lookup));
             assert_eq!(kern.subtables.len(), 1);
-            assert_eq!(kern.pair(5, 6), -40);
+            assert_eq!(kern.lookups.len(), 1);
+            assert_eq!(kern.features, [vec![(0, 2)]]);
+            // The feature selects indices 0 and 1: two positioning actions,
+            // even when those indices alias the same lookup or subtable bytes.
+            assert_eq!(kern.pair(5, 6), -80);
             assert_eq!(kern.pair(5, 7), 0);
+            assert_gpos_pair_and_ascii(&kern, -80);
         }
+    }
+
+    #[test]
+    fn gpos_accumulates_lookups_but_preserves_intralookup_precedence() {
+        for feature in [vec![0, 1], vec![1, 0], vec![1, 0, 0, 1]] {
+            let table = multi_lookup_gpos(&[feature], &[vec![-40, -99], vec![-25]]);
+            assert_gpos_pair_and_ascii(&gpos_kerning_of(table), -65);
+        }
+        let table = multi_lookup_gpos(&[vec![0, 1]], &[vec![0, -99], vec![-25]]);
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(table), -25);
+    }
+
+    #[test]
+    fn gpos_alternative_features_do_not_accumulate_or_replace_defined_zero() {
+        let table = multi_lookup_gpos(&[vec![0], vec![1]], &[vec![-40], vec![-25]]);
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(table), -40);
+        let table = multi_lookup_gpos(&[vec![0], vec![1]], &[vec![0], vec![-25]]);
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(table), 0);
+
+        // A feature omitting the pair has no authority over the next feature.
+        let mut table = multi_lookup_gpos(&[vec![0], vec![1]], &[vec![-40], vec![-25]]);
+        let lookup = test_lookup_offset(&table, 0);
+        let subtable = lookup + usize::from(be_u16(&table, lookup + 6).unwrap());
+        table[subtable + 22..subtable + 24].copy_from_slice(&200u16.to_be_bytes());
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(table), -25);
+    }
+
+    #[test]
+    fn gpos_accumulation_clamps_only_the_final_sum() {
+        for (values, expected) in [
+            (vec![i16::MAX, i16::MAX, -i16::MAX], i16::MAX),
+            (vec![i16::MIN, i16::MIN, i16::MAX], i16::MIN),
+            (vec![i16::MAX, i16::MAX, i16::MIN, i16::MIN], -2),
+            (vec![40, -15, -25], 0),
+        ] {
+            let indices: Vec<_> = (0..values.len()).map(|i| i as u16).collect();
+            let adjustments: Vec<_> = values.into_iter().map(|value| vec![value]).collect();
+            let table = multi_lookup_gpos(&[indices], &adjustments);
+            assert_gpos_pair_and_ascii(&gpos_kerning_of(table), expected);
+        }
+    }
+
+    #[test]
+    fn gpos_expanded_lookup_fanout_shares_the_layout_budget() {
+        let count = 40u16;
+        let adjustments = vec![vec![-40, -1]; usize::from(count)];
+        let mut table = multi_lookup_gpos(&[(0..count).collect()], &adjustments);
+        let first = test_lookup_offset(&table, 0);
+        let shared = first + usize::from(be_u16(&table, first + 6).unwrap());
+        for index in 1..usize::from(count) {
+            let lookup = test_lookup_offset(&table, index);
+            table[lookup + 6..lookup + 8]
+                .copy_from_slice(&u16::try_from(shared - lookup).unwrap().to_be_bytes());
+        }
+        // Unique trailers prevent whole-lookup dedup; each lookup's first
+        // PairPos aliases the same bytes. Admission must charge the expanded
+        // traversal rather than allowing an O(N*M) ASCII initialization graph.
+        assert!(gpos_kerning_of(table).features.is_empty());
+        let small = multi_lookup_gpos(&[vec![0, 1]], &adjustments[..2]);
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(small), -80);
+    }
+
+    #[test]
+    fn gpos_expanded_feature_fanout_shares_the_layout_budget() {
+        let mut adjustments = vec![vec![-40; 8]];
+        adjustments.extend(vec![vec![-25]; 12]);
+        let features: Vec<_> = (1..=12).map(|i| vec![0, i]).collect();
+        let table = multi_lookup_gpos(&features, &adjustments);
+        assert!(gpos_kerning_of(table).features.is_empty());
+        let small = multi_lookup_gpos(&[vec![0, 1]], &adjustments);
+        assert_gpos_pair_and_ascii(&gpos_kerning_of(small), -65);
     }
 
     #[test]
@@ -4892,7 +5246,7 @@ mod synthetic_font_tests {
     }
 
     #[test]
-    fn gpos_alias_dedup_preserves_earlier_defined_zero() {
+    fn gpos_defined_zero_does_not_shadow_another_lookup() {
         let mut g = aliased_gpos_table(false);
         // First PairPos @58 has its xAdvance at +16.
         g[74..76].copy_from_slice(&0i16.to_be_bytes());
@@ -4901,10 +5255,10 @@ mod synthetic_font_tests {
         g.extend_from_slice(&gpos_table(1, 2, 0, 1)[44..]);
         let kern = gpos_kerning_of(g);
         assert_eq!(kern.subtables.len(), 2);
-        assert_eq!(kern.pair(5, 6), 0);
+        assert_eq!(kern.pair(5, 6), -40);
         let mut emitted = Vec::new();
         kern.for_each_ascii_pair(u16::from, |l, r, value| emitted.push((l, r, value)));
-        assert!(emitted.is_empty(), "a later adjustment cannot replace a defined zero");
+        assert_eq!(emitted, [(5, 6, -40)]);
     }
 
     #[test]

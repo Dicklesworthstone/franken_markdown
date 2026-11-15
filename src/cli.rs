@@ -860,6 +860,68 @@ fn render_watched_file(
     (status, html)
 }
 
+/// Host inputs shared by every watched document. The config path is retained
+/// even before it exists; its current stylesheet is replaceable, unlike an
+/// explicit --css/image/font mapping. An unreadable or invalid config retains
+/// the last known stylesheet until a successful load establishes new ownership.
+struct WatchPresentationInputs {
+    fixed: Vec<PathBuf>,
+    config: Option<PathBuf>,
+    configured_css: Option<PathBuf>,
+    inherit_css: bool,
+}
+
+impl WatchPresentationInputs {
+    fn paths(&self) -> Vec<PathBuf> {
+        self.fixed
+            .iter()
+            .chain(self.config.iter())
+            .chain(self.configured_css.iter())
+            .cloned()
+            .collect()
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        self.fixed.iter().any(|fixed| fixed == path)
+            || self.config.as_deref() == Some(path)
+            || self.configured_css.as_deref() == Some(path)
+    }
+
+    fn refresh(&mut self, events: &[crate::watch::ChangeEvent]) -> bool {
+        if !self
+            .config
+            .as_ref()
+            .is_some_and(|config| events.iter().any(|event| &event.path == config))
+        {
+            return false;
+        }
+        self.synchronize()
+    }
+
+    fn synchronize(&mut self) -> bool {
+        let Some(path) = self.config.as_deref().filter(|_| self.inherit_css) else {
+            return false;
+        };
+        // The ordinary renderer emits the load error and keeps the previous
+        // export/preview. Do not discard useful dependency edges on that error.
+        // Read the pinned config identity, with the same absent-file semantics
+        // as FmdConfig::load_default, so watch ownership cannot change paths.
+        let config = match std::fs::read_to_string(path) {
+            Ok(source) => FmdConfig::parse(&source),
+            Err(error) if error.kind() == IoErrorKind::NotFound => Ok(FmdConfig::default()),
+            Err(_) => return false,
+        };
+        let Ok(config) = config else {
+            return false;
+        };
+        if config.custom_css == self.configured_css {
+            return false;
+        }
+        self.configured_css = config.custom_css;
+        true
+    }
+}
+
 fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = global_json || args.json;
     let font_inputs = match parse_host_font_args(&args.style, json) {
@@ -912,11 +974,6 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     if let Some(css) = &args.css {
         extras.push(css.clone());
     }
-    if let Some(css) = config.custom_css
-        && args.css.is_none()
-    {
-        extras.push(css);
-    }
     // Explicit mappings can point somewhere other than the source's image
     // destination (or supply a logo absent from Markdown). Watch every mapped
     // file so replacing the supplied bytes rebuilds all selected outputs.
@@ -932,6 +989,12 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     // paths. Retain missing paths as well so installing a font repairs a failed
     // initial render without requiring a source edit.
     extras.extend(font_inputs.paths().map(Path::to_path_buf));
+    let mut presentation = WatchPresentationInputs {
+        fixed: extras,
+        config: (!no_config).then(config_path),
+        configured_css: args.css.is_none().then_some(config.custom_css).flatten(),
+        inherit_css: args.css.is_none(),
+    };
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
     // would surprise agents that typed the wrong path).
@@ -948,15 +1011,29 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
                 json,
             );
         }
-        return run_watch_directory(args, md_files, extras, interval, json, no_config, profile);
+        return run_watch_directory(
+            args,
+            md_files,
+            presentation,
+            interval,
+            json,
+            no_config,
+            profile,
+        );
     }
-    let paths = collect_watch_paths(&args.input, &extras);
+    let paths = collect_watch_paths(&args.input, &presentation.paths());
     let debounce = if args.measure.is_some() {
         Duration::ZERO
     } else {
         interval
     };
     let mut watcher = PollWatcher::new_with_profile(paths, debounce, SystemClock, profile);
+    // A config save between initial option admission and fingerprint priming
+    // must not leave the initial render watching the previous stylesheet.
+    // Retain the primed config fingerprint: a later save still emits an event.
+    if presentation.synchronize() {
+        watcher.replace_paths(collect_watch_paths(&args.input, &presentation.paths()));
+    }
     let (_, initial_html) = render_watched_file(&args, json, no_config);
     let preview = if args.serve {
         match start_watch_preview() {
@@ -992,6 +1069,9 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         let events = watcher.poll();
         if events.is_empty() {
             continue;
+        }
+        if presentation.refresh(&events) {
+            watcher.replace_paths(collect_watch_paths(&args.input, &presentation.paths()));
         }
         if json {
             let mut changed = String::from("[");
@@ -1033,7 +1113,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
 fn run_watch_directory(
     args: WatchArgs,
     mut md_files: Vec<PathBuf>,
-    extras: Vec<PathBuf>,
+    mut presentation: WatchPresentationInputs,
     interval: Duration,
     json: bool,
     no_config: bool,
@@ -1058,8 +1138,21 @@ fn run_watch_directory(
     if let Err(error) = validate_watch_directory_outputs(&args, &md_files) {
         return fail_json(64, "usage_error", &error, json);
     }
-    let paths = md_files.iter().chain(&extras).cloned().collect();
+    let paths = md_files
+        .iter()
+        .chain(&presentation.paths())
+        .cloned()
+        .collect();
     let mut watcher = PollWatcher::new_with_profile(paths, interval, SystemClock, profile);
+    if presentation.synchronize() {
+        watcher.replace_paths(
+            md_files
+                .iter()
+                .chain(&presentation.paths())
+                .cloned()
+                .collect(),
+        );
+    }
     let protected = watch_directory_inputs(&watcher, no_config);
     for input in &md_files {
         if let Err(error) = validate_watch_directory_input(&args, input, &protected) {
@@ -1110,11 +1203,23 @@ fn run_watch_directory(
         }
         for event in &events {
             let affected = watcher.affected_roots(&event.path);
-            if extras.contains(&event.path) || affected.is_empty() {
+            if presentation.contains(&event.path) || affected.is_empty() {
                 rebuild.extend(md_files.iter().cloned());
             } else {
                 rebuild.extend(affected);
             }
+        }
+        // Admit newly selected presentation inputs before checking any output
+        // in the tree. A config change must not release source protection or
+        // replace a stylesheet with another document's generated page.
+        if presentation.refresh(&events) {
+            watcher.replace_paths(
+                md_files
+                    .iter()
+                    .chain(&presentation.paths())
+                    .cloned()
+                    .collect(),
+            );
         }
         let discovered = expand_md_directory(&args.input);
         if discovered != md_files {
@@ -1143,7 +1248,13 @@ fn run_watch_directory(
                 }
             }
             md_files = discovered;
-            watcher.replace_paths(md_files.iter().chain(&extras).cloned().collect());
+            watcher.replace_paths(
+                md_files
+                    .iter()
+                    .chain(&presentation.paths())
+                    .cloned()
+                    .collect(),
+            );
             blocked.retain(|input| md_files.contains(input));
         }
         // A settling source intentionally retains its old dependency graph.
@@ -4669,6 +4780,52 @@ mod helper_tests {
             std::env::temp_dir().join(format!("fmd-cli-helper-{tag}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn watch_config_synchronization_closes_startup_race_without_resetting_fingerprints() {
+        let dir = fresh_dir("watch-config-startup");
+        let input = dir.join("doc.md");
+        let config = dir.join("config");
+        let old_css = dir.join("old.css");
+        let current_css = dir.join("current.css");
+        let later_css = dir.join("later.css");
+        std::fs::write(&input, "# Document\n").unwrap();
+        std::fs::write(&old_css, "body { color: red; }").unwrap();
+        std::fs::write(&current_css, "body { color: blue; }").unwrap();
+        let mut presentation = super::WatchPresentationInputs {
+            fixed: Vec::new(),
+            config: Some(config.clone()),
+            configured_css: Some(old_css.clone()),
+            inherit_css: true,
+        };
+
+        // The initial config load selected old.css, but a save lands before
+        // fingerprint priming. There will be no future config event for it.
+        std::fs::write(&config, format!("custom_css={}\n", current_css.display())).unwrap();
+        let mut watcher = crate::watch::PollWatcher::new(
+            super::collect_watch_paths(&input, &presentation.paths()),
+            std::time::Duration::ZERO,
+            crate::watch::ManualClock::new(),
+        );
+        assert!(watcher.paths().contains(&old_css));
+        assert!(!watcher.paths().contains(&current_css));
+        assert!(presentation.synchronize());
+        watcher.replace_paths(super::collect_watch_paths(&input, &presentation.paths()));
+        assert!(!watcher.paths().contains(&old_css));
+        assert!(watcher.paths().contains(&current_css));
+        assert!(watcher.poll().is_empty());
+        std::fs::write(&current_css, "body { color: green; }").unwrap();
+        assert!(watcher.poll().iter().any(|event| event.path == current_css));
+
+        // A later save is adopted too, but replacing presentation roots must
+        // not re-prime the config and swallow its queued rebuild notification.
+        std::fs::write(&config, format!("custom_css={}\n", later_css.display())).unwrap();
+        assert!(presentation.synchronize());
+        watcher.replace_paths(super::collect_watch_paths(&input, &presentation.paths()));
+        assert!(watcher.paths().contains(&later_css));
+        assert!(watcher.poll().iter().any(|event| event.path == config));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

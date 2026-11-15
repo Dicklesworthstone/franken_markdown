@@ -78,6 +78,23 @@ length sentinel; same-size edits to an oversized file do not cause work while
 it remains inadmissible, and shrinking/replacing it triggers recovery. The
 configured stylesheet is watched when `--css` does not override it.
 
+Native configuration is itself a live input unless `--no-config` is set.
+Creating the config after starting a watch, editing or atomically replacing it,
+and removing it all rebuild the selected outputs; removal restores the usual
+built-in defaults. Changes to paper, typography, theme or other render defaults
+therefore do not require a Markdown edit. Directory watches apply each change
+to every document.
+
+A valid config change also replaces the configured stylesheet dependency.
+The newly selected path is watched even when it does not exist yet, so creating
+it repairs the failed export. The previous stylesheet stops triggering work
+unless another source or explicit mapping still uses it. An invalid or
+unreadable config preserves the last successful export/preview and the last
+known stylesheet dependency; fixing the config triggers recovery on its own.
+An explicit `--css` remains authoritative, and stylesheets named only by config
+are not watched in that case. New config-selected inputs join source-overwrite
+protection before any directory export is published.
+
 ## Served preview and export parity
 
 For HTML and combined HTML/PDF watches, `--serve` reads the successful HTML
@@ -172,6 +189,11 @@ It also checks complete-directory overwrite admission, existing and missing
 includes/images, both-format siblings, host resources, directory/dangling
 aliases, failed-refresh retention, isolated conflicts, repair retries and
 ordinary links to generated sibling pages.
+`tests/watch_config.rs` runs real CLI watches through config creation, edits,
+replacement/removal, invalid-config recovery, stylesheet switching and missing
+stylesheet creation. It compares live PDF/HTML output with fresh renders,
+checks whole-directory refresh and source protection, and preserves explicit
+CSS and `--no-config` precedence.
 `tests/transclusion_origins.rs` checks included assets and link origins across
 HTML/EPUB export, selected/nested sources, native book checks and watch refresh.
 
@@ -179,6 +201,7 @@ Run:
 
 ```sh
 cargo test --test watch --test watch_dependencies --test watch_preview --test watch_directory
+cargo test --test watch_config
 cargo test --lib watch::
 cargo clippy --all-targets --features cli -- -D warnings
 cargo fmt --check

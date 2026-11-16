@@ -91,7 +91,7 @@ function pathParts(path) {
   return parts.length <= 64 && parts.every(validName) ? parts : null;
 }
 
-/** Capture only PNG/JPEG File objects from one explicit directory selection.
+/** Capture only PNG/JPEG/GIF File objects from one explicit directory selection.
  * documentPath is a literal, root-relative Markdown filename, NOT a URL.
  * Nothing is read until load(); nonimage files grant no readable authority.
  * The directory name is removed, not guessed from a request or browser URL. */
@@ -125,7 +125,7 @@ function directoryImageSources(files, documentPath, documentFormats) {
     seen.add(relative);
     // Extensions restrict the grant, not the decoder. FlowImageAssets still
     // validates the actual container and pixel limits before allocating ink.
-    if (!(documentFormats ? /\.(png|jpe?g|gif|svg)$/i : /\.(png|jpe?g)$/i).test(parts.at(-1))) continue;
+    if (!(documentFormats ? /\.(png|jpe?g|gif|svg)$/i : /\.(png|jpe?g|gif)$/i).test(parts.at(-1))) continue;
     if (++count > MAX_FILES) fail("Select a folder with at most 128 images");
     if (!file.size || file.size > MAX_FILE_BYTES || (total += file.size) > MAX_TOTAL_BYTES)
       fail("Selected images exceed the 8 MiB per-file or 32 MiB total limit");
@@ -195,8 +195,8 @@ function abortable(value, signal) {
 }
 
 /** Capture a bounded document-renderer grant using the same local/folder path
- * policy as Flow. GIF/SVG directory entries are enabled only here; the existing
- * Flow directory grant stays PNG/JPEG-only. No Markdown parsing, image decoding
+ * policy as Flow. SVG directory entries are enabled only here; the existing
+ * Flow directory grant stays raster-only. No Markdown parsing, image decoding
  * or network loading occurs.
  * Native HTML/PDF validate the actual bytes and sanitize SVG when rendering. */
 export function captureDocumentImageFiles(files, { folder = false, documentPath = "" } = {}) {
@@ -288,7 +288,7 @@ export function createDirectoryImageControls({ container, status, onChange }) {
   const help = document.createElement("p");
   help.id = "image-folder-help";
   help.textContent = supported
-    ? "Choose a small document folder, not your home directory. Only its PNG/JPEG files are read, on demand; other file contents are ignored. At most 4096 entries and 128 images. The path is relative to the selected folder, without its name. Apply replaces image access, clears old pixels and prepared exports, and restarts preview; it does not open or edit Markdown. Nothing is uploaded."
+    ? "Choose a small document folder, not your home directory. Only its PNG/JPEG/GIF files are read, on demand; other file contents are ignored. At most 4096 entries and 128 images. The path is relative to the selected folder, without its name. Apply replaces image access, clears old pixels and prepared exports, and restarts preview; it does not open or edit Markdown. Nothing is uploaded."
     : "Folder selection is unavailable in this browser. The individual-image picker above remains available.";
   folder.setAttribute("aria-describedby", `${help.id} image-status`);
   path.setAttribute("aria-describedby", `${help.id} image-status`);

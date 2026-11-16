@@ -388,7 +388,14 @@ export class FlowImageAssets {
       // callback cannot mutate queued decode input after it returns its bytes.
       const blob = new Blob([input], { type: info.mime });
       input = null;
-      image = await this.#decode(blob, Object.freeze({ ...info, signal: run.controller.signal }));
+      const { firstFrameEnd, ...decodeInfo } = info;
+      // Keep animated source bytes for HTML/SVG/EPUB publication, while every
+      // decoder (including a host callback) sees only a static first-frame GIF.
+      // Blob slices share the already admitted immutable source snapshot.
+      const preview = firstFrameEnd === undefined ? blob : new Blob([
+        blob.slice(0, firstFrameEnd), new Uint8Array([0x3b]),
+      ], { type: info.mime });
+      image = await this.#decode(preview, Object.freeze({ ...decodeInfo, signal: run.controller.signal }));
       this.#check(run);
       if (
         !image ||

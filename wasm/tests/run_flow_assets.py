@@ -18,13 +18,15 @@ sources = {name: (root / name).read_text() for name in [
 colour_jpegs = [{"name": name, "hex": (root.parent / "tests" / "fixtures" / f"{name}.hex").read_text()}
                for name in ["jpeg-cmyk-swatches", "jpeg-ycck-swatches",
                             "jpeg-cmyk-progressive-swatches", "jpeg-ycck-progressive-swatches"]]
+gifs = [{"name": name, "base64": (root.parent / "tests" / "fixtures" / "gif" / f"{name}.base64").read_text()}
+        for name in ["animated-colors", "interlaced-palette"]]
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(executable_path=args.chromium, headless=True, args=["--no-sandbox"])
     try:
         page = browser.new_page(user_agent="franken_markdown-agent (+https://github.com/Dicklesworthstone/franken_markdown)")
         page.route("**/*", lambda route: route.abort())
         page.set_content("<!doctype html><meta charset='utf-8'><title>Flow image tests</title>")
-        results = page.evaluate("""async ({sources, colourJpegs}) => {
+        results = page.evaluate("""async ({sources, colourJpegs, gifs}) => {
           const urls = new Map();
           const module = (name, replacements = {}) => {
             let text = sources[name];
@@ -43,12 +45,12 @@ with sync_playwright() as playwright:
             module('demo/flow_preview_controller.mjs', {'../flow_reading.mjs':'flow_reading.mjs','../flow_session.mjs':'flow_session.mjs',
               './flow_preview_export.mjs':'demo/flow_preview_export.mjs'});
             module('demo/flow_export_controls.mjs', {'../flow_session.mjs':'flow_session.mjs','../flow_export.mjs':'flow_export.mjs'});
-            module('tests/flow_assets.browser.mjs', {'../flow-assets.js': 'flow-assets.js',
+            module('tests/flow_assets.browser.mjs', {'../flow-assets.js': 'flow-assets.js', '../flow_raster.mjs': 'flow_raster.mjs',
               './flow_image_fixtures.mjs': 'tests/flow_image_fixtures.mjs','../demo/flow_preview_controller.mjs':'demo/flow_preview_controller.mjs',
               '../demo/flow_export_controls.mjs':'demo/flow_export_controls.mjs','../flow_export.mjs':'flow_export.mjs'});
-            return await (await import(urls.get('tests/flow_assets.browser.mjs'))).run(colourJpegs);
+            return await (await import(urls.get('tests/flow_assets.browser.mjs'))).run(colourJpegs, gifs);
           } finally { for (const url of urls.values()) URL.revokeObjectURL(url); }
-        }""", {"sources": sources, "colourJpegs": colour_jpegs})
+        }""", {"sources": sources, "colourJpegs": colour_jpegs, "gifs": gifs})
         for name in results:
             print(f"PASS: {name}")
         print(json.dumps({"passed": len(results), "browser": browser.version}))

@@ -157,10 +157,8 @@ fn runs(pdf: &[u8]) -> Vec<Run> {
                     let font = &fonts[selected];
                     let cids = pdf_content::glyph_ids(&operation);
                     let text: String = cids.iter().map(|cid| font.unicode[cid].as_str()).collect();
-                    let mut width: f32 = cids
-                        .iter()
-                        .map(|cid| font.widths[usize::from(*cid)])
-                        .sum();
+                    let mut width: f32 =
+                        cids.iter().map(|cid| font.widths[usize::from(*cid)]).sum();
                     for operand in &operation.operands {
                         if let Ok(adjustment) = operand.parse::<f32>() {
                             width -= adjustment;

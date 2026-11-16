@@ -117,17 +117,29 @@ A host may provide an equivalent decoder that transfers an exclusively owned,
 closeable Canvas image. Immutable Blob snapshots prevent later writes to loader
 buffers from changing a pending decode. Shared and detached buffers are refused.
 
-Before calling a decoder, a bounded container walk accepts static PNG and 8-bit
+Before calling a decoder, a bounded container walk accepts static PNG, GIF87a/GIF89a,
+and 8-bit
 baseline/progressive grayscale, RGB, and Adobe CMYK/YCCK JPEG. Four-component
 JPEGs require an unambiguous Adobe APP14 transform (`0` for CMYK or `2` for YCCK)
 before the first scan. Component identities, sampling, coding tables and every
 scan are checked; missing, truncated or contradictory color metadata is refused.
 Encoded bytes are retained unchanged when requested for publication.
 
+GIF previews show the first frame on its logical canvas, including local/global
+palettes, interlacing, frame offsets and transparency. The container walk checks
+every frame and extension through the final trailer before decoding. The decoder
+receives an immutable first-frame prefix with a GIF trailer, so later animation
+frames never enter its input. The original complete animation remains the source
+for HTML, SVG and EPUB export; PDF uses its existing first-frame rendering.
+Plain-text graphics and unknown extensions are refused. Comment and application
+metadata are bounded by the same encoded-byte limit. Palette-index and compressed
+pixel decoding remain the browser codec's responsibility; no additional image
+codec or animation timer is introduced.
+
 Dimensions, encoded bytes and aggregate
 reserved pixels are checked before allocation; actual decoder dimensions must
-match, allowing EXIF JPEG orientation to exchange width and height. SVG, GIF,
-WebP, animation, unmarked four-component/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
+match, allowing EXIF JPEG orientation to exchange width and height. SVG,
+WebP, APNG, unmarked four-component/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
 compressed ancillary metadata (`iCCP`, `zTXt`, `iTXt`) are explicitly refused.
 The conservative PNG metadata restriction avoids decompression independent of
 image pixel bounds. Re-encode such input as plain PNG or supported JPEG before
@@ -148,7 +160,7 @@ scratch buffers. The host must limit its own I/O *before* returning bytes.
 
 ## Verification
 
-`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs` exercises the
+`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs wasm/flow_raster_gif.test.mjs` exercises the
 production admission/ownership code with explicitly synthetic containers,
 bitmaps, and session doubles, including an asynchronous session. The CMYK/YCCK
 suite also uses the real baseline/progressive JPEG fixtures shared with PDF
@@ -156,14 +168,16 @@ tests and checks every truncated prefix and malformed color metadata. It does no
 claim real Rust/WASM or browser decoding.
 
 `python wasm/tests/run_flow_assets.py --chromium /usr/bin/chromium` runs actual
-PNG/JPEG decoding, oriented dimensions, drawing and pixel assertions in Chromium,
-including all six color patches in the four CMYK/YCCK fixtures, without network
-or a server. Its session is explicitly synthetic; Rust layout
+PNG/JPEG/GIF decoding, oriented dimensions, drawing and pixel assertions in Chromium,
+including all six color patches in the four CMYK/YCCK fixtures and real animated
+and interlaced GIF fixtures, without network or a server. GIF checks cover every
+interlaced pixel, transparency, local palettes and offsets, one-frame decoder
+input, and exact animation retention. Its session is explicitly synthetic; Rust layout
 and generated-WASM integration still require the package gates on a build host.
 
 ## Local-image live preview
 
-The assembled `demo/flow-canvas.html` now includes an explicit local PNG/JPEG
+The assembled `demo/flow-canvas.html` now includes an explicit local PNG/JPEG/GIF
 picker, an **Insert image references at cursor** action, and **Revoke all images**.
 Files are authorized by exact name (or their explicitly constructed percent-encoded
 alias); no directory traversal, arbitrary URL resolution or network fallback is
@@ -204,3 +218,7 @@ The controller tests use the production controller and asset manager with explic
 session/bitmap doubles. Package tests prove exported imports and shipping inventory,
 not that a generated WASM package has been built. Serve the matching built package
 to exercise the complete live preview; no renderer fallback hides a missing build.
+
+GIF framing follows the [GIF89a specification](https://www.w3.org/Graphics/GIF/spec-gif89a.txt).
+For partially filled opaque frames, uncovered canvas pixels follow the browser
+codec's background policy, which can differ from the native PDF renderer.

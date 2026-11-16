@@ -84,8 +84,12 @@ test("document GIF selection preserves literal and encoded aliases in flat and f
     assert.equal(assets.has("https://example.test/motion.gif"), false);
     assert.equal(assets.has("../../motion.gif"), false);
   }
-  // The separate measured raster adapter still admits only PNG/JPEG.
-  assert.equal(createDirectoryImageSources([file("manual/motion.gif", bytes)]).count, 0);
+  // The measured preview uses the same explicitly authorized GIF source.
+  const flow = createDirectoryImageSources([file("manual/motion.gif", bytes)]);
+  assert.equal(flow.count, 1);
+  assert.deepEqual(await flow.load({ url: "motion.gif" }, {
+    signal: new AbortController().signal, maxBytes: bytes.length,
+  }), bytes);
 });
 
 test("GIF image limits are enforced before reading selected files", async () => {

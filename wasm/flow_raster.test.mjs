@@ -36,13 +36,17 @@ test("byte/pixel bounds are checked before browser decode", () => {
   assert.throws(() => rasterInfo(png(), { ...limits, maxAssetBytes: 1 }), code("ASSET_BYTE_LIMIT"));
 });
 
-test("MIME names never admit SVG, GIF, APNG, compressed PNG metadata or unknown critical chunks", () => {
-  for (const text of ["<svg xmlns='http://www.w3.org/2000/svg'/>", "GIF89a", "RIFF1234WEBP"]) {
+test("MIME names never admit SVG, APNG, compressed PNG metadata or unknown critical chunks", () => {
+  for (const text of ["<svg xmlns='http://www.w3.org/2000/svg'/>", "RIFF1234WEBP"]) {
     assert.throws(
       () => rasterInfo(new TextEncoder().encode(text), limits),
       code("UNSUPPORTED_IMAGE"),
     );
   }
+  assert.throws(
+    () => rasterInfo(new TextEncoder().encode("GIF89a"), limits),
+    code("INVALID_IMAGE"),
+  );
   for (const type of ["acTL", "fcTL", "fdAT", "iCCP", "zTXt", "iTXt"]) {
     assert.throws(
       () => rasterInfo(png(2, 3, [[type, new Uint8Array(8)]]), limits),

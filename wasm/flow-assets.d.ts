@@ -35,7 +35,7 @@ export interface FlowImageLoadContext {
 }
 export interface FlowImageDecodeContext {
   readonly signal: AbortSignal;
-  readonly mime: "image/png" | "image/jpeg";
+  readonly mime: "image/png" | "image/jpeg" | "image/gif";
   readonly width: number;
   readonly height: number;
   readonly pixels: number;
@@ -64,8 +64,9 @@ export interface FlowImageOptions {
     request: Readonly<FlowAssetRequest>,
     context: FlowImageLoadContext,
   ) => Uint8Array | null | Promise<Uint8Array | null>;
-  /** Defaults to createImageBitmap. Only admitted static PNG/JPEG reaches this
-   * callback. Return an exclusively owned CanvasImageSource with close(). */
+  /** Defaults to createImageBitmap. Only admitted PNG/JPEG or a static first-frame
+   * GIF reaches this callback. GIF animation bytes are retained independently
+   * for export. Return an exclusively owned CanvasImageSource with close(). */
   decode?: (
     blob: Blob,
     context: FlowImageDecodeContext,

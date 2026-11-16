@@ -102,9 +102,9 @@ The selectable reading text below comes from the same session, not a second Mark
 <p id="draft-status" role="status">Inspecting local draft storage. Autosave is off until explicitly enabled.</p>
 </section>
 <section id="image-controls" aria-label="Local image authorization">
-<label for="images">Authorize local PNG/JPEG image files</label>
-<input id="images" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple aria-describedby="image-help image-status">
-<p id="image-help">Files stay in this browser. At most 128 files, 8 MiB each and 32 MiB total. Static PNG and baseline/progressive JPEG are supported; see ASSETS.md for the bounded decoder profile. Changing or clearing the grant restarts the preview and immediately clears old pixels and prepared downloads. Encoded bytes are retained in the native session for export until source changes or restart.</p>
+<label for="images">Authorize local PNG/JPEG/GIF image files</label>
+<input id="images" type="file" accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif" multiple aria-describedby="image-help image-status">
+<p id="image-help">Files stay in this browser. At most 128 files, 8 MiB each and 32 MiB total. PNG, baseline/progressive JPEG and GIF first-frame previews are supported. GIF animation stays in exported HTML, SVG and EPUB. Changing or clearing the grant restarts the preview and immediately clears old pixels and prepared downloads. Encoded bytes are retained in the native session for export until source changes or restart.</p>
 <p><button id="insert-images" type="button" disabled>Insert image references at cursor</button> <button id="clear-images" type="button" disabled>Revoke all image access</button></p>
 <p id="image-status" role="status">No local images authorized. Network image loading is disabled.</p>
 </section>

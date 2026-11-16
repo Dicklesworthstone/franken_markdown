@@ -32,6 +32,8 @@ installDocumentWorker({
       const captured = JSON.parse(JSON.stringify(options, (_key, value) =>
         value instanceof Uint8Array ? [...value] : value));
       parentPort.postMessage({ testEvent: "render", format, source, options: captured });
+      if (format === "epub" && options.author !== undefined && workerData?.epubAuthorSupport === false)
+        throw Object.assign(new Error("EPUB author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
       if (format === workerData?.hang) await new Promise(() => {});
       if (format === workerData?.fail || (source === "fail-pdf" && format === "pdf"))
         throw new Error("fixture renderer failure");

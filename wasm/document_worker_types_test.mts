@@ -22,7 +22,7 @@ await renderer.renderPdf("# Branded PDF", {
 const svg: DocumentOutput<"svg"> = await renderer.render("svg", "# SVG", { maxWidthPt: 612 }, control);
 const svgExtension: "svg" = svg.extension;
 await renderer.renderHtml("# HTML", { customCss: "body{}", pdfImages: [{ destination: "a.png", bytes: new Uint8Array([1]) }] });
-await renderer.renderEpub("# Book", { title: "Book", lang: "en" });
+await renderer.renderEpub("# Book", { title: "Book", author: "Émile & Ada", lang: "en" });
 await renderer.renderInteractiveHtml("# Editable", { fontScale: "lg" });
 await renderer.renderInteractiveHtml("# Configured", {customCss: 'main{}', toc: true, tocDepth: 2,
   htmlFontFormat: 'woff2', pdfImages: [{destination: 'chart.png', bytes: new Uint8Array([1])}],
@@ -60,7 +60,7 @@ await renderer.renderSvg("Term\n: Definition", { profile: "commonmark-gfm" });
 await renderer.renderEpub("Term\n: Definition", { profile: "gfm-plus" });
 await renderer.publish("Term\n: Definition", [
   { format: "html", options: { profile: "commonmark-gfm" } },
-  { format: "epub", options: { profile: "gfm-plus" } },
+  { format: "epub", options: { profile: "gfm-plus", author: "Émile & Ada" } },
 ]);
 // @ts-expect-error Authoring profiles use canonical explicit names.
 await renderer.renderPdf("Term\n: Definition", { profile: "gfm" });

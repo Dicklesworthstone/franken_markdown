@@ -7,7 +7,7 @@ import test from "node:test";
 
 // Execute the real public wrapper with a generated-binding double. This proves
 // ABI marshalling/ownership, not native font subsetting or EPUB rendering.
-async function fixture({ advanced = true, blocked = false, fullFonts = true, metadata = false } = {}) {
+async function fixture({ advanced = true, blocked = false, fullFonts = true, metadata = false, sourceAuthor } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-epub-abi-"));
   await mkdir(join(dir, "pkg"));
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
@@ -17,6 +17,7 @@ async function fixture({ advanced = true, blocked = false, fullFonts = true, met
     await copyFile(new URL(name, import.meta.url), join(dir, name));
   const unused = ["renderHtmlConfiguredAdvanced", "renderInteractiveHtmlConfigured", "renderPdfConfiguredMulti", "renderSvgConfigured", "accessibilityAudit", "capabilities", "documentStats", "renderBookPdf", "renderBookSite", "renderSemanticDiffHtml", "searchIndex", "semanticDiff"];
   await writeFile(join(dir, "pkg/franken_markdown.js"), `
+    ${sourceAuthor === undefined ? "" : `export const sourceMetadata = () => ${JSON.stringify(JSON.stringify({ author: sourceAuthor }))};`}
     export const calls = [];
     export let initCount = 0, frees = 0;
     let release;
@@ -57,6 +58,23 @@ test("EPUB author metadata preserves text, profile and owned assets across initi
   assert.equal(args[20], "  É中 & <Research>  ");
   assert.deepEqual([...args[10]], [1, 2]);
   assert.equal(bindings.frees, 1);
+});
+
+test("EPUB metadata keeps empty-as-unset frontmatter inheritance across the public wrapper", async () => {
+  const source = "---\nauthor: Frontmatter creator\n---\n# Book";
+  for (const author of [undefined, ""]) {
+    const { api, bindings } = await fixture({ metadata: true, sourceAuthor: "Frontmatter creator" });
+    await api.renderEpub(source, { author });
+    assert.equal(bindings.calls[0].args[20], "Frontmatter creator");
+    assert.equal(bindings.frees, 1);
+  }
+  const { api, bindings } = await fixture({ metadata: true, sourceAuthor: "Frontmatter creator" });
+  const author = "  É中 & <Research>\r\nCo-author 😀  ";
+  await api.renderEpub(source, { author });
+  assert.equal(bindings.calls[0].args[20], author);
+  const legacy = await fixture({ metadata: false, sourceAuthor: "Frontmatter creator" });
+  await assert.rejects(legacy.api.renderEpub(source, { author: "" }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  assert.equal(legacy.bindings.calls.length, 0);
 });
 
 test("older EPUB bindings cannot silently discard an explicitly requested author", async () => {

@@ -3,7 +3,7 @@ import type { WorkerFlowSession, FlowEpubExportOptions as WorkerEpubOptions } fr
 
 declare const direct: FlowSession;
 declare const worker: WorkerFlowSession;
-const options: FlowEpubExportOptions = { title: "Book", lang: "fr", toc: true, tocDepth: 2,
+const options: FlowEpubExportOptions = { title: "Book", author: "Émile & Ada", lang: "fr", toc: true, tocDepth: 2,
   customCss: "", darkMode: "disabled", maxOutputBytes: 1024 * 1024 };
 const workerOptions: WorkerEpubOptions = options;
 const a: Promise<FlowExportResult> = direct.exportDocument("epub", options, direct.token);

@@ -22,7 +22,7 @@ const SETTINGS = {
   html: [...SHARED, "profile", "title", "customCss", "allowRawHtml", "lang", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat", "fontEmbedding"],
   pdf: [...SHARED, "profile", "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
   svg: [...SHARED, "profile", "maxWidthPt", "pdfImages", "fontAssets", "toc", "tocDepth"],
-  epub: [...SHARED, "profile", "title", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
+  epub: [...SHARED, "profile", "title", "author", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
   "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
 };
 const SLOTS = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
@@ -162,7 +162,8 @@ function normalize(format, source, options, knownSourceLength) {
     else if (key === "tocDepth") integer(value, 1, 6, key);
     else if (key === "fitToPages") integer(value, 1, 1000, key);
     else {
-      text(value, key === "customCss" ? 1024 * 1024 : 4096, key);
+      text(value, key === "customCss" ? 1024 * 1024
+        : format === "epub" && key === "author" ? 65536 : 4096, key);
       const choices = { font: ["sans", "serif"], darkMode: ["auto", "disabled"] }[key];
       if (choices && !choices.includes(value)) fail("INVALID_OPTIONS", `invalid ${key}`);
     }

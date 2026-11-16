@@ -491,6 +491,9 @@ export interface FlowHtmlExportOptions extends FlowExportOptions {
 }
 /** Reflowable native EPUB output, not a capture of editor geometry. */
 export interface FlowEpubExportOptions extends FlowExportOptions {
+  /** Verbatim creator metadata, at most 64 KiB UTF-8. Omitted or empty values
+   * allow source-frontmatter inheritance, as in renderEpub. Requires matching bindings. */
+  author?: string;
   /** Retain complete supplied/bundled fonts for reader shaping; default subset. */
   fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";

@@ -129,6 +129,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes", "toc", "tocDepth"] : [
     ...COMMON,
     ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding", "customCss"]),
+    ...(format === "epub" ? ["author"] : []),
     ...(format === "html" ? ["htmlFontFormat"] : []),
   ];
   options = runningRecord(options, allowed, `${format} export options`);
@@ -156,6 +157,15 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   }
   for (const key of ["title", ...(format === "pdf" ? ["author"] : [])]) {
     if (options[key] !== undefined) result[key] = text(options[key], key, 4096);
+  }
+  if (format === "epub" && options.author !== undefined) {
+    // Match the native EPUB metadata boundary, including exact whitespace.
+    // Empty strings retain the renderer's existing empty-as-unset convention.
+    // Capture before export yields; queue admission charges the retained text.
+    const author = text(options.author, "author", 65536);
+    if (new TextEncoder().encode(author).length > 65536)
+      fail("INVALID_OPTIONS", "EPUB author exceeds its 64 KiB UTF-8 limit");
+    result.author = author;
   }
   if (options.lang !== undefined) {
     const lang = text(options.lang, "lang", 64);

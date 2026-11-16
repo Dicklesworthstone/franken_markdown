@@ -99,6 +99,8 @@ installFlowWorker(endpoint, async (source, options) => {
     if (workerData?.delayMs)
       await new Promise((resolve) => setTimeout(resolve, workerData.delayMs));
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");
+    if (format === "epub" && settings.author !== undefined && workerData?.epubAuthorSupport === false)
+      throw Object.assign(new Error("EPUB author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (workerData?.fontEmbeddingSupport === false && settings.fontEmbedding === "full")
       throw Object.assign(new Error("Full font embedding requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (workerData?.typographySupport === false && (settings.optimalPagination || settings.strictPagination
@@ -122,6 +124,7 @@ installFlowWorker(endpoint, async (source, options) => {
           markdown,
           font: settings.font,
           title: settings.title,
+          author: settings.author,
           customCss: settings.customCss,
           epoch: settings.metadataEpochSeconds,
           running: settings.running,

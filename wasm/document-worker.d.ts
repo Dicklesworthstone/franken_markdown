@@ -6,7 +6,7 @@ export interface DocumentOptions {
   html: Shared & Pick<FmdRenderOptions, "title" | "customCss" | "allowRawHtml" | "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat" | "fontEmbedding">;
   pdf: Shared & Pick<FmdPdfRenderOptions, "title" | "author" | "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" | "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" | "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" | "optimalPagination" | "strictPagination" | "footnoteBacklinks" | "splitFootnotes" | "baselineGridPt" | "pdfImages" | "fontAssets" | "page" | "running" | "pdfA" | "pdfAStrict">;
   svg: Shared & Pick<FmdRenderOptions, "maxWidthPt" | "pdfImages" | "fontAssets" | "toc" | "tocDepth">;
-  epub: Shared & Pick<FmdRenderOptions, "title" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding">;
+  epub: Shared & Pick<FmdRenderOptions, "title" | "author" | "lang" | "customCss" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding">;
   "interactive-html": FmdInteractiveRenderOptions;
 }
 export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {

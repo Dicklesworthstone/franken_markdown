@@ -43,7 +43,7 @@ test("EPUB options use the shared worker normalizer without acquiring PDF-only d
   assert.ok(Object.isFrozen(normalized));
   settings.title = "later";
   assert.equal(normalized.title, "  Book  ");
-  for (const options of [{ author: "x" }, { pageNumbers: true }, { metadataEpochSeconds: 0 },
+  for (const options of [{ pageNumbers: true }, { metadataEpochSeconds: 0 },
     { allowRawHtml: true }, { fontAssets: [] }, { pdfImages: [] }, { customCss: "\ud800" },
     { customCss: "é".repeat(2 * 1024 * 1024 + 1) }, { tocDepth: 7 }]) {
     assert.throws(() => normalizeFlowExport("epub", options, token()), FlowError);

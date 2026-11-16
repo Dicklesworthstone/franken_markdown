@@ -10,6 +10,7 @@ import { renderEpub } from "@franken-suite/franken-markdown";
 
 const publication = await renderEpub("# Guide\n\n![Chart](chart.png)", {
   title: "Guide",
+  author: "Émile & Ada",
   lang: "en",
   toc: true,
   tocDepth: 2,
@@ -48,6 +49,27 @@ An explicitly empty `customCss` is preserved and disables the default style.
 EPUB navigation is a publication requirement; `toc`/`tocDepth` control the
 HTML-rendered document TOC, not removal of the required EPUB navigation file.
 
+## Creator metadata across publication APIs
+
+The `author` option is available on direct `renderEpub`, document-worker
+`renderEpub`/`render("epub", ...)`, single-document batch jobs, publication
+targets, and direct or worker Flow exports. It reaches the same native EPUB
+creator metadata binding in each route. Each target keeps its own author;
+requesting PDF and EPUB together does not copy one target's metadata to another.
+
+Nonempty author text is preserved verbatim, including Unicode, whitespace and
+line endings. Omitted or empty-string values allow source-frontmatter inheritance,
+matching the direct renderer's existing metadata behavior. EPUB author values
+are bounded to 64 KiB of UTF-8 and rejected for malformed Unicode, non-string
+values or accessors at worker/session admission. Capture occurs before
+initialization or queueing, and metadata is included in worker ingress budgets.
+
+A matching `renderEpubConfiguredMetadata` binding is required when the export
+resolves author metadata, including inheritance. A stale native package reports
+`UNSUPPORTED_WASM_PACKAGE`; a multi-format publication rejects without partial
+artifacts. No fallback silently drops the author. HTML, SVG and lightweight
+interactive-HTML exports retain their existing option contracts.
+
 ## Export the current editor session
 
 Both direct flow sessions and dedicated flow-worker sessions use the shared
@@ -58,6 +80,7 @@ request and result contract:
 const captured = session.token;
 const publication = await session.exportDocument("epub", {
   title: "Edited guide",
+  author: "Émile & Ada",
   lang: "en",
   toc: true,
   customCss: ".fmd { line-height: 1.7; }",
@@ -88,10 +111,15 @@ or replaying the export.
 
 ## Verification
 
-`node --test wasm/epub_assets.test.mjs wasm/epub_flow_export.test.mjs` executes
+`node --test wasm/epub_assets.test.mjs wasm/epub_flow_export.test.mjs
+wasm/epub_author_exports.test.mjs` executes
 the production JavaScript wrapper/export coordinator and shared validation.
 Generated bindings, native snapshots and native render bytes are test doubles;
 these tests do not prove compiled-WASM rendering or EPUB reader conformance.
+The author-export suite additionally runs the document and Flow dispatchers on
+Node worker threads, plus batch and multi-format publication paths. It checks
+exact metadata ownership, blank/omitted values, UTF-8 bounds, queue accounting
+and propagation of unsupported-native-binding errors.
 
 `tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution
 NodeNext wasm/epub_export_types_test.mts` checks direct and worker format-specific

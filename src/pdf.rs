@@ -43,6 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod baseline_grid;
+mod cell_fit;
 mod data_uri;
 mod discretionary;
 mod fenced_code;
@@ -17980,6 +17981,17 @@ fn build_cell_line_owned(
 
 /// Greedily wrap styled cell tokens to `max_width`, preserving per-run styling.
 fn wrap_cell_styled(
+    toks: &[Tok],
+    max_width: f32,
+    size: f32,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
+) -> Vec<CellWrapLine> {
+    let lines = wrap_cell_styled_unfitted(toks, max_width, size, faces, width_cache);
+    cell_fit::repair(lines, max_width, size, faces, width_cache)
+}
+
+fn wrap_cell_styled_unfitted(
     toks: &[Tok],
     max_width: f32,
     size: f32,

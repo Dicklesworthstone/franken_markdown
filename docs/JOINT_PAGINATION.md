@@ -37,6 +37,16 @@ accepted only when the existing page planner reproduces the selected page
 boundaries from those final lines. Both streaming and monolithic PDF emission use
 that same result.
 
+Before pagination, table cells, TOC titles and emergency prose wrapping also
+check their final joined glyph runs against their containing width. Positive
+kerning can make a joined run wider than the sum of separately measured words
+or characters, including in the bundled serif face. Only overflowing rows are
+refitted; their source, font sizes, styles, links and footnote identities stay
+intact. Formula and image boxes and the supported Latin base/combining-mark
+clusters stay indivisible. A single cluster wider than the whole measure keeps
+its source and size under the existing emergency policy. Already-fitting rows
+retain their output, and pagination accounts for any additional repaired rows.
+
 Exact and strict page planning also honor explicit page breaks after headings.
 The inferred keep with the next block stops when the heading's list item or
 quotation ends; a sibling item or content outside that quotation is not its

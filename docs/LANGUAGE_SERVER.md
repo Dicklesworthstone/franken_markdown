@@ -48,6 +48,12 @@ Clients advertising hierarchical symbols receive nested sections with separate
 section and heading-selection ranges. Other clients receive flat
 `SymbolInformation` locations. Empty headings have a nonempty display label.
 
+Heading IDs use the publication allocator, including literal suffix collisions
+and IDs already consumed by headings inside lists or quotes. Footnote headings
+allocate after the body in first-reference order; an unreferenced definition
+does not consume a body ID. This identity parity does not invent precise source
+ranges for nested headings.
+
 `textDocument/foldingRange` folds heading sections and actual multiline code,
 list, quote, table, math, HTML, definition-list and footnote blocks. Exclusive
 end positions never consume the following heading. Results are ordered,

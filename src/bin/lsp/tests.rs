@@ -398,3 +398,32 @@ fn navigation_negotiates_client_capabilities_and_rejects_stale_buffers() -> Test
     );
     Ok(())
 }
+
+#[test]
+fn document_symbols_retain_publication_ids_after_nested_and_literal_collisions() -> TestResult {
+    let mut server = Server::default();
+    server.handle(json(r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true}}}}}"###)?);
+    server.open(&json(
+        r###"{"textDocument":{"uri":"untitled:anchors","version":1,"text":"> # A\n\n# A\n\n# A-2\n\n# A\n"}}"###,
+    )?)?;
+    let params = json(r###"{"textDocument":{"uri":"untitled:anchors"}}"###)?;
+    let symbols = server
+        .navigate("textDocument/documentSymbol", &params)
+        .map_err(|(_, reason)| reason)?;
+    assert_eq!(
+        values(&symbols)
+            .iter()
+            .filter_map(|symbol| symbol.get("detail").and_then(Json::as_str))
+            .collect::<Vec<_>>(),
+        ["#a-2", "#a-2-2", "#a-3"]
+    );
+    assert_eq!(values(&symbols).len(), 3);
+    let first = values(&symbols)[0]
+        .get("selectionRange")
+        .ok_or("missing heading selection range")?;
+    assert_eq!(
+        first,
+        &json(r###"{"start":{"line":2,"character":0},"end":{"line":2,"character":3}}"###)?
+    );
+    Ok(())
+}

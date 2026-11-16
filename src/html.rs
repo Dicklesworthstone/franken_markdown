@@ -1758,21 +1758,53 @@ pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
 }
 
 fn heading_identifiers_for_blocks(blocks: &[Block]) -> HeadingIdentifiers {
+    heading_identifiers_for_roots(blocks.iter())
+}
+
+/// Preserve publication identity for borrowed spanned roots without cloning
+/// their AST. The slots still include nested and omitted note headings, in
+/// source order, while allocation follows actual body/first-reference order.
+pub(crate) fn spanned_heading_identifiers(doc: &crate::SpannedDocument) -> HeadingIdentifiers {
+    heading_identifiers_for_roots(doc.iter_blocks().map(|block| &block.node))
+}
+
+fn heading_identifiers_for_roots<'a>(
+    roots: impl Iterator<Item = &'a Block> + Clone,
+) -> HeadingIdentifiers {
     let mut ordinals = HashMap::new();
-    walk_anchor_blocks(blocks, true, &mut |block| {
-        if matches!(block, Block::Heading { .. }) {
-            let ordinal = ordinals.len();
-            // Pointers identify nodes in this immutable tree only. They never
-            // enter serialized data or determine allocation/emission order.
-            ordinals.insert(std::ptr::from_ref(block), ordinal);
-        }
-    });
+    let mut definitions = BTreeMap::new();
+    for root in roots.clone() {
+        walk_anchor_blocks(std::slice::from_ref(root), true, &mut |block| {
+            match block {
+                Block::Heading { .. } => {
+                    let ordinal = ordinals.len();
+                    // Pointers identify nodes in this immutable tree only. They
+                    // never enter serialized data or determine emission order.
+                    ordinals.insert(std::ptr::from_ref(block), ordinal);
+                }
+                Block::FootnoteDefinition { id, blocks } => {
+                    definitions.entry(id.as_str()).or_insert(blocks.as_slice());
+                }
+                _ => {}
+            }
+        });
+    }
     let mut headings = vec![None; ordinals.len()];
     let mut state = RenderState {
-        root_blocks: blocks,
+        // The source-order walk already visits every definition, including
+        // those nested in duplicate bodies. Reuse that borrowed inventory.
+        footnote_defs: definitions,
+        footnote_defs_scanned: true,
         ..RenderState::default()
     };
-    collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state);
+    for root in roots {
+        collect_emitted_heading_ids(
+            std::slice::from_ref(root),
+            &ordinals,
+            &mut headings,
+            &mut state,
+        );
+    }
     let mut cursor = 0;
     while let Some(id) = state.footnote_order.get(cursor) {
         let blocks = state.footnote_defs.get(id.as_str()).copied();

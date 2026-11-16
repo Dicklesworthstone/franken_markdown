@@ -15,11 +15,10 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fmt;
 
 use crate::ast::{Block, Inline, List, Table};
-use crate::html::{inlines_to_plain, slug_inlines};
+use crate::html::inlines_to_plain;
 use crate::span::{
     CaptureId, DisjointSourceRanges, NestedProvenanceGraph, NestedProvenanceNode, ProvenanceError,
     ProvenanceKind, ProvenanceRelation, QualifiedSpan, SourceOrigin, SourceSpan, SpannedBlock,
@@ -68,14 +67,14 @@ impl TextSelectionRange {
     #[inline]
     #[must_use]
     pub const fn overlaps(self, other: Self) -> bool {
-        self.start < other.end && other.start < self.end
+        !self.is_empty() && !other.is_empty() && self.start < other.end && other.start < self.end
     }
 }
 
 /// Errors arising during source mapping or copy operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceMapError {
-    /// Provided selection range is invalid (reversed or out of bounds).
+    /// Provided selection range is invalid (reversed, out of bounds, or splits UTF-8).
     InvalidSelectionRange {
         start: usize,
         end: usize,
@@ -237,7 +236,11 @@ impl DocumentSourceMap {
         &self.elements
     }
 
-    /// Borrow all authoritative heading anchors.
+    /// Borrow authoritative anchors for primary, top-level headings.
+    ///
+    /// IDs follow actual HTML publication allocation, including collisions
+    /// with headings inside lists and quotes. Nested headings and note bodies
+    /// do not acquire invented exact source ranges here.
     #[inline]
     #[must_use]
     pub fn headings(&self) -> &[HeadingSourceAnchor] {
@@ -260,13 +263,7 @@ impl DocumentSourceMap {
     /// Plan §12.4: "Preview selection offers two explicit actions: copy rendered reading
     /// text and copy corresponding Markdown source."
     pub fn copy_rendered_text(&self, range: TextSelectionRange) -> Result<String, SourceMapError> {
-        if range.start > range.end || range.end > self.rendered_text.len() {
-            return Err(SourceMapError::InvalidSelectionRange {
-                start: range.start,
-                end: range.end,
-                max: self.rendered_text.len(),
-            });
-        }
+        self.validate_selection_range(range)?;
         Ok(self.rendered_text[range.start..range.end].to_string())
     }
 
@@ -278,19 +275,17 @@ impl DocumentSourceMap {
         range: TextSelectionRange,
         source: &'s str,
     ) -> Result<&'s str, SourceMapError> {
-        if range.start > range.end || range.end > self.rendered_text.len() {
-            return Err(SourceMapError::InvalidSelectionRange {
-                start: range.start,
-                end: range.end,
-                max: self.rendered_text.len(),
-            });
-        }
+        self.validate_selection_range(range)?;
 
         let overlapping = self.elements_overlapping(range);
         if overlapping.is_empty() {
             // Check if selection is zero-width at an element boundary
             if let Some(e) = self.element_at_rendered_offset(range.start)
-                && let Some(enclosing) = e.source_ranges.enclosing_span()
+                && let Some(enclosing) = self
+                    .block_spans
+                    .get(e.block_index)
+                    .copied()
+                    .or_else(|| e.source_ranges.enclosing_span())
             {
                 return enclosing
                     .slice(source)
@@ -352,13 +347,7 @@ impl DocumentSourceMap {
         &self,
         range: TextSelectionRange,
     ) -> Result<Vec<QualifiedSpan>, SourceMapError> {
-        if range.start > range.end || range.end > self.rendered_text.len() {
-            return Err(SourceMapError::InvalidSelectionRange {
-                start: range.start,
-                end: range.end,
-                max: self.rendered_text.len(),
-            });
-        }
+        self.validate_selection_range(range)?;
 
         let mut qualified = Vec::new();
         for e in self.elements_overlapping(range) {
@@ -486,6 +475,20 @@ impl DocumentSourceMap {
         })
     }
 
+    fn validate_selection_range(&self, range: TextSelectionRange) -> Result<(), SourceMapError> {
+        if range.start > range.end
+            || !self.rendered_text.is_char_boundary(range.start)
+            || !self.rendered_text.is_char_boundary(range.end)
+        {
+            return Err(SourceMapError::InvalidSelectionRange {
+                start: range.start,
+                end: range.end,
+                max: self.rendered_text.len(),
+            });
+        }
+        Ok(())
+    }
+
     fn elements_overlapping(&self, range: TextSelectionRange) -> Vec<&RenderedElement> {
         self.elements
             .iter()
@@ -503,7 +506,7 @@ struct SourceMapBuilder {
     elements: Vec<RenderedElement>,
     headings: Vec<HeadingSourceAnchor>,
     graph_children: Vec<NestedProvenanceNode>,
-    heading_slug_counts: HashMap<String, usize>,
+    heading_identifiers: std::vec::IntoIter<Option<String>>,
     next_element_id: u64,
     source_len: usize,
     block_spans: Vec<SourceSpan>,
@@ -516,7 +519,7 @@ impl SourceMapBuilder {
             elements: Vec::new(),
             headings: Vec::new(),
             graph_children: Vec::new(),
-            heading_slug_counts: HashMap::new(),
+            heading_identifiers: Vec::new().into_iter(),
             next_element_id: 1,
             source_len,
             block_spans: Vec::new(),
@@ -524,6 +527,9 @@ impl SourceMapBuilder {
     }
 
     fn build(&mut self, doc: &SpannedDocument, source: &str) -> Result<(), SourceMapError> {
+        self.heading_identifiers = crate::html::spanned_heading_identifiers(doc)
+            .headings
+            .into_iter();
         self.block_spans = doc.iter_blocks().map(|b| b.span).collect();
         for (block_idx, block) in doc.iter_blocks().enumerate() {
             self.build_block(block_idx, block, source)?;
@@ -543,31 +549,18 @@ impl SourceMapBuilder {
         match &spanned_block.node {
             Block::Heading { level, inlines } => {
                 let title = inlines_to_plain(inlines);
-                let base_slug = slug_inlines(inlines);
-                let base = if base_slug.is_empty() {
-                    "section".to_string()
-                } else {
-                    base_slug
-                };
-
-                let count = self.heading_slug_counts.entry(base.clone()).or_insert(0);
-                *count += 1;
-                let slug = if *count == 1 {
-                    base
-                } else {
-                    format!("{}-{}", base, count)
-                };
-
                 let rendered_offset = self.rendered_text.len();
-                self.headings.push(HeadingSourceAnchor {
-                    slug,
-                    title: title.clone(),
-                    level: *level,
-                    source_span: block_span,
-                    origin: SourceOrigin::Primary,
-                    block_index: block_idx,
-                    rendered_offset,
-                });
+                if let Some(slug) = self.heading_identifiers.next().flatten() {
+                    self.headings.push(HeadingSourceAnchor {
+                        slug,
+                        title,
+                        level: *level,
+                        source_span: block_span,
+                        origin: SourceOrigin::Primary,
+                        block_index: block_idx,
+                        rendered_offset,
+                    });
+                }
 
                 self.append_inlines(block_idx, inlines, block_span, source, &mut block_children)?;
                 self.append_rendered_str("\n\n");
@@ -781,6 +774,10 @@ impl SourceMapBuilder {
                 self.append_rendered_str("\n\n");
             }
             Block::Heading { inlines, .. } => {
+                // Nested headings participate in publication ID allocation,
+                // including deferred or omitted notes. Retain their slot but
+                // do not invent an exact nested heading source range.
+                let _ = self.heading_identifiers.next();
                 self.append_inlines_at(
                     block_idx,
                     inlines,

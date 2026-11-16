@@ -1978,8 +1978,9 @@ function parseMarkdownClient(source, imageAssets) {
       const container = containers[0];
       if (!container || container.kind !== 'list') return false;
       const marker = listMarker(line);
-      return indentation(line).width >= container.width || !rule(line) && marker
-        && marker.ordered === container.ordered && marker.marker.at(-1) === container.marker;
+      return !rule(line) && marker && marker.ordered === container.ordered
+        && marker.marker.at(-1) === container.marker
+        || !container.empty && indentation(line).width >= container.width;
     };
     function observe(line, level = 0) {
       charge(line.length + 1);
@@ -1990,7 +1991,9 @@ function parseMarkdownClient(source, imageAssets) {
           const inner = stripQuote(line);
           if (inner !== null) { observe(inner, level + 1); return; }
         } else {
-          if (blankLine(line) || indentation(line).width >= container.width) {
+          if (!(container.empty && blankLine(line))
+              && (blankLine(line) || indentation(line).width >= container.width)) {
+            if (!blankLine(line)) container.empty = false;
             observe(stripIndent(line, container.width), level + 1); return;
           }
           sibling = !!listMarker(line);
@@ -2055,7 +2058,8 @@ function parseMarkdownClient(source, imageAssets) {
       const marker = listMarker(line);
       if (marker) {
         if (depth + level < MAX_DEPTH) {
-          allocate(); containers.push({kind: 'list', width: marker.width, ordered: marker.ordered, marker: marker.marker.at(-1)});
+          allocate(); containers.push({kind: 'list', width: marker.width, ordered: marker.ordered,
+            marker: marker.marker.at(-1), empty: blankLine(marker.text)});
           observe(marker.text.replace(/^\[([ xX])\](?:\s+|$)/, ''), level + 1);
         }
         return;
@@ -2212,6 +2216,17 @@ function parseMarkdownClient(source, imageAssets) {
               }
               let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (!blankLine(lines[j])) break; j++; }
               const following = j < lines.length && !rule(lines[j]) && listMarker(lines[j]);
+              // A marker with no content cannot acquire its first block after
+              // a blank line. The gap may still separate same-list siblings,
+              // including markers indented up to three columns. Otherwise the
+              // following source keeps its original indentation outside this
+              // item, so indented code cannot become a reference definition.
+              if (item.length === 1 && blankLine(item[0])) {
+                if (following && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1)) {
+                  blank = true; i = j;
+                }
+                break;
+              }
               const continued = j < lines.length && indentation(lines[j]).width >= next.width;
               if (!continued && !(following && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1))) break;
               // Only a gap between direct blocks/items loosens this list. A

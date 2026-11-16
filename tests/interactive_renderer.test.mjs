@@ -1,3 +1,4 @@
+import './interactive_empty_list_items.test.mjs';
 // Run with: node --test tests/interactive_renderer.test.mjs
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

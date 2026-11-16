@@ -4025,6 +4025,9 @@ enum TailContainer {
         content_indent: usize,
         ordered: bool,
         marker_char: char,
+        // A blank immediately after an empty marker closes the item, even
+        // when a later line reaches its former content indentation.
+        empty: bool,
     },
 }
 
@@ -4073,12 +4076,12 @@ impl ContainerTail {
             content_indent,
             ordered,
             marker_char,
-            ..
+            empty,
         }) = self.containers.first()
         else {
             return false;
         };
-        leading_spaces(line) >= *content_indent
+        (!*empty && leading_spaces(line) >= *content_indent)
             || list_marker(line).is_some_and(|marker| {
                 marker.ordered == *ordered && marker.marker_char == *marker_char
             })
@@ -4156,8 +4159,19 @@ impl ContainerTail {
                     }
                     false
                 }
-                TailContainer::List { content_indent, .. } => {
-                    if is_blank_line(line) || leading_spaces(line) >= content_indent {
+                TailContainer::List {
+                    content_indent,
+                    empty,
+                    ..
+                } => {
+                    if is_blank_line(line) && !empty {
+                        self.observe_at(strip_n(line, content_indent), depth + 1);
+                        return;
+                    }
+                    if !is_blank_line(line) && leading_spaces(line) >= content_indent {
+                        if let TailContainer::List { empty, .. } = &mut self.containers[depth] {
+                            *empty = false;
+                        }
                         self.observe_at(strip_n(line, content_indent), depth + 1);
                         return;
                     }
@@ -4290,6 +4304,7 @@ impl ContainerTail {
                     content_indent: marker.content_indent,
                     ordered: marker.ordered,
                     marker_char: marker.marker_char,
+                    empty: is_blank_line(marker.rest.as_ref()),
                 });
                 self.observe_at(split_task_marker(marker.rest.as_ref()).1, depth + 1);
             }
@@ -4343,23 +4358,6 @@ fn split_list_items_with_first_marker_tracked<'a>(
         tail.observe(split_task_marker(m.rest.as_ref()).1);
         i += 1;
 
-        if items.is_empty()
-            && is_blank_line(m.rest.as_ref())
-            && i < lines.len()
-            && is_blank_line(lines[i])
-        {
-            let (task, first_body) = split_task_marker(item_lines[0].as_ref());
-            item_lines[0] = std::borrow::Cow::Owned(first_body.to_string());
-            if let Some(tabs) = &mut tabs {
-                tabs.marker_body(item_lines[0].as_ref(), item_origin, &m);
-            }
-            if let Some(tracker) = &mut tracker {
-                tracker.map_suffix(item_lines[0].as_ref(), item_origin);
-            }
-            items.push((task, item_lines));
-            break;
-        }
-
         while i < lines.len() {
             if is_blank_line(lines[i]) && tail.retains_literal_blank() {
                 let stripped = if leading_spaces(lines[i]) >= m.content_indent {
@@ -4378,15 +4376,24 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 while j < lines.len() && is_blank_line(lines[j]) {
                     j += 1;
                 }
+                let empty_item = item_lines.len() == 1 && is_blank_line(m.rest.as_ref());
                 if j < lines.len()
                     && list_marker(lines[j]).is_some_and(|next| {
                         next.ordered == ordered
                             && next.marker_char == first.marker_char
-                            && next.indent < m.content_indent
+                            && (empty_item || next.indent < m.content_indent)
                     })
                 {
                     tight = false;
                     i = j;
+                    break;
+                }
+                // The marker line already used the one allowed initial blank.
+                // A further blank closes an empty item at any position in a
+                // list. Its old indentation must not capture later blocks or
+                // harvest reference definitions from outside indented code.
+                // A same-type sibling above can still continue this list.
+                if empty_item {
                     break;
                 }
                 // A blank followed by another direct block makes this list
@@ -4404,9 +4411,13 @@ fn split_list_items_with_first_marker_tracked<'a>(
                         tight = false;
                     }
                 }
+                // Classify this gap once: observing its first blank can close
+                // an empty nested item. Reclassifying the remaining blanks
+                // would incorrectly assign a following sibling to the parent.
+                // Keep every row so indented code retains its literal blanks.
                 tail.observe("");
-                item_lines.push(std::borrow::Cow::Borrowed(""));
-                i += 1;
+                item_lines.extend(std::iter::repeat_n(std::borrow::Cow::Borrowed(""), j - i));
+                i = j;
                 continue;
             }
 

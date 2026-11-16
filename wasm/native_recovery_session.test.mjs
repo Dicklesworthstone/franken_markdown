@@ -113,3 +113,67 @@ test('independent tabs get independent identities, never overwrite by title or s
   first.session.enable(); second.session.enable(); await tick(); await first.encode(); await second.encode();
   assert.notEqual(first.writes[0].value.id, second.writes[0].value.id); await first.commit(); await second.commit();
 });
+
+test('a stale encoder failure cannot disarm recovery for a newer edit', async () => {
+  const h = harness(); const first = h.session.enable(); await tick();
+  // An encoder may only stop its worker asynchronously; cancellation is not a
+  // promise that a different terminal error cannot already be in flight.
+  h.calls[0].job.cancel = () => { h.calls[0].job.cancelled = true; };
+  h.source = '# Newest revision'; h.session.changed();
+  h.calls[0].job.reject(Error('Old worker failed before cancellation arrived'));
+  assert.equal(await first, false);
+  assert.equal(h.session.state.enabled, true); assert.equal(h.session.state.dirty, true);
+  assert.equal(h.writes.length, 0); assert.equal(h.timers.size, 1);
+  await h.runTimer(); assert.equal(h.calls[1].source, h.source);
+  await h.encode(); await h.commit(); assert.equal(h.session.state.dirty, false);
+});
+
+test('a stopped encoder cannot replace the disabled state with a late failure', async () => {
+  for (const stop of ['disable', 'suspend']) {
+    const h = harness(); const first = h.session.enable(); await tick();
+    h.calls[0].job.cancel = () => {};
+    h.session[stop](); const stopped = h.session.state.message;
+    h.calls[0].job.reject(Error('Previous encoder failed'));
+    assert.equal(await first, false);
+    assert.equal(h.session.state.message, stopped); assert.equal(h.session.state.enabled, false);
+    assert.equal(h.writes.length, 0); assert.equal(h.timers.size, 0);
+  }
+});
+
+test('a late encoder failure preserves explicit re-enabling after a pause', async () => {
+  const h = harness(); const first = h.session.enable(); await tick();
+  h.calls[0].job.cancel = () => {};
+  h.session.disable(); const resumed = h.session.enable();
+  h.calls[0].job.reject(Error('Previous encoder failed'));
+  assert.equal(await first, false); assert.equal(await resumed, false);
+  assert.equal(h.session.state.enabled, true); assert.equal(h.timers.size, 1);
+  await h.runTimer(); await h.encode(); await h.commit();
+  assert.equal(h.session.state.dirty, false); assert.equal(h.session.state.revision, 1);
+});
+
+test('a detached write failure cannot disable a newly enabled recovery target', async () => {
+  for (const code of ['QuotaExceededError', 'RECOVERY_CONFLICT']) {
+    const h = harness(); const first = h.session.enable(); await tick(); await h.encode();
+    const oldId = h.session.state.id;
+    h.session.forget(oldId); const resumed = h.session.enable();
+    h.writes[0].result.reject(Object.assign(Error(code), {code}));
+    assert.equal(await first, false); assert.equal(await resumed, false);
+    assert.equal(h.session.state.enabled, true); assert.equal(h.session.state.id, null);
+    assert.equal(h.session.state.savedAt, null); assert.equal(h.timers.size, 1);
+    await h.runTimer(); await h.encode();
+    assert.notEqual(h.writes[1].value.id, oldId); assert.equal(h.writes[1].value.expectedRevision, 0);
+    await h.commit(); assert.equal(h.session.state.dirty, false);
+  }
+});
+
+test('an edit cannot hide a real storage failure for the active recovery target', async () => {
+  for (const code of ['QuotaExceededError', 'RECOVERY_CONFLICT']) {
+    const h = harness(); const first = h.session.enable(); await tick(); await h.encode();
+    h.source = '# Newer edit'; h.session.changed();
+    h.writes[0].result.reject(Object.assign(Error(code), {code}));
+    assert.equal(await first, false);
+    assert.equal(h.session.state.enabled, false); assert.equal(h.session.state.dirty, true);
+    assert.equal(h.session.state.id, null); assert.equal(h.timers.size, 0);
+    assert.match(h.session.state.message, /Download/);
+  }
+});

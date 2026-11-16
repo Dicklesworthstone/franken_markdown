@@ -53,6 +53,12 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
       return true;
     }).catch(error => {
       if (error?.code === 'RECOVERY_CANCELLED') return false;
+      // Cancellation is best-effort. A late codec failure belongs to its old
+      // source/enable epoch, and a detached target no longer owns this writer.
+      // Neither may disable a newer explicit recovery request. Storage errors
+      // for the current target still stop recovery, even after another edit.
+      if ((job.target && target !== job.target)
+          || (job.phase === 'encoding' && (!enabled || epoch !== job.epoch))) return false;
       enabled = false; dirty = true; target = null; clearTimer();
       message = 'Local recovery stopped: ' + String(error?.message ?? error).slice(0, 512) + '. Download a source project to keep your work.';
       return false;

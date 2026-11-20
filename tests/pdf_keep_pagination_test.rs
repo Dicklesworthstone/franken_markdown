@@ -5,8 +5,9 @@
 
 use franken_markdown::pagination::height::HeightPaginationError;
 use franken_markdown::{
-    Block, PdfEmitOptions, PdfImageAsset, PdfOptions, PdfPaginationFailure, RenderError,
-    parse_markdown, render_pdf, render_pdf_document_reported, render_pdf_reported, render_warnings,
+    Block, DefinitionItem, Inline, PdfEmitOptions, PdfImageAsset, PdfOptions, PdfPaginationFailure,
+    RenderError, parse_markdown, render_pdf, render_pdf_document_reported, render_pdf_reported,
+    render_warnings,
 };
 use std::collections::BTreeMap;
 
@@ -788,4 +789,224 @@ fn empty_list_items_and_explicit_breaks_do_not_acquire_label_keeps() {
             .unwrap();
     assert!(rendered.pagination.page_breaks.is_exact());
     assert_eq!(painted_pages(&rendered.bytes), ["•", "HEADING"]);
+}
+
+#[test]
+fn definition_terms_stay_with_their_first_description_fragment() {
+    let prefix = "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.  \nPRE04.  \nPRE05.";
+    let source = format!("{prefix}\n\nTERM00\n: DESC00.  \n  DESC01.  \n  DESC02.  \n  DESC03.");
+    for (optimal, strict) in [(false, false), (true, false), (false, true)] {
+        let mut options = options(120.0, 80);
+        options.optimal_pagination = optimal;
+        options.strict_pagination = strict;
+        let rendered = render_pdf_reported(&source, &options).unwrap();
+        let pages = painted_pages(&rendered.bytes);
+        assert_eq!(pages[0], compact(prefix), "{pages:?}");
+        assert!(pages[1].starts_with("TERM00DESC00."), "{pages:?}");
+        assert_eq!(
+            pages.concat(),
+            format!("{}TERM00DESC00.DESC01.DESC02.DESC03.", compact(prefix))
+        );
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
+        }
+        assert_eq!(
+            rendered,
+            render_pdf_document_reported(
+                &parse_markdown(&source),
+                &options,
+                PdfEmitOptions::monolithic(),
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn definition_aliases_and_wrapped_terms_keep_their_own_descriptions() {
+    let prefix = "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.  \nPRE04.  \nPRE05.";
+    let terms = "TERM00\nALIAS00";
+    let description = ": DESC00.  \n  DESC01.  \n  DESC02.  \n  DESC03.";
+    let body = format!("{terms}\n{description}");
+    let quoted = body
+        .lines()
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for body in [&body, &quoted] {
+        let source = format!("{prefix}\n\n{body}");
+        for (optimal, strict) in [(false, false), (true, false), (false, true)] {
+            let mut options = options(120.0, 80);
+            options.optimal_pagination = optimal;
+            options.strict_pagination = strict;
+            let rendered = render_pdf_reported(&source, &options).unwrap();
+            let pages = painted_pages(&rendered.bytes);
+            assert_eq!(pages[0], compact(prefix), "{pages:?}");
+            assert!(pages[1].starts_with("TERM00ALIAS00DESC00."), "{pages:?}");
+            assert_eq!(
+                pages.concat(),
+                format!(
+                    "{}TERM00ALIAS00DESC00.DESC01.DESC02.DESC03.",
+                    compact(prefix)
+                )
+            );
+        }
+    }
+
+    // This term wraps naturally inside one source paragraph. All its physical
+    // lines must remain together even though the description can span pages.
+    let term = (0..12)
+        .map(|index| format!("TERM{index:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!("PRE00.  \nPRE01.\n\n{term}\n{description}");
+    let mut options = options(120.0, 80);
+    options.theme.page.size.width_pt = 220.0;
+    let pages = exact_pages(&source, &options);
+    let term_page = pages
+        .iter()
+        .position(|page| page.contains("TERM00"))
+        .unwrap();
+    assert!(
+        term_page > 0,
+        "the introduction cannot fit after the prefix: {pages:?}"
+    );
+    for index in 0..12 {
+        assert!(
+            pages[term_page].contains(&format!("TERM{index:02}")),
+            "{pages:?}"
+        );
+    }
+    assert!(pages[term_page].contains("DESC00.DESC01."), "{pages:?}");
+    assert_eq!(
+        pages.concat(),
+        format!("PRE00.PRE01.{}DESC00.DESC01.DESC02.DESC03.", compact(&term))
+    );
+}
+
+#[test]
+fn impossible_definition_keeps_refuse_strict_and_preserve_best_effort_content() {
+    let source = "TERM00\n: DESC00.  \n  DESC01.  \n  DESC02.  \n  DESC03.";
+    let mut options = options(40.0, 80);
+    assert_infeasible(&render_pdf_reported(source, &options).unwrap_err());
+
+    options.strict_pagination = false;
+    for optimal in [false, true] {
+        options.optimal_pagination = optimal;
+        let rendered = render_pdf_reported(source, &options).unwrap();
+        assert_eq!(
+            painted_pages(&rendered.bytes).concat(),
+            "TERM00DESC00.DESC01.DESC02.DESC03."
+        );
+        if optimal {
+            assert!(!rendered.pagination.page_breaks.is_exact());
+            assert_eq!(
+                rendered
+                    .pagination
+                    .page_breaks
+                    .fallback
+                    .as_ref()
+                    .unwrap()
+                    .code(),
+                "infeasible"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_definition_items_and_bold_prose_do_not_capture_following_content() {
+    let body = "BODY00.  \nBODY01.  \nBODY02.  \nBODY03.";
+    let mut document = parse_markdown(body);
+    document.blocks.insert(
+        0,
+        Block::DefinitionList(vec![
+            DefinitionItem {
+                terms: vec![
+                    vec![Inline::Text("TERMONLY".into())],
+                    vec![Inline::Text("ALIASONLY".into())],
+                ],
+                definitions: vec![Vec::new()],
+            },
+            DefinitionItem {
+                terms: Vec::new(),
+                definitions: Vec::new(),
+            },
+        ]),
+    );
+    let options = options(40.0, 80);
+    let rendered =
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    let pages = painted_pages(&rendered.bytes);
+    assert_eq!(pages[0], "TERMONLYALIASONLY", "{pages:?}");
+    assert_eq!(
+        pages.concat(),
+        format!("TERMONLYALIASONLY{}", compact(body))
+    );
+
+    let Block::Paragraph(description) = document.blocks.pop().unwrap() else {
+        panic!("description fixture");
+    };
+    document.blocks = vec![Block::DefinitionList(vec![DefinitionItem {
+        terms: vec![Vec::new()],
+        definitions: vec![description],
+    }])];
+    let rendered =
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    assert_eq!(
+        painted_pages(&rendered.bytes),
+        ["BODY00.BODY01.", "BODY02.BODY03."]
+    );
+
+    let source = format!("**BOLDONLY**\n\n{body}");
+    let pages = exact_pages(&source, &options);
+    assert_eq!(pages[0], "BOLDONLY", "{pages:?}");
+    assert_eq!(pages.concat(), format!("BOLDONLY{}", compact(body)));
+}
+
+#[test]
+fn selected_definition_term_alternative_does_not_capture_the_next_block() {
+    let prose = "The old stone bridge stood beside the river while the town woke slowly. \
+        A small boat crossed the clear water and a child watched from the steps. \
+        The morning light reached the houses along the bank and the shop doors opened. \
+        People walked to work, shared news with friends, and stopped to hear the birds. \
+        By noon the market was full of fresh bread, bright fruit, and flowers from the hills.";
+    let term = [prose; 3].join(" ");
+    let mut document = parse_markdown("NEXT00.  \nNEXT01.");
+    document.blocks.insert(
+        0,
+        Block::DefinitionList(vec![DefinitionItem {
+            terms: vec![vec![Inline::Text(term.clone())]],
+            definitions: Vec::new(),
+        }]),
+    );
+    let mut options = options(180.0, 80);
+    options.theme.page.size.width_pt = 572.0;
+    let rendered =
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    assert_eq!(
+        rendered.pagination.paragraph_variants.status,
+        franken_markdown::PdfParagraphVariantStatus::Planned
+    );
+    assert_eq!(
+        rendered.pagination.paragraph_variants.selected_alternatives,
+        1
+    );
+    let pages = painted_pages(&rendered.bytes);
+    assert_eq!(pages.len(), 2, "{pages:?}");
+    assert_eq!(pages[1], "NEXT00.NEXT01.");
+    // The source has no hyphens; remove only inserted line-end hyphens while
+    // checking every painted term character across the selected measured shape.
+    let painted_term: String = pages[0]
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '\u{00ad}' | '\u{2010}'))
+        .collect();
+    assert_eq!(painted_term, compact(&term));
+    assert_eq!(
+        rendered,
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic()).unwrap()
+    );
 }

@@ -152,6 +152,15 @@ returns typed infeasibility if the label and required body fragment cannot fit
 together. Empty items and explicit page breaks do not acquire a bond to unrelated
 content.
 
+Definition-list terms and aliases likewise stay with their item's first legal
+description fragment. Wrapped terms remain whole, while a long description may
+continue on later pages under the ordinary widow/orphan rules. The association
+comes from the definition-list source, so bold paragraphs and term-only items
+do not capture following content. Paragraph alternatives retain the same term
+ownership. Exact pagination enforces these keeps; an impossible group produces
+typed infeasibility in strict mode, or an explicit best-effort fallback that
+preserves the complete text. Default pagination uses the same strong preference.
+
 The separate `paragraph_variants` report records admitted searches, offered and
 selected alternatives, typography-mode restrictions, item/retained-line/work/
 state-cell limits, and rejected joint searches. Exact page breaks for the final

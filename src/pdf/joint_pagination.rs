@@ -271,7 +271,8 @@ pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
     }
     let end = pdf_height_block_end(lines, start);
     if let Some(after) = lines.get(end)
-        && list_labels::keeps_next(&lines[end - 1], after)
+        && (list_labels::keeps_next(&lines[end - 1], after)
+            || definition_keeps_next(&lines[end - 1], after))
     {
         policy.keep_with_next = true;
     }
@@ -374,6 +375,16 @@ fn finalized_shape(baseline: &[Line], alternative: &Alternative) -> Vec<Line> {
             index,
             count,
             list_start: index == 0 && first.flow.list_start,
+            // A term's interior rows stay joined, but its last row owns the
+            // decision to introduce another alias/description. A termless
+            // item's first description only owns its note label; spreading
+            // that marker would manufacture term authority on ordinary prose.
+            note_definition_keep_next: match first.flow.note_definition_keep_next {
+                Some(true) if index + 1 < count => Some(true),
+                Some(true) => last.flow.note_definition_keep_next,
+                Some(false) if index == 0 => Some(false),
+                _ => None,
+            },
             ..first.flow
         };
         // Quotes stamp their ancestor bars after paragraph shaping. Carry

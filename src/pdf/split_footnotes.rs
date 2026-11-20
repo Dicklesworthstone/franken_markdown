@@ -366,7 +366,7 @@ fn note_label_only(line: &Line) -> bool {
 fn keeps_next(before: &Line, after: &Line) -> bool {
     // Definition introductions carry source-owned keeps from layout. Bold
     // prose and indented paragraphs never acquire definition authority.
-    if before.flow.note_definition_keep_next == Some(true) {
+    if definition_keeps_next(before, after) {
         return true;
     }
     if before.flow.group == after.flow.group {

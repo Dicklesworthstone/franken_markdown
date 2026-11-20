@@ -1667,7 +1667,7 @@ struct FlowMark {
     note_owner: u32,
     /// This text note may continue at measured row boundaries on later pages.
     split_note: bool,
-    /// Source-owned definition-list introduction, consumed by continued notes.
+    /// Source-owned definition-list introduction, shared by body and note pagination.
     /// Some(true) keeps the next row; Some(false) retains note-label ownership
     /// without capturing unrelated content. None marks ordinary source rows.
     note_definition_keep_next: Option<bool>,
@@ -31677,6 +31677,15 @@ fn pdf_height_block_end(lines: &[Line], start: usize) -> usize {
     end
 }
 
+/// Terms (including aliases and wrapped rows) introduce the first painted
+/// description of their own item. Layout stamps the exact source-owned chain;
+/// bold prose and empty items do not infer an association with later content.
+fn definition_keeps_next(before: &Line, after: &Line) -> bool {
+    before.flow.note_definition_keep_next == Some(true)
+        && !after.page_break_before
+        && before.flow.note == after.flow.note
+}
+
 fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     if candidate == 0 || candidate >= lines.len() {
         return false;
@@ -31705,7 +31714,9 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     // An actual intra-word hyphen break joins these physical lines. Source
     // punctuation alone does not: '-' is a common missing-value table cell
     // and a valid ending for code and hard-break prose lines.
-    before.hyphenated || list_labels::keeps_next(before, after)
+    before.hyphenated
+        || list_labels::keeps_next(before, after)
+        || definition_keeps_next(before, after)
 }
 
 fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> LayoutUnit {
@@ -32055,6 +32066,12 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     // Rich-first items and exhausted hanging gutters can put a source marker
     // on its own row. Keep it with that item's first body row, not a sibling.
     if list_labels::keeps_next(before, after) {
+        penalty += 1_500_000.0;
+    }
+
+    // A definition term is incomplete until its own description starts.
+    // Protect wrapped terms and aliases using source metadata, not bold style.
+    if definition_keeps_next(before, after) {
         penalty += 1_500_000.0;
     }
 

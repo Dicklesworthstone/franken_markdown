@@ -66,7 +66,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
   for (const key of Object.keys(BOOK_DIRECTORY_LIMITS))
     if (!Number.isSafeInteger(cap[key]) || cap[key] < 1 || cap[key] > BOOK_DIRECTORY_LIMITS[key])
       throw fail("INVALID_ARGUMENT", "Use positive source-folder limits no larger than the defaults.");
-  let connection = null, active = null, serial = 0, disposed = false, problem = null, receipt = null;
+  let connection = null, active = null, serial = 0, identity = 0, disposed = false, problem = null, receipt = null;
   let message = "No source folder connected. Project downloads and portable backups remain separate.";
   function capture(encode = false) {
     const value = read(), raw = own(value, "files"), stamp = own(value, "stamp");
@@ -110,10 +110,28 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
       canSave: !disposed && !active && !problem && !!compatible && !!dirty && !isBlocked(),
       canRefresh: !disposed && !active && !!compatible && (!problem || problem === "conflict") && !isBlocked() });
   }
-  const announce = () => { if (!disposed) { try { onState(state()); } catch { /* Observers cannot own disk I/O. */ } } };
+  const announce = () => {
+    if (disposed) return;
+    const owner = identity, revision = serial;
+    try {
+      const value = state();
+      // Reading state can drain a host's pending editor/lifecycle callbacks.
+      // A nested notification owns the resulting state, not this older one.
+      if (!disposed && owner === identity && revision === serial) onState(value);
+    } catch { /* Observers cannot own disk I/O. */ }
+  };
+  const owned = job => !disposed && job.identity === identity;
   const current = job => {
-    if (disposed || serial !== job.serial || isBlocked()) return false;
-    try { return same(job.snapshot, capture()); } catch { return false; }
+    if (!owned(job) || serial !== job.serial) return false;
+    try {
+      if (isBlocked() || !owned(job) || serial !== job.serial) return false;
+      const value = capture();
+      if (!owned(job) || serial !== job.serial) return false;
+      // Both host callbacks can synchronously detach, replace or lock the
+      // source. In particular, the final fence must not authorize close using
+      // ownership sampled before a callback or a pre-lock source snapshot.
+      return !isBlocked() && owned(job) && serial === job.serial && same(job.snapshot, value);
+    } catch { return false; }
   };
   function fence(job) {
     alive();
@@ -131,7 +149,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
   function changed() { if (!disposed) { serial++; void stop(active); announce(); } }
   function detach() {
     if (disposed) return;
-    connection = null; problem = null; serial++; void stop(active);
+    connection = null; problem = null; identity++; serial++; void stop(active);
     message = "Source folder disconnected. No source, resource or disk file was removed."; announce();
   }
   function report(job, outcome) {
@@ -143,8 +161,17 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
   }
   async function run(kind, work) {
     alive();
+    const initial = { serial, identity };
     if (active || isBlocked()) throw fail("DIRECTORY_BUSY", "Finish the current import, composition or folder operation first.");
-    const job = { kind, snapshot: capture(true), serial, target: connection, writes: [], directories: [] };
+    alive();
+    if (active) throw fail("DIRECTORY_BUSY", "Finish the current folder operation first.");
+    if (!owned(initial) || serial !== initial.serial)
+      throw fail("STALE_SOURCE", "The book or folder connection changed before folder access could start.");
+    const job = { kind, ...initial, snapshot: capture(true), target: connection, writes: [], directories: [] };
+    alive();
+    if (active) throw fail("DIRECTORY_BUSY", "Finish the current folder operation first.");
+    if (!owned(job) || serial !== job.serial)
+      throw fail("STALE_SOURCE", "The book or folder connection changed while capturing source files.");
     if (!job.snapshot.files.length) throw fail("NO_SOURCE_FILES", "Add source files before connecting a folder.");
     active = job; message = `${kind} in progress. ` + (kind === "Review external source changes"
       ? "Source changes require a completed review and explicit approval."
@@ -158,7 +185,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
       else if (error.code !== "DIRECTORY_REFRESH_UNCERTAIN" && !current(job)) error = fail(disposed ? "SESSION_DISPOSED" : "STALE_SOURCE", "The book or folder connection changed; remaining writes were stopped.");
       const result = report(job, uncertain ? "uncertain" : job.writes.some(item => item.verified) ? "partial" : "stopped");
       error.receipt = result;
-      if (!disposed) {
+      if (owned(job)) {
         if (job.writes.length || !receipt) receipt = result;
         if (job.target && connection === job.target) {
           if (uncertain) problem = "uncertain";
@@ -337,15 +364,22 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
             Promise.resolve(stamp).catch(() => {});
             throw fail("DIRECTORY_REFRESH_UNCERTAIN", "Source refresh requires a synchronous transaction; the folder was disconnected.");
           }
+          // The apply callback may emit its one expected source notification.
+          // Later callbacks must not contribute a new revision to that receipt
+          // or reacquire a connection revoked during source installation.
+          const installedSerial = serial;
+          const installing = () => owned(job) && connection === target && serial === installedSerial;
+          if (!installing() || isBlocked() || !installing())
+            throw fail("DIRECTORY_REFRESH_UNCERTAIN", "The source transaction lost its folder ownership; inspect the current book before reconnecting.");
           const installed = capture();
-          if (disposed || connection !== target || isBlocked() || typeof stamp !== "string"
+          if (!installing() || isBlocked() || !installing() || typeof stamp !== "string"
               || stamp !== installed.stamp || installed.files.length !== next.length
               || installed.files.some((file, i) => file.path !== next[i].path || file.source !== next[i].source))
             throw fail("DIRECTORY_REFRESH_UNCERTAIN", "The source transaction could not be verified; inspect the current book before reconnecting.");
           // The host's ONE source transaction legitimately emits a collection
           // notification and advances its checkpoint. Adopt only the exact
           // verified result, never an arbitrary newer source capture.
-          job.snapshot = installed; job.serial = serial;
+          job.snapshot = installed; job.serial = installedSerial;
         } catch (cause) {
           if (cause?.code !== "DIRECTORY_REFRESH_UNCERTAIN" && current(job)) throw cause;
           if (!disposed && connection === target) { connection = null; problem = null; serial++; }
@@ -357,7 +391,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         changedSources, current: current(job), folder: target.name,
         files: mergeText ? Object.freeze(changes.map(file => Object.freeze({ path: file.path, action: file.action,
           identityChanged: file.identityChanged, choice: decisions.get(file.path) ?? null, editorBytes: file.editorBytes, diskBytes: file.diskBytes }))) : review.files });
-      message = mergeText
+      if (owned(job)) message = mergeText
         ? `${changedSources} source(s) reconciled in one transaction. No disk files were written; local and merged differences still require explicit saving.`
         : `${changedSources} disk-edited source(s) applied as one source-only transaction. Local-only edits were retained. No disk file was written.`;
       return result;
@@ -384,6 +418,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
         }
         fence(job);
         for (const file of job.snapshot.files) await compare(job, target, file.path, target.entries.get(file.path));
+        fence(job);
         connection = target; problem = null; receipt = null;
         message = `Connected ${target.name} for ${target.entries.size} source paths. No disk file has been written. Save explicitly after reviewing changes.`;
         return true;
@@ -455,7 +490,7 @@ export function createBookDirectorySession({ read, isBlocked = () => false, onSt
           if (!disposed && connection === target) target.entries.set(item.path, saved);
         }
         const result = report(job, job.writes.length ? "saved" : "unchanged");
-        if (!disposed) { receipt = result; message = `${result.verified} source file(s) saved and verified.`
+        if (owned(job)) { receipt = result; message = `${result.verified} source file(s) saved and verified.`
           + (result.current ? "" : " Newer editor changes were not saved.")
           + " Settings, images, fonts and unlisted disk files were not written or removed."; }
         return result;

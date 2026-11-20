@@ -21,6 +21,7 @@ mod frontmatter;
 mod html_blocks;
 mod normalized;
 mod page_breaks;
+mod tabs;
 mod unicode_casefold;
 mod unicode_punct;
 
@@ -369,6 +370,13 @@ impl LiteralTabs {
         self.inserted.push((start, previous));
     }
 
+    fn structural(&mut self, output: &str, original: &str) {
+        let base = output.as_ptr() as usize;
+        for tab in tabs::expansions(original) {
+            self.insert(base + tab.expanded.start, base + tab.expanded.end);
+        }
+    }
+
     /// Register a known leading-tab expansion, optionally after a container
     /// has consumed some of its columns. Only wholly retained tabs are owned.
     fn expanded(&mut self, output: &str, original: &str, column: usize, consumed: usize) {
@@ -676,10 +684,6 @@ fn expand_leading_tabs_with_col(line: &str, start_col: usize) -> std::borrow::Co
     std::borrow::Cow::Owned(expanded_prefix)
 }
 
-fn expand_leading_tabs(line: &str) -> std::borrow::Cow<'_, str> {
-    expand_leading_tabs_with_col(line, 0)
-}
-
 fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     // Ignore a leading BOM and recognize LF, CRLF, and lone CR without rewriting
     // the source buffer. Borrowed line slices retain original byte coordinates.
@@ -691,7 +695,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     let tab_storage: Option<Vec<String>> = if src.contains('\t') {
         Some(
             logical_lines(src)
-                .map(|l| expand_leading_tabs(l).into_owned())
+                .map(|line| tabs::expand(line).into_owned())
                 .collect(),
         )
     } else {
@@ -699,8 +703,10 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
     };
     if let Some(storage) = &tab_storage {
         for (copied, original) in storage.iter().zip(logical_lines(src)) {
-            profiler.destination_suffix(copied, original);
-            profiler.literal_tabs.expanded(copied, original, 0, 0);
+            if let Some(tracker) = &mut profiler.destinations {
+                tracker.map_structural_tabs(copied, original);
+            }
+            profiler.literal_tabs.structural(copied, original);
         }
     }
     let lines = profiler.measure(

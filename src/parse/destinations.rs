@@ -248,15 +248,17 @@ pub(crate) fn transclusion_code_ranges_with_profile(
             .filter_map(|line| tracker.text_range(line.trim_start()))
             .collect();
     }
+    let mut profiler = ParseProfiler::disabled().with_profile(profile);
     let tab_storage: Option<Vec<String>> = body.contains('\t').then(|| {
         originals
             .iter()
-            .map(|line| expand_leading_tabs(line).into_owned())
+            .map(|line| tabs::expand(line).into_owned())
             .collect()
     });
     if let Some(storage) = &tab_storage {
         for (copied, original) in storage.iter().zip(&originals) {
-            tracker.map_suffix(copied, original);
+            tracker.map_structural_tabs(copied, original);
+            profiler.literal_tabs.structural(copied, original);
         }
     }
     let lines = if let Some(storage) = &tab_storage {
@@ -264,7 +266,6 @@ pub(crate) fn transclusion_code_ranges_with_profile(
     } else {
         originals
     };
-    let mut profiler = ParseProfiler::disabled().with_profile(profile);
     let (lines, refs, _, consumed) = collect_link_references_tracked(
         lines,
         Some(&mut tracker),
@@ -775,6 +776,22 @@ impl DestinationTracker {
         } else {
             self.map_parts(output, &[]);
         }
+    }
+
+    /// Structural tabs can appear between several container markers. Keep
+    /// every unchanged piece, including markers before the last expansion;
+    /// inserted spaces have no invented source coordinates.
+    pub(super) fn map_structural_tabs(&mut self, output: &str, original: &str) {
+        let mut parts = Vec::new();
+        let mut source_start = 0;
+        let mut output_start = 0;
+        for tab in tabs::expansions(original) {
+            parts.push((output_start, &original[source_start..tab.source]));
+            source_start = tab.source + 1;
+            output_start = tab.expanded.end;
+        }
+        parts.push((output_start, &original[source_start..]));
+        self.map_parts(output, &parts);
     }
 
     fn append_chars(&self, map: &mut CharMap, text: &str) {

@@ -57,10 +57,15 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), "fmd-book-file-"));
   let project = book("Original"), stamp = 0, blocked = false;
+  let guardHook = null, readHook = null;
   const events = [];
   let install = value => { project = structuredClone(value); stamp++; };
   const session = createBookFileSession({
-    read: () => ({ source: serialize(project), key: key(project), stamp: String(stamp) }),
+    read: () => {
+      const value = { source: serialize(project), key: key(project), stamp: String(stamp) };
+      const hook = readHook; readHook = null; hook?.();
+      return value;
+    },
     decode: async file => {
       const text = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
       const value = JSON.parse(text);
@@ -68,7 +73,7 @@ async function fixture(t) {
       return { project: value, key: key(value) };
     },
     replace: (value, expected) => { assert.equal(expected, String(stamp)); return install(value); },
-    isBlocked: () => blocked,
+    isBlocked: () => { const hook = guardHook; guardHook = null; hook?.(); return blocked; },
     onState: value => events.push(value),
   });
   t.after(() => session.dispose());
@@ -77,6 +82,8 @@ async function fixture(t) {
     change(title = "Edited") { project = book(title); stamp++; session.changed(); },
     silent() { stamp++; },
     blocked(value) { blocked = value; },
+    guard(fn) { guardHook = fn; },
+    reading(fn) { readHook = fn; },
     install(fn) { install = fn; },
     file: (name = "book.json", bytes = serialize(project)) => diskFile(dir, name, bytes),
   };
@@ -180,6 +187,31 @@ test("external edits during staged writes are caught before close", async t => {
   assert.equal((await file.bytes()).toString(), outside); assert.equal(file.calls.closes, 0); assert.equal(file.calls.aborts, 1);
 });
 
+for (const callback of ["guard", "reading"]) {
+  for (const action of callback === "reading" ? ["detach", "changed", "block"] : ["detach", "changed"]) {
+    test(`${callback} callback cannot authorize a staged save after ${action}`, async t => {
+      const h = await fixture(t), file = await h.file();
+      await connect(h, file); const before = await file.bytes(); h.change();
+      // Reenter at the host checkpoint following the final disk comparison,
+      // after the captured bytes have been staged but before close can publish.
+      file.hooks.write = () => {
+        file.hooks.read = () => {
+          delete file.hooks.read;
+          h[callback](() => action === "block" ? h.blocked(true) : h.session[action]());
+        };
+      };
+      const failure = await h.session.save().then(() => null, error => error);
+      assert.deepEqual(await file.bytes(), before);
+      assert.equal(file.calls.writes, 1); assert.equal(file.calls.closes, 0);
+      assert.equal(file.calls.aborts, 1);
+      assert.equal(failure?.code, "STALE_SOURCE");
+      if (action === "detach") assert.equal(h.session.state.filename, null);
+      else assert.equal(h.session.state.phase, "edited");
+      assert.equal(h.project.options.title, "Edited");
+    });
+  }
+}
+
 test("edits after close begins survive and only the captured disk revision becomes the new baseline", async t => {
   const h = await fixture(t), file = await h.file(); await connect(h, file); h.change("Captured");
   file.hooks.close = () => h.change("Newer");
@@ -194,6 +226,20 @@ test("detach during close cannot reconnect the obsolete project", async t => {
   file.hooks.close = () => h.session.detach(); const result = await h.session.save();
   assert.equal(result.saved, true); assert.equal(result.connected, false); assert.equal(h.session.state.filename, null);
 });
+
+for (const callback of ["guard", "reading"]) {
+  test(`${callback} callback after read-back cannot reconnect a detached project`, async t => {
+    const h = await fixture(t), file = await h.file(); await connect(h, file); h.change("Captured");
+    file.hooks.afterClose = () => h[callback](() => h.session.detach());
+    const result = await h.session.save();
+    assert.equal(result.saved, true); assert.equal(result.current, false); assert.equal(result.connected, false);
+    assert.equal(h.session.state.filename, null);
+    assert.match(h.session.state.message, /disconnected/i);
+    assert.equal(JSON.parse((await file.bytes()).toString()).options.title, "Captured");
+    await assert.rejects(h.session.save(), { code: "NO_CONNECTED_FILE" });
+    assert.equal(file.calls.closes, 1);
+  });
+}
 
 test("Save as to another file adopts only a still-current verified revision", async t => {
   const h = await fixture(t), old = await h.file(), next = await h.file("copy.json", ""); await connect(h, old); h.change("Captured");
@@ -269,6 +315,19 @@ test("host installation mismatch cannot authorize future overwrites", async t =>
   h.install(() => {}); await assert.rejects(connect(h, file), { code: "STALE_SOURCE" });
   assert.equal(h.session.state.filename, null); assert.equal(file.calls.writers, 0);
 });
+
+for (const action of ["detach", "block"]) {
+  test(`installed project snapshot cannot acquire a file after ${action}`, async t => {
+    const h = await fixture(t), file = await h.file("other.json", serialize(book("Other")));
+    h.install(() => {
+      h.change("Other");
+      h.reading(() => action === "block" ? h.blocked(true) : h.session.detach());
+    });
+    await assert.rejects(connect(h, file), { code: "STALE_SOURCE" });
+    assert.equal(h.project.options.title, "Other");
+    assert.equal(h.session.state.filename, null); assert.equal(file.calls.writers, 0);
+  });
+}
 
 test("disposal retires pending pickers and never installs their late result", async t => {
   const h = await fixture(t), file = await h.file(), wait = deferred();

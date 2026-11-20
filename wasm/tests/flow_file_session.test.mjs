@@ -152,6 +152,36 @@ test("ABA edit and unannounced raw source mutation are both fenced", async () =>
   assert.equal(file.counts.create ?? 0, 0);
 });
 
+for (const action of ["detach", "changed", "block"]) {
+  test(`source snapshot cannot authorize a staged save after ${action}`, async () => {
+    let onRead = null, blocked = false;
+    const h = host(undefined, {
+      isBlocked: () => blocked,
+      readDocument() {
+        const value = h.document, callback = onRead;
+        onRead = null; callback?.();
+        return value;
+      },
+    });
+    const file = await h.open(); h.edit("captured text");
+    file.hooks.write = () => {
+      file.hooks.read = () => {
+        delete file.hooks.read;
+        onRead = () => { if (action === "block") blocked = true; else h.session[action](); };
+      };
+    };
+    const failure = await h.session.save().then(() => null, error => error);
+    assert.equal(file.source, "# Disk\n");
+    assert.equal(h.document.source, "captured text");
+    assert.equal(file.counts.write, 1); assert.equal(file.counts.close ?? 0, 0);
+    assert.equal(file.counts.abort, 1);
+    assert.equal(failure?.code, "STALE_SOURCE");
+    if (action === "detach") assert.equal(h.session.state.filename, null);
+    else assert.equal(h.session.state.phase, "edited");
+    h.session.dispose();
+  });
+}
+
 test("newer edits during close survive and are correctly left dirty", async () => {
   const h = host(),
     file = await h.open();
@@ -166,6 +196,44 @@ test("newer edits during close survive and are correctly left dirty", async () =
   await h.session.save();
   assert.equal(file.source, "newer unsaved source");
 });
+
+test("read-back host callbacks cannot replace a detached document's status", async () => {
+  let onRead = null;
+  const h = host(undefined, {
+    readDocument() {
+      const value = h.document, callback = onRead;
+      onRead = null; callback?.(); return value;
+    },
+  });
+  const file = await h.open(); h.edit("captured");
+  file.hooks.committed = () => { onRead = () => h.session.detach(); };
+  const result = await h.session.save();
+  assert.equal(result.saved, true); assert.equal(result.current, false);
+  assert.equal(file.source, "captured"); assert.equal(h.session.state.filename, null);
+  assert.match(h.session.state.message, /disconnected/i);
+  h.session.dispose();
+});
+
+for (const action of ["detach", "block"]) {
+  test(`installed Markdown snapshot cannot acquire a file after ${action}`, async () => {
+    let value = { filename: "draft.md", source: "Initial" }, installed = false, blocked = false;
+    const session = createFileDocumentSession({
+      readDocument() {
+        if (installed) {
+          installed = false;
+          if (action === "block") blocked = true; else session.detach();
+        }
+        return value;
+      },
+      replaceDocument(next) { value = next; installed = true; },
+      renameDocument() {}, isBlocked: () => blocked,
+    });
+    const file = new MemoryFileHandle("new.md", "Imported");
+    await assert.rejects(session.open(() => [file], () => true), code("STALE_SOURCE"));
+    assert.equal(value.source, "Imported"); assert.equal(session.state.filename, null);
+    assert.equal(file.counts.create ?? 0, 0); session.dispose();
+  });
+}
 
 test("replacement during close cannot reconnect the old file", async () => {
   const h = host(),

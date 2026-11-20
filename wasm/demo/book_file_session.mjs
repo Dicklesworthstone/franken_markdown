@@ -91,8 +91,18 @@ export function createBookFileSession({ read, decode, replace, isBlocked = () =>
   }
   const owned = job => !disposed && job.identity === identity;
   function current(job) {
-    if (!owned(job) || job.revision !== revision || isBlocked()) return false;
-    try { const value = snapshot(); return value.key === job.snapshot.key && value.source === job.snapshot.source && value.stamp === job.snapshot.stamp; }
+    // Host callbacks can synchronously drain access/lifecycle changes. Recheck
+    // ownership after both callbacks, including a byte-identical replacement,
+    // before this checkpoint can authorize the final staged-file close.
+    if (!owned(job) || job.revision !== revision) return false;
+    try {
+      if (isBlocked() || !owned(job) || job.revision !== revision) return false;
+      const value = snapshot();
+      if (!owned(job) || job.revision !== revision) return false;
+      return !isBlocked() && owned(job) && job.revision === revision
+        && value.key === job.snapshot.key && value.source === job.snapshot.source
+        && value.stamp === job.snapshot.stamp;
+    }
     catch { return false; }
   }
   function fence(job) {
@@ -161,9 +171,14 @@ export function createBookFileSession({ read, decode, replace, isBlocked = () =>
     installing = true;
     try {
       const result = replace(decoded.project, job.snapshot.stamp);
+      // Suppress only the replacement's own change notifications. Snapshot
+      // and access callbacks below must be able to retire this new file grant.
+      installing = false;
       if (result && typeof result.then === "function") throw fail("INVALID_ARGUMENT", "Project installation must be synchronous.");
       alive();
-      if (snapshot().key !== decoded.key)
+      const installed = snapshot();
+      if (!owned(job) || job.revision !== revision || isBlocked()
+          || !owned(job) || job.revision !== revision || installed.key !== decoded.key)
         throw fail("STALE_SOURCE", "The host did not install the selected project exactly; no file was connected.");
       identity++; revision++;
       connection = { handle, name: value.name, bytes: value.bytes, key: decoded.key, savedRevision: revision };
@@ -198,7 +213,9 @@ export function createBookFileSession({ read, decode, replace, isBlocked = () =>
     if (saved.name !== expected.name || !equalBytes(saved.bytes, output))
       throw fail("FILE_SAVE_UNCERTAIN", "Read-back did not match the captured source project.");
     job.verified = true;
-    const stillOwned = owned(job), stillCurrent = current(job);
+    // current() invokes the host. It may retire this connection even when the
+    // captured bytes were saved successfully, so derive ownership afterward.
+    const stillCurrent = current(job), stillOwned = owned(job);
     if (stillOwned && (job.associated || (adopt && stillCurrent))) {
       connection = { handle, name: saved.name, bytes: saved.bytes, key: job.snapshot.key, savedRevision: job.revision };
       problem = null; lastError = null;

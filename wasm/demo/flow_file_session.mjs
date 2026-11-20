@@ -172,9 +172,15 @@ export function createFileDocumentSession({
   function unchanged(job) {
     // The host may synchronously drain pending DOM access changes here. Check
     // the captured identity/revision AFTER that callback can retire this job.
+    if (!currentJob(job) || job.revision !== revision) return false;
     if (isBlocked() || !currentJob(job) || job.revision !== revision) return false;
     try {
-      return same(job.document, read());
+      const document = read();
+      // Reading a host snapshot may itself retire this file owner. Its old
+      // bytes cannot authorize close after disconnect, editing or suspension.
+      if (!currentJob(job) || job.revision !== revision) return false;
+      return !isBlocked() && currentJob(job) && job.revision === revision
+        && same(job.document, document);
     } catch {
       return false;
     }
@@ -248,7 +254,11 @@ export function createFileDocumentSession({
     installing = true;
     try {
       replaceDocument(document);
-      if (!same(read(), document))
+      installing = false;
+      alive();
+      const installed = read();
+      if (!currentJob(job) || job.revision !== revision || isBlocked()
+          || !currentJob(job) || job.revision !== revision || !same(installed, document))
         throw error(
           "STALE_SOURCE",
           "The host did not install the selected source exactly; no file was connected.",
@@ -340,12 +350,16 @@ export function createFileDocumentSession({
       problem = null;
     }
     let current = unchanged(job);
+    let reportOwner = currentJob(job);
     if (adopt && current) {
       installing = true;
       try {
         renameDocument(saved.filename);
+        installing = false;
         const now = read();
-        if (now.source !== job.document.source || now.filename !== saved.filename) {
+        if (!currentJob(job) || job.revision !== revision || isBlocked()
+            || !currentJob(job) || job.revision !== revision
+            || now.source !== job.document.source || now.filename !== saved.filename) {
           throw error(
             "STALE_SOURCE",
             "The saved file was verified, but the editor changed; reopen it to connect.",
@@ -368,11 +382,12 @@ export function createFileDocumentSession({
         revision++;
         identity++;
         current = false;
+        reportOwner = false;
       } finally {
         installing = false;
       }
     }
-    if (!disposed && owned)
+    if (!disposed && reportOwner)
       message = current
         ? `Saved and verified ${saved.filename}.`
         : `Saved the captured revision to ${saved.filename}; newer editor changes were not saved. No newer source was replaced.`;

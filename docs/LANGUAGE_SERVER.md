@@ -74,6 +74,15 @@ synchronized buffer on demand; requests against an unsynchronized buffer return
 
 ## Heading-link completion and go-to-definition
 
+Filename completion is available inside explicit link destinations, including
+empty `[next]()` and unfinished `[next](cha` links. It offers synchronized
+documents already opened by the editor and folders containing those documents;
+typing `/` continues through those folders. Relative, parent-relative, rooted
+and explicit `file:` paths use the navigation provider's existing URI rules.
+Edits preserve queries, fragments, angle brackets and titles, and percent-encode
+filenames so spaces, Unicode and Markdown punctuation remain valid URLs. See
+[file path completion](LSP_PATH_COMPLETION.md) for ownership and scope.
+
 `textDocument/completion` offers publication-correct heading IDs while the caret
 is inside an explicit same-document fragment, such as `[label](#par)` or the
 unfinished `[label](#par`. Its fragment trigger is `#`. Text edits replace the

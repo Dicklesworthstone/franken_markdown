@@ -10,6 +10,58 @@ use franken_markdown::mcp::{JsonValue as Json, parse_json, read_frame, write_fra
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn real_path_completion_tracks_open_buffers_and_preserves_utf16_source_ranges() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md","languageId":"markdown","version":7,"text":"😀 [next](<cha-old.md?view=1#chapter> \"Keep title\")\r\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md"},"position":{"line":0,"character":14}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/chapter%20one.md","languageId":"markdown","version":1,"text":"# Chapter\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md"},"position":{"line":0,"character":14}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md","version":8},"contentChanges":[{"text":"> [next](cha)\n"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md"},"position":{"line":0,"character":11}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/chapter%20one.md"}}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/start.md"},"position":{"line":0,"character":11}}}"###,
+        r###"{"jsonrpc":"2.0","id":6,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let result = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .and_then(|reply| reply.get("result"))
+            .ok_or("missing completion result")
+    };
+    for id in [2, 5] {
+        assert!(array(result(id)?.get("items").ok_or("missing items")?).is_empty());
+    }
+    for (id, start, end) in [(3, 11, 21), (4, 9, 12)] {
+        let items = array(result(id)?.get("items").ok_or("missing items")?);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].get("label").and_then(Json::as_str),
+            Some("chapter one.md")
+        );
+        let edit = items[0].get("textEdit").ok_or("missing text edit")?;
+        assert_eq!(
+            edit.get("newText").and_then(Json::as_str),
+            Some("chapter%20one.md")
+        );
+        let range = edit.get("range").ok_or("missing edit range")?;
+        for (side, character) in [("start", start), ("end", end)] {
+            let position = range.get(side).ok_or("missing edit position")?;
+            assert_eq!(position.get("line").and_then(Json::as_u64), Some(0));
+            assert_eq!(
+                position.get("character").and_then(Json::as_u64),
+                Some(character)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn session(messages: &[&str]) -> Result<(ExitStatus, Vec<Json>), Box<dyn std::error::Error>> {
     let mut input = Vec::new();
     for message in messages {
@@ -203,7 +255,7 @@ fn real_label_completion_returns_exact_edits_and_reads_live_document_revisions()
             .iter()
             .filter_map(Json::as_str)
             .collect::<Vec<_>>(),
-        ["#", "[", "^"]
+        ["#", "[", "^", "/", "("]
     );
     for (id, label, line, start, end, inserted) in [
         (2, "[^research]", 0, 11, 20, "research"),

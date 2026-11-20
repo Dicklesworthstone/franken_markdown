@@ -214,7 +214,13 @@ impl Server {
                                 object([
                                     (
                                         "triggerCharacters",
-                                        Json::Array(vec![string("#"), string("["), string("^")]),
+                                        Json::Array(vec![
+                                            string("#"),
+                                            string("["),
+                                            string("^"),
+                                            string("/"),
+                                            string("("),
+                                        ]),
                                     ),
                                     ("resolveProvider", Json::Bool(false)),
                                 ]),

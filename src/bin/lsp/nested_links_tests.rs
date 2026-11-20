@@ -285,6 +285,7 @@ fn hidden_note_links_do_not_consult_even_an_unsynchronized_remote_target() {
         URI,
         &source,
         |_| Err((-32801, "must not resolve a hidden source link")),
+        |_, _, _| panic!("must not complete a hidden source link"),
     )
     .unwrap();
     assert_eq!(result, Json::Null);
@@ -295,6 +296,7 @@ fn hidden_note_links_do_not_consult_even_an_unsynchronized_remote_target() {
         URI,
         &source,
         |_| Err((-32801, "must not resolve a hidden source link")),
+        |_, _, _| panic!("must not complete a hidden source link"),
     )
     .unwrap();
     assert!(items(&result).is_empty());

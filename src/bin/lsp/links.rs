@@ -14,6 +14,8 @@ use super::{
 };
 use std::collections::BTreeMap;
 
+#[path = "path_completion.rs"]
+mod paths;
 #[path = "reference_links.rs"]
 mod references;
 #[path = "link_structure.rs"]
@@ -59,7 +61,7 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
         end += 1;
     }
     let raw = source.get(start..end)?;
-    if raw.is_empty() || raw.len() > MAX_DESTINATION_BYTES {
+    if raw.len() > MAX_DESTINATION_BYTES {
         return None;
     }
     let fragment = raw.find('#').map(|index| start + index);
@@ -182,7 +184,14 @@ fn prefix_text(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<Json, Failure> {
-    request_resolving(method, params, uri, source, |_| Ok(None))
+    request_resolving(
+        method,
+        params,
+        uri,
+        source,
+        |_| Ok(None),
+        |_, _, _| empty(true),
+    )
 }
 
 pub fn request_in_workspace(
@@ -198,9 +207,14 @@ pub fn request_in_workspace(
     ) {
         return usages::request(method, params, uri, documents);
     }
-    request_resolving(method, params, uri, source, |destination| {
-        workspace_links::resolve(documents, uri, destination)
-    })
+    request_resolving(
+        method,
+        params,
+        uri,
+        source,
+        |destination| workspace_links::resolve(documents, uri, destination),
+        |token, offset, index| paths::complete(uri, source, index, token, offset, documents),
+    )
 }
 
 fn request_resolving<'a>(
@@ -209,6 +223,7 @@ fn request_resolving<'a>(
     uri: &str,
     source: &str,
     resolve: impl Fn(&str) -> Result<Option<(&'a str, &'a str)>, Failure>,
+    complete_paths: impl Fn(Token, usize, &LineIndex) -> Json,
 ) -> Result<Json, Failure> {
     let completing = method == "textDocument/completion";
     if !completing && method != "textDocument/definition" {
@@ -263,11 +278,12 @@ fn request_resolving<'a>(
         }
         return Ok(empty(completing));
     };
-    // Reference labels are never edited by fragment completion.
-    let fragment = token.fragment.unwrap_or(token.end);
-    if completing && (token.fragment.is_none() || offset <= fragment) {
-        return Ok(empty(true));
+    if !completing && token.start == token.end {
+        return Ok(empty(false));
     }
+    // Both path and fragment completions require the same parser ownership
+    // proof. A lexical filename is no more authoritative than a lexical '#'.
+    let fragment = token.fragment.unwrap_or(token.end);
     let Some((mut probed, probe)) =
         probe_document(source, span, token, &original, owner, completing)
     else {
@@ -300,6 +316,9 @@ fn request_resolving<'a>(
             Some(destination) => definition_source.resolve(&destination, &resolve),
             None => Ok(Json::Null),
         };
+    }
+    if token.fragment.is_none() || offset <= fragment {
+        return Ok(complete_paths(token, offset, &index));
     }
     // Existing links use the parser-decoded destination (including entities).
     // An unfinished completion has only its verified lexical URL available.

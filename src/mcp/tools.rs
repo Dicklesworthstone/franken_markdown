@@ -10,7 +10,7 @@ use super::{
 use crate::layout::MicrotypeOptions;
 use crate::{
     BaselineGrid, DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat,
-    HtmlOptions, PdfAMode, PdfASettings, PdfOptions, Theme,
+    HtmlOptions, PdfAMode, PdfASettings, PdfOptions, Profile, Theme,
 };
 
 #[path = "resources.rs"]
@@ -37,8 +37,14 @@ type ToolSpec = (
     &'static [&'static str],
 );
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const AUTHORING_PROFILE: Field = (
+    "profile",
+    "string",
+    "Markdown dialect ('commonmark-gfm' or 'gfm-plus'); omission preserves the default grammar",
+);
 
 const HTML_FIELDS: &[Field] = &[
+    AUTHORING_PROFILE,
     (
         "images",
         "array",
@@ -87,7 +93,7 @@ const HTML_FIELDS: &[Field] = &[
     (
         "interactiveHtml",
         "boolean",
-        "Generate self-hosting interactive HTML",
+        "Generate lightweight self-hosting interactive HTML; cannot be combined with an explicit profile",
     ),
     (
         "fontScale",
@@ -96,6 +102,7 @@ const HTML_FIELDS: &[Field] = &[
     ),
 ];
 const PDF_FIELDS: &[Field] = &[
+    AUTHORING_PROFILE,
     (
         "page",
         "object",
@@ -395,6 +402,17 @@ pub fn tools_list_result() -> JsonValue {
                         property.insert("minimum".to_string(), JsonValue::Number(min as f64));
                         property.insert("maximum".to_string(), JsonValue::Number(max as f64));
                     }
+                    if *name == "profile" {
+                        property.insert(
+                            "enum".to_string(),
+                            JsonValue::Array(
+                                ["commonmark-gfm", "gfm-plus"]
+                                    .into_iter()
+                                    .map(|value| JsonValue::String(value.to_string()))
+                                    .collect(),
+                            ),
+                        );
+                    }
                     ((*name).to_string(), JsonValue::Object(property))
                 })
                 .collect();
@@ -520,6 +538,21 @@ fn boolean(args: &JsonValue, name: &str) -> bool {
     args.get(name).and_then(JsonValue::as_bool).unwrap_or(false)
 }
 
+/// Source grammar must be selected before parsing, include expansion, or I/O.
+/// Applying an output profile to an already parsed default AST cannot recover
+/// inline delimiters split by extension-specific block parsing.
+fn authoring_profile(args: &JsonValue) -> Result<Option<Profile>, ToolError> {
+    match string(args, "profile") {
+        None => Ok(None),
+        Some("commonmark-gfm") => Ok(Some(Profile::CommonMarkGfm)),
+        Some("gfm-plus") => Ok(Some(Profile::GfmPlus)),
+        Some(_) => Err(invalid_options(
+            "profile must be 'commonmark-gfm' or 'gfm-plus'",
+            "invalid_profile",
+        )),
+    }
+}
+
 fn theme(args: &JsonValue) -> Result<Theme, ToolError> {
     let mut theme = Theme::default();
     if let Some(font) = string(args, "font") {
@@ -590,6 +623,7 @@ fn html_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
         .unwrap_or_default();
     Ok(HtmlOptions {
         theme,
+        profile: authoring_profile(args)?,
         title: string(args, "title").map(str::to_string),
         custom_css: string(args, "customCss").map(str::to_string),
         lang: string(args, "lang").map(str::to_string),
@@ -673,6 +707,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
     Ok((
         PdfOptions {
             theme,
+            profile: authoring_profile(args)?,
             base_font_size: args
                 .get("baseFontSize")
                 .and_then(JsonValue::as_f64)
@@ -761,6 +796,12 @@ pub fn handle_tool_call(
     let args = params.get("arguments").unwrap_or(&default_args);
     let fields = fields_for(name, fields);
     validate_arguments(args, &fields, required)?;
+    if authoring_profile(args)?.is_some() && boolean(args, "interactiveHtml") {
+        return Err(invalid_options(
+            "interactiveHtml cannot retain an explicit authoring profile after local edits; omit interactiveHtml for a static document, or use a native Flow/WASM workspace for profiled editing",
+            "profile_interactive_unsupported",
+        ));
+    }
     let started = Instant::now();
     let result = execute(name, args, max_input_bytes);
     eprintln!("fmd mcp tool '{name}' completed in {:?}", started.elapsed());
@@ -777,7 +818,7 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             let assets = resources::parse(args)?;
             options.font_assets = assets.fonts;
             options.image_assets = assets.images;
-            let doc = crate::parse_markdown(source);
+            let doc = crate::parse_markdown_with_profile(source, options.profile);
             let html = if boolean(args, "interactiveHtml") {
                 crate::interactive::render_interactive_html(&doc, source, &options)
             } else {
@@ -791,7 +832,7 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             let assets = resources::parse(args)?;
             options.font_assets = assets.fonts;
             options.image_assets = assets.images;
-            let doc = crate::parse_markdown(source);
+            let doc = crate::parse_markdown_with_profile(source, options.profile);
             let pdf = if settings.mode == PdfAMode::Off {
                 crate::render_pdf_document(&doc, &options)
             } else {
@@ -806,7 +847,7 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             let assets = resources::parse(args)?;
             options.font_assets = assets.fonts;
             options.image_assets = assets.images;
-            let doc = crate::parse_markdown(source);
+            let doc = crate::parse_markdown_with_profile(source, options.profile);
             let report = crate::verify::verify_pdf_result(&doc, &options)
                 .map_err(|error| engine_failure(error, "Verification failed", "verify_failed"))?;
             let report = if boolean(args, "a11y") {

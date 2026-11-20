@@ -11,9 +11,10 @@ use crate::mcp::ERROR_INPUT_ERROR;
 use crate::{HtmlOptions, PdfASettings, PdfOptions};
 
 use super::{
-    ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS, JsonValue as Json, PDF_FIELDS,
-    ToolError, base64_encode, boolean, engine_failure, html_options, invalid_options, pdf_options,
-    resources, string, wrap_text_content,
+    AUTHORING_PROFILE, ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS,
+    JsonValue as Json, PDF_FIELDS, ToolError, authoring_profile, base64_encode, boolean,
+    engine_failure, html_options, invalid_options, pdf_options, resources, string,
+    wrap_text_content,
 };
 
 const MAX_SOURCES: usize = 4096;
@@ -23,6 +24,7 @@ pub(super) const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(super) const SOURCE_FIELDS: &[Field] = &[
+    AUTHORING_PROFILE,
     (
         "chapters",
         "array",
@@ -309,8 +311,9 @@ fn sources(args: &Json, limit: u64) -> Result<(Vec<BookInput>, Vec<BookInput>), 
 }
 
 fn renderer(args: &Json, limit: u64) -> Result<BookRenderer, ToolError> {
+    let profile = authoring_profile(args)?;
     let (chapters, includes) = sources(args, limit)?;
-    BookRenderer::from_sources(&chapters, &includes).map_err(input_error)
+    BookRenderer::from_sources_with_profile(&chapters, &includes, profile).map_err(input_error)
 }
 
 fn link_analysis_error(error: crate::RenderError) -> ToolError {

@@ -4,6 +4,19 @@
 `images`, and `fonts`. The HTML/PDF option builders are shared with
 `fmd.render_html` and `fmd.render_pdf`, not reimplemented in the file loader.
 
+All targets accept `profile: "commonmark-gfm"` or `profile: "gfm-plus"`.
+The source is parsed under that dialect before any output transforms, including
+SVG. Paired HTML/PDF output shares the same profiled AST.
+Omitting the option retains the existing extended grammar. Unknown names and
+non-string values fail before the source is read or any output is replaced.
+
+Explicit profiles cannot be combined with `interactiveHtml: true`: the
+lightweight saved-HTML editor has its own local parser and cannot retain the
+requested grammar after editing. This returns `profile_interactive_unsupported`
+before source I/O. Omit `interactiveHtml` for a static document, or use the native
+Flow/WASM workspace for profiled editing. Unprofiled interactive output keeps its
+existing behavior.
+
 ```json
 {
   "name": "fmd.render_file",
@@ -39,7 +52,7 @@ JSON `outputs` array; single-format output retains its existing text/base64 form
 | `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages, baseline grid, strict pagination and PDF/A |
 | `both` | The union of HTML and PDF options; each renderer consumes its own fields |
 | `epub` | HTML theme, font scale, title, language, CSS, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
-| `svg` | `font`, `fontScale`, `maxWidthPt` (144..14400 points), and explicit resources |
+| `svg` | `profile`, `font`, `fontScale`, `maxWidthPt` (144..14400 points), `toc`, `tocDepth`, and explicit resources |
 
 `images` and `fonts` work for all targets. They contain explicit bytes; destinations
 never authorize ambient file reads or network requests. SVG resolves `fontScale`

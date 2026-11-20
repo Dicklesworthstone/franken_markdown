@@ -45,6 +45,16 @@ are logical source names, not permission to read a similarly named host file.
 Missing includes, duplicate normalized paths and output collisions are errors;
 the adapter never falls back to the filesystem or returns a partial book.
 
+Set `profile` to `"commonmark-gfm"` or `"gfm-plus"` to select the Markdown
+dialect for the whole edition. The selection reaches include discovery,
+chapter parsing, navigation validation and every requested output. It is
+applied before parsing rather than used to rewrite an AST from another grammar.
+For example, a code span crossing a definition-list-shaped line stays one code
+span in CommonMark/GFM, including when it contains apparent include syntax.
+Omitting `profile` preserves the existing default. `fmd.verify_book` accepts the
+same option; use it with the same source set when diagnosing a `strictLinks`
+failure. Unknown names and non-string values are rejected before expansion.
+
 Links and images inside an included source resolve from that source's directory,
 including nested includes, selected lines/anchors, reference definitions and
 supported HTML URL attributes. If `guide/intro.md` includes `parts/body.md`,

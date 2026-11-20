@@ -5,6 +5,20 @@
 `page` object and explicit typographic sizes. They populate
 the native `PdfOptions` and theme before layout; output is not rescaled or patched.
 
+Rendering and verification also accept `profile: "commonmark-gfm"` or
+`profile: "gfm-plus"`. The same optional field is available on HTML rendering,
+every file target, book publishing and book verification. It selects the source
+grammar before parsing and the corresponding output transforms afterwards.
+Use the same profile for a render and its verification: a code span, link,
+definition list, footnote or authored page break can have different semantics
+between dialects. Omission preserves the existing extended grammar. Unknown
+names return `invalid_profile`; wrong JSON types return `invalid_params`.
+The authoring profile is separate from the archival `pdfA` option.
+An explicit profile with `interactiveHtml: true` is refused with
+`profile_interactive_unsupported`, because the lightweight saved-HTML parser
+cannot retain that choice after edits. Static HTML and native Flow/WASM
+workspaces support explicit profiles.
+
 ```json
 {
   "name": "fmd.render_pdf",

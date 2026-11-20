@@ -4,10 +4,10 @@
 //! fields. Other exports reject fields with no consumer before reading a file.
 
 use super::{
-    FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, boolean, html_options,
-    invalid_options, pdf_options, string, theme, toc_depth, validate_arguments,
+    FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, authoring_profile, boolean,
+    html_options, invalid_options, pdf_options, string, theme, toc_depth, validate_arguments,
 };
-use crate::{HtmlOptions, PdfASettings, PdfOptions, SvgOptions};
+use crate::{HtmlOptions, PdfASettings, PdfOptions, Profile, SvgOptions};
 use std::collections::BTreeMap;
 
 const SVG_WIDTH: Field = (
@@ -56,7 +56,7 @@ fn supports(target: &str, name: &str) -> bool {
         // SVG resolves the shared font scale before measurement and painting.
         "svg" => matches!(
             name,
-            "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth"
+            "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth" | "profile"
         ),
         _ => false,
     }
@@ -64,6 +64,7 @@ fn supports(target: &str, name: &str) -> bool {
 
 pub(crate) struct PreparedOptions {
     pub target: &'static str,
+    pub profile: Option<Profile>,
     pub html: HtmlOptions,
     pub pdf: PdfOptions,
     pub pdf_a: PdfASettings,
@@ -75,6 +76,7 @@ pub(crate) struct PreparedOptions {
 /// The resource payloads themselves are still decoded once by file_render.
 pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
     validate_arguments(args, &fields(), &["path"])?;
+    let profile = authoring_profile(args)?;
     let value = string(args, "to")
         .unwrap_or("html")
         .trim()
@@ -137,6 +139,7 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
     };
     Ok(PreparedOptions {
         target,
+        profile,
         html,
         pdf,
         pdf_a,

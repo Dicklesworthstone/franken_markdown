@@ -364,7 +364,7 @@ fn discovery_keeps_verification_narrow_and_advertises_strict_publication() {
     let fields = schema.get("properties").and_then(Json::as_object).unwrap();
     assert_eq!(
         fields.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["chapters", "includeSources"]
+        ["chapters", "includeSources", "profile"]
     );
     assert_eq!(schema.get("additionalProperties"), Some(&Json::Bool(false)));
     assert_eq!(array(schema.get("required").unwrap()), [text("chapters")]);

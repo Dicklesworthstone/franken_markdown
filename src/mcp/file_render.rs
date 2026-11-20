@@ -226,7 +226,7 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         pdf_options.image_assets = assets.images;
     }
     // Parse once, including for paired HTML/PDF output.
-    let document = crate::parse_markdown(&source.text);
+    let document = crate::parse_markdown_with_profile(&source.text, prepared.profile);
     let render_error =
         |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     let mut artifacts = Vec::new();
@@ -267,8 +267,9 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         });
     }
     if target == "svg" {
+        let profiled = crate::apply_profile(&document, prepared.profile);
         let (bytes, _, warnings) = crate::svg::render_svg_with_resources(
-            &document,
+            &profiled,
             &prepared.svg,
             &pdf_options.font_assets,
             &pdf_options.image_assets,

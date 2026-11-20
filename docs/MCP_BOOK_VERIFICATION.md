@@ -7,6 +7,14 @@ logical path rules and bounded include expansion. It returns the existing
 rendering pages, opening files, fetching URLs, or inventing a second Markdown
 link grammar.
 
+Both tools accept the same optional authoring `profile`: `"commonmark-gfm"`
+or `"gfm-plus"`. Supply the same value when checking and publishing an edition.
+The book engine selects this grammar before include discovery, expansion and
+chapter parsing, so an include directive inside a code span remains literal
+under the selected dialect. Strict publication checks that same parsed book.
+Omission preserves the existing extended grammar; invalid values are refused
+before source processing. This source option is independent of PDF/A's `pdfA`.
+
 ## Check and repair
 
 Use this object as the `params` of `tools/call`:

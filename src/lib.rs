@@ -911,6 +911,7 @@ pub struct PdfOptions {
     /// fallback. Default false preserves best-effort rendering.
     ///
     /// The guarantee covers supported paragraph split minima, heading keeps,
+    /// list labels kept with their own first body fragment,
     /// short captions/list introductions kept with their first legal subject
     /// fragment, forced breaks and forbidden table/hyphen splits. Inferred
     /// caption keeps cover complete 1–3-line paragraphs in the same quote/list

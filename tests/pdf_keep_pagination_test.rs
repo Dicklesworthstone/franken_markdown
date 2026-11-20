@@ -691,3 +691,101 @@ fn best_effort_keeps_still_protect_a_containers_own_subjects() {
         );
     }
 }
+
+#[test]
+fn list_labels_stay_with_their_first_rich_content() {
+    let cases = [
+        (
+            "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.",
+            "- ## HEADING\n- OUT00.  \n  OUT01.  \n  OUT02.  \n  OUT03.",
+            "•HEADING•OUT00.OUT01.OUT02.OUT03.",
+            110.0,
+            "•HEADING",
+        ),
+        (
+            "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.",
+            "1. ## HEADING\n2. OUT00.  \n   OUT01.  \n   OUT02.  \n   OUT03.",
+            "1.HEADING2.OUT00.OUT01.OUT02.OUT03.",
+            110.0,
+            "1.HEADING",
+        ),
+        (
+            "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.  \nPRE04.  \nPRE05.",
+            "- > OUT00.  \n  > OUT01.  \n  > OUT02.  \n  > OUT03.",
+            "•OUT00.OUT01.OUT02.OUT03.",
+            120.0,
+            "•OUT00.",
+        ),
+    ];
+    for (optimal, strict) in [(false, false), (true, false), (false, true)] {
+        for (prefix, item, expected, height, first_content) in cases {
+            let source = format!("{prefix}\n\n{item}");
+            let mut options = options(height, 80);
+            options.optimal_pagination = optimal;
+            options.strict_pagination = strict;
+            let rendered = render_pdf_reported(&source, &options).unwrap();
+            let pages = painted_pages(&rendered.bytes);
+            assert_eq!(
+                pages[0],
+                compact(prefix),
+                "labels belong with their body: {pages:?}"
+            );
+            assert!(pages[1].starts_with(first_content), "{pages:?}");
+            assert!(pages.iter().all(|page| !page.ends_with('•')), "{pages:?}");
+            assert_eq!(pages.concat(), format!("{}{expected}", compact(prefix)));
+            if strict {
+                assert!(rendered.pagination.page_breaks.is_exact());
+            }
+            assert_eq!(
+                rendered,
+                render_pdf_document_reported(
+                    &parse_markdown(&source),
+                    &options,
+                    PdfEmitOptions::monolithic(),
+                )
+                .unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn impossible_list_label_keeps_refuse_strict_and_preserve_best_effort_content() {
+    let source = "- ### HEADING";
+    let mut options = options(40.0, 80);
+    assert_infeasible(&render_pdf_reported(source, &options).unwrap_err());
+
+    options.strict_pagination = false;
+    options.optimal_pagination = true;
+    let rendered = render_pdf_reported(source, &options).unwrap();
+    assert!(!rendered.pagination.page_breaks.is_exact());
+    assert_eq!(
+        rendered
+            .pagination
+            .page_breaks
+            .fallback
+            .as_ref()
+            .unwrap()
+            .code(),
+        "infeasible"
+    );
+    assert_eq!(painted_pages(&rendered.bytes).concat(), "•HEADING");
+}
+
+#[test]
+fn empty_list_items_and_explicit_breaks_do_not_acquire_label_keeps() {
+    let empty = exact_pages("-\n-\n-", &options(40.0, 80));
+    assert_eq!(empty.len(), 2);
+    assert_eq!(empty.concat(), "•••");
+
+    let mut document = parse_markdown("- ## HEADING");
+    let Block::List(list) = &mut document.blocks[0] else {
+        panic!("list fixture");
+    };
+    list.items[0].blocks.insert(0, Block::PageBreak);
+    let rendered =
+        render_pdf_document_reported(&document, &options(80.0, 80), PdfEmitOptions::default())
+            .unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    assert_eq!(painted_pages(&rendered.bytes), ["•", "HEADING"]);
+}

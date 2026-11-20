@@ -363,15 +363,6 @@ fn note_label_only(line: &Line) -> bool {
     labelled
 }
 
-fn marker_only(line: &Line) -> bool {
-    line.image.is_none()
-        && list_labels::has_label(line)
-        && line
-            .segs
-            .iter()
-            .all(|seg| seg.list_label || seg.text.trim().is_empty())
-}
-
 fn keeps_next(before: &Line, after: &Line) -> bool {
     // Definition introductions carry source-owned keeps from layout. Bold
     // prose and indented paragraphs never acquire definition authority.
@@ -398,14 +389,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     {
         return true;
     }
-    if marker_only(before)
-        && before.list_path.last().is_some_and(|item| {
-            after
-                .list_path
-                .iter()
-                .any(|next| item.list == next.list && item.item == next.item)
-        })
-    {
+    if list_labels::keeps_next(before, after) {
         return true;
     }
     // Rich-first notes have an inserted label paragraph. Bind its first

@@ -144,6 +144,14 @@ does not bind unrelated content outside it or in a sibling item. Explicit page
 breaks and the generated Notes section also end those inferred associations.
 Headings still introduce nested content within their own source scope.
 
+A list label that occupies its own measured row stays with the first body row
+in that item, including a leading heading, quotation or nested list. Wrapped
+labels retain the same association. Default pagination treats the bond as a
+strong preference; exact pagination makes it a hard constraint and strict mode
+returns typed infeasibility if the label and required body fragment cannot fit
+together. Empty items and explicit page breaks do not acquire a bond to unrelated
+content.
+
 The separate `paragraph_variants` report records admitted searches, offered and
 selected alternatives, typography-mode restrictions, item/retained-line/work/
 state-cell limits, and rejected joint searches. Exact page breaks for the final

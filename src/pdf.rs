@@ -31705,7 +31705,7 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     // An actual intra-word hyphen break joins these physical lines. Source
     // punctuation alone does not: '-' is a common missing-value table cell
     // and a valid ending for code and hard-break prose lines.
-    before.hyphenated
+    before.hyphenated || list_labels::keeps_next(before, after)
 }
 
 fn pdf_table_continuation_prefix(lines: &[Line], start: usize, end: usize) -> LayoutUnit {
@@ -32051,6 +32051,12 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     let before = &lines[candidate - 1];
     let after = &lines[candidate];
     let mut penalty = 0.0;
+
+    // Rich-first items and exhausted hanging gutters can put a source marker
+    // on its own row. Keep it with that item's first body row, not a sibling.
+    if list_labels::keeps_next(before, after) {
+        penalty += 1_500_000.0;
+    }
 
     // Keep headings with at least the first following content line. This is the
     // PDF analogue of TeX's high after-heading penalty.

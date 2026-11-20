@@ -269,6 +269,12 @@ pub(super) fn block_policy(lines: &[Line], start: usize) -> BlockPolicy {
         policy.keep_together = true;
         policy.keep_with_next = true;
     }
+    let end = pdf_height_block_end(lines, start);
+    if let Some(after) = lines.get(end)
+        && list_labels::keeps_next(&lines[end - 1], after)
+    {
+        policy.keep_with_next = true;
+    }
     policy
 }
 

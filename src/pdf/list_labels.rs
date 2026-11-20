@@ -14,6 +14,25 @@ pub(super) fn has_label(line: &Line) -> bool {
             .any(|seg| seg.list_label && !seg.text.is_empty())
 }
 
+fn marker_only(line: &Line) -> bool {
+    line.image.is_none()
+        && has_label(line)
+        && line
+            .segs
+            .iter()
+            .all(|seg| seg.list_label || seg.text.trim().is_empty())
+}
+
+/// A separately measured marker introduces its own item, including nested
+/// lists and quotes. Empty sibling items and explicit breaks create no bond.
+/// Source ownership also keeps note labels independent of ordinary body rows.
+pub(super) fn keeps_next(before: &Line, after: &Line) -> bool {
+    marker_only(before)
+        && !after.page_break_before
+        && before.flow.note == after.flow.note
+        && after.list_path.starts_with(&before.list_path)
+}
+
 pub(super) fn path(line: &Line) -> Option<SmallPath> {
     if !has_label(line) {
         return None;

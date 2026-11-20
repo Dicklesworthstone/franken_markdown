@@ -31,15 +31,25 @@ export async function createFlowSession(markdown, options = {}) {
       );
     }
     const p = prepared.layout;
-    raw = new bindings.FmdFlowSession(
+    const args = [
       prepared.source,
       prepared.font,
       p.viewportWidth,
       p.bodySize,
       p.codeSize,
       p.lineHeight,
-    );
-    const session = withGlyphOutlines(createFlowAdapter(raw, p), (id, glyphIds) => {
+    ];
+    if (prepared.profile === undefined) {
+      raw = new bindings.FmdFlowSession(...args);
+    } else {
+      if (typeof bindings.FmdFlowSession.withProfile !== "function"
+          || bindings.FmdFlowSession.withProfile.length < 7) {
+        throw new FlowError("UNSUPPORTED_WASM_PACKAGE",
+          "Flow authoring profiles require FmdFlowSession.withProfile from matching source.");
+      }
+      raw = bindings.FmdFlowSession.withProfile(...args, prepared.profile);
+    }
+    const session = withGlyphOutlines(createFlowAdapter(raw, p, prepared.profile), (id, glyphIds) => {
       if (typeof raw.glyphOutlinesJson !== "function") {
         throw new FlowError(
           "UNSUPPORTED_WASM_PACKAGE",

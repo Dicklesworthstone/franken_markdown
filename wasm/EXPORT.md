@@ -45,6 +45,14 @@ MIME type, owned bytes, original source byte length, asset counts and diagnostic
 
 ## Fidelity and options
 
+Every publication inherits the session's immutable authoring `profile`, when
+selected at creation. HTML, PDF, EPUB and SVG all receive that same grammar;
+single and batch results report it as `result.profile`. Preview and publication
+cannot choose different dialects through an export option. Omission retains the
+existing extended grammar and legacy renderer argument shape. A requested
+profile that the packaged renderer cannot honor is an explicit
+`UNSUPPORTED_WASM_PACKAGE` failure.
+
 This is document export, not pixel parity with the live flow layout. It uses the
 shared document renderer's paragraph, page, table and typography implementation.
 The session's `sans`/`serif` preset is retained; viewport width and Canvas pixel

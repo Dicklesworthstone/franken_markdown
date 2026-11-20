@@ -27,6 +27,16 @@ try {
 
 ## Ownership and ordering
 
+Creation accepts `profile: "commonmark-gfm"` or `profile: "gfm-plus"` in its
+second argument. The worker acknowledges the immutable dialect before exposing
+the session; `editor.profile`, preview/reading metadata and every publication
+retain it after edits and reflows. The option is captured before invoking a
+custom worker factory. Omission keeps the legacy request and response shape.
+An older native session that cannot honor an explicit profile rejects with
+`UNSUPPORTED_WASM_PACKAGE`. Missing or conflicting profile metadata in a success
+reply closes the worker with `WORKER_PROTOCOL_ERROR`, including delta snapshots
+and multi-format exports.
+
 Each session owns one worker and its WASM instance; sessions do not share an
 implicit pool. Importing the entry point neither starts a worker nor initializes
 WASM on the caller thread. Creation rejects rather than silently running the

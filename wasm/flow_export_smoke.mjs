@@ -14,7 +14,7 @@ if (!packageArgument || !wasmArgument)
 const packageDir = path.resolve(packageArgument),
   wasmPath = path.resolve(wasmArgument);
 const entry = (name) => pathToFileURL(path.join(packageDir, name)).href;
-const { init, renderHtml, renderPdf } = await import(entry("franken_markdown.js"));
+const { init, renderHtml, renderPdf, renderEpub, renderSvg } = await import(entry("franken_markdown.js"));
 const { createFlowSession } = await import(entry("flow.js"));
 const { createWorkerFlowSession } = await import(entry("flow-worker.js"));
 await init(new Uint8Array(await readFile(wasmPath)));
@@ -187,3 +187,56 @@ try {
   direct.dispose();
   remote?.dispose();
 }
+
+// Exercise the additive persistent profile constructor against actual native
+// grammar and all four stateless renderers, including the real worker transport.
+// The definition-list boundary deliberately changes parsing between dialects.
+const profiledPreviews = new Map(), profiledHtml = new Map();
+for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+  let markdown = "# Dialect proof\n\n**Term\n: definition**\n\n> [!NOTE]\n> Authored note.\n";
+  const local = await createFlowSession(markdown, { font: "serif", profile });
+  let worker;
+  try {
+    worker = await createWorkerFlowSession(markdown, { font: "serif", profile },
+      { workerFactory, timeoutMs: 60000 });
+    for (const stage of ["initial", "edited"]) {
+      if (stage === "edited") {
+        markdown = "Introduction.\n\n" + markdown;
+        local.replaceSource(markdown, { expectedRevision: local.revision });
+        await worker.replaceSource(markdown, { expectedRevision: worker.revision });
+        local.reflow({ viewportWidth: 640 }, local.token);
+        await worker.reflow({ viewportWidth: 640 }, worker.token);
+      }
+      for (const session of [local, worker]) {
+        assert.equal(session.profile, profile);
+        const page = await session.snapshot({ limit: 2048 });
+        assert.equal(page.profile, profile);
+        assert.equal((await session.readingOrder()).profile, profile);
+        if (session === local && stage === "initial")
+          profiledPreviews.set(profile, JSON.stringify(page.items.map(item => [item.kind, item.text])));
+      }
+      const requests = ["html", "pdf", "epub", "svg"].map(format => ({ format, options:
+        format === "pdf" ? { metadataEpochSeconds: 0 }
+          : format === "svg" ? { maxWidthPt: 612 } : { darkMode: "auto" } }));
+      const a = await local.exportDocuments(requests, local.token);
+      const b = await worker.exportDocuments(requests, worker.token);
+      for (const [index, { format, options }] of requests.entries()) {
+        const render = { html: renderHtml, pdf: renderPdf, epub: renderEpub, svg: renderSvg }[format];
+        const oracle = await render(markdown, { ...options, font: "serif", profile,
+          ...(format === "svg" ? {} : { allowRawHtml: false }) });
+        assert.equal(a[index].profile, profile); assert.equal(b[index].profile, profile);
+        assert.deepEqual(a[index].bytes, oracle.bytes, `${profile} ${stage}: ${format} direct/core parity`);
+        assert.deepEqual(b[index].bytes, oracle.bytes, `${profile} ${stage}: ${format} worker/core parity`);
+        assert.deepEqual(b[index].diagnostics, oracle.diagnostics);
+        if (format === "html" && stage === "initial") profiledHtml.set(profile, oracle.text());
+      }
+    }
+    console.log(`flow-export: ${profile} preview, edited source and HTML/PDF/EPUB/SVG native-core/direct/worker parity: PASS`);
+  } finally {
+    local.dispose(); worker?.dispose();
+  }
+}
+assert.notEqual(profiledPreviews.get("commonmark-gfm"), profiledPreviews.get("gfm-plus"),
+  "explicit profiles must change the actual native preview grammar");
+assert.notEqual(profiledHtml.get("commonmark-gfm"), profiledHtml.get("gfm-plus"),
+  "explicit profiles must change the actual native publication grammar");

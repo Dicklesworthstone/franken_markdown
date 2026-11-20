@@ -139,7 +139,8 @@ export function normalizeFlowRequest(method, args) {
   switch (method) {
     case "create": {
       const value = validateCreation(args[0], args[1]);
-      return [value.source, { font: value.font, ...value.layout }];
+      return [value.source, { font: value.font, ...value.layout,
+        ...(value.profile === undefined ? {} : { profile: value.profile }) }];
     }
     case "getSource":
       return [];

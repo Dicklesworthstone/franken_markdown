@@ -38,6 +38,33 @@ try {
 }
 ```
 
+## Authoring dialect
+
+Pass `profile: "commonmark-gfm"` or `profile: "gfm-plus"` when creating a
+direct or worker session to select the same grammar supported by document
+rendering. The choice is immutable: `editor.profile` reports it, and source
+edits, reflows, image discovery and HTML/PDF/EPUB/SVG publications retain it.
+Create a new session to change dialect. Export options cannot override the
+preview's grammar.
+
+```js
+const editor = await createFlowSession(source, {
+  profile: "commonmark-gfm", viewportWidth: 720
+});
+const preview = editor.snapshot();
+const publication = await editor.exportDocument("html", {}, editor.token);
+console.assert(preview.profile === editor.profile);
+console.assert(publication.profile === editor.profile);
+editor.dispose();
+```
+
+Omitting `profile` preserves the existing extended grammar and the legacy native
+constructor. Explicit profiles require the generated `FmdFlowSession.withProfile`
+binding; an older binary fails with `UNSUPPORTED_WASM_PACKAGE`. Profiled native
+pages and publications carry the selected `profile`, and mismatched metadata is
+rejected before exposing a response. The authoring dialect does not expand the
+bundled text shaper's script coverage or grant access to images or files.
+
 ## Coordinates and optimistic transactions
 
 `revision`, `layoutRevision`, request IDs and font IDs are **decimal strings**;

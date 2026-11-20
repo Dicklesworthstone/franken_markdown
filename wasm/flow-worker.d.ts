@@ -1,6 +1,7 @@
 import type {
   FlowAssetPage,
   FlowAssetResult,
+  FlowAuthoringProfile,
   FlowBatchEdit,
   FlowCreateOptions,
   FlowEditOptions,
@@ -24,6 +25,7 @@ import type {
 } from "./flow.js";
 
 export type {
+  FlowAuthoringProfile,
   FlowAssetPage,
   FlowAssetResult,
   FlowBatchEdit,
@@ -97,6 +99,8 @@ export interface FlowWorkerOptions {
  * below are last-acknowledged values, not speculative queued mutations. */
 export interface WorkerFlowSession {
   readonly disposed: boolean;
+  /** Immutable dialect acknowledged during creation and retained by all publications. */
+  readonly profile: FlowAuthoringProfile | undefined;
   /** Negotiated at creation; false for legacy worker/native packages. */
   readonly supportsViewport: boolean;
   /** Negotiated with the worker/native package. No partial-write fallback. */

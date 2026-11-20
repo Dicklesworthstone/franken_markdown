@@ -66,6 +66,7 @@ test("source controls have a separate script and their import graph never reache
     "wasm/demo/flow_draft_store.mjs", "wasm/demo/flow_file_controls.mjs",
     "wasm/demo/flow_file_session.mjs", "wasm/demo/source_commands.mjs",
     "wasm/demo/source_formatting.mjs", "wasm/flow_session.mjs",
+    "wasm/render_typography.mjs",
   ]);
 });
 test("source replacement revokes native image ownership and image insertion notifies source observers", async () => {

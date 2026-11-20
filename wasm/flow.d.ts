@@ -1,4 +1,5 @@
-import type { FmdPdfPage, FmdPdfRunning, FmdPdfTypography } from "./franken_markdown.js";
+import type { FmdAuthoringProfile, FmdPdfPage, FmdPdfRunning, FmdPdfTypography } from "./franken_markdown.js";
+export type FlowAuthoringProfile = FmdAuthoringProfile;
 export type {
   FmdPdfPage as FlowPdfPage,
   FmdPdfRunning as FlowPdfRunning,
@@ -35,6 +36,9 @@ export interface FlowLayoutOptions {
 }
 export interface FlowCreateOptions extends FlowLayoutOptions {
   font?: "sans" | "serif";
+  /** Immutable Markdown dialect for preview, edits, assets and all publications.
+   * Omit to preserve the existing extended dialect and legacy constructor. */
+  profile?: FlowAuthoringProfile;
 }
 /** One edit in original source UTF-16 coordinates; end is exclusive. */
 export interface FlowBatchEdit {
@@ -67,6 +71,7 @@ export type FlowViewportItem = Exclude<FlowItem, FlowClipItem> & {
   readonly effectiveClip: FlowRect;
 };
 export interface FlowViewportPage extends FlowToken {
+  readonly profile?: FlowAuthoringProfile;
   readonly schemaVersion: 1;
   readonly queryKind: "viewport-v1";
   readonly shapingProfile: "bundled-simple-ltr";
@@ -82,6 +87,7 @@ export interface FlowViewportPage extends FlowToken {
   readonly items: readonly FlowViewportItem[];
 }
 export interface FlowPage extends FlowToken {
+  readonly profile?: FlowAuthoringProfile;
   readonly schemaVersion: 1;
   readonly offset: number;
   readonly total: number;
@@ -320,6 +326,7 @@ export interface FlowAssetResult {
   bytes?: Uint8Array;
 }
 export interface FlowHit extends FlowToken {
+  readonly profile?: FlowAuthoringProfile;
   readonly schemaVersion: 1;
   readonly linkTarget: string | null;
   readonly hit: null | {
@@ -336,6 +343,7 @@ export interface FlowHit extends FlowToken {
   };
 }
 export interface FlowSelection extends FlowToken {
+  readonly profile?: FlowAuthoringProfile;
   readonly schemaVersion: 1;
   readonly itemIndex: number;
   readonly coordinateSpace: "fragment-utf16";
@@ -349,6 +357,8 @@ export interface FlowSelection extends FlowToken {
  */
 export interface FlowSession {
   readonly disposed: boolean;
+  /** Immutable, acknowledged authoring dialect; undefined retains legacy behavior. */
+  readonly profile: FlowAuthoringProfile | undefined;
   /** False with older native binaries; snapshot remains usable. */
   readonly supportsViewport: boolean;
   /** False for older native packages; batching never falls back to partial writes. */
@@ -577,6 +587,8 @@ export interface FlowExportDiagnostic {
   readonly scope?: "document";
 }
 export interface FlowExportResult extends FlowToken {
+  /** The session dialect used by the document renderer, when explicitly selected. */
+  readonly profile?: FlowAuthoringProfile;
   readonly schemaVersion: 1;
   readonly format: FlowExportFormat;
   readonly mimeType: "text/html; charset=utf-8" | "application/pdf" | "application/epub+zip" | "image/svg+xml";

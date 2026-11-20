@@ -1,6 +1,8 @@
 // Pure JS boundary over the generated FmdFlowSession. No renderer or fake
 // Markdown implementation lives here; the separate tests inject a transport
 // double to verify validation, fencing and disposal without claiming WASM proof.
+import { normalizeAuthoringProfile } from "./render_typography.mjs";
+
 export const FLOW_SOURCE_LIMIT = 4 * 1024 * 1024;
 export const FLOW_ASSET_LIMIT = 8 * 1024 * 1024;
 export const FLOW_EDIT_LIMIT = 4096;
@@ -124,10 +126,28 @@ export function layoutOptions(value = {}, defaults = DEFAULT_LAYOUT) {
   return Object.freeze(next);
 }
 export function validateCreation(source, options = {}) {
-  record(options, ["font", ...Object.keys(DEFAULT_LAYOUT)], "creation options");
+  record(options, ["font", "profile", ...Object.keys(DEFAULT_LAYOUT)], "creation options");
+  const field = Object.getOwnPropertyDescriptor(options, "profile");
+  if ((field && !Object.hasOwn(field, "value")) || (!field && "profile" in options))
+    fail("INVALID_OPTIONS", "profile must be a data-valued authoring profile");
+  let profile;
+  try { profile = normalizeAuthoringProfile(field?.value); }
+  catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
   const { font = "sans", ...layout } = options;
+  delete layout.profile;
   if (font !== "sans" && font !== "serif") fail("INVALID_FONT", "font must be sans or serif");
-  return { source: sourceText(source), font, layout: layoutOptions(layout) };
+  return { source: sourceText(source), font, layout: layoutOptions(layout),
+    ...(profile === undefined ? {} : { profile }) };
+}
+
+// The dialect belongs to the immutable session, not to a mutable export option.
+// Native wire headers and worker publications must acknowledge that same choice.
+export function validateFlowProfile(value, expected, code = "INVALID_WASM_RESPONSE") {
+  const actual = value?.profile;
+  if (actual !== expected || (actual !== undefined
+      && actual !== "commonmark-gfm" && actual !== "gfm-plus"))
+    fail(code, "flow response does not match the session authoring profile");
+  return value;
 }
 function textRange(start, end) {
   integer(start, "start");
@@ -194,7 +214,7 @@ function bytes(value, max = FLOW_ASSET_LIMIT) {
   }
   return value;
 }
-function response(value, expected) {
+function response(value, expected, profile) {
   if (typeof value !== "string" || value.length > 16 * 1024 * 1024)
     fail("INVALID_WASM_RESPONSE", "flow response exceeds the JSON limit");
   let parsed;
@@ -216,7 +236,7 @@ function response(value, expected) {
   if (parsed.revision !== expected.revision || parsed.layoutRevision !== expected.layoutRevision) {
     fail("STALE_LAYOUT", "flow response does not match the requested source/layout snapshot");
   }
-  return parsed;
+  return validateFlowProfile(parsed, profile);
 }
 // Direct and worker reads must expose exactly the requested dense inventory page.
 export function validateFlowPage(value, key, offset, limit) {
@@ -342,7 +362,8 @@ export function coveringViewport(value) {
   return viewportRect({ x, y, width, height });
 }
 
-export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
+export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT, profile) {
+  validateFlowProfile(raw, profile);
   let backend = raw;
   let layout = layoutOptions(initialLayout);
   const alive = () => {
@@ -402,7 +423,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           : b.pendingAssetsJson(expected.revision, offset, limit),
     );
     return validateFlowPage(
-      response(data, expected),
+      response(data, expected, profile),
       kind === "snapshot" ? "items" : kind === "reading" ? "nodes" : "requests",
       offset,
       limit,
@@ -419,6 +440,9 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
   const api = {
     get disposed() {
       return backend === null;
+    },
+    get profile() {
+      return call((b) => validateFlowProfile(b, profile).profile);
     },
     get supportsViewport() {
       return call((b) => typeof b.viewportJson === "function");
@@ -559,7 +583,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           query.glyphs,
         );
       });
-      return validateViewportPage(response(data, expected), query, expected);
+      return validateViewportPage(response(data, expected, profile), query, expected);
     },
     readingOrder(options) {
       return page("reading", options);
@@ -590,6 +614,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
       return response(
         call((b) => b.hitTestJson(expected.revision, expected.layoutRevision, px, py)),
         expected,
+        profile,
       );
     },
     selectText(itemIndex, startUtf16, endUtf16, expectedToken) {
@@ -607,6 +632,7 @@ export function createFlowAdapter(raw, initialLayout = DEFAULT_LAYOUT) {
           ),
         ),
         expected,
+        profile,
       );
     },
     copySource(startByte, endByte, expectedRevision) {

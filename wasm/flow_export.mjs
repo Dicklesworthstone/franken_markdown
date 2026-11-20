@@ -10,6 +10,7 @@ import {
   FlowError,
   identity,
   sourceText,
+  validateFlowProfile,
 } from "./flow_session.mjs";
 
 export const FLOW_EXPORT_LIMIT = 64 * 1024 * 1024;
@@ -346,6 +347,7 @@ function collectImages(session, expected, readInventory) {
       ? readInventory(expected, offset, 256)
       : session.snapshot({ offset, limit: 256, glyphs: false, token: expected });
     fence(session, expected);
+    validateFlowProfile(page, session.profile);
     if (
       !page ||
       page.schemaVersion !== 1 ||
@@ -533,6 +535,8 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
   ) {
     fail("INVALID_OPTIONS", "fixed HTML/PDF renderers and a bundled font preset are required");
   }
+  const profile = session.profile;
+  validateFlowProfile(session, profile);
   let busy = false;
   const api = Object.create(
     Object.getPrototypeOf(session),
@@ -553,6 +557,7 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
   };
   const run = async (requests, expected) => {
     fence(session, expected);
+    validateFlowProfile(session, profile);
     if (busy) fail("EXPORT_BUSY", "one physical document export is already in progress");
     const jobs = requests.map(({ format, options }) => {
       const render = renderers[format];
@@ -575,10 +580,12 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
         const output = await render(source, {
           ...settings,
           font,
+          ...(profile === undefined ? {} : { profile }),
           ...(format === "svg" ? {} : { allowRawHtml: false }),
           pdfImages: assets.pdfImages,
         });
         fence(session, expected);
+        validateFlowProfile(session, profile);
         if (!output || output.format !== format || output.mimeType !== MIME[format])
           fail("INVALID_WASM_RESPONSE", "document renderer returned the wrong format");
         const bytes = byteView(output.bytes, maxOutputBytes);
@@ -592,6 +599,7 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
           format,
           mimeType: MIME[format],
           font,
+          ...(profile === undefined ? {} : { profile }),
           sourceLengthBytes,
           assetCount: assets.pdfImages.length,
           assetBytes: assets.assetBytes,

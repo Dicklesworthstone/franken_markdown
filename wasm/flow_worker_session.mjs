@@ -1,5 +1,5 @@
 import { validateFlowExportBatchResult, validateFlowExportResult } from "./flow_export.mjs";
-import { sourceText, validateFlowPage, validateViewportPage } from "./flow_session.mjs";
+import { sourceText, validateFlowPage, validateFlowProfile, validateViewportPage } from "./flow_session.mjs";
 import {
   acknowledgedState,
   fields,
@@ -100,6 +100,8 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         method = method === "snapshotDelta" ? "snapshot" : "viewport";
       }
       if (method === "create") {
+        const profile = initial[1].profile;
+        validateFlowProfile(result, profile, "WORKER_PROTOCOL_ERROR");
         // Legacy workers returned null. Capabilities travel in the creation
         // VALUE, not state, so older clients retain their strict state schema.
         if (result !== null && (!result || typeof result.supportsViewport !== "boolean")) {
@@ -242,11 +244,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         }
         codeHighlighting = result.codeHighlighting;
       }
+      if (["snapshot", "viewport", "readingOrder", "pendingAssets", "hitTest", "selectText",
+        "exportDocument"].includes(method))
+        validateFlowProfile(result, initial[1].profile, "WORKER_PROTOCOL_ERROR");
       if (method === "exportDocument") validateFlowExportResult(result, next.token);
       if (method === "exportDocuments") {
         if (!Array.isArray(result) || result.length < 1 || result.length > 4)
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export-batch acknowledgment");
-        for (const output of result) validateFlowExportResult(output, next.token);
+        for (const output of result) {
+          validateFlowProfile(output, initial[1].profile, "WORKER_PROTOCOL_ERROR");
+          validateFlowExportResult(output, next.token);
+        }
       }
       if (method === "getSource") sourceText(result);
       state = next;
@@ -402,6 +410,10 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     const api = {
       get disposed() {
         return rpc.closed;
+      },
+      get profile() {
+        alive();
+        return initial[1].profile;
       },
       get supportsViewport() {
         alive();
@@ -564,6 +576,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
  * before acknowledging state or admitting another operation. */
 export function installFlowWorker(endpoint, createSession) {
   let session = null;
+  let profile;
   const snapshotDeltas = new SnapshotDeltaEncoder();
   const stop = serveOwnedWorker(endpoint, async (method, args) => {
     try {
@@ -584,6 +597,11 @@ export function installFlowWorker(endpoint, createSession) {
         if (session)
           throw new FlowWorkerError("SESSION_EXISTS", "worker already owns a flow session");
         session = await createSession(...normalized);
+        profile = normalized[1].profile;
+        if (profile !== undefined && session.profile === undefined)
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE",
+            "This native session does not acknowledge Flow authoring profiles; rebuild matching packages.");
+        validateFlowProfile(session, profile);
         const highlighting = session.supportsCodeHighlighting === true &&
           typeof session.setCodeHighlighting === "function";
         if (highlighting && typeof session.codeHighlighting !== "boolean")
@@ -597,10 +615,12 @@ export function installFlowWorker(endpoint, createSession) {
           supportsExportBatches: typeof session.exportDocuments === "function",
           supportsSnapshotDeltas: true,
           supportsViewportDeltas: session.supportsViewport === true,
+          ...(profile === undefined ? {} : { profile }),
         };
       } else {
         if (!session)
           throw new FlowWorkerError("SESSION_NOT_READY", "create the flow session first");
+        validateFlowProfile(session, profile);
         if (method === "provideAssets" && session.supportsAssetBatches !== true) {
           throw new FlowWorkerError(
             "UNSUPPORTED_WASM_PACKAGE",
@@ -657,6 +677,7 @@ export function installFlowWorker(endpoint, createSession) {
       const state = { token: session.token, layout: session.layoutOptions };
       let transfer = [];
       if (method === "exportDocument") {
+        validateFlowProfile(value, profile);
         validateFlowExportResult(value, state.token, normalized[1].maxOutputBytes, normalized[1]);
         if (
           value.format !== normalized[0] ||
@@ -672,6 +693,7 @@ export function installFlowWorker(endpoint, createSession) {
         transfer = [value.bytes.buffer];
       } else if (method === "exportDocuments") {
         validateFlowExportBatchResult(value, normalized[0], normalized[1]);
+        for (const output of value) validateFlowProfile(output, profile);
         value = value.map((output) => ({ ...output, bytes: new Uint8Array(output.bytes) }));
         transfer = value.map((output) => output.bytes.buffer);
       } else if (value instanceof Uint8Array) {

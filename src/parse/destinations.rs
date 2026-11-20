@@ -265,8 +265,12 @@ pub(crate) fn transclusion_code_ranges_with_profile(
         originals
     };
     let mut profiler = ParseProfiler::disabled().with_profile(profile);
-    let (lines, refs, _, consumed) =
-        collect_link_references_tracked(lines, Some(&mut tracker), profiler.definition_lists);
+    let (lines, refs, _, consumed) = collect_link_references_tracked(
+        lines,
+        Some(&mut tracker),
+        profiler.definition_lists,
+        &mut profiler.lazy_line_padding,
+    );
     profiler.destinations = Some(tracker);
     if source.contains('`') {
         // Use the same paragraph/container boundaries and speculative-work

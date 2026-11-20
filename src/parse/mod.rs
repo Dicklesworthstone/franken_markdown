@@ -439,9 +439,7 @@ impl LiteralTabs {
     fn contains_complete(&self, text: &str) -> bool {
         let start = text.as_ptr() as usize;
         let end = start + text.len();
-        self.spans
-            .range(start..end)
-            .any(|(_, &stop)| stop <= end)
+        self.spans.range(start..end).any(|(_, &stop)| stop <= end)
     }
 
     fn literal<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
@@ -726,6 +724,7 @@ fn parse_document_inner(src: &str, profiler: &mut ParseProfiler) -> Document {
             lines,
             profiler.destinations.as_mut(),
             profiler.definition_lists,
+            &mut profiler.lazy_line_padding,
         )
     } else {
         (lines, ReferenceMap::new(), false, Vec::new())
@@ -990,7 +989,7 @@ fn looks_like_reference_definition(line: &str) -> bool {
 #[cfg(test)]
 fn collect_link_references(lines: Vec<&str>) -> (Vec<&str>, ReferenceMap, bool, bool) {
     let (lines, refs, kept_reference_candidate, consumed) =
-        collect_link_references_tracked(lines, None, true);
+        collect_link_references_tracked(lines, None, true, &mut LazyLinePadding::default());
     let rebuilt_lines = !consumed.is_empty();
     let kept = if rebuilt_lines {
         strip_consumed_references(&lines, &consumed)
@@ -1004,6 +1003,7 @@ fn collect_link_references_tracked<'a>(
     lines: Vec<&'a str>,
     tracker: Option<&mut destinations::DestinationTracker>,
     definition_lists: bool,
+    padding: &mut LazyLinePadding,
 ) -> (Vec<&'a str>, ReferenceMap, bool, ConsumedReferenceLines) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
@@ -1013,6 +1013,7 @@ fn collect_link_references_tracked<'a>(
         &mut refs,
         tracker,
         definition_lists,
+        padding,
     );
     (lines, refs, kept_reference_candidate, consumed)
 }
@@ -1078,10 +1079,17 @@ fn table_body_row_starts_at(lines: &[&str], start: usize) -> bool {
 fn collect_link_reference_metadata(
     lines: &[&str],
     definition_lists: bool,
+    padding: &mut LazyLinePadding,
 ) -> (ConsumedReferenceLines, ReferenceMap) {
     let mut consumed = ConsumedReferenceLines::new();
     let mut refs = ReferenceMap::new();
-    collect_link_reference_metadata_into(lines, Some(&mut consumed), &mut refs, definition_lists);
+    collect_link_reference_metadata_into(
+        lines,
+        Some(&mut consumed),
+        &mut refs,
+        definition_lists,
+        padding,
+    );
     (consumed, refs)
 }
 
@@ -1207,8 +1215,16 @@ fn collect_link_reference_metadata_into(
     consumed: Option<&mut ConsumedReferenceLines>,
     refs: &mut ReferenceMap,
     definition_lists: bool,
+    padding: &mut LazyLinePadding,
 ) -> bool {
-    collect_link_reference_metadata_into_tracked(lines, consumed, refs, None, definition_lists)
+    collect_link_reference_metadata_into_tracked(
+        lines,
+        consumed,
+        refs,
+        None,
+        definition_lists,
+        padding,
+    )
 }
 
 fn collect_link_reference_metadata_into_tracked(
@@ -1217,8 +1233,17 @@ fn collect_link_reference_metadata_into_tracked(
     refs: &mut ReferenceMap,
     tracker: Option<&mut destinations::DestinationTracker>,
     definition_lists: bool,
+    padding: &mut LazyLinePadding,
 ) -> bool {
-    collect_link_reference_metadata_at_depth(lines, consumed, refs, tracker, definition_lists, 0)
+    collect_link_reference_metadata_at_depth(
+        lines,
+        consumed,
+        refs,
+        tracker,
+        definition_lists,
+        0,
+        padding,
+    )
 }
 
 fn collect_link_reference_metadata_at_depth(
@@ -1228,6 +1253,7 @@ fn collect_link_reference_metadata_at_depth(
     mut tracker: Option<&mut destinations::DestinationTracker>,
     definition_lists: bool,
     depth: usize,
+    padding: &mut LazyLinePadding,
 ) -> bool {
     let mut i = 0usize;
     // Whether the current position is a lazy continuation of an open top-level
@@ -1246,6 +1272,12 @@ fn collect_link_reference_metadata_at_depth(
             i += 1;
             continue;
         }
+
+        // A container has already admitted this line as lazy paragraph content.
+        // Leading reference definitions may have supplied all preceding text;
+        // removing them must not turn its protective indentation into code and
+        // expose following prose as a new reference-definition boundary.
+        in_paragraph |= padding.contains(line.as_ptr() as usize);
 
         // A display formula owns its entire literal body, including blank lines
         // and reference-shaped TeX. It cannot interrupt an open paragraph, and
@@ -1311,8 +1343,13 @@ fn collect_link_reference_metadata_at_depth(
         // quoted definitions keep precedence over later top-level/list ones.
         if scan.maybe_blockquote && blockquote_marker_start(line) {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
-            let (inner, used) =
-                split_blockquote_lines_tracked(&lines[i..], tracker.as_deref_mut(), None, None);
+            let padding_checkpoint = padding.checkpoint();
+            let (inner, used) = split_blockquote_lines_tracked(
+                &lines[i..],
+                tracker.as_deref_mut(),
+                Some(padding),
+                None,
+            );
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
             i += used;
             if depth < MAX_BLOCK_NESTING_DEPTH {
@@ -1324,11 +1361,13 @@ fn collect_link_reference_metadata_at_depth(
                     tracker.as_deref_mut(),
                     definition_lists,
                     depth + 1,
+                    padding,
                 );
             }
             if let Some(tracker) = &mut tracker {
                 tracker.restore(checkpoint);
             }
+            padding.restore(padding_checkpoint);
             in_paragraph = false;
             continue;
         }
@@ -1361,6 +1400,7 @@ fn collect_link_reference_metadata_at_depth(
                     tracker.as_deref_mut(),
                     definition_lists,
                     depth + 1,
+                    padding,
                 );
             }
             i += used;
@@ -1397,11 +1437,12 @@ fn collect_link_reference_metadata_at_depth(
             && (!in_paragraph || marker_interrupts_paragraph(&marker))
         {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
+            let padding_checkpoint = padding.checkpoint();
             let split = split_list_items_with_first_marker_tracked(
                 &lines[i..],
                 marker,
                 tracker.as_deref_mut(),
-                None,
+                Some(padding),
                 None,
             );
             let used = split.used.max(1);
@@ -1416,12 +1457,14 @@ fn collect_link_reference_metadata_at_depth(
                         tracker.as_deref_mut(),
                         definition_lists,
                         depth + 1,
+                        padding,
                     );
                 }
             }
             if let Some(tracker) = &mut tracker {
                 tracker.restore(checkpoint);
             }
+            padding.restore(padding_checkpoint);
             i += used;
             in_paragraph = false;
             continue;
@@ -1725,7 +1768,12 @@ fn parse_blocks_bounded(
     profiler: &mut ParseProfiler,
 ) -> Vec<Block> {
     let consumed = if lines.iter().any(|line| line.contains("]:")) {
-        collect_link_reference_metadata(lines, profiler.definition_lists).0
+        collect_link_reference_metadata(
+            lines,
+            profiler.definition_lists,
+            &mut profiler.lazy_line_padding,
+        )
+        .0
     } else {
         Vec::new()
     };
@@ -1921,7 +1969,11 @@ fn parse_blocks_with_refs_profiled(
             spans.record(start + source_line_offset, i + source_line_offset);
         }
         let line = lines[i];
-        let force_paragraph = std::mem::take(&mut table_padding_fallback);
+        // Reference removal can leave an admitted lazy continuation first in
+        // this slice. Its protective padding still belongs to prose; it cannot
+        // become an indented code block or a new footnote/definition-list body.
+        let force_paragraph = std::mem::take(&mut table_padding_fallback)
+            || profiler.lazy_line_padding.contains(line.as_ptr() as usize);
         let trimmed = trim_space_tab(line);
         if trimmed.is_empty() {
             i += 1;
@@ -2052,7 +2104,7 @@ fn parse_blocks_with_refs_profiled(
             i += used;
             continue;
         }
-        if scanned_indented_code_start(scan) {
+        if !force_paragraph && scanned_indented_code_start(scan) {
             let started = profiler.checkpoint();
             let (code, used) = parse_indented_code(&lines[i..], &profiler.literal_tabs);
             profiler.record_since(
@@ -2070,7 +2122,7 @@ fn parse_blocks_with_refs_profiled(
         // GFM footnote definition with a bounded sequence of semantic blocks.
         // Keep blank-separated continuations inside the note and remove only
         // its four-column container indent before parsing the nested blocks.
-        if let Some((id, content)) = scan_footnote_definition(line) {
+        if !force_paragraph && let Some((id, content)) = scan_footnote_definition(line) {
             let started = profiler.checkpoint();
             let checkpoint = profiler.destination_checkpoint();
             let (body, used) = footnote_body_lines(&lines[i..], content);

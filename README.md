@@ -896,6 +896,18 @@ counts plus content hashes). Without it, stdout stays empty and a human summary
 goes to stderr. See [`docs/BATCH_ORCHESTRATION.md`](docs/BATCH_ORCHESTRATION.md)
 and [`docs/BATCH_WORKER_BUDGET.md`](docs/BATCH_WORKER_BUDGET.md).
 
+### Verify a composed document
+
+`fmd verify report.md --json` checks the expanded document, including nested
+`{{#include ...}}` sources and selected snippets. `--profile commonmark-gfm`
+or `--profile gfm-plus` selects the same grammar for expansion and verification.
+The default remains an offline audit with fixed PDF options; `--links` adds
+external-link checks across the complete published document, including tables,
+definitions, footnotes and supported HTML anchors. Any link cache is prevented
+from replacing the main file or an included source. See
+[native verification sources](docs/NATIVE_VERIFY_SOURCES.md) for limits,
+diagnostic coordinates and examples.
+
 ### Exit codes
 
 | Code | Meaning |

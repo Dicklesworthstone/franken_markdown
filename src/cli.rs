@@ -16,6 +16,7 @@ pub(crate) mod host_fonts;
 pub(crate) mod page_budget;
 pub(crate) mod protected_paths;
 pub(crate) mod remote_images;
+mod verify_sources;
 pub(crate) use crate::source_origins;
 
 #[cfg(test)]
@@ -216,6 +217,13 @@ struct VerifyArgs {
     /// force the schema.
     #[arg(long)]
     json: bool,
+    /// Markdown dialect, shared with rendering and include expansion:
+    /// commonmark-gfm or gfm-plus. Omission retains the default grammar.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Maximum bytes per input/include and for the complete expanded document.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
+    max_input_bytes: u64,
     /// Restrict findings to the accessibility audit (missing alt text,
     /// heading-level jumps, generic link text, headerless tables). The a11y
     /// findings also appear in the default verify report; this flag is the
@@ -2617,42 +2625,64 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
 
 fn collect_external_links(doc: &crate::Document) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    fn inlines(inl: &[crate::Inline], out: &mut Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    fn inlines(
+        inl: &[crate::Inline],
+        out: &mut Vec<String>,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) {
         for i in inl {
             match i {
                 crate::Inline::Link { dest, content, .. } => {
                     let d = dest.as_str();
-                    if (d.starts_with("http://") || d.starts_with("https://"))
-                        && !out.iter().any(|u| u == d)
-                    {
+                    if remote_image_url(d).is_some() && seen.insert(d.to_owned()) {
                         out.push(d.to_string());
                     }
-                    inlines(content, out);
+                    inlines(content, out, seen);
                 }
                 crate::Inline::Emphasis(c)
                 | crate::Inline::Strong(c)
-                | crate::Inline::Strikethrough(c) => inlines(c, out),
+                | crate::Inline::Strikethrough(c) => inlines(c, out, seen),
                 _ => {}
             }
         }
     }
-    fn blocks(blk: &[crate::Block], out: &mut Vec<String>) {
+    fn blocks(
+        blk: &[crate::Block],
+        out: &mut Vec<String>,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) {
         for b in blk {
             match b {
                 crate::Block::Paragraph(i) | crate::Block::Heading { inlines: i, .. } => {
-                    inlines(i, out);
+                    inlines(i, out, seen);
                 }
-                crate::Block::BlockQuote(inner) => blocks(inner, out),
+                crate::Block::BlockQuote(inner)
+                | crate::Block::FootnoteDefinition { blocks: inner, .. } => {
+                    blocks(inner, out, seen)
+                }
                 crate::Block::List(list) => {
                     for item in &list.items {
-                        blocks(&item.blocks, out);
+                        blocks(&item.blocks, out, seen);
+                    }
+                }
+                crate::Block::Table(table) => {
+                    for cell in table.head.iter().chain(table.rows.iter().flatten()) {
+                        inlines(cell, out, seen);
+                    }
+                }
+                crate::Block::DefinitionList(items) => {
+                    for item in items {
+                        for text in item.terms.iter().chain(&item.definitions) {
+                            inlines(text, out, seen);
+                        }
                     }
                 }
                 _ => {}
             }
         }
     }
-    blocks(&doc.blocks, &mut out);
+    blocks(&doc.blocks, &mut out, &mut seen);
     out
 }
 
@@ -2661,6 +2691,10 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     // A TTY without `--json` gets the caret report. `--json` / global `--json`
     // always force the schema.
     let json = global_json || args.json || !std::io::stdout().is_terminal();
+    let profile = match parse_profile_value(args.profile.as_deref(), json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
     let Some(path_str) = args.input.to_str() else {
         return fail_json(
             64,
@@ -2669,9 +2703,13 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
             json,
         );
     };
-    let src = match read_input(Some(path_str), None, DEFAULT_MAX_INPUT_BYTES) {
+    let src = match read_input(Some(path_str), None, args.max_input_bytes) {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
+    };
+    let prepared = match verify_sources::prepare(src, &args.input, args.max_input_bytes, profile) {
+        Ok(prepared) => prepared,
+        Err((code, kind, message)) => return fail_json(code, kind, &message, json),
     };
     // Link checking may write a cache, but verification must preserve the
     // document it just read. Admit the destination before rendering or making
@@ -2680,31 +2718,32 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     if args.links
         && path_str != "-"
         && let Some(cache) = args.links_cache.as_deref()
+        && let Some(source) = prepared.inputs.source_for(cache)
     {
-        let mut protected = protected_paths::ProtectedInputs::default();
-        protected.insert(&args.input);
-        if let Some(source) = protected.source_for(cache) {
-            return fail_json(
-                64,
-                "usage_error",
-                &format!(
-                    "refusing to overwrite verify input {} with link cache {}; choose a different --links-cache path",
-                    source.display(),
-                    cache.display(),
-                ),
-                json,
-            );
-        }
+        return fail_json(
+            64,
+            "usage_error",
+            &format!(
+                "refusing to overwrite verify input {} with link cache {}; choose a different --links-cache path",
+                source.display(),
+                cache.display(),
+            ),
+            json,
+        );
     }
-    let parsed = crate::parse_markdown_spanned(&src);
+    let src = prepared.text;
+    let parsed = crate::parse_markdown_spanned_with_profile(&src, profile);
     let parse_findings = parsed
         .diagnostics
         .iter()
         .map(|diagnostic| crate::verify::VerifyFinding {
             code: diagnostic.code,
             detail: format!(
-                "{} (source bytes {}..{})",
-                diagnostic.message, diagnostic.span.start, diagnostic.span.end,
+                "{} ({}source bytes {}..{})",
+                diagnostic.message,
+                if prepared.expanded { "expanded " } else { "" },
+                diagnostic.span.start,
+                diagnostic.span.end,
             ),
         })
         .collect();
@@ -2712,7 +2751,10 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     // Verification baseline: the default theme/options, deliberately
     // independent of config, so the same document verifies identically on
     // every machine (the digest is a portable change detector).
-    let opts = PdfOptions::default();
+    let opts = PdfOptions {
+        profile,
+        ..PdfOptions::default()
+    };
     let report = match crate::verify::verify_pdf_result(&doc, &opts) {
         Ok(report) => crate::verify::with_extra_findings(report, parse_findings),
         Err(error) => return fail_json(70, error.code(), &error.to_string(), json),
@@ -2726,8 +2768,11 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
     // link_broken / link_redirected findings; pure addition, never in the
     // default path (network is non-deterministic by definition).
     let report = if args.links {
+        // Audit every link actually present in the PDF baseline, including
+        // safe HTML and complete note bodies, through the same preparation.
+        let published = crate::transform_footnotes_for_pdf(&doc, &opts);
         let extra = check_external_links(
-            &doc,
+            &published,
             args.links_timeout_secs,
             args.links_cache.as_deref(),
             args.links_ttl_secs,
@@ -2751,7 +2796,15 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
             crate::caret::ColorMode::from_env()
         };
         let style = crate::caret::style_for_stderr(mode, std::io::stdout().is_terminal(), None);
-        let human = crate::verify::to_human(&report, &src, Some(path_str), style);
+        // These coordinates describe the expanded buffer. Never label them
+        // as byte/line positions in the unexpanded primary file.
+        let expanded_label = format!("{path_str} (expanded includes)");
+        let label = if prepared.expanded {
+            expanded_label.as_str()
+        } else {
+            path_str
+        };
+        let human = crate::verify::to_human(&report, &src, Some(label), style);
         emit_stdout(&human)
     };
     if out_status != ExitCode::SUCCESS {
@@ -4085,7 +4138,14 @@ fn parse_profile_arg(
     style: &RenderStyleArgs,
     json: bool,
 ) -> std::result::Result<Option<crate::Profile>, ExitCode> {
-    let Some(prof_str) = &style.profile else {
+    parse_profile_value(style.profile.as_deref(), json)
+}
+
+fn parse_profile_value(
+    value: Option<&str>,
+    json: bool,
+) -> std::result::Result<Option<crate::Profile>, ExitCode> {
+    let Some(prof_str) = value else {
         return Ok(None);
     };
     crate::Profile::parse(prof_str).map(Some).ok_or_else(|| {

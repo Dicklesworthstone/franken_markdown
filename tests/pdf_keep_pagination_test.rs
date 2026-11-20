@@ -608,3 +608,86 @@ fn wasm_uses_the_same_extended_exact_contract() {
     assert_eq!(browser.bytes, render_pdf(source, &options).unwrap());
     assert_eq!(painted_pages(&browser.bytes), ["CAP00.FIGURE"]);
 }
+
+#[test]
+fn best_effort_keeps_stop_at_source_container_boundaries() {
+    let preceding = "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.";
+    let cases = [
+        (
+            format!("{preceding}\n\n> ### HEADING\n\nOUT00.  \nOUT01.  \nOUT02.  \nOUT03."),
+            "HEADING",
+            "OUT00.OUT01.OUT02.OUT03.",
+        ),
+        (
+            format!("{preceding}\n\n> ## HEADING\n\nOUT00.  \nOUT01.  \nOUT02.  \nOUT03."),
+            "HEADING",
+            "OUT00.OUT01.OUT02.OUT03.",
+        ),
+        (
+            format!("{preceding}\n\n- ### HEADING\n- OUT00.  \n  OUT01.  \n  OUT02.  \n  OUT03."),
+            "HEADING",
+            "OUT00.OUT01.OUT02.OUT03.",
+        ),
+        (
+            format!(
+                "{preceding}\n\n> > ### HEADING\n>\n> OUT00.  \n> OUT01.  \n> OUT02.  \n> OUT03."
+            ),
+            "HEADING",
+            "OUT00.OUT01.OUT02.OUT03.",
+        ),
+        (
+            format!("{preceding}\n\n> CAPTION\n\n```text\nCODEA\nCODEB\nCODEC\nCODED\n```"),
+            "CAPTION",
+            "CODEACODEBCODECCODED",
+        ),
+    ];
+    let mut options = options(120.0, 80);
+    options.strict_pagination = false;
+    for optimal in [false, true] {
+        options.optimal_pagination = optimal;
+        for (source, ending, following) in &cases {
+            let result = render_pdf_reported(source, &options).unwrap();
+            let pages = painted_pages(&result.bytes);
+            assert_eq!(pages.len(), 2, "{source}\n{pages:?}");
+            assert!(
+                pages[0].contains(ending),
+                "a completed container must not capture unrelated following content: {source}\n{pages:?}"
+            );
+            assert_eq!(
+                plain(&pages),
+                format!("{}{}{}", compact(preceding), ending, following)
+            );
+            assert_eq!(
+                result,
+                render_pdf_document_reported(
+                    &parse_markdown(source),
+                    &options,
+                    PdfEmitOptions::monolithic()
+                )
+                .unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn best_effort_keeps_still_protect_a_containers_own_subjects() {
+    let preceding = "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.";
+    let cases = [
+        format!("{preceding}\n\n> ### HEADING\n>\n> OUT00.  \n> OUT01.  \n> OUT02.  \n> OUT03."),
+        format!(
+            "{preceding}\n\n> CAPTION\n>\n> ```text\n> CODEA\n> CODEB\n> CODEC\n> CODED\n> ```"
+        ),
+    ];
+    let mut options = options(120.0, 80);
+    options.strict_pagination = false;
+    for source in cases {
+        let pages = painted_pages(&render_pdf(&source, &options).unwrap());
+        assert_eq!(pages.len(), 2, "{pages:?}");
+        assert_eq!(pages[0], compact(preceding), "{pages:?}");
+        assert!(
+            pages[1].starts_with("HEADINGOUT00.") || pages[1].starts_with("CAPTIONCODEA"),
+            "{pages:?}"
+        );
+    }
+}

@@ -138,6 +138,12 @@ fallback, the renderer uses the note-aware greedy pager because the legacy DP
 cannot reserve footnote space. These fallbacks remain successful renders, but
 they do not establish the exact planner's hard guarantees.
 
+Heading and short-caption preferences respect their source containers in every
+pagination mode. A closing heading or caption inside a quotation or list item
+does not bind unrelated content outside it or in a sibling item. Explicit page
+breaks and the generated Notes section also end those inferred associations.
+Headings still introduce nested content within their own source scope.
+
 The separate `paragraph_variants` report records admitted searches, offered and
 selected alternatives, typography-mode restrictions, item/retained-line/work/
 state-cell limits, and rejected joint searches. Exact page breaks for the final

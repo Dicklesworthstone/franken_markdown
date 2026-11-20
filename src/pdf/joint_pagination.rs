@@ -190,7 +190,7 @@ pub(super) fn block_variant(
 /// A following list adds one child container; sibling items, quote changes,
 /// and new note destinations are separate content even when flattened lines
 /// happen to be adjacent. Explicit page breaks override inferred associations.
-fn short_introduction_keeps_next(lines: &[Line], start: usize) -> bool {
+pub(super) fn short_introduction_keeps_next(lines: &[Line], start: usize) -> bool {
     let first = &lines[start];
     if first.flow.kind != FlowKind::Paragraph
         || first.flow.index != 0

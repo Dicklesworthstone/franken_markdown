@@ -32014,6 +32014,35 @@ fn break_score_for_used_height(lines: &[Line], candidate: usize, capacity: f32, 
     fill_badness + break_penalty(lines, candidate)
 }
 
+/// Soft keeps have the same source ownership as exact keeps. Flattening a
+/// quote or list must not bind its last heading to an unrelated sibling. H1/H2
+/// underlines can lack list ancestry, so use their preceding visible title row.
+fn heading_penalty_applies(lines: &[Line], heading: usize, candidate: usize) -> bool {
+    let line = &lines[heading];
+    if line.flow.kind != FlowKind::Heading
+        || lines[heading + 1..=candidate].iter().any(|line| {
+            line.page_break_before
+                || line
+                    .heading_source
+                    .as_ref()
+                    .is_some_and(|source| source.starts_note_section)
+        })
+    {
+        return false;
+    }
+    let after = &lines[candidate];
+    let owner = if line.rule
+        && heading > 0
+        && lines[heading - 1].flow.group == line.flow.group
+        && lines[heading - 1].flow.kind == FlowKind::Heading
+    {
+        &lines[heading - 1]
+    } else {
+        line
+    };
+    owner.flow.note == after.flow.note && heading_scope_contains(owner, after)
+}
+
 fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     if candidate == 0 || candidate >= lines.len() {
         return 0.0;
@@ -32025,7 +32054,7 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
 
     // Keep headings with at least the first following content line. This is the
     // PDF analogue of TeX's high after-heading penalty.
-    if before.flow.kind == FlowKind::Heading {
+    if heading_penalty_applies(lines, candidate - 1, candidate) {
         penalty += 1_500_000.0;
     }
 
@@ -32043,10 +32072,10 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     if !completes_figure {
         // Protect the first rows following a heading while its subject is
         // incomplete. The direct after-heading keep above remains unchanged.
-        if candidate >= 2 && lines[candidate - 2].flow.kind == FlowKind::Heading {
+        if candidate >= 2 && heading_penalty_applies(lines, candidate - 2, candidate) {
             penalty += 1_200_000.0;
         }
-        if candidate >= 3 && lines[candidate - 3].flow.kind == FlowKind::Heading {
+        if candidate >= 3 && heading_penalty_applies(lines, candidate - 3, candidate) {
             penalty += 1_000_000.0;
         }
     }
@@ -32055,7 +32084,7 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
     // a heading from the first line of a following list.
     if before.flow.list_start
         && candidate >= 2
-        && lines[candidate - 2].flow.kind == FlowKind::Heading
+        && heading_penalty_applies(lines, candidate - 2, candidate)
     {
         penalty += 1_500_000.0;
     }
@@ -32081,44 +32110,15 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 1_500_000.0;
     }
 
-    // Keep a short intro/caption paragraph together: do not break inside a 1-3 line
-    // intro paragraph when it introduces a structured block.
-    if before.flow.group == after.flow.group
-        && before.flow.kind == FlowKind::Paragraph
-        && before.flow.count <= 3
-        && before.flow.index + 1 < before.flow.count
+    // Preserve short introductions and their subjects using the same ownership
+    // test as exact pagination, both inside and after the paragraph. A short
+    // paragraph closing a quote/list item is not the next container's caption.
+    if before.flow.kind == FlowKind::Paragraph
+        && (1..=3).contains(&before.flow.count)
+        && let Some(start) = (candidate - 1).checked_sub(before.flow.index)
+        && lines[start].flow.group == before.flow.group
+        && joint_pagination::short_introduction_keeps_next(lines, start)
     {
-        let mut following_is_captioned = false;
-        for next_line in &lines[candidate..] {
-            if next_line.flow.group != before.flow.group {
-                following_is_captioned = matches!(
-                    next_line.flow.kind,
-                    FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
-                ) || next_line.flow.list_start;
-                break;
-            }
-        }
-        if following_is_captioned {
-            penalty += 1_200_000.0;
-        }
-    }
-
-    // Generalized keep-with-next: keep a short intro/caption paragraph with the
-    // structured block it introduces (a table, code block, figure/image, or
-    // list), so a one- or two-line caption never strands alone at the foot of a
-    // page. This extends the heading keep above to captioned blocks. List items
-    // share the Paragraph kind, so the list's first line is tagged with
-    // `flow.list_start` in `layout_list` to make a list start detectable here.
-    let before_ends_short_intro = before.flow.kind == FlowKind::Paragraph
-        && before.flow.group != after.flow.group
-        && before.flow.index + 1 == before.flow.count
-        && before.flow.count <= 3;
-    let after_starts_captioned_block = (matches!(
-        after.flow.kind,
-        FlowKind::TableHeader | FlowKind::Code | FlowKind::Image
-    ) && after.flow.index == 0)
-        || after.flow.list_start;
-    if before_ends_short_intro && after_starts_captioned_block {
         penalty += 1_200_000.0;
     }
 
@@ -32439,7 +32439,8 @@ mod keep_with_next_tests {
 
     #[test]
     fn short_intro_before_a_list_is_kept_but_a_long_paragraph_is_not() {
-        let mut list_start = line(FlowKind::Paragraph, 2, 0, 3);
+        let mut list_start = list_line(20, 2);
+        list_start.flow.count = 3;
         list_start.flow.list_start = true;
         let kept = [line(FlowKind::Paragraph, 1, 0, 1), list_start];
         assert!(
@@ -32447,7 +32448,8 @@ mod keep_with_next_tests {
             "a short intro before a list must be kept with it"
         );
 
-        let mut list_start2 = line(FlowKind::Paragraph, 2, 0, 3);
+        let mut list_start2 = list_line(20, 2);
+        list_start2.flow.count = 3;
         list_start2.flow.list_start = true;
         let not_kept = [line(FlowKind::Paragraph, 1, 3, 4), list_start2];
         assert_eq!(

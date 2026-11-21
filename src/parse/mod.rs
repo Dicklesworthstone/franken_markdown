@@ -3299,9 +3299,9 @@ fn indented_code_start(line: &str) -> bool {
 fn parse_indented_code(lines: &[&str], tabs: &LiteralTabs) -> (String, usize) {
     let used = indented_code_extent(lines, |line| *line);
     // Presize the body from the extent: raw byte lengths plus one newline per
-    // line. Blank lines push only '\n' and content lines drop at most four
-    // leading columns, so the estimate never under-grows; capacity is
-    // invisible to the collected bytes.
+    // line. Each line drops at most four leading columns, including internal
+    // blanks whose remaining whitespace is literal code, so the estimate never
+    // under-grows; capacity is invisible to the collected bytes.
     let body_bytes = lines
         .iter()
         .take(used)
@@ -3327,7 +3327,9 @@ fn indented_code_extent<T>(lines: &[T], text: impl Fn(&T) -> &str) -> usize {
             if next >= lines.len() || !indented_code_start(text(&lines[next])) {
                 break;
             }
-            i += 1;
+            // This whole blank run belongs to the following code chunk. Skip
+            // it once instead of rescanning its suffix for every blank line.
+            i = next;
             continue;
         }
         if !indented_code_start(line) {
@@ -4063,8 +4065,8 @@ fn marker_interrupts_paragraph(marker: &Marker<'_>) -> bool {
 /// separated) without parsing them, plus the list flags and the number of lines
 /// consumed. Body lines borrow from the source wherever possible: marker rests,
 /// content-indent strips, and lazy continuations are all slices of the original
-/// input; inserted structural blanks use the shared empty string. Shared by
-/// `parse_list_profiled_with_first_marker` (which parses each body) and
+/// input, including blank lines whose residual whitespace may be literal code.
+/// Shared by `parse_list_profiled_with_first_marker` (which parses each body) and
 /// reference collection (which recurses into each body to find nested
 /// definitions), so the two agree exactly on item boundaries.
 struct ListSplit<'a> {
@@ -4143,6 +4145,17 @@ impl ContainerTail {
             || list_marker(line).is_some_and(|marker| {
                 marker.ordered == *ordered && marker.marker_char == *marker_char
             })
+    }
+
+    /// Blank runs between indented chunks belong to one code block, not to a
+    /// pair of direct item blocks. A nested list handles its own code gaps when
+    /// it is split; an unmarked blank closes a nested quote rather than keeping
+    /// its code open. Only the item's current direct code block can claim this
+    /// gap here.
+    fn indented_code_owns_gap_before(&self, line: &str) -> bool {
+        self.containers.is_empty()
+            && matches!(self.leaf, TailLeaf::IndentedCode)
+            && indented_code_start(line)
     }
 
     fn can_continue_lazily(&self, line: &str) -> bool {
@@ -4465,6 +4478,7 @@ fn split_list_items_with_first_marker_tracked<'a>(
                     let next_indent = leading_spaces(lines[j]);
                     if next_indent >= m.content_indent
                         && !tail.nested_list_owns_gap_before(strip_n(lines[j], m.content_indent))
+                        && !tail.indented_code_owns_gap_before(strip_n(lines[j], m.content_indent))
                     {
                         tight = false;
                     }
@@ -4472,9 +4486,16 @@ fn split_list_items_with_first_marker_tracked<'a>(
                 // Classify this gap once: observing its first blank can close
                 // an empty nested item. Reclassifying the remaining blanks
                 // would incorrectly assign a following sibling to the parent.
-                // Keep every row so indented code retains its literal blanks.
+                // Borrow every stripped row so indented code retains both its
+                // blank lines and their literal spaces/tabs. Replacing them
+                // with empty strings loses source provenance before the code
+                // parser can remove its four structural columns.
                 tail.observe("");
-                item_lines.extend(std::iter::repeat_n(std::borrow::Cow::Borrowed(""), j - i));
+                item_lines.extend(
+                    lines[i..j]
+                        .iter()
+                        .map(|line| std::borrow::Cow::Borrowed(strip_n(line, m.content_indent))),
+                );
                 i = j;
                 continue;
             }

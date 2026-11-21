@@ -4,7 +4,7 @@
 use std::{fs, path::Path};
 
 use franken_markdown::{
-    Block, DiagnosticSeverity, HtmlOptions, SourceSpan, SpannedDocument, parse_markdown,
+    Block, DiagnosticSeverity, HtmlOptions, Inline, SourceSpan, SpannedDocument, parse_markdown,
     parse_markdown_spanned, parse_markdown_spanned_profiled, render_html_document,
 };
 
@@ -313,6 +313,18 @@ fn bom_frontmatter_and_crlf_keep_original_byte_coordinates() {
 #[test]
 fn tab_expansion_and_reference_removal_keep_real_line_offsets() {
     let source = "[ref]: /target\n\t\"not a reference title\"\n\n# After\n\n[ref]\n";
+    // A tab-indented title belongs to the definition's open paragraph. Its
+    // source disappears with the reference; the remaining spans stay exact.
+    let document = assert_spans(source, &["# After", "[ref]"]);
+    assert!(matches!(
+        &document.blocks[1].node,
+        Block::Paragraph(inlines)
+            if matches!(&inlines[..], [Inline::Link { title: Some(title), .. }]
+                if title == "not a reference title")
+    ));
+
+    // With an actual blank boundary the same source line remains literal code.
+    let source = "[ref]: /target\n\n\t\"not a reference title\"\n\n# After\n\n[ref]\n";
     let document = assert_spans(source, &["\t\"not a reference title\"", "# After", "[ref]"]);
     assert!(matches!(document.blocks[0].node, Block::CodeBlock { .. }));
 }

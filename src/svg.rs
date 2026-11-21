@@ -176,7 +176,7 @@ pub fn render_svg_with_diagnostics(
 ///
 /// # Errors
 /// Invalid font data/instances or oversized resource collections fail before
-/// output. Unsupported or malformed used CFF1 glyphs also fail before output,
+/// output. Unsupported or malformed used host glyphs also fail before output,
 /// rather than silently omitting their ink. Per-image input is bounded to
 /// 32 MiB; input/encoded image budgets
 /// and aggregate supplied fonts are bounded to 128 MiB each. At most 4096
@@ -189,7 +189,7 @@ pub fn render_svg_with_resources(
 ) -> franken_markdown::Result<(Vec<u8>, SvgReport, Vec<SvgWarning>)> {
     let mut poster = Poster::new(opts).with_resources(fonts, images)?;
     let height = poster.layout(doc);
-    poster.validate_cff_glyphs()?;
+    poster.validate_host_glyphs(fonts)?;
     Ok(poster.emit(height))
 }
 
@@ -565,25 +565,34 @@ impl Poster {
     /// Validate the shaped glyphs that will actually be painted, including
     /// GSUB substitutions. Batching per face shares the CFF instruction and
     /// output budgets; decoding each repeated occurrence independently would
-    /// bypass those aggregate limits. The strict subsetter also checks cubic
-    /// ink bounds and rejects unsupported charstring operators.
-    fn validate_cff_glyphs(&self) -> franken_markdown::Result<()> {
+    /// bypass those aggregate limits. Host TrueType faces must also pass the
+    /// strict subsetter so failed outline decoding cannot become invisible ink.
+    /// Registry faces retain their existing trusted path.
+    fn validate_host_glyphs(
+        &self,
+        fonts: &franken_markdown::FontAssets,
+    ) -> franken_markdown::Result<()> {
+        let host_slots =
+            franken_markdown::FontAssetSlot::ALL.map(|slot| fonts.resolved_bytes(slot).is_some());
         let mut used: BTreeMap<usize, BTreeSet<u16>> = BTreeMap::new();
         for op in &self.ops {
             if let Op::Glyph { slot, gid, .. } = op
-                && self
-                    .font_for_slot(*slot)
-                    .is_some_and(|font| !font.has_glyf_outlines())
+                && host_slots.get(*slot).copied().unwrap_or(false)
             {
                 used.entry(*slot).or_default().insert(*gid);
             }
         }
         for (slot, glyphs) in used {
             if let Some(font) = self.font_for_slot(slot) {
+                let kind = if font.has_glyf_outlines() {
+                    "truetype"
+                } else {
+                    "cff"
+                };
                 font.try_subset_glyphs(&glyphs.into_iter().collect::<Vec<_>>(), &[])
                     .map_err(|error| {
                         franken_markdown::RenderError::InvalidInput(format!(
-                            "svg_cff_font: font slot {slot}: {error}"
+                            "svg_{kind}_font: font slot {slot}: {error}"
                         ))
                     })?;
             }

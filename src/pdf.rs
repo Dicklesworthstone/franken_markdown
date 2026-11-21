@@ -2306,7 +2306,11 @@ fn load_pdf_face_parts(
     Cow<'static, Ligatures>,
 )> {
     if let Some(font) = face.parsed {
-        crate::validate_render_font(slot, font)?;
+        // Parsed faces come from the immutable bundled registry. Keep their
+        // existing admission without repeating host TrueType subset checks.
+        if !font.has_glyf_outlines() {
+            crate::validate_render_font(slot, font)?;
+        }
         if let Some(layout) = face.layout {
             return Ok((
                 Cow::Borrowed(font),
@@ -23389,18 +23393,26 @@ fn serialize(
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let (bytes, mut gid_lookup, format) = if !source.has_glyf_outlines() {
+        let strict_subset = !source.has_glyf_outlines() || matches!(&face.font, Cow::Owned(_));
+        let (bytes, mut gid_lookup, format) = if strict_subset {
             // ISO 32000-1 9.7.4.2: a name-keyed CFF program embedded as
             // OpenType under CIDFontType0 selects CharStrings directly by
             // GID. Preserve the same dense subset IDs used by Identity-H,
             // the width array, shaped text and ToUnicode; CIDToGIDMap is
-            // only valid for the TrueType descendant below.
+            // only valid for a TrueType descendant. Host TrueType faces also
+            // use strict subsetting: the legacy API repairs malformed glyphs
+            // into missing ink. Trusted registry faces retain their old path.
+            let kind = if source.has_glyf_outlines() {
+                "TrueType"
+            } else {
+                "CFF"
+            };
             let t0 = tail.then(subset_tail_now);
             let subset = source
                 .try_subset_glyphs_with_lookup(&seed, &keep)
                 .map_err(|err| {
                     RenderError::InvalidInput(format!(
-                        "{} CFF font could not be subset: {err}",
+                        "{} {kind} font could not be subset: {err}",
                         subset_tail_slot_name(slot)
                     ))
                 })?;

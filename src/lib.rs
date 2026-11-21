@@ -371,7 +371,8 @@ impl FontAssetSlot {
 /// PDF, SVG and EPUB use the same bytes without filesystem, fontconfig, or
 /// global mutable state. CFF2 and noncanonical CFF font matrices remain unsupported;
 /// TTC/OTC collections require prior extraction to a standalone OpenType face.
-/// unsupported CFF glyph programs are rejected when needed for a subset.
+/// Malformed or unsupported glyph programs are rejected when needed for a
+/// subset or vector outline.
 ///
 /// Per-slot `*_weight` pins CSS `font-weight` for **variable** host faces
 /// (`wght` axis). The HTML/PDF loaders instance the face at that location and
@@ -569,17 +570,16 @@ fn validate_font_asset(slot: FontAssetSlot, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Admit supported outline formats without decoding unrelated glyph programs.
-/// Each renderer validates its used CFF glyphs before emitting the document.
+/// Admit supported outline formats and metrics without decoding unrelated glyph
+/// programs. The strict subsetter checks only the required `.notdef` glyph here;
+/// each renderer validates the glyphs it actually subsets or paints later.
 pub(crate) fn validate_render_font(slot: FontAssetSlot, font: &text::Font) -> Result<()> {
-    if !font.has_glyf_outlines() {
-        font.try_subset_glyphs(&[], &[]).map_err(|err| {
-            RenderError::InvalidInput(format!(
-                "{} font bytes must contain TrueType glyf outlines or supported CFF1 OpenType outlines for deterministic subsetting: {err}",
-                slot.as_str()
-            ))
-        })?;
-    }
+    font.try_subset_glyphs(&[], &[]).map_err(|err| {
+        RenderError::InvalidInput(format!(
+            "{} font bytes must contain valid metrics and TrueType glyf outlines or supported CFF1 OpenType outlines for deterministic subsetting: {err}",
+            slot.as_str()
+        ))
+    })?;
     Ok(())
 }
 
@@ -1179,7 +1179,7 @@ pub fn parse_markdown_spanned_profiled_with_profile(
 /// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
 /// invalid (empty, over the size limit, or not a supported TrueType/CFF1
 /// OpenType face), a requested variable instance cannot be produced, or a
-/// used CFF glyph cannot be subset deterministically.
+/// used glyph cannot be subset deterministically without losing its ink.
 pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
     opts.font_assets.validate()?;
     html::validate_font_usage(doc, opts)?;

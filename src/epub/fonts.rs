@@ -274,9 +274,9 @@ impl Package {
         embedding: FontEmbedding,
     ) -> Result<()> {
         // Full embedding retains the complete cmap and layout program for
-        // the reading system. Compact embedding keeps the established bytes;
-        // CFF uses the strict API so unsupported used outlines cannot become
-        // a successful blank subset.
+        // the reading system. Compact embedding keeps the established bytes
+        // for valid fonts; strict subsetting refuses malformed used outlines
+        // instead of repairing them into a successful blank subset.
         let (bytes, format) = if embedding == FontEmbedding::Full {
             let format = if font.has_glyf_outlines() {
                 EmbeddingFormat::TrueType
@@ -284,12 +284,6 @@ impl Package {
                 EmbeddingFormat::OpenTypeCff
             };
             (font.as_sfnt().to_vec(), format)
-        } else if font.has_glyf_outlines() {
-            (
-                font.subset(keep)
-                    .ok_or_else(|| invalid("font subsetting failed"))?,
-                EmbeddingFormat::TrueType,
-            )
         } else {
             let subset = font.try_subset(keep).map_err(invalid)?;
             (subset.bytes, subset.format)

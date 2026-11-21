@@ -172,6 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Checked publishers reject malformed TrueType glyphs instead of silently
+  producing missing ink. Compact HTML/EPUB validate the selected characters,
+  and PDF/SVG validate the actual shaped glyphs, including ligatures. Host-font
+  metrics and `.notdef` are checked before layout; valid subset bytes, unused
+  glyphs and the existing Full-embedding policy retain their behavior.
 - Leading link-reference definitions preserve the paragraph that owns their
   remaining text. Indented markup, noninterrupting ordered markers and type-7
   HTML no longer restart as separate blocks or create phantom link targets.

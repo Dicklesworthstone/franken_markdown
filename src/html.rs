@@ -218,8 +218,8 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
-/// Checked publication refuses failed variable instances and CFF programs it
-/// cannot subset. The longstanding infallible HTML helpers retain their
+/// Checked publication refuses failed variable instances and used glyphs it
+/// cannot subset faithfully. The longstanding infallible HTML helpers retain their
 /// compatible full-font fallback; native and browser publishers use this
 /// admission before producing bytes.
 pub(crate) fn validate_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
@@ -245,19 +245,17 @@ fn validate_fonts(subset_doc: Option<&Document>, opts: &HtmlOptions) -> crate::R
                 slot.as_str()
             ))
         })?;
-        if font.instance_bounds(*b"wght").is_some() {
+        let font = if font.instance_bounds(*b"wght").is_some() {
             // Reuse this already parsed face. A failed pin must not reach the
             // infallible stylesheet helper's original-font fallback, including
             // Full embedding and the regular face's inherited bold weight.
-            crate::instance_render_font(slot, font, opts.font_assets.effective_weight(slot))?;
-            continue;
-        }
+            crate::instance_render_font(slot, font, opts.font_assets.effective_weight(slot))?
+        } else {
+            font
+        };
         let Some(doc) = subset_doc else {
             continue;
         };
-        if font.has_glyf_outlines() {
-            continue;
-        }
         let usage = usage.get_or_insert_with(|| {
             let profiled = crate::apply_profile(doc, opts.profile);
             let mut usage = collect_font_usage(&profiled);
@@ -272,9 +270,14 @@ fn validate_fonts(subset_doc: Option<&Document>, opts: &HtmlOptions) -> crate::R
             FontAssetSlot::MonoRegular => &usage.mono,
         };
         if !chars.is_empty() {
+            let kind = if font.has_glyf_outlines() {
+                "truetype"
+            } else {
+                "cff"
+            };
             font.try_subset(&chars.to_chars()).map_err(|err| {
                 crate::RenderError::InvalidInput(format!(
-                    "html_cff_font: {} font subsetting failed: {err}",
+                    "html_{kind}_font: {} font subsetting failed: {err}",
                     slot.as_str()
                 ))
             })?;

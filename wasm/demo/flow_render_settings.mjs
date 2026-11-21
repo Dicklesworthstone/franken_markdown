@@ -5,6 +5,7 @@ import { normalizeFlowExport } from "../flow_export.mjs";
 import { FlowError, validateCreation } from "../flow_session.mjs";
 
 const DEFAULTS = Object.freeze({
+  profile: null,
   font: "sans",
   bodySize: 14,
   codeSize: 13,
@@ -71,9 +72,10 @@ const TYPOGRAPHY_FIELDS = Object.freeze({
   typographyAntiriver: "antiriver",
   typographyPareto: "pareto",
 });
-const optionalSelects = ["microtype", "pageSize", "pageOrientation"];
+const optionalSelects = ["profile", "microtype", "pageSize", "pageOrientation"];
 const equal = (a, b) => Object.keys(DEFAULTS).every((key) => a.values[key] === b.values[key]);
 const previewEqual = (a, b) =>
+  Object.keys(a.preview).length === Object.keys(b.preview).length &&
   Object.keys(a.preview).every((key) => a.preview[key] === b.preview[key]);
 
 export function normalizeRenderSettings(input = {}) {
@@ -84,14 +86,18 @@ export function normalizeRenderSettings(input = {}) {
     Object.keys(input).some((key) => !Object.hasOwn(DEFAULTS, key))
   )
     fail("Unsupported rendering settings.");
+  const field = Object.getOwnPropertyDescriptor(input, "profile");
+  if ((field && !Object.hasOwn(field, "value")) || (!field && "profile" in input))
+    fail("profile must be a data-valued authoring profile.");
   const values = Object.fromEntries(
     Object.entries(DEFAULTS).map(([key, value]) => [
       key,
       input[key] === undefined ? value : input[key],
     ]),
   );
-  const { font, layout } = validateCreation("", {
+  const { font, layout, profile } = validateCreation("", {
     font: values.font,
+    profile: values.profile === null ? undefined : values.profile,
     bodySize: values.bodySize,
     codeSize: values.codeSize,
     lineHeight: values.lineHeight,
@@ -106,6 +112,7 @@ export function normalizeRenderSettings(input = {}) {
   }
   const preview = Object.freeze({
     font,
+    ...(profile === undefined ? {} : { profile }),
     bodySize: layout.bodySize,
     codeSize: layout.codeSize,
     lineHeight: layout.lineHeight,
@@ -196,6 +203,16 @@ const booleanChoices = [
 ];
 const FIELDS = [
   [
+    "profile",
+    "Markdown dialect (preview and exports)",
+    "select",
+    [
+      ["", "Renderer default (GFM plus)"],
+      ["commonmark-gfm", "CommonMark + GFM"],
+      ["gfm-plus", "GFM plus"],
+    ],
+  ],
+  [
     "font",
     "Bundled font (preview and exports)",
     "select",
@@ -274,7 +291,7 @@ function mount(root) {
     const title = make("h2", "Typography and publishing", "render-settings-title");
     const help = make(
       "p",
-      "Apply changes to use the Rust engine's measured typography. Canvas sizes affect only the flowing preview; PDF sizes use points and its separate page layout. The bundled font applies to all four exports. Settings do not modify or save Markdown, and do not enable raw HTML or network images.",
+      "Apply changes to use the selected Markdown dialect and measured typography. The dialect and bundled font apply to the preview and all four exports. Canvas sizes affect only the flowing preview; PDF sizes use points and its separate page layout. Settings do not modify or save Markdown, and do not enable raw HTML or network images.",
       "render-settings-help",
     );
     panel.append(title, help);
@@ -285,8 +302,8 @@ function mount(root) {
     let group;
     for (const [key, label, type, first, max, integer] of FIELDS) {
       const groupTitle =
-        key === "font"
-          ? "Measured preview"
+        key === "profile"
+          ? "Authoring and measured preview"
           : key === "title"
             ? "Shared export options"
             : key === "author"
@@ -458,7 +475,7 @@ export function createRenderSettingsControls({
         message ??
         (dirty
           ? "Unapplied settings. Apply or discard them before preparing an export. Current Markdown is unchanged."
-          : "Settings applied. The preview reports engine progress separately; no file has been saved. Publishing options reset when a different document is opened or restored.");
+          : "Settings applied. The preview reports engine progress separately; no file has been saved. Dialect and publishing options reset when a different document is opened or restored.");
   }
   function commit(next) {
     alive();
@@ -555,9 +572,10 @@ export function createRenderSettingsControls({
     sourceEditor,
     "fmd-document-replaced",
     run(() => {
-      // A new file must not inherit another document's author/title/language.
+      // Plain Markdown carries no settings. Keep typography preferences, but
+      // do not apply another document's grammar, author, title or language.
       composing = false;
-      commit(normalizeRenderSettings(applied.preview));
+      commit(normalizeRenderSettings({ ...applied.preview, profile: null }));
     }),
   );
   write(applied);

@@ -117,6 +117,25 @@ test("defaults preserve worker metrics and omit unspecified renderer options", (
   for (const value of [s, s.values, s.preview, s.html, s.pdf])
     assert.equal(Object.isFrozen(value), true);
 });
+for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+  test(`${profile} belongs to preview creation, with no per-export grammar override`, () => {
+    const s = normalizeRenderSettings({ profile, font: "serif" });
+    assert.equal(s.values.profile, profile);
+    assert.equal(s.preview.profile, profile);
+    assert.equal(s.preview.font, "serif");
+    for (const format of ["html", "pdf", "epub", "svg"])
+      assert.equal(Object.hasOwn(s[format], "profile"), false);
+    assert.equal(normalizeRenderSettings({ profile: null }).values.profile, null);
+    assert.equal(Object.hasOwn(normalizeRenderSettings({ profile: null }).preview, "profile"), false);
+  });
+}
+test("profile settings reject accessors and inherited values without evaluating them", () => {
+  let reads = 0;
+  const accessor = { get profile() { reads++; return "gfm-plus"; } };
+  for (const input of [accessor, Object.create(accessor)])
+    assert.throws(() => normalizeRenderSettings(input), { code: "INVALID_OPTIONS" });
+  assert.equal(reads, 0);
+});
 test("all publishing options reach only the appropriate export format", () => {
   const s = normalizeRenderSettings({
     font: "serif",
@@ -159,6 +178,11 @@ test("all publishing options reach only the appropriate export format", () => {
   }
 });
 for (const [key, value] of [
+  ["profile", ""],
+  ["profile", "gfm"],
+  ["profile", " commonmark-gfm "],
+  ["profile", true],
+  ["profile", {}],
   ["font", "url(font.ttf)"],
   ["bodySize", 7],
   ["bodySize", 49],
@@ -211,6 +235,69 @@ test("panel mounts next to exports with associated labels, status and no startup
   assert.equal(f.el("render-settings-apply").disabled, true);
   assert.equal(f.controls.dirty, false);
   assert.equal(f.sourceEditor.value, "# Original Markdown");
+});
+test("dialect selector stages, applies, discards and resets grammar without changing Markdown", (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  assert.deepEqual(f.el("render-profile").children.map(option => option.value),
+    ["", "commonmark-gfm", "gfm-plus"]);
+  assert.equal(f.el("render-profile").value, "");
+  assert.match(f.el("render-profile").attributes["aria-describedby"], /render-settings-help/);
+  f.set("profile", "commonmark-gfm");
+  assert.equal(f.controls.settings.values.profile, null);
+  assert.throws(() => f.controls.exportOptions("html"), { code: "UNAPPLIED_SETTINGS" });
+  f.submit();
+  assert.equal(f.applied.at(-1).change.previewChanged, true);
+  assert.equal(f.controls.settings.preview.profile, "commonmark-gfm");
+  f.set("profile", "gfm-plus");
+  f.el("render-settings-discard").click();
+  assert.equal(f.el("render-profile").value, "commonmark-gfm");
+  f.set("profile", "");
+  f.submit();
+  assert.equal(f.applied.at(-1).change.previewChanged, true, "removing a profile must rebuild the preview");
+  assert.equal(Object.hasOwn(f.controls.settings.preview, "profile"), false);
+  f.set("profile", "gfm-plus");
+  f.submit();
+  f.controls.reset();
+  assert.equal(f.applied.at(-1).change.previewChanged, true);
+  assert.equal(f.controls.settings.values.profile, null);
+  assert.equal(f.el("render-profile").value, "");
+  assert.equal(f.sourceEditor.value, "# Original Markdown");
+  assert.equal(f.sourceEditor.selectionStart, 2);
+  assert.equal(f.sourceEditor.selectionEnd, 5);
+  assert.equal(f.inputEvents, 0);
+});
+test("preview presets and same-document remount retain the applied dialect", (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  f.set("profile", "commonmark-gfm");
+  f.submit();
+  f.el("render-preset-reading").click();
+  assert.equal(f.el("render-profile").value, "commonmark-gfm");
+  f.submit();
+  const initial = f.controls.settings.values;
+  f.remount(initial);
+  assert.equal(f.el("render-profile").disabled, false);
+  assert.equal(f.controls.settings.preview.profile, "commonmark-gfm");
+  assert.equal(f.controls.settings.preview.font, "serif");
+  assert.equal(f.controls.dirty, false);
+});
+test("opening plain Markdown resets the prior dialect and draft while preserving typography", (t) => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  f.set("profile", "commonmark-gfm");
+  f.set("font", "serif");
+  f.set("bodySize", 18);
+  f.set("lineHeight", 27);
+  f.submit();
+  f.set("profile", "gfm-plus");
+  f.sourceEditor.dispatchEvent(new Event("fmd-document-replaced"));
+  assert.deepEqual(f.controls.settings.preview, { font: "serif", bodySize: 18, codeSize: 13, lineHeight: 27 });
+  assert.equal(f.controls.settings.values.profile, null);
+  assert.equal(f.el("render-profile").value, "");
+  assert.equal(f.applied.at(-1).change.previewChanged, true);
+  assert.equal(f.controls.dirty, false);
+  assert.equal(f.inputEvents, 0);
 });
 test("draft fields never change applied settings and block export until apply", (t) => {
   const f = fixture();

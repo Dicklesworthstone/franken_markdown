@@ -427,6 +427,112 @@ test("font change during startup disposes the late old session without publishin
     ["latest"],
   );
 });
+for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+  test(`${profile} is captured before startup and retained through edits, reflow and restart`, async (t) => {
+    const f = fixture(), c = f.controller;
+    t.after(() => c.dispose());
+    const intent = input("first", { profile, font: "serif" });
+    c.update(intent);
+    intent.profile = "changed after admission";
+    await c.whenIdle();
+    assert.equal(f.sessions[0].layoutOptions.profile, profile);
+    c.update(input("edited", { profile, font: "serif", width: 720, lineHeight: 26 }));
+    await c.whenIdle();
+    assert.equal(f.sessions.length, 1);
+    assert.deepEqual(f.mutations, ["edited"]);
+    assert.deepEqual(f.reflows, [720]);
+    c.restart();
+    await c.whenIdle();
+    assert.equal(f.sessions.length, 2);
+    assert.equal(f.sessions[1].source, "edited");
+    assert.equal(f.sessions[1].layoutOptions.profile, profile);
+    assert.equal(f.sessions[1].layoutOptions.font, "serif");
+    assert.equal(f.sessions[1].layoutOptions.lineHeight, 26);
+  });
+}
+test("dialect switching retires the old session synchronously, including return to renderer default", async (t) => {
+  const f = fixture(), c = f.controller;
+  t.after(() => c.dispose());
+  c.update(input("Term\n: Definition", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  c.update(input("Term\n: Definition", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  assert.equal(f.sessions.length, 1);
+  for (const profile of ["gfm-plus", undefined]) {
+    const old = f.sessions.at(-1);
+    c.update(input("Term\n: Definition", profile === undefined ? {} : { profile }));
+    assert.equal(old.disposed, true);
+    assert.equal(c.state.frame, null);
+    assert.equal(c.state.reading, "");
+    await assert.rejects(c.exportDocument("pdf", {}, old.source), { code: "STALE_REVISION" });
+    await c.whenIdle();
+    assert.equal(f.sessions.at(-1).layoutOptions.profile, profile);
+    assert.equal(Object.hasOwn(f.sessions.at(-1).layoutOptions, "profile"), profile !== undefined);
+    assert.equal(c.state.status, "ready");
+  }
+  assert.equal(f.sessions.length, 3);
+  assert.equal(f.clears, 2);
+  assert.deepEqual(f.mutations, []);
+});
+test("invalid and accessor profiles cannot replace the admitted preview or run getters", async (t) => {
+  const f = fixture(), c = f.controller;
+  t.after(() => c.dispose());
+  c.update(input("safe", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  const before = c.state;
+  let reads = 0;
+  const accessor = { get profile() { reads++; return "gfm-plus"; } };
+  for (const intent of [
+    ...[null, "", "gfm", " commonmark-gfm ", true, 1, {}]
+      .map(profile => input("rejected", { profile })),
+    Object.defineProperty(input("rejected"), "profile", Object.getOwnPropertyDescriptor(accessor, "profile")),
+    Object.assign(Object.create(accessor), input("rejected")),
+  ]) {
+    assert.throws(() => c.update(intent), { code: "INVALID_OPTIONS" });
+    assert.equal(c.state, before);
+  }
+  assert.equal(reads, 0);
+  c.restart();
+  await c.whenIdle();
+  assert.equal(f.sessions.at(-1).source, "safe");
+  assert.equal(f.sessions.at(-1).layoutOptions.profile, "commonmark-gfm");
+});
+test("dialect changes during startup dispose late sessions even when source and tokens repeat", async (t) => {
+  const f = fixture(), c = f.controller, hold = deferred();
+  t.after(() => c.dispose());
+  f.createGate = hold;
+  c.update(input("unchanged", { profile: "commonmark-gfm" }));
+  await next();
+  c.update(input("unchanged", { profile: "gfm-plus" }));
+  hold.resolve();
+  await c.whenIdle();
+  assert.equal(f.sessions.length, 2);
+  assert.equal(f.sessions[0].disposed, true);
+  assert.equal(f.sessions[1].layoutOptions.profile, "gfm-plus");
+  assert.equal(f.paints.length, 1);
+  assert.equal(c.state.status, "ready");
+});
+test("a late transcript from the old dialect cannot publish into its replacement", async (t) => {
+  const f = fixture(), c = f.controller, hold = deferred();
+  t.after(() => c.dispose());
+  c.update(input("first", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  f.sessions[0].readingOrder = async () => {
+    await hold.promise;
+    return { nodes: [{ text: "Old dialect transcript" }], nextOffset: null };
+  };
+  c.update(input("current", { profile: "commonmark-gfm" }));
+  await next();
+  assert.equal(c.state.readingPending, true);
+  c.update(input("current", { profile: "gfm-plus" }));
+  await next();
+  assert.equal(c.state.status, "ready");
+  assert.equal(c.state.reading, "");
+  hold.resolve();
+  await c.whenIdle();
+  assert.equal(c.state.reading, "current");
+  assert.equal(f.events.some(event => event.reading === "Old dialect transcript"), false);
+});
 function exportResult(expected) {
   return {
     schemaVersion: 1,
@@ -476,6 +582,30 @@ test("an ABA settings change cannot publish an older export even without a physi
   await assert.rejects(job, { code: "STALE_LAYOUT" });
   await c.whenIdle();
   assert.deepEqual(f.reflows, []);
+});
+test("changing dialect away and back rejects an old export with identical source and revision tokens", async (t) => {
+  const f = fixture(), c = f.controller, hold = deferred();
+  t.after(() => c.dispose());
+  c.update(input("stable", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  const old = f.sessions[0], before = c.state.frame;
+  old.exportDocument = async (_, __, expected) => {
+    await hold.promise;
+    return { ...exportResult(expected), profile: "commonmark-gfm" };
+  };
+  const pending = c.exportDocument("pdf", {}, "stable");
+  c.update(input("stable", { profile: "gfm-plus" }));
+  c.update(input("stable", { profile: "commonmark-gfm" }));
+  await c.whenIdle();
+  assert.equal(old.disposed, true);
+  assert.deepEqual(c.state.frame, before);
+  await assert.rejects(c.exportDocument("pdf", {}, "stable"), { code: "EXPORT_BUSY" });
+  hold.resolve();
+  await assert.rejects(pending, { code: "STALE_REVISION" });
+  assert.equal(c.state.status, "ready");
+  f.sessions.at(-1).exportDocument = async (_, __, expected) =>
+    ({ ...exportResult(expected), profile: "commonmark-gfm" });
+  assert.equal((await c.exportDocument("pdf", {}, "stable")).profile, "commonmark-gfm");
 });
 test("scrolling during an export preserves session and layout identity", async (t) => {
   const f = fixture(),

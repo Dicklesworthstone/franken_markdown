@@ -96,6 +96,19 @@ installFlowWorker(endpoint, async (source, options) => {
   const raw = new NativeDouble(source);
   const { font, ...layout } = options;
   const renderer = (format) => async (markdown, settings) => {
+    if (workerData?.outputSizes) {
+      const counters = new Int32Array(workerData.outputCounters);
+      Atomics.add(counters, ["html", "pdf", "epub", "svg"].indexOf(format), 1);
+      if (settings.title === "output-size-fixture") {
+        return {
+          format,
+          mimeType: format === "html" ? "text/html; charset=utf-8" : format === "epub"
+            ? "application/epub+zip" : "application/pdf",
+          bytes: new Uint8Array(workerData.outputSizes[format]),
+          diagnostics: [],
+        };
+      }
+    }
     if (workerData?.delayMs)
       await new Promise((resolve) => setTimeout(resolve, workerData.delayMs));
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");

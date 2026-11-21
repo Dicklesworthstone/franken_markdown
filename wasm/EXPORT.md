@@ -33,7 +33,11 @@ The whole publication is one queued RPC, so edits cannot interleave between
 formats and one abort/deadline governs the complete batch. Older workers fail
 explicitly rather than decomposing the request into separately observable
 exports. Individual outputs keep their own `maxOutputBytes` cap, while combined
-returned bytes are capped at 128 MiB.
+returned bytes are capped at 128 MiB. Each rendered output must fit the remaining
+combined budget before the session copies and retains it. Overflow, an empty
+output, or an exhausted budget stops the batch before any later renderer starts;
+the entire publication is rejected. A budget refusal leaves the session usable.
+Renderer temporary memory is outside this output budget.
 
 The same `exportDocument(format, options, token)` method exists on synchronous
 sessions, but it returns a Promise. That Promise does NOT make synchronous WASM

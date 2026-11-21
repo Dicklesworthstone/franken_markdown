@@ -172,6 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Leading link-reference definitions preserve the paragraph that owns their
+  remaining text. Indented markup, noninterrupting ordered markers and type-7
+  HTML no longer restart as separate blocks or create phantom link targets.
+  Nested containers, multiline definitions and titles retain exact source
+  locations; blank-separated code and GFM table/definition-list promotion keep
+  their existing behavior.
 - Book source inspection retains the selected Markdown dialect through the
   workbench, worker, statistics and accessibility checks. Reports and downloads
   retain that grammar identity, and matching source hashes cannot revive a

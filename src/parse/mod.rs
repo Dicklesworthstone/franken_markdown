@@ -1269,26 +1269,36 @@ fn collect_link_reference_metadata_at_depth(
     // which used to silently delete the line and merge the surrounding text
     // (e.g. `foo\n[bar]: /url\nbaz` dropped the middle line).
     let mut in_paragraph = false;
+    // Definitions are stripped from the start of a paragraph, not independent
+    // blocks. More leading definitions may follow, but ordinary nonblank text
+    // still needs a paragraph interrupt before it can start another block.
+    let mut reference_prefix = false;
     let mut kept_reference_candidate = false;
 
     while i < lines.len() {
         let line = lines[i];
         if is_blank_line(line) {
             in_paragraph = false;
+            reference_prefix = false;
             i += 1;
             continue;
         }
+        let after_reference = std::mem::take(&mut reference_prefix);
 
         // A container has already admitted this line as lazy paragraph content.
         // Leading reference definitions may have supplied all preceding text;
         // removing them must not turn its protective indentation into code and
         // expose following prose as a new reference-definition boundary.
-        in_paragraph |= padding.contains(line.as_ptr() as usize);
+        if !after_reference {
+            in_paragraph |= padding.contains(line.as_ptr() as usize);
+        }
+        let paragraph_open = in_paragraph || after_reference;
+        let continued_reference = after_reference && trim_start_space_tab(line).starts_with('[');
 
         // A display formula owns its entire literal body, including blank lines
         // and reference-shaped TeX. It cannot interrupt an open paragraph, and
         // its closing fence leaves the next line at a real block boundary.
-        if !in_paragraph && let Some(start) = math_block_start(line) {
+        if !paragraph_open && let Some(start) = math_block_start(line) {
             i += math_block_extent(&lines[i..], start);
             continue;
         }
@@ -1296,18 +1306,22 @@ fn collect_link_reference_metadata_at_depth(
         // One-column tables may omit the header's pipes when the delimiter
         // supplies them. That ordinary-looking header needs the same lookahead
         // as the block parser before the plain-line fast path opens a paragraph.
+        // The table extension can promote the first visible header after a
+        // definition prefix. Unlike a new code/list/HTML block, that is still
+        // a transformation of the paragraph's own remaining source.
         let possible_table = !in_paragraph
             && lines
                 .get(i + 1)
                 .is_some_and(|delimiter| line.contains('|') || delimiter.contains('|'));
         if !possible_table
+            && !continued_reference
             && let Some(is_paragraph_text) = reference_collector_plain_nonblank_line_fast_path(line)
         {
             // The nonblank fast path returns false for indented code at a
             // block boundary. Indentation cannot close an already open
             // paragraph: its hanging continuation still owns any following
             // reference-shaped text, just as in the real block parser.
-            in_paragraph |= is_paragraph_text;
+            in_paragraph = paragraph_open || is_paragraph_text;
             i += 1;
             continue;
         }
@@ -1383,7 +1397,7 @@ fn collect_link_reference_metadata_at_depth(
         // looking line inside raw HTML is not extracted and resolved.
         let html_kind = scan.maybe_html.then(|| html_block_kind(line)).flatten();
         if let Some(end_cond) = html_kind
-            && (!in_paragraph || end_cond.interrupts_paragraph())
+            && (!paragraph_open || end_cond.interrupts_paragraph())
         {
             i = html_block_end(lines, i, end_cond, |l| *l);
             in_paragraph = false;
@@ -1395,7 +1409,7 @@ fn collect_link_reference_metadata_at_depth(
         // whole body here so it is not extracted as a `[label]: dest` link ref
         // (which would silently delete the footnote). Resolve its nested
         // definitions after removing the note indent, in source order.
-        if !in_paragraph && let Some((_, content)) = scan_footnote_definition(line) {
+        if !paragraph_open && let Some((_, content)) = scan_footnote_definition(line) {
             let (body, used) = footnote_body_lines(&lines[i..], content);
             kept_reference_candidate |= lines[i..i + used].iter().any(|line| line.contains("]:"));
             if depth < MAX_BLOCK_NESTING_DEPTH {
@@ -1440,7 +1454,7 @@ fn collect_link_reference_metadata_at_depth(
         // Harvest item definitions now to retain first-definition source order.
         if scan.maybe_list_marker
             && let Some(marker) = list_marker(line)
-            && (!in_paragraph || marker_interrupts_paragraph(&marker))
+            && (!paragraph_open || marker_interrupts_paragraph(&marker))
         {
             let checkpoint = tracker.as_ref().map_or(0, |tracker| tracker.checkpoint());
             let padding_checkpoint = padding.checkpoint();
@@ -1476,12 +1490,14 @@ fn collect_link_reference_metadata_at_depth(
             continue;
         }
 
-        // Extract a reference definition only at a block boundary, never as a
-        // paragraph continuation.
-        if scan.maybe_reference {
+        // Only the still-leading portion of a paragraph can define links.
+        // Real visible text permanently ends that opportunity until a boundary.
+        if scan.maybe_reference || continued_reference {
+            let footnote = scan_footnote_definition(line).is_some();
             if !in_paragraph
+                && !footnote
                 && let Some((label, mut reference, used)) =
-                    parse_multiline_reference_definition(&lines[i..])
+                    parse_multiline_reference_definition(&lines[i..], after_reference)
             {
                 if let Some(tracker) = &mut tracker {
                     reference.source =
@@ -1492,12 +1508,13 @@ fn collect_link_reference_metadata_at_depth(
                     push_consumed_reference_range(consumed, i..i + used);
                 }
                 i += used;
-                // Leading reference definitions do not themselves open a paragraph.
                 in_paragraph = false;
+                reference_prefix = true;
                 continue;
             }
 
             if !in_paragraph
+                && !footnote
                 && looks_like_reference_definition(line)
                 && let Some(tracker) = &mut tracker
                 // After reference parsing rejects it, the same source may be
@@ -1526,7 +1543,8 @@ fn collect_link_reference_metadata_at_depth(
         // `[label]: dest` line is a lazy continuation, not a definition — unless
         // it begins a different block, which closes/prevents a paragraph.
         in_paragraph = line_is_paragraph_text_with_scan(line, scan)
-            || (in_paragraph && html_kind.is_some_and(|end| !end.interrupts_paragraph()));
+            || (paragraph_open
+                && !scanned_paragraph_interrupt(BlockStartScan::new(line, trim_space_tab(line))));
         i += 1;
     }
     kept_reference_candidate
@@ -1931,7 +1949,7 @@ fn parse_blocks_with_reference_boundaries(
     profiler: &mut ParseProfiler,
 ) -> Vec<Block> {
     if consumed.is_empty() {
-        return parse_blocks_with_refs_profiled(lines, refs, profiler, 0);
+        return parse_blocks_with_refs_profiled(lines, refs, profiler, 0, false);
     }
     let mut blocks = Vec::new();
     let mut start = 0;
@@ -1941,6 +1959,7 @@ fn parse_blocks_with_reference_boundaries(
             refs,
             profiler,
             start,
+            start > 0,
         ));
         start = range.end;
     }
@@ -1949,6 +1968,7 @@ fn parse_blocks_with_reference_boundaries(
         refs,
         profiler,
         start,
+        true,
     ));
     blocks
 }
@@ -1958,6 +1978,7 @@ fn parse_blocks_with_refs_profiled(
     refs: &ReferenceMap,
     profiler: &mut ParseProfiler,
     source_line_offset: usize,
+    starts_in_reference_paragraph: bool,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
@@ -1975,11 +1996,6 @@ fn parse_blocks_with_refs_profiled(
             spans.record(start + source_line_offset, i + source_line_offset);
         }
         let line = lines[i];
-        // Reference removal can leave an admitted lazy continuation first in
-        // this slice. Its protective padding still belongs to prose; it cannot
-        // become an indented code block or a new footnote/definition-list body.
-        let force_paragraph = std::mem::take(&mut table_padding_fallback)
-            || profiler.lazy_line_padding.contains(line.as_ptr() as usize);
         let trimmed = trim_space_tab(line);
         if trimmed.is_empty() {
             i += 1;
@@ -1989,6 +2005,15 @@ fn parse_blocks_with_refs_profiled(
             block_start = Some(i);
         }
         let scan = BlockStartScan::new(line, trimmed);
+        // A definition prefix left this paragraph open. Its first remaining
+        // line can start a block only if that block can interrupt a paragraph;
+        // a real blank consumes this privilege before the next iteration.
+        // Separately, container padding and a table's bounded fallback retain
+        // their already established paragraph ownership.
+        let owned_paragraph = std::mem::take(&mut table_padding_fallback)
+            || profiler.lazy_line_padding.contains(line.as_ptr() as usize);
+        let force_paragraph = owned_paragraph
+            || (i == 0 && starts_in_reference_paragraph && !scanned_paragraph_interrupt(scan));
         if scanned_thematic_break(scan) {
             blocks.push(Block::ThematicBreak);
             i += 1;
@@ -2065,7 +2090,7 @@ fn parse_blocks_with_refs_profiled(
             }
             continue;
         }
-        if let Some(start) = math_block_start(line) {
+        if !force_paragraph && let Some(start) = math_block_start(line) {
             let started = profiler.checkpoint();
             let used = math_block_extent(&lines[i..], start);
             let multiline = matches!(start, MathBlockStart::Multiline(_));
@@ -2210,7 +2235,7 @@ fn parse_blocks_with_refs_profiled(
             profiler.destination_restore(checkpoint);
             continue;
         }
-        if let Some(end_cond) = scanned_html_block_kind(scan) {
+        if !force_paragraph && let Some(end_cond) = scanned_html_block_kind(scan) {
             let started = profiler.checkpoint();
             let start = i;
             i = html_block_end(lines, i, end_cond, |l| *l);
@@ -2253,7 +2278,7 @@ fn parse_blocks_with_refs_profiled(
             blocks.push(Block::HtmlBlock(html));
             continue;
         }
-        if !force_paragraph
+        if !owned_paragraph
             && i + 1 < lines.len()
             && is_table_header_source(line, lines[i + 1])
             && let Some(align) = validated_table_delimiter_alignments(lines[i + 1])
@@ -2284,7 +2309,7 @@ fn parse_blocks_with_refs_profiled(
                 continue;
             }
         }
-        if let Some(marker) = scanned_list_marker(scan) {
+        if !force_paragraph && let Some(marker) = scanned_list_marker(scan) {
             let started = profiler.checkpoint();
             let (list, used) =
                 parse_list_profiled_with_first_marker(&lines[i..], refs, profiler, marker);
@@ -2304,7 +2329,7 @@ fn parse_blocks_with_refs_profiled(
             i += used;
             continue;
         }
-        if !force_paragraph
+        if !owned_paragraph
             && profiler.definition_lists
             && let Some((dl, used)) = parse_definition_list_profiled(&lines[i..], refs, profiler)
         {
@@ -2625,7 +2650,7 @@ enum ReferencePhase {
     AngleDestination,
     BareDestination,
     AfterDestination { separated: bool },
-    NextLineTitle { indented_code: bool },
+    NextLineTitle,
     Title { close: char },
     AfterTitle,
 }
@@ -2680,15 +2705,6 @@ impl ReferenceDefinitionScan {
             }
             trim_start_space_tab(line).strip_prefix('[')?
         } else {
-            if matches!(
-                self.phase,
-                ReferencePhase::NextLineTitle {
-                    indented_code: true
-                }
-            ) && leading_spaces(line) >= 4
-            {
-                return None;
-            }
             line
         };
         self.lines += 1;
@@ -2753,7 +2769,7 @@ impl ReferenceDefinitionScan {
                         _ => {}
                     }
                 }
-                ReferencePhase::AfterDestination { .. } | ReferencePhase::NextLineTitle { .. } => {
+                ReferencePhase::AfterDestination { .. } | ReferencePhase::NextLineTitle => {
                     if matches!(ch, ' ' | '\t') {
                         if matches!(self.phase, ReferencePhase::AfterDestination { .. }) {
                             self.phase = ReferencePhase::AfterDestination { separated: true };
@@ -2811,9 +2827,7 @@ impl ReferenceDefinitionScan {
             ReferencePhase::DestinationStart => Some(ReferenceProgress::Pending),
             ReferencePhase::BareDestination if self.paren_depth != 0 => None,
             ReferencePhase::BareDestination | ReferencePhase::AfterDestination { .. } => {
-                self.phase = ReferencePhase::NextLineTitle {
-                    indented_code: self.lines == 1,
-                };
+                self.phase = ReferencePhase::NextLineTitle;
                 Some(ReferenceProgress::Destination)
             }
             ReferencePhase::Title { .. } if !self.title_saw_newline => {
@@ -2826,8 +2840,15 @@ impl ReferenceDefinitionScan {
     }
 }
 
-fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkReference, usize)> {
-    let first = *lines.first()?;
+fn parse_multiline_reference_definition(
+    lines: &[&str],
+    continues_paragraph: bool,
+) -> Option<(String, LinkReference, usize)> {
+    let first = if continues_paragraph {
+        trim_start_space_tab(lines.first()?)
+    } else {
+        *lines.first()?
+    };
     if leading_spaces(first) > 3 || !trim_start_space_tab(first).starts_with('[') {
         return None;
     }
@@ -2837,7 +2858,7 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
         if reference.title.is_some() {
             return Some((label, reference, 1));
         }
-        let Some(next) = lines.get(1).filter(|line| leading_spaces(line) < 4) else {
+        let Some(next) = lines.get(1) else {
             return Some((label, reference, 1));
         };
         if let Some(title) = parse_reference_title_line(next) {
@@ -2858,7 +2879,10 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
 
     let mut scan = ReferenceDefinitionScan::new();
     let mut accepted = None;
-    for (index, line) in lines.iter().enumerate() {
+    for (index, line) in std::iter::once(first)
+        .chain(lines[1..].iter().copied())
+        .enumerate()
+    {
         match scan.line(line) {
             Some(ReferenceProgress::Pending) => {}
             Some(ReferenceProgress::Destination) => accepted = Some(index + 1),
@@ -2870,7 +2894,18 @@ fn parse_multiline_reference_definition(lines: &[&str]) -> Option<(String, LinkR
         }
     }
     let used = accepted?;
-    let joined = lines[..used].join("\n");
+    let mut joined = String::with_capacity(
+        first.len()
+            + lines[1..used]
+                .iter()
+                .map(|line| line.len() + 1)
+                .sum::<usize>(),
+    );
+    joined.push_str(first);
+    for line in &lines[1..used] {
+        joined.push('\n');
+        joined.push_str(line);
+    }
     let (label, reference) = parse_reference_definition(&joined)?;
     Some((label, reference, used))
 }

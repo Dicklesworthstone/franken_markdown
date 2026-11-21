@@ -137,11 +137,42 @@ fn lazy_footnote_lookalikes_stay_inline_content_after_reference_removal() {
 }
 
 #[test]
-fn real_container_indentation_and_blank_boundaries_still_create_literal_code() {
+fn real_container_indentation_after_a_definition_still_belongs_to_its_paragraph() {
+    // CommonMark.js 0.31.2 confirms these no-blank cases are paragraphs. The
+    // earlier expectation of literal code encoded the reference-removal bug:
+    // deleting a definition must not restart the already-open paragraph.
     for source in [
         "> [r]: /real\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
         "- [r]: /real\n      [hidden](/literal)\n  [fake]: /actual\n\n[fake]\n",
+    ] {
+        let parsed = document(source);
+        assert_eq!(
+            inner_paragraph(&parsed.blocks[..1]),
+            [
+                link("hidden", "/literal"),
+                Inline::SoftBreak,
+                Inline::Text("[fake]: /actual".into()),
+            ]
+        );
+        assert_eq!(
+            parsed.blocks[1],
+            Block::Paragraph(vec![Inline::Text("[fake]".into())])
+        );
+        assert_eq!(
+            destination_spans(source)
+                .iter()
+                .map(|span| span.dest.as_str())
+                .collect::<Vec<_>>(),
+            ["/real", "/literal"]
+        );
+    }
+}
+
+#[test]
+fn blank_boundaries_after_definitions_still_create_literal_code() {
+    for source in [
         "> [r]: /real\n>\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
+        "- [r]: /real\n\n      [hidden](/literal)\n  [fake]: /actual\n\n[fake]\n",
     ] {
         let parsed = document(source);
         let blocks = match &parsed.blocks[0] {

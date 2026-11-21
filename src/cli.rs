@@ -16,6 +16,7 @@ pub(crate) mod host_fonts;
 pub(crate) mod page_budget;
 pub(crate) mod protected_paths;
 pub(crate) mod remote_images;
+mod verify_options;
 mod verify_sources;
 pub(crate) use crate::source_origins;
 
@@ -221,6 +222,9 @@ struct VerifyArgs {
     /// commonmark-gfm or gfm-plus. Omission retains the default grammar.
     #[arg(long)]
     profile: Option<String>,
+    /// Explicit PDF layout and local resources for this verification report.
+    #[command(flatten)]
+    layout: verify_options::VerifyLayoutArgs,
     /// Maximum bytes per input/include and for the complete expanded document.
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
@@ -2695,6 +2699,10 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         Ok(profile) => profile,
         Err(code) => return code,
     };
+    let mut layout = match args.layout.admit(&args.input, profile, json) {
+        Ok(layout) => layout,
+        Err(code) => return code,
+    };
     let Some(path_str) = args.input.to_str() else {
         return fail_json(
             64,
@@ -2707,29 +2715,19 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail_json(66, "input_error", &format!("reading input: {e}"), json),
     };
-    let prepared = match verify_sources::prepare(src, &args.input, args.max_input_bytes, profile) {
-        Ok(prepared) => prepared,
-        Err((code, kind, message)) => return fail_json(code, kind, &message, json),
-    };
+    let mut prepared =
+        match verify_sources::prepare(src, &args.input, args.max_input_bytes, profile) {
+            Ok(prepared) => prepared,
+            Err((code, kind, message)) => return fail_json(code, kind, &message, json),
+        };
     // Link checking may write a cache, but verification must preserve the
     // document it just read. Admit the destination before rendering or making
     // network requests, with the same alias-aware protection as publications.
-    // Without --links no cache is read or written; stdin has no file identity.
-    if args.links
-        && path_str != "-"
-        && let Some(cache) = args.links_cache.as_deref()
-        && let Some(source) = prepared.inputs.source_for(cache)
-    {
-        return fail_json(
-            64,
-            "usage_error",
-            &format!(
-                "refusing to overwrite verify input {} with link cache {}; choose a different --links-cache path",
-                source.display(),
-                cache.display(),
-            ),
-            json,
-        );
+    // Without --links no cache is read or written. Stdin can still authorize
+    // explicit image/font inputs, which acquire the same protection below.
+    let cache = args.links.then_some(args.links_cache.as_deref()).flatten();
+    if let Err(code) = verify_options::check_cache(&prepared.inputs, cache, json) {
+        return code;
     }
     let src = prepared.text;
     let parsed = crate::parse_markdown_spanned_with_profile(&src, profile);
@@ -2748,17 +2746,26 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         })
         .collect();
     let doc = parsed.into_document();
-    // Verification baseline: the default theme/options, deliberately
-    // independent of config, so the same document verifies identically on
-    // every machine (the digest is a portable change detector).
-    let opts = PdfOptions {
-        profile,
-        ..PdfOptions::default()
-    };
+    if let Err(code) = args.layout.load(
+        &mut layout,
+        &doc,
+        &args.input,
+        &mut prepared.inputs,
+        cache,
+        json,
+    ) {
+        return code;
+    }
+    // Explicit options/assets reproduce the selected PDF layout. Omission
+    // keeps the historical default report, independent of ambient config.
+    let opts = layout.options;
     let report = match crate::verify::verify_pdf_result(&doc, &opts) {
         Ok(report) => crate::verify::with_extra_findings(report, parse_findings),
         Err(error) => return fail_json(70, error.code(), &error.to_string(), json),
     };
+    if let Err(error) = page_budget::check_count(report.page_count as u64, opts.fit_to_pages) {
+        return fail_json(70, error.code, &error.message, json);
+    }
     let report = if args.a11y {
         crate::verify::filter_a11y(report)
     } else {
@@ -3487,9 +3494,14 @@ fn read_pdf_image_assets_recording(
         let (destination, path) =
             parse_pdf_image_spec(spec, destination_hints).map_err(PdfImageError::Usage)?;
         let label = format!("PDF image asset {destination} from {}", path.display());
-        if let Ok(meta) = std::fs::metadata(&path)
-            && meta.len() > max_bytes
-        {
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| PdfImageError::Input(format!("reading {label}: {e}")))?;
+        if !meta.is_file() {
+            return Err(PdfImageError::Input(format!(
+                "{label} must be a regular file"
+            )));
+        }
+        if meta.len() > max_bytes {
             return Err(PdfImageError::Input(
                 pdf_image_too_large(&label, meta.len(), max_bytes).to_string(),
             ));
@@ -4024,7 +4036,14 @@ fn parse_font_scale_arg(
     style: &RenderStyleArgs,
     json: bool,
 ) -> std::result::Result<Option<FontScale>, ExitCode> {
-    let Some(scale_str) = &style.font_scale else {
+    parse_font_scale_value(style.font_scale.as_deref(), json)
+}
+
+fn parse_font_scale_value(
+    value: Option<&str>,
+    json: bool,
+) -> std::result::Result<Option<FontScale>, ExitCode> {
+    let Some(scale_str) = value else {
         return Ok(None);
     };
     FontScale::parse(scale_str).map(Some).ok_or_else(|| {

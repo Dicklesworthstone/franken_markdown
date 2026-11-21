@@ -17,7 +17,15 @@ pub(crate) fn check(bytes: &[u8], target: Option<usize>) -> Result<(), Failure> 
         code: "pdf_page_count_unavailable",
         message: "could not read the emitted PDF page count".to_string(),
     })?;
-    if pages > target as u64 {
+    check_count(pages, Some(target))
+}
+
+/// The verifier measures the same final layout without serializing a PDF.
+/// Keep its hard page-budget refusal identical to native publication.
+pub(crate) fn check_count(pages: u64, target: Option<usize>) -> Result<(), Failure> {
+    if let Some(target) = target
+        && pages > target as u64
+    {
         return Err(Failure {
             code: "page_budget_unmet",
             message: format!(

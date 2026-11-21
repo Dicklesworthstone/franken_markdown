@@ -120,6 +120,145 @@ fn array(value: &Json) -> &[Json] {
 }
 
 #[test]
+fn real_file_rename_tracks_open_include_sources_and_selected_current_revisions() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true},"fileOperations":{"willRename":true}}}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/README.md","languageId":"markdown","version":7,"text":"😀\r\n\r\n{{#include parts/card.md:2:2}}\r\n"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/parts/card.md","languageId":"markdown","version":4,"text":"ignored\nSelected\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/docs/parts/card.md","newUri":"file:///fmd-nonexistent/docs/notes/card.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/docs/parts/card.md","newUri":"file:///fmd-nonexistent/docs/notes/card.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/parts/card.md"}}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/docs/parts/card.md","newUri":"file:///fmd-nonexistent/docs/notes/card.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/parts/card.md","languageId":"markdown","version":5,"text":"Only line\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/docs/parts/card.md","newUri":"file:///fmd-nonexistent/docs/notes/card.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///fmd-nonexistent/docs/README.md","version":8},"contentChanges":[{"text":"😀\r\n\r\n{{#include parts/card.md:1:1}}\r\n"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":6,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/docs/parts/card.md","newUri":"file:///fmd-nonexistent/docs/notes/card.md"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":7,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let reply = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .ok_or("missing reply")
+    };
+    assert_eq!(
+        reply(2)?.get("result"),
+        reply(3)?.get("result"),
+        "a proposed rename cannot mutate its captured sources"
+    );
+    for id in [4, 5] {
+        assert!(reply(id)?.get("result").is_none());
+        assert_eq!(
+            reply(id)?
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Json::as_f64),
+            Some(-32803.0)
+        );
+    }
+    for (id, version) in [(2, 7), (6, 8)] {
+        let result = reply(id)?
+            .get("result")
+            .ok_or("missing include rename result")?;
+        let changes = array(result.get("documentChanges").ok_or("missing changes")?);
+        assert_eq!(changes.len(), 1);
+        let document = changes[0].get("textDocument").ok_or("missing document")?;
+        assert_eq!(
+            document.get("uri").and_then(Json::as_str),
+            Some("file:///fmd-nonexistent/docs/README.md")
+        );
+        assert_eq!(
+            document.get("version").and_then(Json::as_u64),
+            Some(version)
+        );
+        let edits = array(changes[0].get("edits").ok_or("missing edits")?);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].get("newText").and_then(Json::as_str),
+            Some("\"notes/card.md\"")
+        );
+        let range = edits[0].get("range").ok_or("missing range")?;
+        for (side, column) in [("start", 11), ("end", 24)] {
+            let position = range.get(side).ok_or("missing position")?;
+            assert_eq!(position.get("line").and_then(Json::as_u64), Some(2));
+            assert_eq!(
+                position.get("character").and_then(Json::as_u64),
+                Some(column)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn real_include_file_rename_uses_the_selected_profile_for_every_source_proof() -> TestResult {
+    for (profile, admitted) in [("commonmark-gfm", true), ("gfm-plus", false)] {
+        let initialize = r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true},"fileOperations":{"willRename":true}}},"initializationOptions":{"profile":"PROFILE"}}}"###.replace("PROFILE", profile);
+        let (status, replies) = session(&[
+            &initialize,
+            r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+            r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/profiles/root.md","languageId":"markdown","version":7,"text":"{{#include parts/shared.md}}\n"}}}"###,
+            r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/profiles/parts/shared.md","languageId":"markdown","version":4,"text":"[Term\n: definition](../end.md#end)\n\n`Term\n: definition\n{{#include missing.md}}\ntail`\n"}}}"###,
+            r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-nonexistent/profiles/end.md","languageId":"markdown","version":1,"text":"# End\n"}}}"###,
+            r###"{"jsonrpc":"2.0","id":2,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/profiles/end.md","newUri":"file:///fmd-nonexistent/profiles/finish.md"}]}}"###,
+            r###"{"jsonrpc":"2.0","id":3,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///fmd-nonexistent/profiles/end.md","newUri":"file:///fmd-nonexistent/profiles/finish.md"}]}}"###,
+            r###"{"jsonrpc":"2.0","id":4,"method":"shutdown"}"###,
+            r###"{"jsonrpc":"2.0","method":"exit"}"###,
+        ])?;
+        assert!(status.success());
+        let reply = |id| {
+            replies
+                .iter()
+                .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+                .ok_or("missing profiled include rename reply")
+        };
+        if !admitted {
+            for id in [2, 3] {
+                assert!(reply(id)?.get("result").is_none());
+                assert_eq!(
+                    reply(id)?
+                        .get("error")
+                        .and_then(|error| error.get("code"))
+                        .and_then(Json::as_f64),
+                    Some(-32803.0),
+                    "GFM+ must require its active missing include source"
+                );
+            }
+            continue;
+        }
+        let result = reply(2)?.get("result").ok_or("missing rename result")?;
+        assert_eq!(Some(result), reply(3)?.get("result"));
+        let changes = array(result.get("documentChanges").ok_or("missing changes")?);
+        assert_eq!(changes.len(), 1);
+        let document = changes[0].get("textDocument").ok_or("missing document")?;
+        assert_eq!(
+            document.get("uri").and_then(Json::as_str),
+            Some("file:///fmd-nonexistent/profiles/parts/shared.md")
+        );
+        assert_eq!(document.get("version").and_then(Json::as_u64), Some(4));
+        let edits = array(changes[0].get("edits").ok_or("missing edits")?);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].get("newText").and_then(Json::as_str),
+            Some("../finish.md#end")
+        );
+        let range = edits[0].get("range").ok_or("missing range")?;
+        for (side, column) in [("start", 14), ("end", 27)] {
+            let position = range.get(side).ok_or("missing position")?;
+            assert_eq!(position.get("line").and_then(Json::as_u64), Some(1));
+            assert_eq!(
+                position.get("character").and_then(Json::as_u64),
+                Some(column)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn real_file_rename_returns_old_uri_versioned_edits_and_reads_current_revisions() -> TestResult {
     let (status, replies) = session(&[
         r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true},"fileOperations":{"willRename":true}}}}}"###,

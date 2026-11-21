@@ -12,6 +12,15 @@ file operations with the `file` scheme and `**/*` pattern. The pattern includes
 folders and image/resource files because their moves can affect Markdown too.
 Requests without both negotiated capabilities return `MethodNotFound`.
 
+The immutable `initializationOptions.profile` selected for the LSP session also
+governs file renames. `commonmark-gfm` and `gfm-plus` apply consistently to
+source parsing, destination ownership, include code exclusions, recursively
+selected fragments, and both sides of the final semantic proof. Omitting the
+profile retains the historical extended grammar. For example, an include
+inside a multiline code span that is valid in CommonMark remains literal when
+that profile is selected; another grammar cannot make it an active source read
+during a rename.
+
 ## Before a move
 
 For an open `docs/start.md` containing:
@@ -106,12 +115,39 @@ outside this Markdown-destination contract. A file autolink without an editable
 parser-owned destination token refuses the request if its semantic target
 would change.
 
-Transclusion directives are owned by a separate expansion subsystem and are
-not destination tokens. If any opened source contains an active or malformed
-include directive, this provider refuses the request with an explicit
-transclusion error. It uses the real expander with a refusing, no-I/O resolver
-to make that determination; include examples inside literal code remain safe.
-The provider does not claim whole-project link or include maintenance.
+## Transcluded documents
+
+File and folder moves also maintain active `{{#include ...}}` paths when every
+source consulted by expansion is explicitly open and synchronized. For example,
+moving `parts/card.md` to `notes/card.md` changes
+`{{#include parts/card.md:summary}}` to
+`{{#include "notes/card.md":summary}}`. The selector, surrounding whitespace and
+line ending remain byte-identical. Moving an included file also rebases its
+outgoing Markdown destinations and nested include paths; simultaneous swaps and
+folder moves use the same move map as ordinary links.
+
+The shared transclusion engine supplies exact path tokens, code exclusions and
+literal quoting. Include paths are host path text: `%`, `#`, `?`, spaces and
+quoted colons are not decoded as URL syntax. Absolute paths, backslashes,
+drive-prefixed paths, directory targets, and moves requiring a different URI
+authority or drive root are refused. The editor retains host filesystem and
+publication-root authorization; a logical edit grants no file permission.
+
+Before returning any edits, the provider expands every active opened root
+against the captured buffers, both before and after the proposed move. Parser
+probes and exact origin maps put each Markdown destination into the same
+post-move identity space; the complete expanded ASTs must agree. This matters
+for selected snippets: a link inside a full-source code example can become
+active when selected, and separately included text can become code in its
+surrounding document. If maintaining one interpretation would change literal
+text or leave another interpretation broken, the entire request is refused.
+
+Malformed directives, missing/closed include sources, cycles, invalid selectors,
+ambiguous source origins and expansion-budget failures also refuse the whole
+request. An include exposed only by a selected fragment is not automatically
+an editable token in its complete source. Code examples remain unchanged. This
+is maintenance of the explicitly opened graph, without a workspace scan or
+filesystem reads.
 
 ## Bounds and regression coverage
 
@@ -119,8 +155,14 @@ The existing 64-document, 2 MiB/document and 16 MiB/session limits apply.
 Additional bounds are 128 simultaneous moves, 8 KiB per URI/destination,
 8,192 source destination tokens, 32,768 semantic destinations with 1 MiB total
 destination text, 4 MiB per probe, 4,096 returned edits and 2 MiB of replacement
-text. Parser passes are fixed per source document, independent of how many
-links need changes. Resource refusals use `RequestFailed`; stale buffers use
+text. Include tokens share the 8,192-token source allowance. Across all roots
+and both comparison phases, include proofs allow at most 32 MiB expanded text,
+32 MiB of complete source payloads copied by resolvers, 16,384 destination
+tokens, and 65,536 semantic destinations with 2 MiB of destination text. Each
+expanded root retains the 2 MiB document cap; the ordinary expander also enforces
+its depth and resolution-count limits. Parser passes are fixed per source or
+expanded root, independent of how many links need changes.
+Resource refusals use `RequestFailed`; stale buffers use
 `ContentModified`; malformed parameters use `InvalidParams`.
 
 `src/bin/lsp/file_rename_tests.rs` covers single files, folders, simultaneous
@@ -129,6 +171,8 @@ unopened targets, drive/authority changes, source ownership, Unicode edits,
 literal exclusions, includes, collisions, limits and capability negotiation.
 `tests/lsp_protocol_test.rs` includes a real framed-server session checking
 old-URI/versioned edits, unchanged server buffers and a live revision change.
+Its include session additionally checks closed-source refusal, updated selected
+source content, and successful retry after the current root selector changes.
 
 ```sh
 cargo test --features lsp --bin fmd-lsp file_rename

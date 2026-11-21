@@ -512,6 +512,48 @@ await test("font registration reentrancy cannot replace current source with obso
   equal(document.fonts.size, 0);
 });
 
+
+for (const profile of ["commonmark-gfm", "gfm-plus"]) await test(`authoring dialect ${profile} reaches inline and fetched sources`, async () => {
+  for (const attributes of [{ profile }, { profile, src: "data:text/plain,Term%0A%3A%20definition" }]) {
+    const f = view("Term\n: definition", attributes);
+    const call = await nextRender(() => f.connect());
+    equal(call.options.profile, profile);
+    equal(call.markdown, "Term\n: definition");
+    await publish(f, call);
+    f.element.remove();
+  }
+});
+
+await test("dialect attribute changes retire old output and removal restores default grammar", async () => {
+  const f = view("Term\n: definition", { profile: "commonmark-gfm" });
+  const old = await nextRender(() => f.connect());
+  const latest = await nextRender(() => f.element.setAttribute("profile", "gfm-plus"));
+  equal(old.options.profile, "commonmark-gfm");
+  equal(latest.options.profile, "gfm-plus");
+  await publish(f, latest, "current GFM+ output");
+  old.resolve(output(old, "obsolete CommonMark"));
+  await turn();
+  equal(f.rendered.length, 1);
+  equal(f.element.shadowRoot.querySelector("p")?.textContent, "current GFM+ output");
+  const defaults = await nextRender(() => f.element.removeAttribute("profile"));
+  equal(defaults.options, { font: "sans", darkMode: "auto" });
+  await publish(f, defaults, "default grammar");
+});
+
+await test("unsupported dialect errors retain the prior view without retrying default grammar", async () => {
+  const f = view("same source");
+  const first = await nextRender(() => f.connect());
+  await publish(f, first, "prior view");
+  const count = renders.length;
+  renderFailure = Object.assign(new Error("UNSUPPORTED_WASM_PACKAGE: rebuild profiled bindings"), { code: "UNSUPPORTED_WASM_PACKAGE" });
+  f.element.setAttribute("profile", "gfm-plus");
+  await until(() => f.errors.length === 1);
+  assert(f.errors[0].error.includes("UNSUPPORTED_WASM_PACKAGE"));
+  equal(f.element.shadowRoot.querySelector("p")?.textContent, "prior view");
+  equal(f.rendered.length, 1);
+  equal(renders.length, count);
+});
+
 FontFace.prototype.load = nativeFontLoad;
 
 document.querySelector("#result").textContent = JSON.stringify({

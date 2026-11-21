@@ -45,7 +45,7 @@ function byteView(value, maximum) {
 }
 function input(source, options) {
   const sourceLength = text(source, DEMO_WORKSPACE_LIMITS.sourceBytes, "Markdown");
-  const captured = record(options, ["font", "darkMode", "title", "author", "codeLineNumbers", "metadataEpochSeconds", "pdfImages", "allowRawHtml", "customCss"], "workspace option");
+  const captured = record(options, ["font", "darkMode", "profile", "title", "author", "codeLineNumbers", "metadataEpochSeconds", "pdfImages", "allowRawHtml", "customCss"], "workspace option");
   if (captured.customCss !== undefined) {
     text(captured.customCss, 1024 * 1024, "Custom CSS");
     if (captured.customCss.trim()) fail("UNSUPPORTED_WORKSPACE_SETTINGS", "Editable workspaces cannot preserve custom CSS. Clear Custom CSS before preparing the workspace.");
@@ -53,7 +53,7 @@ function input(source, options) {
   }
   if (captured.allowRawHtml !== undefined && captured.allowRawHtml !== false)
     fail("UNSUPPORTED_WORKSPACE_SETTINGS", "Editable workspaces require safe Markdown. Turn off Allow raw HTML before preparing the workspace.");
-  for (const [key, choices] of [["font", ["sans", "serif"]], ["darkMode", ["auto", "disabled"]]])
+  for (const [key, choices] of [["font", ["sans", "serif"]], ["darkMode", ["auto", "disabled"]], ["profile", ["commonmark-gfm", "gfm-plus"]]])
     if (captured[key] !== undefined && !choices.includes(captured[key])) fail("INVALID_OPTIONS", `Invalid workspace ${key}.`);
   for (const key of ["title", "author"]) if (captured[key] !== undefined) text(captured[key], 4096, key);
   if (captured.codeLineNumbers !== undefined && typeof captured.codeLineNumbers !== "boolean")

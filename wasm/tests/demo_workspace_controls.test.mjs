@@ -103,7 +103,7 @@ test("preparing or cancelling a workspace preserves current HTML/PDF/Markdown do
   assert.equal(f.urls.length, ordinaryUrls.length);
 });
 
-for (const id of ["markdown", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"]) {
+for (const id of ["markdown", "font", "dark-mode", "profile", "title", "author", "custom-css", "allow-html", "line-numbers"]) {
   test(`${id} edits cancel preparation and discard a late result`, async t => {
     const f = fixture(t), pending = f.controller.prepareWorkspace(), call = f.calls[0];
     f.input(id, ["allow-html", "line-numbers"].includes(id) ? !f.els[id].checked : f.els[id].value + " changed");
@@ -196,4 +196,21 @@ test("native warnings appear beside the workspace without changing ordinary prev
   call.resolve(result); assert.equal(await pending, true);
   assert.match(f.els["workspace-status"].textContent, /warning 0-4: Image was unavailable/);
   assert.equal(f.els.diagnostics.textContent, "Existing preview findings");
+});
+
+
+test("editable workspace captures the selected grammar and returning to default omits it", async t => {
+  const f = fixture(t);
+  for (const profile of ["commonmark-gfm", "gfm-plus", ""]) {
+    f.input("profile", profile);
+    const pending = f.controller.prepareWorkspace(), call = f.calls.at(-1);
+    assert.equal(Object.hasOwn(call.options, "profile"), profile !== "");
+    assert.equal(call.options.profile, profile || undefined);
+    call.resolve(f.output(call));
+    assert.equal(await pending, true);
+    f.els["download-workspace"].click();
+    assert.equal(f.downloads.length, f.calls.length);
+  }
+  assert.equal(f.calls[0].source, f.calls[2].source);
+  assert.equal(f.els.markdown.value, "# Original");
 });

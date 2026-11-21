@@ -22,7 +22,7 @@ function fixture(t, { directory = true, rendererFactory } = {}) {
       if (accepted && this.tag === "a" && this.href) downloads.push({ href: this.href, download: this.download });
     }
   }
-  const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers",
+  const ids = ["download-markdown", "open-markdown", "markdown-file", "file-status", "markdown", "render", "download-pdf", "download-html", "preview", "diagnostics", "status", "source-size", "preview-meta", "font", "dark-mode", "profile", "title", "author", "custom-css", "allow-html", "line-numbers",
     "image-files", "image-folder", "image-document-path", "apply-image-folder", "clear-images", "cancel-images", "image-status", "image-references", "image-folder-help",
     "remember-draft", "refresh-draft", "restore-draft", "forget-draft", "save-draft", "draft-status",
     "prepare-workspace", "cancel-workspace", "download-workspace", "workspace-status"];
@@ -86,7 +86,7 @@ test("HTML download reuses exact completed bytes and filename without another re
   assert.deepEqual(f.revoked, [], "repeat activation keeps the current artifact usable");
 });
 
-for (const field of ["markdown", "font", "dark-mode", "title", "author", "custom-css", "allow-html", "line-numbers"]) {
+for (const field of ["markdown", "font", "dark-mode", "profile", "title", "author", "custom-css", "allow-html", "line-numbers"]) {
   test(`silent ${field} changes block stale HTML activation`, async t => {
     const f = fixture(t), pending = f.controller.renderPreview();
     f.calls[0].resolve(f.output(f.calls[0], "completed HTML")); await pending;
@@ -972,4 +972,74 @@ test("the demo's explicit worker budget admits an eight-MiB image and its litera
   assert(receipt.images.every(image => image.size === bytes.length));
   assert.equal(f.workerSettings[0].maxPendingOperations, 1);
   assert.equal(f.workerSettings[0].maxPendingBytes, 64 * 1024 * 1024);
+});
+
+
+for (const profile of ["commonmark-gfm", "gfm-plus"]) test(`demo captures ${profile} for both HTML and PDF without rewriting source`, async t => {
+  const f = fixture(t);
+  f.input("markdown", "Term\n: definition\n\n<!-- pagebreak -->\n");
+  f.input("profile", profile);
+  const html = f.controller.renderPreview(), pdf = f.controller.downloadPdf();
+  assert.equal(f.calls.length, 2);
+  for (const call of f.calls) {
+    assert.equal(call.source, f.els.markdown.value);
+    assert.equal(call.options.profile, profile);
+    call.resolve(f.output(call));
+  }
+  assert.equal(await html, true);
+  assert.equal(await pdf, true);
+  assert.equal(f.els.profile.value, profile);
+});
+
+test("dialect changes retire HTML/PDF work and prepared output with unchanged Markdown", async t => {
+  const f = fixture(t), source = f.els.markdown.value;
+  const oldHtml = f.controller.renderPreview(), oldPdf = f.controller.downloadPdf();
+  const obsolete = f.calls.slice();
+  assert(obsolete.every(call => !Object.hasOwn(call.options, "profile")));
+  f.input("profile", "commonmark-gfm");
+  for (const call of obsolete) assert.equal(call.controls.signal.aborted, true);
+  const latest = f.controller.renderPreview(), current = f.calls.at(-1);
+  assert.equal(current.options.profile, "commonmark-gfm");
+  current.resolve(f.output(current, "Current CommonMark HTML"));
+  assert.equal(await latest, true);
+  const url = f.els["download-html"].href;
+  for (const call of obsolete) call.resolve(f.output(call, "Obsolete HTML/PDF"));
+  assert.equal(await oldHtml, false); assert.equal(await oldPdf, false);
+  assert.equal(f.els.preview.srcdoc, "Current CommonMark HTML");
+  assert.equal(f.els["download-html"].href, url);
+  assert.equal(f.downloads.length, 0);
+  f.input("profile", "");
+  assert.equal(f.els.markdown.value, source);
+  assert.equal(f.els.preview.srcdoc, "");
+  assert.equal(f.els["download-html"].hidden, true);
+  assert(f.revoked.includes(url));
+  const defaults = f.controller.renderPreview(), call = f.calls.at(-1);
+  assert.equal(Object.hasOwn(call.options, "profile"), false);
+  call.resolve(f.output(call));
+  assert.equal(await defaults, true);
+});
+
+test("opening a source-only document resets grammar while preserving typography preferences", async t => {
+  const f = fixture(t);
+  f.input("font", "serif"); f.input("profile", "commonmark-gfm");
+  assert.equal(await f.controller.openMarkdown(new File(["Term\n: definition\n"], "New.md")), true);
+  assert.equal(f.els.profile.value, "");
+  assert.equal(f.els.font.value, "serif");
+  const pending = f.controller.renderPreview(), call = f.calls.at(-1);
+  assert.equal(Object.hasOwn(call.options, "profile"), false);
+  assert.equal(call.options.font, "serif");
+  call.resolve(f.output(call));
+  assert.equal(await pending, true);
+});
+
+test("an unsupported explicit demo dialect stays an error without a default-grammar retry", async t => {
+  const f = fixture(t); f.input("profile", "gfm-plus");
+  const pending = f.controller.renderPreview();
+  f.calls[0].reject(Object.assign(new Error("Rebuild matching profiled bindings"), { code: "UNSUPPORTED_WASM_PACKAGE" }));
+  assert.equal(await pending, false);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].options.profile, "gfm-plus");
+  assert.equal(f.els["download-html"].hidden, true);
+  assert.equal(f.els.preview.srcdoc, "");
+  assert.match(f.els.diagnostics.textContent + f.els.diagnostics.children.map(x => x.textContent).join(" "), /Rebuild matching profiled bindings/);
 });

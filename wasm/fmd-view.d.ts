@@ -23,13 +23,17 @@ export interface FmdViewEventMap {
 /**
  * Reactive source: a nonempty `src` attribute, otherwise the first
  * `script[type="text/markdown"]` child descendant or exact inline text.
- * Inline mutations and `src`/`font`/`dark-mode` changes render the latest
+ * Inline mutations and `src`/`font`/`dark-mode`/`profile` changes render the latest
  * snapshot. Superseded fetches and disconnection cancel publication; reconnect
  * renders current content. Failed engine initialization can be retried by a
  * subsequent source/options change or reconnect.
  * The document theme is scoped to the shadow host. Embedded body/mono faces
  * have per-render family names; replacing or disconnecting a view retires only
  * its registrations. A failed render/font load retains the previous view.
+ * The optional `profile` attribute selects `commonmark-gfm` or `gfm-plus` for
+ * both fetched and inline Markdown. Removing it restores the renderer default;
+ * invalid/blank values or unsupported native bindings emit `fmd-error` without
+ * falling back to a different dialect. Each render captures its own choice.
  *
  * Relative link/image URLs in fetched HTTP(S) Markdown resolve against the
  * final response URL, including redirects. Inline Markdown and opaque data/blob

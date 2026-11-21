@@ -10,6 +10,7 @@
 //               fallback when src is absent/unset)
 //   font      - "sans" | "serif"
 //   dark-mode - "auto" | "disabled"
+//   profile   - "commonmark-gfm" | "gfm-plus" (omit for the renderer default)
 //
 // The rendered document lands in a shadow root (style-isolated; the engine's
 // self-contained HTML carries its own CSS). A "fmd-rendered" CustomEvent with
@@ -132,7 +133,7 @@ function sharedRenderer(wasmInput) {
 
 class FmdView extends HTMLElement {
   static get observedAttributes() {
-    return ["src", "font", "dark-mode"];
+    return ["src", "font", "dark-mode", "profile"];
   }
 
   #root = null;
@@ -252,6 +253,7 @@ class FmdView extends HTMLElement {
     this.#cancelRender();
     if (!this.isConnected) return;
     const src = this.getAttribute("src");
+    const profile = this.getAttribute("profile");
     const markdown = src ? null : this.#inlineSource();
     this.#lastInline = markdown;
     const request = {
@@ -260,6 +262,7 @@ class FmdView extends HTMLElement {
       options: {
         font: this.getAttribute("font") === "serif" ? "serif" : "sans",
         darkMode: this.getAttribute("dark-mode") === "disabled" ? "disabled" : "auto",
+        ...(profile === null ? {} : { profile }),
       },
       controller: new AbortController(),
     };

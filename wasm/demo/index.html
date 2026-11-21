@@ -397,6 +397,15 @@
                   <option value="disabled">Disabled</option>
                 </select>
               </label>
+              <label class="field wide">
+                Markdown dialect
+                <select id="profile" aria-describedby="profile-help">
+                  <option value="">Renderer default</option>
+                  <option value="commonmark-gfm">CommonMark + GFM</option>
+                  <option value="gfm-plus">GFM+</option>
+                </select>
+                <span id="profile-help">GFM+ renders definition lists and page-break comments. CommonMark + GFM keeps definition-list text literal. The choice applies to preview, exports, editable workspaces and Document Lab. Opening or restoring source resets it to the renderer default.</span>
+              </label>
               <label class="field">
                 Title
                 <input id="title" value="franken_markdown demo" />

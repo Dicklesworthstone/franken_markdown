@@ -377,3 +377,21 @@ for (const operation of ["database open", "recovery read", "manual save"]) {
     assert.equal(db.record.version, 2);
   });
 }
+
+
+test("source recovery resets document grammar only after the replacement is accepted", async t => {
+  const f = fixture(t, storage({ source: "Term\n: recovered definition\n", filename: "saved.md" }));
+  await f.ready();
+  f.input("commonmark-gfm", "profile"); f.input("serif", "font");
+  f.win.approve = false;
+  f.click("restore-draft"); await f.idle();
+  assert.equal(f.els.profile.value, "commonmark-gfm");
+  assert.equal(f.els.markdown.value, "# Original");
+  f.win.approve = true;
+  f.click("restore-draft"); await f.idle();
+  assert.equal(f.els.profile.value, "");
+  assert.equal(f.els.font.value, "serif");
+  const pending = f.controller.renderPreview(), call = f.calls.at(-1);
+  assert.equal(Object.hasOwn(call.options, "profile"), false);
+  call.resolve(f.output(call)); assert.equal(await pending, true);
+});

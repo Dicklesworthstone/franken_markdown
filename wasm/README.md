@@ -224,12 +224,34 @@ explicit native-renderer receipt double; it does not qualify generated WASM,
 browser appearance, SVG sanitization or PDF output. Existing real-browser
 download checks remain separate.
 
+### Markdown dialect in the HTML/PDF demo
+
+Use **Markdown dialect** to choose **CommonMark + GFM** or **GFM+** for the
+current document. CommonMark + GFM keeps definition-list syntax as ordinary
+paragraphs and treats page-break comments as ordinary HTML comments; GFM+
+renders definition lists and recognizes standalone page breaks. **Renderer
+default** leaves the option unset, preserving existing package behavior.
+
+The selected grammar is captured with preview and HTML/PDF export requests,
+editable workspace downloads and Document Lab inspections. Changing it retires
+old results and prepared downloads even when source text stays identical.
+An older renderer that cannot honor an explicit choice reports its capability
+error instead of retrying another grammar. Opening or restoring a Markdown
+source file resets the choice to **Renderer default**; source-only draft
+recovery does not store document settings.
+
 ### Web component
 
 The `./web-component` entry registers `<fmd-view>` for fetched or inline
 Markdown. Its shadow view applies the renderer's palette, body typography and
 embedded body/mono fonts; `font="sans"` and `font="serif"` can coexist on the
-same page. Document selectors are scoped to the host, including dark and print
+same page. The optional `profile="commonmark-gfm"` or `profile="gfm-plus"`
+attribute selects the Markdown grammar for fetched and inline sources. Attribute
+changes start a fresh render and fence late results from the previous choice.
+Remove `profile` to restore the renderer default; blank/unknown values and
+unsupported renderer packages emit `fmd-error`, preserving the previous view.
+
+Document selectors are scoped to the host, including dark and print
 styles. Each render owns its font registrations, which are released on
 replacement or disconnection. `fmd-rendered` follows font decoding and retains
 the original renderer byte counts and diagnostics. A font/render failure emits

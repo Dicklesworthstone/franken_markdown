@@ -158,3 +158,51 @@ test("incorrect result identity closes the client without exposing helpers", asy
     value: { format: "interactive-html", mimeType: "text/html;charset=utf-8", extension: "html", sourceLength: 0, bytes: Uint8Array.of(1), diagnostics: [] } } });
   await assert.rejects(pending, { code: "WORKER_PROTOCOL_ERROR" }); assert.equal(f.terminated, 1);
 });
+
+
+for (const profile of ["commonmark-gfm", "gfm-plus"]) test(`physical workspace worker preserves ${profile} through native publication and persistence`, async t => {
+  const f = threaded(t), source = "Term\n: definition\n";
+  const options = { profile, title: "Dialect" };
+  const pending = f.client.prepare(source, options);
+  options.profile = profile === "gfm-plus" ? "commonmark-gfm" : "gfm-plus";
+  const result = await pending, html = result.text();
+  assert.equal(jsonBlock(html, "fmd-native-runtime").options.profile, profile);
+  assert.equal(jsonBlock(html, "fmd-raw-source"), source);
+  assert.match(html, new RegExp("data-profile=&quot;" + profile + "&quot;"));
+});
+
+test("an older workspace engine cannot silently publish an explicitly selected grammar", async t => {
+  const f = threaded(t, { unprofiled: true });
+  await assert.rejects(f.client.prepare("Term\n: definition\n", { profile: "commonmark-gfm" }),
+    error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /authoring profiles/.test(error.message));
+  assert.equal(f.client.disposed, true);
+});
+
+for (const profile of ["", "gfm", " GFM+ ", null, true, {}]) test(`workspace refuses invalid authoring profile ${JSON.stringify(profile)} before startup`, async t => {
+  const f = fixture(t);
+  await assert.rejects(f.client.prepare("Source", { profile }), { code: "INVALID_OPTIONS" });
+  assert.equal(f.starts, 0); assert.equal(f.calls.length, 0); assert.equal(f.outgoing.length, 0);
+});
+
+test("workspace profile accessors are refused before they run", async t => {
+  const f = fixture(t); let reads = 0;
+  await assert.rejects(f.client.prepare("Source", { get profile() { reads++; return "gfm-plus"; } }),
+    { code: "UNSUPPORTED_WORKSPACE_SETTINGS" });
+  assert.equal(reads, 0); assert.equal(f.starts, 0);
+});
+
+test("workspace server independently refuses an unknown dialect before loading runtime", async () => {
+  const messages = [], endpoint = new EventTarget(); let loaded = 0;
+  endpoint.postMessage = message => messages.push(message);
+  const close = installDemoWorkspaceWorker(endpoint, () => { loaded++; });
+  try {
+    const event = new Event("message");
+    Object.defineProperty(event, "data", { value: { protocol: WORKER_PROTOCOL, id: 1,
+      method: "prepare-workspace", args: ["Source", { profile: "unknown" }, 1000] } });
+    endpoint.dispatchEvent(event);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(loaded, 0);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].ok, false);
+  } finally { close(); }
+});

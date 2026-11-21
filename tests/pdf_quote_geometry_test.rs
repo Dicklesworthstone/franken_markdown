@@ -366,7 +366,9 @@ fn ordinary_and_narrow_fitting_quotes_keep_their_exact_output() {
     let mut narrow = options(72.0);
     narrow.theme.page.size.height_pt = 288.0;
     for (source, opts, bytes, hash) in [
-        (ordinary, regular, 18_144, 0x061c_40da_75fd_f715_u64),
+        // Updated after semantic list /Lbl structure (d1c9eb48) and
+        // cross-lookup GPOS kerning (2f6e05b1); pdftotext output verified identical.
+        (ordinary, regular, 18_529, 0x68a0_e177_8861_cd0d_u64),
         (
             "> > > QUOTE_END_SENTINEL\n",
             narrow,
@@ -376,8 +378,8 @@ fn ordinary_and_narrow_fitting_quotes_keep_their_exact_output() {
         (
             "> > > > > > FITTING77\n",
             fractional,
-            5_877,
-            0x9646_7fad_5b10_f12b_u64,
+            5_885,
+            0xc073_1bc6_4904_cc6e_u64,
         ),
     ] {
         let pdf = render_pdf(source, &opts).unwrap();

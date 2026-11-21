@@ -594,10 +594,15 @@ fn linked_inline_images_continue_with_note_ownership_and_full_annotation_bounds(
 
 #[test]
 fn indivisible_figures_oversized_table_rows_and_unreferenced_notes_keep_existing_fallback() {
+    let mut options = options();
+    options.image_assets.push(PdfImageAsset::new(
+        "tall.svg",
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="1000"><rect width="160" height="1000" fill="blue"/></svg>"#.to_vec(),
+    ));
     for block in [
-        "![figure](badge.svg)".to_owned(),
-        "**[![figure](badge.svg)](https://example.org/figure)**".to_owned(),
-        "![first](badge.svg) ![second](badge.svg)".to_owned(),
+        "![figure](tall.svg)".to_owned(),
+        "**[![figure](tall.svg)](https://example.org/figure)**".to_owned(),
+        "![first](tall.svg) ![second](tall.svg)".to_owned(),
         format!(
             "| Column |\n    | --- |\n    | {} |",
             "Retained cell ".repeat(180)
@@ -606,7 +611,6 @@ fn indivisible_figures_oversized_table_rows_and_unreferenced_notes_keep_existing
         let source = format!(
             "CITATION.[^objects]\n\n[^objects]: {block}\n\n[^orphan]: Orphan $x^2$ keeps its source.\n"
         );
-        let options = options();
         let bytes = render_pdf(&source, &options).unwrap();
         let mut original = options.clone();
         original.split_footnotes = false;

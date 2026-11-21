@@ -12,8 +12,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use super::{
-    Parser,
-    Document, Failure, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES, ReferenceKind, SourceSpan,
+    Document, Failure, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES, Parser, ReferenceKind, SourceSpan,
     analyze_document_links, matches_probe, structure, unique_probe,
 };
 
@@ -133,8 +132,16 @@ pub(super) fn destination(
         // grant navigation from an image or another unproven source context.
         if index != selected_index
             && candidate.preceding.is_some()
-            && prove_candidate(parser, source, candidate, original, owner, &probe, Some(&boundary))?
-                .is_some()
+            && prove_candidate(
+                parser,
+                source,
+                candidate,
+                original,
+                owner,
+                &probe,
+                Some(&boundary),
+            )?
+            .is_some()
         {
             return Ok(None);
         }

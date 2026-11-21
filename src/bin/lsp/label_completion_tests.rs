@@ -325,10 +325,15 @@ fn invalid_positions_and_document_budgets_fail_without_clamping_surrogates() {
         "position",
         object([("line", number(0)), ("character", number(1))]),
     )]);
-    assert_eq!(request(Parser::default(), &bad, source).err().map(|e| e.0), Some(-32602));
+    assert_eq!(
+        request(Parser::default(), &bad, source).err().map(|e| e.0),
+        Some(-32602)
+    );
     let oversized = "a".repeat(MAX_DOCUMENT_BYTES + 1);
     assert_eq!(
-        request(Parser::default(), &object([]), &oversized).err().map(|e| e.0),
+        request(Parser::default(), &object([]), &oversized)
+            .err()
+            .map(|e| e.0),
         Some(-32803)
     );
 }

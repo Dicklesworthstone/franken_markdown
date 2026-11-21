@@ -20,7 +20,12 @@ fn buffers(entries: &[(&str, &str)]) -> BTreeMap<String, Buffer> {
 }
 
 fn search(documents: &BTreeMap<String, Buffer>, query: &str) -> Vec<Json> {
-    let result = request(Parser::default(), documents, &object([("query", string(query))])).expect("search");
+    let result = request(
+        Parser::default(),
+        documents,
+        &object([("query", string(query))]),
+    )
+    .expect("search");
     let Json::Array(items) = result else {
         panic!("symbol array");
     };
@@ -192,11 +197,18 @@ fn queries_and_all_admission_limits_fail_without_partial_results() {
         object([("query", string(&"term ".repeat(MAX_QUERY_TERMS + 1)))]),
         object([("query", string("a\0b"))]),
     ] {
-        assert!(matches!(request(Parser::default(), &docs, &params), Err((-32602, _))));
+        assert!(matches!(
+            request(Parser::default(), &docs, &params),
+            Err((-32602, _))
+        ));
     }
     let huge = "x".repeat(MAX_DOCUMENT_BYTES + 1);
     assert!(matches!(
-        request(Parser::default(), &buffers(&[("a", &huge)]), &object([("query", string(""))])),
+        request(
+            Parser::default(),
+            &buffers(&[("a", &huge)]),
+            &object([("query", string(""))])
+        ),
         Err((-32803, _))
     ));
     let heading = format!("# {}", "x".repeat(MAX_HEADING_BYTES + 1));
@@ -212,7 +224,11 @@ fn queries_and_all_admission_limits_fail_without_partial_results() {
         .map(|n| format!("# Heading {n}\n\n"))
         .collect();
     assert!(matches!(
-        request(Parser::default(), &buffers(&[("a", &many)]), &object([("query", string(""))])),
+        request(
+            Parser::default(),
+            &buffers(&[("a", &many)]),
+            &object([("query", string(""))])
+        ),
         Err((-32803, _))
     ));
     let mut too_many = BTreeMap::new();
@@ -220,7 +236,11 @@ fn queries_and_all_admission_limits_fail_without_partial_results() {
         too_many.extend(buffers(&[(&n.to_string(), "")]));
     }
     assert!(matches!(
-        request(Parser::default(), &too_many, &object([("query", string(""))])),
+        request(
+            Parser::default(),
+            &too_many,
+            &object([("query", string(""))])
+        ),
         Err((-32803, _))
     ));
     let one = "x".repeat(MAX_DOCUMENT_BYTES);
@@ -229,7 +249,11 @@ fn queries_and_all_admission_limits_fail_without_partial_results() {
         too_large.extend(buffers(&[(&n.to_string(), &one)]));
     }
     assert!(matches!(
-        request(Parser::default(), &too_large, &object([("query", string(""))])),
+        request(
+            Parser::default(),
+            &too_large,
+            &object([("query", string(""))])
+        ),
         Err((-32803, _))
     ));
 }

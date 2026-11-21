@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use franken_markdown::parse_markdown;
 use super::super::{Phase, Server};
 use super::*;
+use franken_markdown::parse_markdown;
 use franken_markdown::{Block, Inline};
 
 const URI: &str = "file:///docs/source.md";

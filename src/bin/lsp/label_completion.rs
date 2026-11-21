@@ -9,14 +9,11 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use franken_markdown::SourceSpan;
-use franken_markdown::parse::{
-    ReferenceLabelForm, ReferenceLabelSpan,
-    split_frontmatter,
-};
+use franken_markdown::parse::{ReferenceLabelForm, ReferenceLabelSpan, split_frontmatter};
 
 use super::{
-    Parser,
-    Json, LineIndex, MAX_DOCUMENT_BYTES, Position, footnotes, number, object, position, string,
+    Json, LineIndex, MAX_DOCUMENT_BYTES, Parser, Position, footnotes, number, object, position,
+    string,
 };
 
 type Failure = (i32, &'static str);
@@ -337,7 +334,11 @@ fn prove_reference(
 }
 
 /// None delegates unrelated positions to the existing fragment-completion route.
-pub(super) fn request(parser: Parser, params: &Json, source: &str) -> Result<Option<Json>, Failure> {
+pub(super) fn request(
+    parser: Parser,
+    params: &Json,
+    source: &str,
+) -> Result<Option<Json>, Failure> {
     if source.len() > MAX_DOCUMENT_BYTES {
         return Err((-32803, "document exceeds the label completion budget"));
     }

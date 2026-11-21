@@ -217,12 +217,11 @@ impl Plan<'_> {
         after: bool,
     ) -> Option<(String, String)> {
         let known = if after { &self.after } else { &self.before };
-        if kind == UrlKind::Link {
-            if let Some(target) =
+        if kind == UrlKind::Link
+            && let Some(target) =
                 paths::chapter_destination(origin, destination, |path| known.contains(path))
-            {
-                return Some(target);
-            }
+        {
+            return Some(target);
         }
         if let Some(target) = paths::destination(origin, destination) {
             return Some(target);
@@ -436,7 +435,7 @@ fn include_path(origin: &str, target: &str) -> Result<String> {
     {
         return Err(invalid("include path is not a relative book source"));
     }
-    paths::source_path(&format!("{}/{}", parent(origin), target).trim_start_matches('/'))
+    paths::source_path(format!("{}/{}", parent(origin), target).trim_start_matches('/'))
         .ok_or_else(|| invalid("include path escapes the captured book"))
 }
 

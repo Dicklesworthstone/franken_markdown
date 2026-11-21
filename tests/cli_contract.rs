@@ -3078,7 +3078,7 @@ fn fmd_pdf_fit_to_pages_shrinks_multipage_document() {
 
     // Create a 2-page document with multiple paragraphs
     let mut content = String::new();
-    for i in 1..=15 {
+    for i in 1..=8 {
         content.push_str(&format!(
             "## Section {}\n\nThis is a substantial paragraph of text written to ensure that the document exceeds a single page boundary under normal 11pt typography. It contains several full sentences demonstrating realistic content flow, word measurements, and optimal paragraph line breaking.\n\n",
             i
@@ -3090,11 +3090,21 @@ fn fmd_pdf_fit_to_pages_shrinks_multipage_document() {
     let out_1_s = out_pdf_1.to_str().unwrap();
     let out_2_s = out_pdf_2.to_str().unwrap();
 
-    // Default render (will be 2 pages)
+    let page_count = |pdf: &[u8]| {
+        pdf.windows(b"<< /Type /Page ".len())
+            .filter(|w| *w == b"<< /Type /Page ")
+            .count()
+    };
+
+    // Default render (exceeds 1 page)
     let res_1 = fmd(&[doc_s, "--to", "pdf", "--out", out_1_s]);
     assert_eq!(res_1.status.code(), Some(0));
     let pdf_bytes_1 = fs::read(&out_pdf_1).unwrap();
     assert!(pdf_bytes_1.len() > 1000);
+    assert!(
+        page_count(&pdf_bytes_1) >= 2,
+        "default render should span multiple pages"
+    );
 
     // Fit to 1 page
     let res_2 = fmd(&[
@@ -3106,9 +3116,19 @@ fn fmd_pdf_fit_to_pages_shrinks_multipage_document() {
         "--out",
         out_2_s,
     ]);
-    assert_eq!(res_2.status.code(), Some(0));
+    assert_eq!(
+        res_2.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&res_2.stderr)
+    );
     let pdf_bytes_2 = fs::read(&out_pdf_2).unwrap();
     assert!(pdf_bytes_2.len() > 1000);
+    assert_eq!(
+        page_count(&pdf_bytes_2),
+        1,
+        "fit-to-pages=1 must emit exactly 1 page"
+    );
 
     let _ = fs::remove_file(doc_md);
     let _ = fs::remove_file(out_pdf_1);

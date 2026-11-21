@@ -8,11 +8,10 @@ use franken_markdown::book::validation::DocumentLinkAnalysis;
 
 use super::super::{MAX_DOCUMENTS, MAX_SESSION_BYTES};
 use super::{
-    Parser,
     AnchorKind, Buffer, Document, Failure, Json, LineIndex, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES,
-    MAX_DOCUMENT_BYTES, Position, ReferenceKind, SourceSpan, analyze_document_links, candidate,
-    number, object, prefix_text, probe_document, range, references, string,
-    structure, workspace_links,
+    MAX_DOCUMENT_BYTES, Parser, Position, ReferenceKind, SourceSpan, analyze_document_links,
+    candidate, number, object, prefix_text, probe_document, range, references, string, structure,
+    workspace_links,
 };
 
 const MAX_RESULTS: usize = 4096;
@@ -30,7 +29,8 @@ impl Snapshot {
         if source.len() > MAX_DOCUMENT_BYTES {
             return Err((-32803, "document exceeds the reference search budget"));
         }
-        let (spans, blocks) = parser.spanned(source)
+        let (spans, blocks) = parser
+            .spanned(source)
             .blocks
             .into_iter()
             .map(|block| (block.span, block.node))
@@ -85,7 +85,8 @@ fn destination_at(
     let Some(token) = candidate(source, span, offset) else {
         return references::destination(parser, source, span, offset, original, owner);
     };
-    let Some((mut probed, probe)) = probe_document(parser, source, span, token, original, owner, false)
+    let Some((mut probed, probe)) =
+        probe_document(parser, source, span, token, original, owner, false)
     else {
         return Ok(None);
     };
@@ -263,7 +264,8 @@ pub(super) fn request(
         source_bytes += document.text.len();
     }
     let snapshot = Snapshot::parse(parser, &buffer.text)?;
-    let Some(target) = select_target(parser, documents, uri, &buffer.text, &snapshot, requested)? else {
+    let Some(target) = select_target(parser, documents, uri, &buffer.text, &snapshot, requested)?
+    else {
         return Ok(Json::Array(Vec::new()));
     };
     // An unsynchronized buffer might contain another use. Never return a

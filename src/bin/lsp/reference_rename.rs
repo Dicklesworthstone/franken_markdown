@@ -11,9 +11,8 @@ use franken_markdown::parse::{ReferenceLabelForm, ReferenceLabelSpan};
 use franken_markdown::{Block, Document, Inline};
 
 use super::{
-    Parser,
-    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_SESSION_BYTES, Position, object, position,
-    string,
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_SESSION_BYTES, Parser, Position, object,
+    position, string,
 };
 
 type Failure = (i32, &'static str);

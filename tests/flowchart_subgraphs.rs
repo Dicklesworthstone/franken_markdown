@@ -114,10 +114,12 @@ fn paths(svg: &str) -> Vec<Vec<(f32, f32)>> {
         .map(|line| {
             let words: Vec<_> = attribute(line, "d").split_whitespace().collect();
             words
-                .chunks_exact(3)
-                .map(|point| {
-                    assert!(matches!(point[0], "M" | "L"));
-                    (point[1].parse().unwrap(), point[2].parse().unwrap())
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|&[cmd, x, y]| {
+                    assert!(matches!(cmd, "M" | "L"));
+                    (x.parse().unwrap(), y.parse().unwrap())
                 })
                 .collect()
         })

@@ -205,13 +205,13 @@ impl Plan {
         }
         let mut before = BTreeSet::new();
         for opened in documents.keys() {
-            if let Some((key, false)) = file_uri(opened) {
-                if !before.insert(key) {
-                    return Err((
-                        -32803,
-                        "file rename cannot edit ambiguous opened file URI aliases",
-                    ));
-                }
+            if let Some((key, false)) = file_uri(opened)
+                && !before.insert(key)
+            {
+                return Err((
+                    -32803,
+                    "file rename cannot edit ambiguous opened file URI aliases",
+                ));
             }
         }
         // An opened text document and one of its descendants cannot both be

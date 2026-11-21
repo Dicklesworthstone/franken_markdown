@@ -245,9 +245,15 @@ fn utf16_crlf_and_encoded_fragments_preserve_original_source_ranges() {
         ),
     ]);
     assert_eq!(
-        request(Parser::default(), "textDocument/references", &invalid, A, &docs)
-            .unwrap_err()
-            .0,
+        request(
+            Parser::default(),
+            "textDocument/references",
+            &invalid,
+            A,
+            &docs
+        )
+        .unwrap_err()
+        .0,
         -32602
     );
 }
@@ -258,12 +264,27 @@ fn stale_buffers_refuse_workspace_results_without_breaking_local_highlights() {
     docs.get_mut(B).unwrap().synchronized = false;
     let query = params(&docs[A].text, "Topic", false);
     assert_eq!(
-        request(Parser::default(), "textDocument/references", &query, A, &docs)
-            .unwrap_err()
-            .0,
+        request(
+            Parser::default(),
+            "textDocument/references",
+            &query,
+            A,
+            &docs
+        )
+        .unwrap_err()
+        .0,
         -32801
     );
-    let rows = array(request(Parser::default(), "textDocument/documentHighlight", &query, A, &docs).unwrap());
+    let rows = array(
+        request(
+            Parser::default(),
+            "textDocument/documentHighlight",
+            &query,
+            A,
+            &docs,
+        )
+        .unwrap(),
+    );
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get("kind").and_then(Json::as_u64), Some(3));
     assert_eq!(rows[1].get("kind").and_then(Json::as_u64), Some(2));
@@ -304,9 +325,15 @@ fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
         }),
     )]);
     assert_eq!(
-        request(Parser::default(), "textDocument/references", &missing, A, &docs)
-            .unwrap_err()
-            .0,
+        request(
+            Parser::default(),
+            "textDocument/references",
+            &missing,
+            A,
+            &docs
+        )
+        .unwrap_err()
+        .0,
         -32602
     );
     let invalid = object([
@@ -320,17 +347,29 @@ fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
         ("context", object([("includeDeclaration", string("true"))])),
     ]);
     assert_eq!(
-        request(Parser::default(), "textDocument/references", &invalid, A, &docs)
-            .unwrap_err()
-            .0,
+        request(
+            Parser::default(),
+            "textDocument/references",
+            &invalid,
+            A,
+            &docs
+        )
+        .unwrap_err()
+        .0,
         -32602
     );
     docs.get_mut(A).unwrap().synchronized = false;
     let query = params(&docs[B].text, "a.md#topic", false);
     assert_eq!(
-        request(Parser::default(), "textDocument/references", &query, B, &docs)
-            .unwrap_err()
-            .0,
+        request(
+            Parser::default(),
+            "textDocument/references",
+            &query,
+            B,
+            &docs
+        )
+        .unwrap_err()
+        .0,
         -32801
     );
 }

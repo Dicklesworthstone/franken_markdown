@@ -7,10 +7,11 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use franken_markdown::parse::{ReferenceLabelForm, ReferenceLabelSpan, reference_label_spans};
-use franken_markdown::{Block, Document, Inline, parse_markdown};
+use franken_markdown::parse::{ReferenceLabelForm, ReferenceLabelSpan};
+use franken_markdown::{Block, Document, Inline};
 
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_SESSION_BYTES, Position, object, position,
     string,
 };
@@ -33,7 +34,7 @@ fn range(index: &LineIndex, source: &str, span: &Range<usize>) -> Json {
     ])
 }
 
-fn new_key(name: &str) -> Result<String, Failure> {
+fn new_key(parser: Parser, name: &str) -> Result<String, Failure> {
     if name.is_empty() || name.len() > MAX_LABEL_BYTES || name.chars().any(|ch| ch.is_control()) {
         return Err((
             -32602,
@@ -50,8 +51,8 @@ fn new_key(name: &str) -> Result<String, Failure> {
             content: vec![Inline::Text("probe".to_string())],
         }])],
     };
-    let spans = reference_label_spans(&source);
-    if parse_markdown(&source) != expected || spans.len() != 2 {
+    let spans = parser.reference_labels(&source);
+    if parser.parse(&source) != expected || spans.len() != 2 {
         return Err((-32602, "newName is not a parser-valid reference label"));
     }
     let definition = spans
@@ -89,6 +90,7 @@ fn edit_for(
 
 /// `None` delegates non-reference positions to the heading rename provider.
 pub(super) fn request(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -111,7 +113,7 @@ pub(super) fn request(
     let offset = index
         .offset(source, requested)
         .map_err(|reason| (-32602, reason))?;
-    let spans = reference_label_spans(source);
+    let spans = parser.reference_labels(source);
     let Some(selected) = spans.iter().find(|span| {
         span.label
             .as_ref()
@@ -159,7 +161,7 @@ pub(super) fn request(
         .get("newName")
         .and_then(Json::as_str)
         .ok_or((-32602, "rename requires string newName"))?;
-    let renamed_key = new_key(name)?;
+    let renamed_key = new_key(parser, name)?;
     if renamed_key != *key && spans.iter().any(|span| span.key == renamed_key) {
         return Err((
             -32803,
@@ -220,7 +222,7 @@ pub(super) fn request(
     }
     // This catches newly resolved formerly-literal references, altered code or
     // HTML, lost titles, image changes, and any incomplete source mapping.
-    if parse_markdown(&revised) != parse_markdown(source) {
+    if parser.parse(&revised) != parser.parse(source) {
         return Err((
             -32803,
             "new reference label changes surrounding Markdown meaning",

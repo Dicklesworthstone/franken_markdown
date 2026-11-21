@@ -1,8 +1,10 @@
 # Configured MCP file exports
 
 `fmd.render_file` accepts flat rendering options alongside `path`, `to`, `out`,
-`images`, and `fonts`. The HTML/PDF option builders are shared with
-`fmd.render_html` and `fmd.render_pdf`, not reimplemented in the file loader.
+`images`, `fonts`, and `expandIncludes`. The HTML/PDF option builders are shared
+with `fmd.render_html` and `fmd.render_pdf`; EPUB and SVG also share their
+applicability rules and builders with the stateless
+[source publication tools](MCP_SOURCE_EXPORTS.md).
 
 All targets accept `profile: "commonmark-gfm"` or `profile: "gfm-plus"`.
 The source is parsed under that dialect before any output transforms, including
@@ -51,7 +53,7 @@ JSON `outputs` array; single-format output retains its existing text/base64 form
 | `html` | The `fmd.render_html` options, including CSS, appearance, TOC, font container and interactive HTML |
 | `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages, baseline grid, strict pagination and PDF/A |
 | `both` | The union of HTML and PDF options; each renderer consumes its own fields |
-| `epub` | HTML theme, font scale, title, language, CSS, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
+| `epub` | HTML theme, font scale, title, author, language, CSS, font embedding, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
 | `svg` | `profile`, `font`, `fontScale`, `maxWidthPt` (144..14400 points), `toc`, `tocDepth`, and explicit resources |
 
 `images` and `fonts` work for all targets. They contain explicit bytes; destinations
@@ -73,7 +75,53 @@ An enabled baseline grid and `fitToPages` are incompatible and fail before sourc
 I/O. Strict-pagination failures preserve their typed `pagination_*` reason and
 leave both paired destinations unchanged.
 
+EPUB `author` is preserved in its escaped creator metadata and publication
+identity. Omission retains the native default. The existing HTML/PDF paired
+contract is unchanged: `author` affects its PDF artifact only, and HTML-only
+requests still reject it.
+
 The default target remains HTML. Omitted titles retain the filename-stem default;
 explicit empty titles and surrounding whitespace are preserved. Source parsing is
 shared by the artifacts of one paired export. Interactive HTML uses the same
 source, AST and options as the in-memory interactive tool.
+
+## Local Markdown includes
+
+Set `expandIncludes: true` to expand `{{#include path}}` in the selected file.
+The default is `false`: omission retains the original single-file behavior and
+does not read include destinations. The option works for HTML, PDF, paired
+HTML/PDF, EPUB, SVG, and unprofiled interactive HTML.
+
+```json
+{
+  "name": "fmd.render_file",
+  "arguments": {
+    "path": "guide/report.md",
+    "expandIncludes": true,
+    "to": "both",
+    "out": "publication/report.pdf"
+  }
+}
+```
+
+Expansion uses the same resolver as native rendering: recursive includes, named
+anchors and line selectors work; fenced/indented code remains literal; the
+selected `profile` applies during discovery and parsing. Relative links and
+image destinations retain the included fragment's directory. Supply explicit
+image bytes using the resulting root-relative destination, such as
+`parts/plot.svg` for `![Plot](plot.svg)` in `parts/body.md`.
+Image and font destinations still do not authorize local reads or network
+requests.
+
+Include reads stay inside the canonical directory of the requested input path,
+including when the input itself is a symlink. Every fragment is a regular UTF-8
+file subject to the server's Markdown byte limit; expanded output is capped by
+that same limit and the shared 64 MiB ceiling. Missing files, cycles, escaped
+paths, invalid UTF-8 and exceeded budgets return `include_error` with the
+resolver's diagnostic before publication.
+
+The original source and every consulted fragment are protected from output
+replacement, including symlink and hard-link aliases. With `to: "both"`, an
+include error or protected destination leaves both previous artifacts intact.
+Interactive HTML contains the expanded editable source so subsequent edits
+retain the published document.

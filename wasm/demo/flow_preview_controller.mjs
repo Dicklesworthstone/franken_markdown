@@ -21,6 +21,7 @@ export function createPreviewController({
   let session = null,
     appliedSource = null,
     appliedFont = null,
+    appliedProfile = null,
     disposed = false,
     reading = "";
   let layoutVersion = 0;
@@ -53,7 +54,8 @@ export function createPreviewController({
     lineHeight: value.lineHeight,
   });
   const layoutCurrent = () => {
-    if (!session || session.disposed || !desired || appliedFont !== desired.font) return false;
+    if (!session || session.disposed || !desired || appliedFont !== desired.font ||
+      appliedProfile !== desired.profile) return false;
     const actual = session.layoutOptions,
       expected = targetLayout(desired);
     return layoutKeys.every((key) => actual[key] === expected[key]);
@@ -127,8 +129,12 @@ export function createPreviewController({
       throw new FlowError("INVALID_OPTIONS", "viewport width is required");
     // Use the same defaults and f32 admission as the worker, not browser CSS
     // or a second set of layout rules. Snapshot primitives before any await.
+    const profile = Object.getOwnPropertyDescriptor(input, "profile");
+    if ((profile && !Object.hasOwn(profile, "value")) || (!profile && "profile" in input))
+      throw new FlowError("INVALID_OPTIONS", "profile must be a data-valued authoring profile");
     const creation = validateCreation(input.source, {
       font: input.font,
+      profile: profile?.value,
       viewportWidth: input.width,
       bodySize: input.bodySize,
       codeSize: input.codeSize,
@@ -137,6 +143,7 @@ export function createPreviewController({
     const value = {
       source: creation.source,
       font: creation.font,
+      profile: creation.profile,
       width: creation.layout.viewportWidth,
       bodySize: creation.layout.bodySize,
       codeSize: creation.layout.codeSize,
@@ -416,7 +423,8 @@ export function createPreviewController({
             startup = controller;
             const created = await createSession(
               intent.source,
-              { font: intent.font, ...targetLayout(intent) },
+              { font: intent.font, ...targetLayout(intent),
+                ...(intent.profile === undefined ? {} : { profile: intent.profile }) },
               { signal: controller.signal },
             );
             if (startup === controller) startup = null;
@@ -428,6 +436,7 @@ export function createPreviewController({
             session = created;
             appliedSource = intent.source;
             appliedFont = intent.font;
+            appliedProfile = intent.profile;
             assets = createAssets ? createAssets(created) : null;
             imagesRevision = null;
           }
@@ -518,6 +527,7 @@ export function createPreviewController({
       previousAssets = assets;
     session = null;
     appliedFont = null;
+    appliedProfile = null;
     assets = null;
     imagesRevision = null;
     appliedSource = null;
@@ -584,19 +594,21 @@ export function createPreviewController({
       alive();
       const next = valid(input);
       if (desired && Object.keys(next).every((key) => next[key] === desired[key])) return;
-      const fontChanged = desired && desired.font !== next.font;
+      const identityChanged = desired &&
+        (desired.font !== next.font || desired.profile !== next.profile);
       if (
         !desired ||
-        ["font", "width", "bodySize", "codeSize", "lineHeight"].some(
+        ["font", "profile", "width", "bodySize", "codeSize", "lineHeight"].some(
           (key) => desired[key] !== next[key],
         )
       )
         layoutVersion++;
       desired = next;
       version++;
-      // Bundled faces are chosen at native session creation. Rebuild explicitly
-      // rather than relabeling old glyphs, while retaining the host image grant.
-      if (fontChanged) {
+      // Font and grammar are fixed at native session creation. Changing either
+      // retires old pixels, reading and exports, while retaining the host source
+      // and image grant for a new session with the requested identity.
+      if (identityChanged) {
         restart();
         return;
       }
@@ -628,6 +640,7 @@ export function createPreviewController({
       desired = null;
       appliedSource = null;
       appliedFont = null;
+      appliedProfile = null;
       reading = "";
       readingDocument = null;
       readingToken = null;

@@ -134,6 +134,37 @@ fn relative(origin: &FileKey, target: &FileKey) -> String {
     }
 }
 
+/// Include paths are literal host paths, not Markdown URLs. Percent signs,
+/// query/fragment punctuation and spaces must reach exactly one file identity.
+/// Absolute paths and backslashes have platform-dependent host semantics and
+/// cannot acquire authority from this filesystem-free provider.
+pub(super) fn include_key(origin: &str, path: &str) -> Result<FileKey, Failure> {
+    if path.is_empty()
+        || path.len() > MAX_DESTINATION_BYTES
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+        || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic())
+    {
+        return Err((
+            -32803,
+            "include rename requires bounded relative literal paths",
+        ));
+    }
+    let encoded = path.split('/').map(component).collect::<Vec<_>>().join("/");
+    let (key, directory) = addressed(origin, &encoded).ok_or((
+        -32803,
+        "include rename has no unambiguous source file identity",
+    ))?;
+    if directory {
+        return Err((
+            -32803,
+            "include rename cannot resolve a directory as source text",
+        ));
+    }
+    Ok(key)
+}
+
 impl Plan {
     pub(super) fn new(
         params: &Json,
@@ -250,6 +281,108 @@ impl Plan {
         self.moves.is_empty()
     }
 
+    pub(super) fn moved_uri(&self, origin: &str) -> Result<String, Failure> {
+        let (key, directory) = file_uri(origin).ok_or((
+            -32803,
+            "include rename requires an opened source with a file URI",
+        ))?;
+        if directory || key.parts.is_empty() {
+            return Err((-32803, "include rename requires a source file identity"));
+        }
+        Ok(uri(&self.moved(&key)))
+    }
+
+    pub(super) fn include_route(&self, origin: &str, path: &str) -> Result<Route, Failure> {
+        let before = include_key(origin, path)?;
+        let after = self.moved(&before);
+        let new_uri = self.moved_uri(origin)?;
+        if include_key(&new_uri, path).as_ref().ok() == Some(&after) {
+            return Ok(Route {
+                before,
+                after,
+                replacement: None,
+            });
+        }
+        let (new_origin, _) = file_uri(&new_uri)
+            .ok_or((-32803, "include rename cannot represent the moved source"))?;
+        if new_origin.authority != after.authority || drive(&new_origin) != drive(&after) {
+            return Err((
+                -32803,
+                "include rename cannot cross URI authorities or drive roots",
+            ));
+        }
+        let parent = &new_origin.parts[..new_origin.parts.len() - 1];
+        let common = parent
+            .iter()
+            .zip(&after.parts)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let mut parts = vec!["..".to_string(); parent.len() - common];
+        parts.extend_from_slice(&after.parts[common..]);
+        let replacement = parts.join("/");
+        if include_key(&new_uri, &replacement)? != after {
+            return Err((-32803, "renamed include cannot preserve its literal target"));
+        }
+        Ok(Route {
+            before,
+            after,
+            replacement: Some(replacement),
+        })
+    }
+
+    /// Compare expanded documents in one post-move identity space. Unlike
+    /// route(), this returns an absolute logical identity, never a source edit.
+    pub(super) fn canonical_destination(
+        &self,
+        origin: &str,
+        destination: &str,
+        aliases: bool,
+        after_move: bool,
+    ) -> Result<Option<String>, Failure> {
+        if destination.len() > MAX_DESTINATION_BYTES {
+            return Err((-32803, "file destination exceeds the rename byte budget"));
+        }
+        let Some((address, directory)) = addressed(origin, destination) else {
+            return Ok(None);
+        };
+        let resolved = if after_move {
+            let resolved = resolve(&self.after, &address, directory, aliases)?;
+            if aliases
+                && resolved
+                    .as_ref()
+                    .is_some_and(|target| directory || *target != address)
+                && self.incoming_alias(&address, directory)
+            {
+                return Err((
+                    -32803,
+                    "expanded include alias may be captured by an unopened moved target",
+                ));
+            }
+            resolved
+        } else {
+            self.resolve_before(&address, directory, aliases)?
+        };
+        let target = resolved.as_ref().unwrap_or(&address);
+        let target = if after_move {
+            target.clone()
+        } else {
+            self.moved(target)
+        };
+        let mut canonical = uri(&target);
+        if directory && resolved.is_none() && !canonical.ends_with('/') {
+            canonical.push('/');
+        }
+        let suffix = destination.find(['?', '#']).unwrap_or(destination.len());
+        canonical.push_str(&destination[suffix..]);
+        if canonical.len() > MAX_DESTINATION_BYTES {
+            return Err((
+                -32803,
+                "expanded include destination exceeds its byte budget",
+            ));
+        }
+        Ok(Some(canonical))
+    }
+
     fn moved(&self, key: &FileKey) -> FileKey {
         self.moves
             .iter()
@@ -280,6 +413,31 @@ impl Plan {
         })
     }
 
+    /// An unopened extension/index alias has no proven original file identity.
+    /// Both source edits and selected-expansion comparisons must refuse when a
+    /// move can affect an alternative that the exact spelling does not expose.
+    fn resolve_before(
+        &self,
+        address: &FileKey,
+        directory: bool,
+        aliases: bool,
+    ) -> Result<Option<FileKey>, Failure> {
+        let resolved = resolve(&self.before, address, directory, aliases)?;
+        if aliases
+            && resolved.is_none()
+            && *address == self.moved(address)
+            && alternative_targets(address, directory)
+                .iter()
+                .any(|candidate| self.moved(candidate) != *candidate)
+        {
+            return Err((
+                -32803,
+                "file rename needs the target opened to disambiguate an extension or index alias",
+            ));
+        }
+        Ok(resolved)
+    }
+
     pub(super) fn route(
         &self,
         origin: &str,
@@ -289,20 +447,7 @@ impl Plan {
         let Some((address, directory)) = addressed(origin, destination) else {
             return Ok(None);
         };
-        let resolved = resolve(&self.before, &address, directory, aliases)?;
-        let direct_after = self.moved(&address);
-        if aliases
-            && resolved.is_none()
-            && address == direct_after
-            && alternative_targets(&address, directory)
-                .iter()
-                .any(|candidate| self.moved(candidate) != *candidate)
-        {
-            return Err((
-                -32803,
-                "file rename needs the target opened to disambiguate an extension or index alias",
-            ));
-        }
+        let resolved = self.resolve_before(&address, directory, aliases)?;
         let before = resolved.as_ref().unwrap_or(&address).clone();
         let after = self.moved(&before);
         let new_origin = file_uri(origin)

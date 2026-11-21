@@ -23,11 +23,15 @@ export function createDocumentLabController(doc, win, factory = createDocumentIn
     els[key] = doc.getElementById(id);
     if (!els[key]) throw new Error(`Document Lab is missing #${id}`);
   }
+  // Other hosts may omit this selector; preserve the legacy inspector request.
+  const profileControl = doc.getElementById("profile");
+  const currentProfile = () => profileControl?.value || undefined;
   let alive = true, suspended = false, composing = false, generation = 0;
   let client = null, pending = null, retained = null, downloadUrl = null;
   const listeners = [];
   const available = () => alive && !suspended && !composing;
-  const fresh = entry => available() && entry && entry.generation === generation && entry.source === els.source.value;
+  const fresh = entry => available() && entry && entry.generation === generation
+    && entry.source === els.source.value && entry.profile === currentProfile();
   const active = entry => pending === entry && fresh(entry);
   function listen(target, name, fn) {
     target.addEventListener(name, fn);
@@ -110,7 +114,7 @@ export function createDocumentLabController(doc, win, factory = createDocumentIn
   async function inspect() {
     if (!available()) return false;
     invalidate("Inspecting the captured draft in a worker…");
-    const job = { source: els.source.value, generation, abort: new AbortController() };
+    const job = { source: els.source.value, profile: currentProfile(), generation, abort: new AbortController() };
     pending = job;
     controls();
     try {
@@ -123,7 +127,8 @@ export function createDocumentLabController(doc, win, factory = createDocumentIn
         }
         client = next;
       }
-      const output = await client.inspect(job.source, { signal: job.abort.signal });
+      const output = await client.inspect(job.source, { signal: job.abort.signal,
+        ...(job.profile === undefined ? {} : { profile: job.profile }) });
       if (!active(job)) {
         if (pending === job) invalidate("Source changed. Inspect the current draft again.");
         return false;
@@ -133,7 +138,7 @@ export function createDocumentLabController(doc, win, factory = createDocumentIn
         if (pending === job) invalidate("Source changed. Inspect the current draft again.");
         return false;
       }
-      retained = { source: job.source, generation: job.generation, output };
+      retained = { source: job.source, profile: job.profile, generation: job.generation, output };
       els.results.hidden = false;
       const total = output.stats.findings.length + output.accessibility.findings.length;
       controls(`Current draft inspected: ${total} findings reported. Source analysis only; not PDF certification.`);
@@ -192,6 +197,9 @@ export function createDocumentLabController(doc, win, factory = createDocumentIn
   }
   for (const event of ["input", "change"]) listen(els.source, event, () => {
     if (alive) invalidate(composing ? "Finish composing before inspection." : "Source changed. Inspect the current draft again.");
+  });
+  if (profileControl) for (const event of ["input", "change"]) listen(profileControl, event, () => {
+    if (alive) invalidate("Markdown dialect changed. Inspect the current draft again.");
   });
   listen(els.source, "compositionstart", () => {
     composing = true; invalidate("Finish composing before inspection.");

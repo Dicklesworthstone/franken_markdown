@@ -1,8 +1,8 @@
 # Typography and publishing in the live editor
 
 The **Typography and publishing** panel in `demo/flow-canvas.html` configures
-measured Canvas preview and document exports. It uses the existing worker and
-HTML/PDF/EPUB/SVG renderers.
+Markdown dialect, measured Canvas preview and document exports. It uses the
+existing worker and HTML/PDF/EPUB/SVG renderers.
 
 ## Applying settings
 
@@ -16,7 +16,39 @@ last applied settings and all editable field text, with a visible diagnostic.
 
 The three preview presets load draft values only. Standard uses sans/14/13/20;
 Reading uses serif/18/15/27; Compact uses sans/12/11/17. The numbers are body size,
-code size and line height. Presets preserve publishing fields and require Apply.
+code size and line height. Presets preserve dialect and publishing fields and
+require Apply.
+
+## Markdown dialect
+
+**Markdown dialect (preview and exports)** selects the document's grammar:
+
+| Choice | Behavior |
+| --- | --- |
+| Renderer default (GFM plus) | Preserves the existing extended grammar and legacy native constructor. |
+| CommonMark + GFM | Uses the engine's GitHub-compatible syntax. Definition-list-shaped text remains ordinary paragraph text, and page-break comments remain ordinary comments. |
+| GFM plus | Also enables definition lists and standalone `<!-- pagebreak -->` comments for printed page boundaries. |
+
+The dialect is shared by the measured preview, semantic reading surface and
+HTML/PDF/EPUB/SVG exports. It belongs to the native session, so an export cannot
+override it independently. Applying a dialect change rebuilds the session from
+the unchanged editor source. Old pixels and reading navigation are withdrawn
+immediately; late paints, transcripts and exports from the old session cannot
+be published, even when the new session starts with the same revision numbers.
+Returning to **Renderer default** also rebuilds explicitly.
+
+Typing, resizing, typography presets and **Restart preview from current source**
+retain the applied dialect. Opening/importing/restoring a different plain
+Markdown document resets dialect to **Renderer default**: plain Markdown files
+and browser drafts do not carry these session-only settings. Font and preview
+size preferences are retained across that document change.
+
+An explicit dialect requires a matching generated WASM package with the
+`FmdFlowSession.withProfile` binding. An older package reports
+`UNSUPPORTED_WASM_PACKAGE` and preserves the editor source instead of silently
+using a different grammar. Selecting **Renderer default** can recover the older
+package's existing behavior. Dialect selection does not enable raw HTML, grant
+image access, or change the bundled shaper's script coverage.
 
 ## Measured preview
 
@@ -52,9 +84,9 @@ renderer default instead of guessing an application default.
 
 SVG has an optional poster width from 144 through 14,400 points; leaving it
 blank uses the renderer's 612-point default. EPUB retains the applied appearance
-settings. Each format uses the current session font and explicitly authorized
-images. Missing native EPUB or SVG bindings produce an explicit refusal while
-other supported formats remain available.
+settings. Each format uses the current session dialect, font and explicitly
+authorized images. Missing native EPUB or SVG bindings produce an explicit
+refusal while other supported formats remain available.
 
 PDF additionally exposes author, page numbers, code line numbers, body size
 (6–24 pt), heading scale (1.05–2), table size (5–24 pt), target page count (1–1000),
@@ -110,8 +142,9 @@ Settings are page-session memory only. They are not written into Markdown,
 frontmatter, file handles, browser drafts, local storage, or a server. Applying a
 setting never changes selection, undo/redo, file-save identity, or source dirty
 state. It does not save a file. Opening/importing/restoring another document
-resets all publishing settings and pending fields so an old title, author or
-language cannot leak into the next document; applied preview preferences remain.
+resets dialect, publishing settings and pending fields so another document's
+grammar, title, author or language cannot leak into the next document; applied
+font and preview size preferences remain.
 
 Page suspension removes listeners and disables the old controls. A back/forward
 return can retain applied primitive settings in memory, but does not retain file
@@ -128,13 +161,17 @@ rendering or settings failure does not take away original Markdown recovery.
 
 ```sh
 node --test wasm/tests/flow_preview_controller.test.mjs \
+  wasm/tests/flow_preview_profile.test.mjs \
   wasm/tests/flow_export_controls.test.mjs \
   wasm/tests/flow_render_settings.test.mjs \
   wasm/tests/flow_publication_controls.test.mjs
 ```
 
 The suites execute production preview orchestration, settings normalization and
-controls, reading/export admission, adapter validation and Blob creation. Their
-session/painter/renderer/DOM/URL doubles are explicit. They do not prove actual
-Rust glyph output, PDF appearance or native browser accessibility. Package checks
-cover the manifest and both assemblers; they are not a generated-WASM build.
+controls, reading/export admission, adapter validation and Blob creation. Dialect
+integration also exercises the public direct entrypoint and real Node worker
+transport through all four exports, including older-binding refusal and recovery.
+Their native/session/painter/renderer/DOM/URL doubles are explicit. They do not
+prove actual Rust glyph output, PDF appearance or native browser accessibility.
+Package checks cover the manifest and both assemblers; they are not a
+generated-WASM build.

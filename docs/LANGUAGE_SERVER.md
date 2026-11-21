@@ -40,6 +40,38 @@ URIs are opaque in-memory document keys, including `untitled:` buffers. The
 server does not open files, follow links, resolve includes, fetch resources, or
 write editor documents. It only examines text explicitly supplied by the client.
 
+## Authoring profiles
+
+Set the editor client's `initializationOptions.profile` to the same authoring
+profile used for rendering or publication:
+
+```json
+{
+  "initializationOptions": {
+    "profile": "commonmark-gfm"
+  }
+}
+```
+
+The accepted values are exactly `commonmark-gfm` and `gfm-plus`. CommonMark/GFM
+keeps definition-list-shaped text in its original paragraph, allowing inline
+links, emphasis and code spans to cross `: definition` lines. GFM-Plus keeps
+the extended definition-list grammar. Omitting the profile preserves the
+server's existing extended grammar; omitted or `null` initialization options
+also preserve that default. Unrelated fields in an options object are ignored.
+An explicit invalid profile, including `null`, an alias or a non-string value,
+returns `InvalidParams` without initializing the server, so the client can retry.
+
+The profile is immutable for the session and applies to every opened buffer,
+including cross-document targets. Diagnostics, outlines, folds, selections,
+workspace symbols, completion, definition/reference navigation and all rename
+providers use that grammar. The same profile also controls temporary parser
+probes and source-token inventories before an edit is offered. For example,
+link or footnote text inside a code span crossing a colon line stays literal in
+CommonMark/GFM, while a real link whose label crosses that line remains
+navigable and editable. Reconnect the server to change profiles; configuration
+notifications do not change an existing session's grammar or cached diagnostics.
+
 ## Outlines, folding, and selection expansion
 
 `textDocument/documentSymbol` returns section outlines from the shared parser

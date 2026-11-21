@@ -17,10 +17,11 @@ class Element extends EventTarget {
   setAttribute(name, value) { this.attributes[name] = value; }
   set innerHTML(_) { assert.fail("native report text must never be HTML"); }
 }
-function harness(t, factory) {
+function harness(t, factory, { profileControl = false } = {}) {
   const ids = ["markdown", "document-lab", "open-document-lab", "inspect-document", "download-inspection",
     "inspection-status", "inspection-results", "inspection-metrics", "inspection-structure",
     "inspection-outline", "inspection-quality", "inspection-accessibility", "preview", "allow-html", "status"];
+  if (profileControl) ids.push("profile");
   const els = Object.fromEntries(ids.map(id => [id, new Element()]));
   els.markdown.value = "aaaa"; els.preview.srcdoc = "untouched preview";
   els["allow-html"].checked = true; els.status.textContent = "unrelated HTML render";
@@ -45,7 +46,7 @@ function harness(t, factory) {
     const client = { disposed: false,
       inspect(source, controls) {
         assert.equal(this.disposed, false);
-        assert.deepEqual(Object.keys(controls), ["signal"]);
+        assert.deepEqual(Object.keys(controls), controls.profile === undefined ? ["signal"] : ["signal", "profile"]);
         return new Promise((resolve, reject) => operations.push({ source, controls, resolve, reject, client }));
       },
       dispose() { this.disposed = true; },
@@ -57,7 +58,8 @@ function harness(t, factory) {
   function finish(index, override = {}) {
     const op = operations[index];
     const stats = statsFixture(op.source), accessibility = auditFixture();
-    const report = { schema: "fmd-document-inspection-v1", sourceLength: stats.bytes, stats, accessibility, ...override };
+    const report = { schema: "fmd-document-inspection-v1", sourceLength: stats.bytes, stats, accessibility,
+      ...(op.controls.profile === undefined ? {} : { profile: op.controls.profile }), ...override };
     const text = JSON.stringify(report);
     op.resolve({ ...report, bytes: new TextEncoder().encode(text), blob: () => new Blob([text], { type: "application/json" }) });
   }
@@ -265,4 +267,59 @@ test("focus invalidates an old displayed result and repeated downloads retain on
   h.els.markdown.value = "bbbb"; fire(h.win, "focus");
   assert.deepEqual(h.revoked, [h.urls[0].url, h.urls[1].url]);
   assert.equal(h.els["inspection-results"].hidden, true);
+});
+
+
+test("Document Lab captures the selected dialect and fences older reports for identical source", async t => {
+  const h = harness(t, undefined, { profileControl: true });
+  h.els.profile.value = "commonmark-gfm";
+  const old = h.api.inspect();
+  assert.equal(h.operations[0].controls.profile, "commonmark-gfm");
+  h.els.profile.value = "gfm-plus"; fire(h.els.profile, "change");
+  assert.equal(h.operations[0].controls.signal.aborted, true);
+  assert.equal(h.clients[0].disposed, true);
+  const current = h.api.inspect();
+  assert.equal(h.operations[1].controls.profile, "gfm-plus");
+  assert.equal(h.operations[1].source, h.operations[0].source);
+  h.finish(1, { stats: { ...statsFixture("aaaa"), words: 42 } });
+  assert.equal(await current, true);
+  h.finish(0); assert.equal(await old, false);
+  assert.match(text(h.els["inspection-metrics"]), /Words 42/);
+  assert.equal(h.api.downloadReport(), true);
+  assert.equal(JSON.parse(await h.urls[0].blob.text()).profile, "gfm-plus");
+  h.els.profile.value = ""; fire(h.els.profile, "input");
+  assert.equal(h.els["inspection-results"].hidden, true);
+  assert.equal(h.els["download-inspection"].disabled, true);
+  assert.deepEqual(h.revoked, [h.urls[0].url]);
+  const defaults = h.api.inspect();
+  assert.equal(Object.hasOwn(h.operations[2].controls, "profile"), false);
+  h.finish(2); assert.equal(await defaults, true);
+});
+
+test("silent dialect edits cannot publish or download an old inspection", async t => {
+  const h = harness(t, undefined, { profileControl: true });
+  h.els.profile.value = "gfm-plus";
+  const old = h.api.inspect();
+  h.els.profile.value = "commonmark-gfm";
+  h.finish(0); assert.equal(await old, false);
+  assert.equal(h.els["inspection-results"].hidden, true);
+  const current = h.api.inspect(); h.finish(1); assert.equal(await current, true);
+  h.els.profile.value = "gfm-plus";
+  assert.equal(h.api.downloadReport(), false);
+  assert.equal(h.downloads.length, 0);
+  assert.equal(h.urls.length, 0);
+  const retry = h.api.inspect(); h.finish(2); assert.equal(await retry, true);
+  assert.equal(h.api.downloadReport(), true);
+});
+
+test("unsupported dialect analysis remains a failure without an unprofiled retry", async t => {
+  const h = harness(t, undefined, { profileControl: true });
+  h.els.profile.value = "commonmark-gfm";
+  const pending = h.api.inspect();
+  h.operations[0].reject(Object.assign(new Error("Rebuild profiled analysis"), { code: "UNSUPPORTED_WASM_PACKAGE" }));
+  assert.equal(await pending, false);
+  assert.equal(h.operations.length, 1);
+  assert.equal(h.operations[0].controls.profile, "commonmark-gfm");
+  assert.equal(h.els["inspection-results"].hidden, true);
+  assert.match(h.els["inspection-status"].textContent, /UNSUPPORTED_WASM_PACKAGE Rebuild profiled analysis/);
 });

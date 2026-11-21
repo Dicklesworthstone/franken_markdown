@@ -1,10 +1,14 @@
 # MCP render resources
 
-`fmd.render_html`, `fmd.render_pdf`, and `fmd.render_file` accept optional
-`images` and `fonts` arrays. Each payload is caller-supplied canonical padded
+`fmd.render_html`, `fmd.render_pdf`, `fmd.render_svg`, `fmd.render_epub`, and
+`fmd.render_file` accept optional `images` and `fonts` arrays. Each payload is caller-supplied canonical padded
 base64, not a URL or path to read. The file tool reads only its explicitly
-requested Markdown file. Markdown image destinations do not authorize asset
-reads or network requests.
+requested Markdown file by default; `expandIncludes: true` also authorizes bounded
+Markdown includes inside its directory (see
+[file options](MCP_FILE_OPTIONS.md#local-markdown-includes)). Markdown image
+destinations do not authorize asset reads or network requests. The four
+single-document source tools take `markdown` directly and reject file/output
+paths and include-loading options; see [source publications](MCP_SOURCE_EXPORTS.md).
 
 ```json
 {
@@ -46,8 +50,9 @@ tables. The default `"subset"` keeps compact document-specific fonts. Full
 embedding makes publications larger and is intended for browser/EPUB-reader
 shaping; it does not change native PDF shaping or PDF font subsetting.
 
-The shared option reaches `fmd.render_html`, HTML/EPUB and paired HTML/PDF
-`fmd.render_file` outputs, and site/EPUB/combined `fmd.render_book` outputs.
+The shared option reaches `fmd.render_html`, `fmd.render_epub`, HTML/EPUB and
+paired HTML/PDF `fmd.render_file` outputs, and site/EPUB/combined
+`fmd.render_book` outputs.
 For HTML, `htmlFontFormat` independently selects `ttf`, `woff1`, or `woff2`.
 EPUB keeps its native sfnt font resources. Both TrueType and supported CFF1
 OpenType host faces use the existing byte/resource limits. Interactive HTML
@@ -72,7 +77,8 @@ The shared renderers decide whether an admitted image format is supported.
 SVG preserves missing/malformed image alt text and unsupported mathematics as
 visible fallback, and now returns those recoverable diagnostics in an additive
 `warnings` array beside `content` and `isError`. Each entry has `code` and
-`message`; warnings are returned for saved and inline SVG exports. A warning
+`message`; warnings are returned for saved and inline file SVG exports and
+`fmd.render_svg` source publications. A warning
 is not a claim that the export failed. HTML/PDF/EPUB keep their pre-existing
 backend fallback behavior; this change does not add their warning APIs to MCP.
 

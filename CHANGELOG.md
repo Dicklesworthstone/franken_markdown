@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language server accepts `initializationOptions.profile` to match the
+  CommonMark/GFM or GFM Plus grammar used for publication. The immutable session
+  profile reaches diagnostics, symbols, folding, selections, completion,
+  cross-document navigation and every rename proof. Invalid explicit profiles
+  fail before initialization; omitted settings retain the existing grammar.
 - Persistent Flow sessions accept an explicit CommonMark/GFM or GFM Plus
   dialect before parsing. The selected grammar survives edits, asset reloads,
   reflow and source replacement; dependency reuse and browser read receipts
@@ -172,6 +177,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Checked publishers reject malformed TrueType glyphs instead of silently
+  producing missing ink. Compact HTML/EPUB validate the selected characters,
+  and PDF/SVG validate the actual shaped glyphs, including ligatures. Host-font
+  metrics and `.notdef` are checked before layout; valid subset bytes, unused
+  glyphs and the existing Full-embedding policy retain their behavior.
+- Leading link-reference definitions preserve the paragraph that owns their
+  remaining text. Indented markup, noninterrupting ordered markers and type-7
+  HTML no longer restart as separate blocks or create phantom link targets.
+  Nested containers, multiline definitions and titles retain exact source
+  locations; blank-separated code and GFM table/definition-list promotion keep
+  their existing behavior.
 - Book source inspection retains the selected Markdown dialect through the
   workbench, worker, statistics and accessibility checks. Reports and downloads
   retain that grammar identity, and matching source hashes cannot revive a

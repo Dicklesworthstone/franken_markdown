@@ -189,7 +189,7 @@ fn cache_reuses_other_revisions_and_does_not_resend_unchanged_findings() {
     assert!(
         server
             .diagnostics
-            .refresh(&server.documents, None)
+            .refresh(server.parser, &server.documents, None)
             .is_empty()
     );
     assert_eq!(server.diagnostics.rebuilds, 4);

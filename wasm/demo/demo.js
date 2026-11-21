@@ -42,7 +42,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     markdown: "#markdown", render: "#render", downloadPdf: "#download-pdf", downloadHtml: "#download-html",
     preview: "#preview", diagnostics: "#diagnostics", status: "#status",
     sourceSize: "#source-size", previewMeta: "#preview-meta", font: "#font",
-    darkMode: "#dark-mode", title: "#title", author: "#author", customCss: "#custom-css",
+    darkMode: "#dark-mode", profile: "#profile", title: "#title", author: "#author", customCss: "#custom-css",
     allowHtml: "#allow-html", lineNumbers: "#line-numbers",
     imageFiles: "#image-files", imageFolder: "#image-folder", imageDocumentPath: "#image-document-path",
     applyImageFolder: "#apply-image-folder", clearImages: "#clear-images", cancelImages: "#cancel-images",
@@ -69,7 +69,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   const sourceAccess = trackSourceAccess([els.markdown], refreshSourceControls);
   const directorySupported = "webkitdirectory" in els.imageFolder;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
-  const fields = ["markdown", "font", "darkMode", "title", "author", "customCss", "allowHtml", "lineNumbers"];
+  const fields = ["markdown", "font", "darkMode", "profile", "title", "author", "customCss", "allowHtml", "lineNumbers"];
   const raw = () => Object.fromEntries(fields.map(key =>
     [key, key === "allowHtml" || key === "lineNumbers" ? els[key].checked : els[key].value]));
   const unchanged = expected => {
@@ -340,6 +340,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   }
   function options(kind, snapshot, images) {
     const common = { font: snapshot.font, darkMode: snapshot.darkMode,
+      ...(snapshot.profile === "" ? {} : { profile: snapshot.profile }),
       title: snapshot.title.trim() || undefined, allowRawHtml: snapshot.allowHtml,
       ...(images.length ? { pdfImages: images } : {}) };
     return kind === "html" ? { ...common,
@@ -459,6 +460,8 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     originalSource = next.source;
     sourceFilename = next.filename;
     els.title.value = next.filename.replace(/\.(md|markdown|txt)$/i, "") || next.filename;
+    // A source-only import/recovery does not carry the previous document's grammar.
+    els.profile.value = "";
     els.allowHtml.checked = false;
     releaseImages();
     // Even an identical import/recovery is a replacement. Retire exports

@@ -8,9 +8,9 @@
 use std::collections::BTreeSet;
 
 use franken_markdown::book::validation::{DocumentLinkAnalysis, analyze_document_links};
-use franken_markdown::{DiagnosticSeverity, Document, SourceSpan, parse_markdown_spanned};
+use franken_markdown::{DiagnosticSeverity, Document, SourceSpan};
 
-use super::{Buffer, Json, LineIndex, notification, number, object, position, string};
+use super::{Parser, Buffer, Json, LineIndex, notification, number, object, position, string};
 
 pub(super) const MAX_DIAGNOSTICS: usize = 1024;
 const MAX_MESSAGE_CHARS: usize = 512;
@@ -64,8 +64,8 @@ pub(super) struct Snapshot {
     pub local: Vec<Json>,
 }
 
-pub(super) fn snapshot(buffer: &Buffer) -> Snapshot {
-    let document = parse_markdown_spanned(&buffer.text);
+pub(super) fn snapshot(parser: Parser, buffer: &Buffer) -> Snapshot {
+    let document = parser.spanned(&buffer.text);
     let index = LineIndex::new(&buffer.text);
     let source = buffer.text.as_str();
     let mut findings: Vec<_> = document
@@ -166,11 +166,12 @@ pub(super) fn publication(uri: &str, buffer: &Buffer, mut findings: Vec<Json>) -
 
 #[cfg(test)]
 fn publish(uri: &str, buffer: &Buffer) -> Json {
-    publication(uri, buffer, snapshot(buffer).local)
+    publication(uri, buffer, snapshot(Parser::default(), buffer).local)
 }
 
 #[cfg(test)]
 mod tests {
+    use franken_markdown::parse_markdown_spanned;
     use super::super::{Phase, Server, parse_json};
     use super::*;
 

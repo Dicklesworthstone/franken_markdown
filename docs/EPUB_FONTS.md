@@ -206,6 +206,15 @@ input/output/work limits, not a bound on all transient allocations. A retained
 session's source and font options are not mutated by rendering. An invalid font
 in a directly modified retained book is rejected at render time.
 
+TrueType fonts also use strict subsetting in Subset mode. A broken `loca` range,
+invalid composite child or undecodable used outline returns a typed font error
+instead of publishing an empty or repaired glyph. Unused glyph programs are
+not decoded. Valid subset bytes remain identical to the legacy subset API.
+Shared host-font admission checks the metrics and required `.notdef` outline
+before layout, including Full embedding; zero units per em cannot reach the
+renderer. The same admission and used-glyph policy apply to checked HTML, PDF
+and vector SVG exports, including glyphs selected by PDF/SVG shaping.
+
 CFF1 fonts use strict subsetting in the default Subset mode. Name-keyed and
 CID-keyed inputs support cubic curves, hints, flex operators and local/global
 subroutines within the decoder's work limits. CID fonts select each glyph's

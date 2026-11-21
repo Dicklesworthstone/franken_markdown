@@ -1,7 +1,7 @@
 //! Zero-dependency pure-Rust diagram compiler.
 //!
 //! Compiles Mermaid flowcharts, state, class, entity-relationship, and sequence
-//! diagrams, pie charts, and ASCII art into standalone SVG for the shared renderers.
+//! diagrams, pie charts, timelines, and ASCII art into standalone SVG for the shared renderers.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -13,6 +13,7 @@ mod flowchart_groups;
 mod pie;
 mod sequence;
 mod state;
+mod timeline;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,15 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
     let trimmed_lang = lang.trim().to_ascii_lowercase();
     if matches!(
         trimmed_lang.as_str(),
-        "mermaid" | "flowchart" | "state" | "class" | "er" | "sequence" | "pie" | "ditaa"
+        "mermaid"
+            | "flowchart"
+            | "state"
+            | "class"
+            | "er"
+            | "sequence"
+            | "pie"
+            | "timeline"
+            | "ditaa"
     ) {
         return true;
     }
@@ -45,6 +54,7 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
         || er::is_header(first_directive)
         || sequence::is_header(first_directive)
         || pie::is_header(first_directive)
+        || timeline::is_header(first_directive)
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
 }
 
@@ -60,7 +70,11 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         .find(|line| !line.is_empty() && !line.starts_with("%%"))
         .unwrap_or("");
 
-    if lower_lang == "state" {
+    if lower_lang == "timeline" {
+        // Explicit fences own their grammar before header auto-detection.
+        // Pass the original source so outer whitespace counts toward its bound.
+        timeline::render(code)
+    } else if lower_lang == "state" {
         // An explicit state fence owns its grammar, including the required
         // header. Other diagram headers must not bypass that contract.
         state::render(trimmed)
@@ -84,6 +98,8 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         class::render(trimmed)
     } else if er::is_header(first_directive) {
         er::render(trimmed)
+    } else if timeline::is_header(first_directive) {
+        timeline::render(code)
     } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
         // gantt and other Mermaid
         // types this compiler does not draw stay readable source code instead
@@ -115,6 +131,8 @@ pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
         "Class diagram"
     } else if svg.contains("class=\"fmd-diagram fmd-er\"") {
         "Entity relationship diagram"
+    } else if svg.contains("class=\"fmd-diagram fmd-timeline\"") {
+        "Timeline diagram"
     } else if svg.contains("class=\"fmd-diagram fmd-flowchart\"") {
         "Diagram"
     } else {

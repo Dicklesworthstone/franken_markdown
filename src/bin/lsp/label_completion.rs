@@ -10,11 +10,12 @@ use std::ops::Range;
 
 use franken_markdown::SourceSpan;
 use franken_markdown::parse::{
-    ReferenceLabelForm, ReferenceLabelSpan, destination_spans, reference_label_spans,
+    ReferenceLabelForm, ReferenceLabelSpan,
     split_frontmatter,
 };
 
 use super::{
+    Parser,
     Json, LineIndex, MAX_DOCUMENT_BYTES, Position, footnotes, number, object, position, string,
 };
 
@@ -133,13 +134,13 @@ fn range(index: &LineIndex, source: &str, span: &Range<usize>) -> Json {
     ])
 }
 
-fn reference_key(label: &str) -> Option<String> {
+fn reference_key(parser: Parser, label: &str) -> Option<String> {
     if label.trim().is_empty() {
         return Some(String::new());
     }
     // Ask the real parser for its pinned Unicode folding and whitespace rules.
     let probe = format!("[{label}]: /fmd-label-prefix\n");
-    let spans = reference_label_spans(&probe);
+    let spans = parser.reference_labels(&probe);
     let [span] = spans.as_slice() else {
         return None;
     };
@@ -147,8 +148,8 @@ fn reference_key(label: &str) -> Option<String> {
         .then(|| span.key.clone())
 }
 
-fn prefix_key(prefix: &str) -> Option<String> {
-    let mut key = reference_key(prefix)?;
+fn prefix_key(parser: Parser, prefix: &str) -> Option<String> {
+    let mut key = reference_key(parser, prefix)?;
     if !key.is_empty() && prefix.chars().next_back().is_some_and(char::is_whitespace) {
         key.push(' ');
     }
@@ -163,7 +164,7 @@ fn reserve_label(source: &str) -> Result<String, Failure> {
         .ok_or((-32803, "cannot reserve a bounded completion probe"))
 }
 
-fn note_labels(source: &str, token: &Token) -> Result<Option<Vec<Label>>, Failure> {
+fn note_labels(parser: Parser, source: &str, token: &Token) -> Result<Option<Vec<Label>>, Failure> {
     let raw = &source[token.label.clone()];
     let name = if raw.is_empty() {
         reserve_label(source)?
@@ -181,6 +182,7 @@ fn note_labels(source: &str, token: &Token) -> Result<Option<Vec<Label>>, Failur
         return Err((-32803, "footnote completion probe exceeds its byte budget"));
     }
     footnotes::completion_labels(
+        parser,
         &amended,
         SourceSpan::new(token.label.start, token.label.start + name.len()),
     )
@@ -236,6 +238,7 @@ fn coordinates(range: &Option<Range<usize>>) -> Option<(usize, usize)> {
 }
 
 fn prove_reference(
+    parser: Parser,
     source: &str,
     token: &Token,
     spans: &[ReferenceLabelSpan],
@@ -247,7 +250,7 @@ fn prove_reference(
     } else {
         raw.to_string()
     };
-    let Some(key) = reference_key(&name) else {
+    let Some(key) = reference_key(parser, &name) else {
         return Ok(false);
     };
     // Insert after actual frontmatter, before any source block. Appending to the
@@ -266,7 +269,7 @@ fn prove_reference(
     if amended.len() > MAX_PROBE_BYTES {
         return Err((-32803, "reference completion probe exceeds its byte budget"));
     }
-    let probed = reference_label_spans(&amended);
+    let probed = parser.reference_labels(&amended);
     if probed.len() > MAX_SYMBOLS + 2 {
         return Err((-32803, "reference completion symbols exceed their budget"));
     }
@@ -307,8 +310,8 @@ fn prove_reference(
             return Ok(false);
         }
     }
-    let original_destinations = destination_spans(source);
-    let probed_destinations = destination_spans(&amended);
+    let original_destinations = parser.destinations(source);
+    let probed_destinations = parser.destinations(&amended);
     if original_destinations.len() > MAX_SYMBOLS || probed_destinations.len() > MAX_SYMBOLS + 1 {
         return Err((
             -32803,
@@ -334,7 +337,7 @@ fn prove_reference(
 }
 
 /// None delegates unrelated positions to the existing fragment-completion route.
-pub(super) fn request(params: &Json, source: &str) -> Result<Option<Json>, Failure> {
+pub(super) fn request(parser: Parser, params: &Json, source: &str) -> Result<Option<Json>, Failure> {
     if source.len() > MAX_DOCUMENT_BYTES {
         return Err((-32803, "document exceeds the label completion budget"));
     }
@@ -358,16 +361,16 @@ pub(super) fn request(params: &Json, source: &str) -> Result<Option<Json>, Failu
     }
     let typed = &source[token.label.start..offset];
     let (labels, prefix, mut incomplete) = if token.kind == Kind::Footnote {
-        let Some(labels) = note_labels(source, &token)? else {
+        let Some(labels) = note_labels(parser, source, &token)? else {
             return Ok(Some(list(Vec::new(), false)));
         };
         (labels, typed.to_string(), false)
     } else {
-        let spans = reference_label_spans(source);
+        let spans = parser.reference_labels(source);
         if spans.len() > MAX_SYMBOLS {
             return Err((-32803, "reference completion symbols exceed their budget"));
         }
-        let Some(prefix) = prefix_key(typed) else {
+        let Some(prefix) = prefix_key(parser, typed) else {
             return Ok(Some(list(Vec::new(), false)));
         };
         let mut seen = BTreeSet::new();
@@ -400,7 +403,7 @@ pub(super) fn request(params: &Json, source: &str) -> Result<Option<Json>, Failu
         if labels.is_empty() {
             return Ok(Some(list(Vec::new(), incomplete)));
         }
-        if !prove_reference(source, &token, &spans, body)? {
+        if !prove_reference(parser, source, &token, &spans, body)? {
             return Ok(Some(list(Vec::new(), false)));
         }
         (labels, prefix, incomplete)

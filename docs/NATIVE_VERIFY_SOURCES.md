@@ -11,6 +11,8 @@ fmd verify report.md --json
 fmd verify manual.md --profile commonmark-gfm --json
 fmd verify glossary.md --profile gfm-plus --a11y --json
 fmd verify manual.md --max-input-bytes 1048576 --json
+fmd verify report.md --load-local-images --page-size a5 --font serif --json
+fmd verify report.md --pdf-font body-regular=Body.ttf --pdf-strict-pagination --json
 fmd verify manual.md --links --links-cache link-results.jsonl --json
 ```
 
@@ -40,17 +42,58 @@ the input is read.
 
 The existing version-1 JSON schema, verdict codes and digest algorithm are
 unchanged. Plain documents with no selected profile retain their existing
-reports. A composed document's report describes its expanded text and fixed
-PDF baseline. Parser findings explicitly say `expanded source bytes`, and
+reports. A composed document's report describes its expanded text and selected
+PDF layout. Parser findings explicitly say `expanded source bytes`, and
 human caret locations label the virtual source as `file.md (expanded includes)`.
 These are expanded-buffer positions, not invented line positions inside the
 original primary file or an included file.
 
-Verification still ignores machine-specific rendering config and uses default
-PDF styling, with the explicitly selected authoring profile. It does not
-automatically load image/font files, download image resources, reproduce
-arbitrary render flags, or certify PDF/A or PDF/UA conformance. Those limits
-are distinct from expanding the Markdown source correctly.
+## Explicit PDF layout and resources
+
+Verification ignores machine-specific rendering config, `SOURCE_DATE_EPOCH`
+and frontmatter presentation defaults. With no new flags, it keeps the original
+default PDF layout and empty host-resource set. Explicit options make it
+possible to check the paper, typography and resource bytes used by a particular
+publication:
+
+| Input | Verification options |
+|---|---|
+| Paper and independent margins | `--page-size`, `--margin-top-pt`, `--margin-right-pt`, `--margin-bottom-pt`, `--margin-left-pt` |
+| Typography | `--font`, `--font-scale` / `--type-size`, `--lang`, `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` |
+| Paragraph and page layout | `--microtype`, `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto`, `--pdf-optimal-pagination`, `--pdf-strict-pagination`, `--pdf-baseline-grid-pt`, `--fit-to-pages` / `--target-pages` |
+| Contents, code and notes | `--toc`, `--toc-depth`, `--pdf-line-numbers`, `--pdf-footnote-backlinks`, `--pdf-split-footnotes`, `--pdf-theme-spacing` |
+| Explicit images | Repeat `--pdf-image DEST=PATH`; `DEST` is the exact parsed/rebased destination, including extensionless keys and URLs |
+| Source-relative images | `--load-local-images` enables the renderer's sandboxed local PNG/JPEG/GIF/SVG discovery |
+| Host fonts | Repeat `--pdf-font SLOT=PATH`, with the renderer's `--pdf-font-face` collection selectors and `--pdf-font-weight` pins |
+
+The shared native parsers enforce the same geometry, font selection, scale and
+asset limits as rendering. Explicit images override automatic images, including
+an invalid explicit override: the report describes the resulting unsupported
+image instead of silently choosing different bytes. `--max-pdf-image-bytes`
+bounds each image (32 MiB by default). Explicit image inputs must be regular
+files, so a pipe cannot turn a verification request into an unbounded wait.
+Fonts retain the existing font-asset byte limit and validation.
+
+Local loading resolves rebased include destinations against the top input's
+directory. Images in supported HTML and complete note bodies participate.
+Out-of-root symlinks remain unavailable. Remote image URLs are never fetched;
+use an explicit `--pdf-image URL=PATH` to check a captured remote resource.
+Stdin accepts explicit images/fonts, but rejects `--load-local-images` because
+it has no source directory. Missing automatic images remain report findings;
+missing explicit files and oversized assets fail with input exit code 66.
+
+Strict pagination and incompatible layout combinations retain the renderer's
+typed failures, with exit code 70 and no partial report. An unmet explicit page
+budget also fails with `page_budget_unmet` after fitting, before external link
+checking or cache writes. A failed layout cannot be reported as clean merely
+because `--a11y` was selected.
+
+This is a body-layout and authoring audit. Running headers/footers, archival
+metadata, PDF serialization and PDF/A or PDF/UA certification remain outside
+the native verification flags. The version-1 report and digest describe measured
+content and findings; they are not a cryptographic manifest of option or asset
+bytes. Different image pixels with identical dimensions can yield the same
+report.
 
 ## Optional external links
 
@@ -63,19 +106,25 @@ definitions do not authorize network requests. Unreferenced note bodies are
 included because the PDF baseline publishes them as trailing notes.
 
 The cache is an output. Before rendering or making any external request, the
-verifier checks its path against the main input and every consulted include,
-including symlink and hard-link aliases. A collision fails with usage exit
-code 64. No cache is read or written when `--links` is omitted.
+verifier checks its path against the main input, every consulted include and
+every selected image/font input, including symlink and hard-link aliases.
+Missing and explicitly overridden automatic image paths remain protected when
+local loading is enabled. Explicit resources keep this protection with stdin.
+A collision fails with usage exit code 64. No cache is read or written when
+`--links` is omitted.
 
 ## Regression coverage
 
 The native CLI tests compare reports with independently written expanded
 Markdown, exercise nested and selected content, source-relative resources,
 profile-specific code protection, graph failures, byte budgets and cache/source
-aliases. External-link coverage uses prepopulated cache records, so the suite
-does not need network access.
+aliases. Layout/resource tests compare complete reports with the core API and
+actual emitted PDFs, exercise strict refusals and page budgets, and preserve
+source/resource aliases. External-link coverage uses prepopulated cache records;
+resource tests run without fetchers, so the suites do not need network access.
 
 ```sh
 cargo test --locked --features lsp --test cli_verify_sources \
-  --test cli_verify_cache_safety_test --test cli_verify_parser_limits
+  --test cli_verify_layout --test cli_verify_cache_safety_test \
+  --test cli_verify_parser_limits
 ```

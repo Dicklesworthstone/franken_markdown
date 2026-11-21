@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use franken_markdown::{
-    Block, Document, Inline, PageMargins, PageSize, PdfEmitOptions, PdfImageAsset, PdfOptions,
-    parse_markdown, render_pdf, render_pdf_document, render_pdf_document_emitted,
-    render_pdf_document_profiled, render_warnings,
+    BaselineGrid, Block, Document, Inline, PageMargins, PageSize, PdfEmitOptions, PdfImageAsset,
+    PdfOptions, parse_markdown, render_pdf, render_pdf_document, render_pdf_document_emitted,
+    render_pdf_document_profiled, render_pdf_reported, render_warnings,
 };
 
 const SVG: &[u8] = include_bytes!("fixtures/pdf/linked-figure.svg");
@@ -24,7 +24,11 @@ fn pdf_text(pdf: &[u8]) -> String {
 /// length and filter. Small figure-only streams can be shorter uncompressed;
 /// a helper that only inflates zlib payloads would silently skip their drawing.
 fn page_content(pdf: &[u8]) -> String {
-    let mut content = String::new();
+    page_contents(pdf).join("\n")
+}
+
+fn page_contents(pdf: &[u8]) -> Vec<String> {
+    let mut content = Vec::new();
     for reference in pdf_text(pdf).split("/Contents ").skip(1) {
         let object: usize = reference
             .split_whitespace()
@@ -64,8 +68,11 @@ fn page_content(pdf: &[u8]) -> String {
             assert!(!dictionary.contains("/Filter"), "unsupported page filter");
             payload
         };
-        content.push_str(std::str::from_utf8(raw).expect("page drawing operators"));
-        content.push('\n');
+        content.push(
+            std::str::from_utf8(raw)
+                .expect("page drawing operators")
+                .to_owned(),
+        );
     }
     assert!(!content.is_empty(), "at least one page content stream");
     content
@@ -98,45 +105,56 @@ fn object_containing<'a>(text: &'a str, needle: &str) -> (usize, &'a str) {
 /// The new figure fixtures begin with a filled SVG rectangle. Inspect its
 /// actual drawing matrix and path, independently of the structure/links.
 fn painted_figure_rectangle(pdf: &[u8]) -> [f32; 4] {
+    painted_figure_rectangles(pdf)[0]
+}
+
+fn painted_figure_rectangles(pdf: &[u8]) -> Vec<[f32; 4]> {
     let content = page_content(pdf);
-    let body = content.split_once("/Figure <</MCID ").unwrap().1;
-    let fields: Vec<_> = body
-        .split_once("EMC")
-        .unwrap()
-        .0
-        .split_whitespace()
-        .collect();
-    let cm = fields.iter().position(|&field| field == "cm").unwrap();
-    let re = fields.iter().position(|&field| field == "re").unwrap();
-    assert_eq!(fields[re + 1], "f", "a painted rectangle");
-    assert_eq!(
-        fields[..re].iter().filter(|&&field| field == "cm").count(),
-        1
-    );
-    let matrix: [f32; 6] = std::array::from_fn(|index| fields[cm - 6 + index].parse().unwrap());
-    let rect: [f32; 4] = std::array::from_fn(|index| fields[re - 4 + index].parse().unwrap());
-    let [a, b, c, d, e, f] = matrix;
-    let [x, y, w, h] = rect;
-    let corners = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
-        .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
-    [
-        corners
-            .iter()
-            .map(|point| point.0)
-            .fold(f32::INFINITY, f32::min),
-        corners
-            .iter()
-            .map(|point| point.1)
-            .fold(f32::INFINITY, f32::min),
-        corners
-            .iter()
-            .map(|point| point.0)
-            .fold(f32::NEG_INFINITY, f32::max),
-        corners
-            .iter()
-            .map(|point| point.1)
-            .fold(f32::NEG_INFINITY, f32::max),
-    ]
+    content
+        .split("/Figure <</MCID ")
+        .skip(1)
+        .map(|body| {
+            let fields: Vec<_> = body
+                .split_once("EMC")
+                .unwrap()
+                .0
+                .split_whitespace()
+                .collect();
+            let cm = fields.iter().position(|&field| field == "cm").unwrap();
+            let re = fields.iter().position(|&field| field == "re").unwrap();
+            assert_eq!(fields[re + 1], "f", "a painted rectangle");
+            assert_eq!(
+                fields[..re].iter().filter(|&&field| field == "cm").count(),
+                1
+            );
+            let matrix: [f32; 6] =
+                std::array::from_fn(|index| fields[cm - 6 + index].parse().unwrap());
+            let rect: [f32; 4] =
+                std::array::from_fn(|index| fields[re - 4 + index].parse().unwrap());
+            let [a, b, c, d, e, f] = matrix;
+            let [x, y, w, h] = rect;
+            let corners = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+                .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+            [
+                corners
+                    .iter()
+                    .map(|point| point.0)
+                    .fold(f32::INFINITY, f32::min),
+                corners
+                    .iter()
+                    .map(|point| point.1)
+                    .fold(f32::INFINITY, f32::min),
+                corners
+                    .iter()
+                    .map(|point| point.0)
+                    .fold(f32::NEG_INFINITY, f32::max),
+                corners
+                    .iter()
+                    .map(|point| point.1)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            ]
+        })
+        .collect()
 }
 
 fn assert_paint_matches_box(pdf: &[u8], bbox: [f32; 4]) {
@@ -363,6 +381,245 @@ fn leading_list_figures_keep_normal_size_markers_and_nested_list_structure() {
     );
     assert_eq!(text.matches("/S /L ").count(), 2);
     assert!(text.contains("/S /BlockQuote ") && text.contains("/Alt (Nested)"));
+}
+
+#[test]
+fn leading_list_galleries_keep_readable_figures_and_one_first_image_marker() {
+    let opts = options();
+    for prefix in ["- ", "3. ", "- [x] ", "- [ ] "] {
+        let source = format!(
+            "{prefix}[![First screenshot](figure.svg)](https://example.com/first) ![Second screenshot](figure.svg)\n\nAfter the gallery."
+        );
+        let document = parse_markdown(&source);
+        let pdf = render_pdf_document(&document, &opts).unwrap();
+        let text = pdf_text(&pdf);
+        let rectangles = painted_figure_rectangles(&pdf);
+        assert_eq!(rectangles.len(), 2, "each source image is painted");
+        for rectangle in &rectangles {
+            assert!(
+                (rectangle[2] - rectangle[0] - 120.0).abs() < 0.02,
+                "a screenshot must keep its figure width: {rectangle:?}"
+            );
+            assert!(
+                (rectangle[3] - rectangle[1] - 90.0).abs() < 0.02,
+                "a screenshot must keep its figure height: {rectangle:?}"
+            );
+        }
+        assert!(
+            rectangles[1][3] < rectangles[0][1],
+            "each screenshot occupies its own row: {rectangles:?}"
+        );
+        assert_eq!(text.matches("/S /LI ").count(), 1);
+        assert_eq!(text.matches("/S /Lbl ").count(), 1);
+        assert_eq!(text.matches("/S /Figure ").count(), 2);
+        assert_eq!(text.matches("/Alt (First screenshot)").count(), 1);
+        assert_eq!(text.matches("/Alt (Second screenshot)").count(), 1);
+        assert_eq!(array_after(&text, "/Rect ["), array_after(&text, "/BBox ["));
+        assert!(text.contains("/URI (https://example.com/first)"));
+
+        // Read the marker's actual text matrix. It belongs beside the first
+        // screenshot, not the final screenshot or a detached paragraph row.
+        let content = page_content(&pdf);
+        let label = content
+            .split_once("/Lbl <</MCID ")
+            .unwrap()
+            .1
+            .split_once("EMC")
+            .unwrap()
+            .0;
+        let fields: Vec<_> = label.split_whitespace().collect();
+        let tf = fields.iter().position(|&field| field == "Tf").unwrap();
+        let tm = fields.iter().position(|&field| field == "Tm").unwrap();
+        let size: f32 = fields[tf - 1].parse().unwrap();
+        let x: f32 = fields[tm - 2].parse().unwrap();
+        let y: f32 = fields[tm - 1].parse().unwrap();
+        assert_eq!(size, 11.0);
+        assert!(x < rectangles[0][0], "marker stays in its gutter");
+        assert!(
+            (y - (rectangles[0][3] - 14.52)).abs() < 0.02,
+            "marker aligns with the first figure: {y}, {rectangles:?}"
+        );
+        assert_eq!(
+            pdf,
+            render_pdf_document_emitted(&document, &opts, PdfEmitOptions::monolithic()).unwrap()
+        );
+    }
+}
+
+#[test]
+fn leading_list_galleries_paginate_without_stranding_or_repeating_the_marker() {
+    let source = "PRE00.  \nPRE01.  \nPRE02.  \nPRE03.\n\n1. ![First](figure.svg) ![Second](figure.svg)\n\nAfter the gallery.";
+    for (optimal, strict, grid) in [
+        (false, false, None),
+        (true, false, None),
+        (false, true, None),
+        (false, true, Some(BaselineGrid::from_points(12.0).unwrap())),
+    ] {
+        let mut opts = options();
+        opts.optimal_pagination = optimal;
+        opts.strict_pagination = strict;
+        opts.theme.page.baseline_grid = grid;
+        opts.theme.page.size = PageSize {
+            name: "gallery-pagination",
+            width_pt: 220.0,
+            height_pt: 180.0,
+        };
+        opts.theme.page.margins = PageMargins {
+            top_pt: 18.0,
+            right_pt: 18.0,
+            bottom_pt: 18.0,
+            left_pt: 18.0,
+        };
+        let rendered = render_pdf_reported(source, &opts).unwrap();
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
+        }
+        let pages = page_contents(&rendered.bytes);
+        // Each figure needs its own page after the prefix. Grid quantization
+        // also moves the following prose onto a fourth page at this height.
+        let expected_figures = if grid.is_some() {
+            vec![0, 1, 1, 0]
+        } else {
+            vec![0, 1, 1]
+        };
+        let expected_labels = if grid.is_some() {
+            vec![0, 1, 0, 0]
+        } else {
+            vec![0, 1, 0]
+        };
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| page.matches("/Figure <</MCID ").count())
+                .collect::<Vec<_>>(),
+            expected_figures
+        );
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| page.matches("/Lbl <</MCID ").count())
+                .collect::<Vec<_>>(),
+            expected_labels
+        );
+        for rectangle in painted_figure_rectangles(&rendered.bytes) {
+            assert!(
+                (rectangle[2] - rectangle[0] - 120.0).abs() < 0.02,
+                "{rectangle:?}"
+            );
+            assert!(
+                (rectangle[3] - rectangle[1] - 90.0).abs() < 0.02,
+                "{rectangle:?}"
+            );
+            assert!(
+                rectangle[0] >= 17.98 && rectangle[2] <= 202.02,
+                "{rectangle:?}"
+            );
+            assert!(
+                rectangle[1] >= 17.98 && rectangle[3] <= 162.02,
+                "{rectangle:?}"
+            );
+        }
+        assert_eq!(
+            rendered.bytes,
+            render_pdf_document_emitted(
+                &parse_markdown(source),
+                &opts,
+                PdfEmitOptions::monolithic()
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn list_galleries_preserve_nested_ownership_and_explicit_page_breaks() {
+    let source = "> - Outer item\n>   - **[![First](figure.svg)](https://example.com/first)** ![Second](figure.svg)";
+    let opts = options();
+    let pdf = render_pdf(source, &opts).unwrap();
+    let text = pdf_text(&pdf);
+    for (tag, count) in [
+        ("BlockQuote", 1),
+        ("L", 2),
+        ("LI", 2),
+        ("Lbl", 2),
+        ("LBody", 2),
+        ("Figure", 2),
+    ] {
+        assert_eq!(text.matches(&format!("/S /{tag} ")).count(), count, "{tag}");
+    }
+    let (_, linked) = object_containing(&text, "/S /Link ");
+    let (_, second) = object_containing(&text, "/Alt (Second)");
+    let parent = linked
+        .split_once("/P ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        .unwrap();
+    assert!(
+        second.contains(&format!("/P {parent} 0 R")),
+        "both figures belong to the same nested item body"
+    );
+    for rectangle in painted_figure_rectangles(&pdf) {
+        assert!(
+            (rectangle[2] - rectangle[0] - 120.0).abs() < 0.02,
+            "{rectangle:?}"
+        );
+        assert!(
+            (rectangle[3] - rectangle[1] - 90.0).abs() < 0.02,
+            "{rectangle:?}"
+        );
+    }
+
+    let mut document =
+        parse_markdown("Introduction.\n\n- ![First](figure.svg) ![Second](figure.svg)");
+    document.blocks.insert(1, Block::PageBreak);
+    let pdf = render_pdf_document(&document, &opts).unwrap();
+    let pages = page_contents(&pdf);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| page.matches("/Figure <</MCID ").count())
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| page.matches("/Lbl <</MCID ").count())
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+}
+
+#[test]
+fn leading_list_badges_and_prose_images_remain_inline() {
+    let mut opts = options();
+    opts.image_assets.push(PdfImageAsset::new("badge.svg", br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="blue"/></svg>"#.to_vec()));
+    for (source, height) in [
+        ("- ![First](badge.svg) ![Second](badge.svg)", 12.0),
+        (
+            "- Before ![First](figure.svg) between ![Second](figure.svg) after.",
+            19.25,
+        ),
+    ] {
+        let pdf = render_pdf(source, &opts).unwrap();
+        let rectangles = painted_figure_rectangles(&pdf);
+        assert_eq!(rectangles.len(), 2);
+        for rectangle in &rectangles {
+            assert!(
+                (rectangle[3] - rectangle[1] - height).abs() < 0.02,
+                "{rectangle:?}"
+            );
+        }
+        assert!(
+            (rectangles[0][3] - rectangles[1][3]).abs() < 0.02,
+            "inline images share the prose baseline"
+        );
+        assert!(rectangles[0][2] < rectangles[1][0]);
+        assert_eq!(pdf_text(&pdf).matches("/S /Lbl ").count(), 1);
+    }
 }
 
 #[test]

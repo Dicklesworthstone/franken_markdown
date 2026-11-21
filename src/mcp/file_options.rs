@@ -1,11 +1,12 @@
-//! Target-aware file configuration over the same options as the text tools.
+//! Target-aware configuration shared by file and source publication tools.
 //!
 //! A paired export consumes the union, not the intersection, of its targets'
 //! fields. Other exports reject fields with no consumer before reading a file.
 
 use super::{
     FILE_FIELDS, Field, HTML_FIELDS, JsonValue, PDF_FIELDS, ToolError, authoring_profile, boolean,
-    html_options, invalid_options, pdf_options, string, theme, toc_depth, validate_arguments,
+    epub_options, html_options, invalid_options, pdf_options, string, theme, toc_depth,
+    validate_arguments,
 };
 use crate::{HtmlOptions, PdfASettings, PdfOptions, Profile, SvgOptions};
 use std::collections::BTreeMap;
@@ -37,6 +38,23 @@ pub(super) fn supported_targets(name: &str) -> String {
         .join(", ")
 }
 
+/// Source tools expose only options consumed by their renderer, with no file
+/// paths, output destinations or include authority. Keep this derived from the
+/// same predicate as file-target admission instead of maintaining a second list.
+pub(super) fn source_fields(target: &str) -> Vec<Field> {
+    let mut fields = BTreeMap::new();
+    for &field in HTML_FIELDS
+        .iter()
+        .chain(PDF_FIELDS)
+        .chain(std::iter::once(&SVG_WIDTH))
+    {
+        if supports_output(target, field.0) {
+            fields.entry(field.0).or_insert(field);
+        }
+    }
+    fields.into_values().collect()
+}
+
 fn supports(target: &str, name: &str) -> bool {
     if FILE_FIELDS.iter().any(|field| field.0 == name) {
         return true;
@@ -44,6 +62,10 @@ fn supports(target: &str, name: &str) -> bool {
     if name == "markdown" {
         return false;
     }
+    supports_output(target, name)
+}
+
+fn supports_output(target: &str, name: &str) -> bool {
     let html = HTML_FIELDS.iter().any(|field| field.0 == name);
     let pdf = PDF_FIELDS.iter().any(|field| field.0 == name);
     match target {
@@ -52,11 +74,22 @@ fn supports(target: &str, name: &str) -> bool {
         "both" => html || pdf,
         // EPUB is safe XHTML with its own font container. These HTML switches
         // have no effect there and must not masquerade as publication options.
-        "epub" => html && !matches!(name, "allowRawHtml" | "interactiveHtml" | "htmlFontFormat"),
+        "epub" => {
+            name == "author"
+                || html && !matches!(name, "allowRawHtml" | "interactiveHtml" | "htmlFontFormat")
+        }
         // SVG resolves the shared font scale before measurement and painting.
         "svg" => matches!(
             name,
-            "font" | "fontScale" | "maxWidthPt" | "toc" | "tocDepth" | "profile"
+            "markdown"
+                | "font"
+                | "fontScale"
+                | "maxWidthPt"
+                | "toc"
+                | "tocDepth"
+                | "profile"
+                | "images"
+                | "fonts"
         ),
         _ => false,
     }
@@ -65,6 +98,7 @@ fn supports(target: &str, name: &str) -> bool {
 pub(crate) struct PreparedOptions {
     pub target: &'static str,
     pub profile: Option<Profile>,
+    pub expand_includes: bool,
     pub html: HtmlOptions,
     pub pdf: PdfOptions,
     pub pdf_a: PdfASettings,
@@ -107,10 +141,10 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
             }
         }
     }
-    let html = if matches!(target, "html" | "both" | "epub") {
-        html_options(args)?
-    } else {
-        HtmlOptions::default()
+    let html = match target {
+        "epub" => epub_options(args)?,
+        "html" | "both" => html_options(args)?,
+        _ => HtmlOptions::default(),
     };
     let (pdf, pdf_a) = if matches!(target, "pdf" | "both") {
         pdf_options(args)?
@@ -118,33 +152,38 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
         (PdfOptions::default(), PdfASettings::OFF)
     };
     let svg = if target == "svg" {
-        let width = args
-            .get("maxWidthPt")
-            .and_then(JsonValue::as_f64)
-            .unwrap_or(612.0);
-        if !width.is_finite() || !(144.0..=14400.0).contains(&width) {
-            return Err(invalid_options(
-                "maxWidthPt must be 144..14400 finite points",
-                "invalid_svg_width",
-            ));
-        }
-        SvgOptions {
-            theme: theme(args)?,
-            max_width_pt: width as f32,
-            toc: boolean(args, "toc"),
-            toc_depth: toc_depth(args)?,
-        }
+        svg_options(args)?
     } else {
         SvgOptions::default()
     };
     Ok(PreparedOptions {
         target,
         profile,
+        expand_includes: boolean(args, "expandIncludes"),
         html,
         pdf,
         pdf_a,
         svg,
         interactive: boolean(args, "interactiveHtml"),
+    })
+}
+
+pub(super) fn svg_options(args: &JsonValue) -> Result<SvgOptions, ToolError> {
+    let width = args
+        .get("maxWidthPt")
+        .and_then(JsonValue::as_f64)
+        .unwrap_or(612.0);
+    if !width.is_finite() || !(144.0..=14400.0).contains(&width) {
+        return Err(invalid_options(
+            "maxWidthPt must be 144..14400 finite points",
+            "invalid_svg_width",
+        ));
+    }
+    Ok(SvgOptions {
+        theme: theme(args)?,
+        max_width_pt: width as f32,
+        toc: boolean(args, "toc"),
+        toc_depth: toc_depth(args)?,
     })
 }
 

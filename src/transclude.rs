@@ -333,13 +333,26 @@ struct Expansion<'a> {
 /// Exact path tokens admitted by the ordinary expansion engine. Selectors and
 /// surrounding whitespace are outside `range`; `line` owns the directive so
 /// Markdown-shaped filenames cannot become a separate source-edit authority.
-pub(crate) struct IncludeTargetSpan {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeTargetSpan {
+    /// Byte range of the path token, including any literal quote delimiters.
     pub range: Range<usize>,
+    /// Complete directive line, including its original line ending.
     pub line: Range<usize>,
+    /// Literal host path, without quote delimiters or a snippet/line selector.
     pub path: String,
 }
 
-pub(crate) fn include_target_spans(
+/// Inspect active include paths using the ordinary expansion grammar and code
+/// exclusions. This performs no resolution or file reads. Hosts retain all
+/// path authorization and must inspect the actual selected/expanded contexts
+/// before treating source edits as semantically safe.
+///
+/// # Errors
+/// Rejects malformed directives/selectors and the ordinary resolution-count
+/// budget. Successful inspection does not establish that a target exists or
+/// that its selected snippet can be expanded.
+pub fn include_target_spans(
     source: &str,
     profile: Option<crate::Profile>,
 ) -> Result<Vec<IncludeTargetSpan>> {
@@ -358,6 +371,35 @@ pub(crate) fn include_target_spans(
     };
     expansion.expand(source, 0, "<source>", false, 0)?;
     Ok(expansion.targets.unwrap_or_default())
+}
+
+/// Serialize one literal include path, without adding or changing a selector.
+/// Quotes have no escape syntax in an include directive. The result is checked
+/// by the same scanner used for expansion, so punctuation cannot create a new
+/// selector, another directive, or an unrepresentable multiline filename.
+///
+/// # Errors
+/// Rejects empty/control-containing paths or paths that cannot be represented
+/// literally by the include grammar. This grants no filesystem authority.
+pub fn include_path_token(path: &str) -> Result<String> {
+    let token = if path.is_empty() || path.chars().any(char::is_control) {
+        None
+    } else if !path.contains('"') {
+        Some(format!("\"{path}\""))
+    } else if !path.contains('\'') {
+        Some(format!("'{path}'"))
+    } else if !path.starts_with(['\'', '"']) && path.trim() == path && !path.contains(':') {
+        Some(path.to_string())
+    } else {
+        None
+    }
+    .ok_or_else(|| selector_error(path))?;
+    let source = format!("{{{{#include {token}}}}}\n");
+    let targets = include_target_spans(&source, None)?;
+    if targets.len() != 1 || targets[0].path != path {
+        return Err(selector_error(path));
+    }
+    Ok(token)
 }
 
 struct ActiveInclude {

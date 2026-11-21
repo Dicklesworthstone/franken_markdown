@@ -3,6 +3,7 @@ import test from "node:test";
 import { Worker } from "node:worker_threads";
 import {
   FLOW_EXPORT_BATCH_LIMIT,
+  FLOW_EXPORT_LIMIT,
   normalizeFlowExportBatch,
   validateFlowExportBatchResult,
   withFlowExports,
@@ -192,6 +193,93 @@ test("combined-output validation rejects a batch beyond its aggregate publicatio
   }));
   assert(outputs.reduce((sum, value) => sum + value.bytes.length, 0) > FLOW_EXPORT_BATCH_LIMIT);
   assert.throws(() => validateFlowExportBatchResult(outputs, requests, expected), code("BUDGET_EXCEEDED"));
+});
+
+function sizedPublication(sizes) {
+  const session = new Session(), calls = [], buffers = new Map();
+  let small = false;
+  const renderers = Object.fromEntries(Object.keys(MIME).map(format => [format, async () => {
+    calls.push(format);
+    const size = small ? 1 : sizes[format];
+    // Reuse one real encoded buffer for equal sizes. The adapter must still
+    // create independently owned publication bytes for every accepted result.
+    if (!buffers.has(size)) buffers.set(size, new Uint8Array(size));
+    return { format, mimeType: MIME[format], bytes: buffers.get(size), diagnostics: [] };
+  }]));
+  return { session, calls, api: withFlowExports(session, renderers),
+    recover() { small = true; },
+  };
+}
+
+test("direct batches reject a combined overflow before copying it or running later formats", async () => {
+  const size = 43 * 1024 * 1024;
+  const f = sizedPublication({ html: size, pdf: size, epub: size, svg: 1 });
+  const NativeBytes = Uint8Array;
+  let copied = 0;
+  // Observe actual owned-result allocations without changing their sizes,
+  // contents, native views, or the production budget constants.
+  globalThis.Uint8Array = new Proxy(NativeBytes, {
+    construct(target, args, newTarget) {
+      if (ArrayBuffer.isView(args[0]) && args[0].byteLength === size) copied += size;
+      return Reflect.construct(target, args, newTarget);
+    },
+  });
+  try {
+    await assert.rejects(f.api.exportDocuments(Object.keys(MIME).map(format => ({ format })),
+      f.session.token), code("BUDGET_EXCEEDED"));
+  } finally {
+    globalThis.Uint8Array = NativeBytes;
+  }
+  assert.equal(copied, size * 2, "the over-budget third output must not be retained or copied");
+  assert.deepEqual(f.calls, ["html", "pdf", "epub"], "no later renderer runs after overflow");
+  f.recover();
+  const recovered = await f.api.exportDocument("svg", {}, f.session.token);
+  assert.equal(recovered.bytes.length, 1, "failed atomic publication releases its export slot");
+});
+
+test("direct batches accept the exact aggregate boundary and skip work when it is exhausted", async () => {
+  assert.equal(FLOW_EXPORT_LIMIT * 2, FLOW_EXPORT_BATCH_LIMIT);
+  const f = sizedPublication({ html: FLOW_EXPORT_LIMIT, pdf: FLOW_EXPORT_LIMIT, epub: 1 });
+  const result = await f.api.exportDocuments([{ format: "html" }, { format: "pdf" }], f.session.token);
+  assert.equal(result.reduce((size, output) => size + output.bytes.byteLength, 0), FLOW_EXPORT_BATCH_LIMIT);
+  result[0].bytes[0] = 7;
+  assert.equal(result[1].bytes[0], 0, "accepted outputs independently own their bytes");
+  f.calls.length = 0;
+  await assert.rejects(f.api.exportDocuments([
+    { format: "html" }, { format: "pdf" }, { format: "epub" },
+  ], f.session.token), code("BUDGET_EXCEEDED"));
+  assert.deepEqual(f.calls, ["html", "pdf"], "zero remaining capacity cannot admit another output");
+});
+
+test("an empty direct result rejects the batch before a subsequent renderer starts", async () => {
+  const f = sizedPublication({ html: 0, pdf: 1 });
+  await assert.rejects(f.api.exportDocuments([{ format: "html" }, { format: "pdf" }],
+    f.session.token), code("INVALID_WASM_RESPONSE"));
+  assert.deepEqual(f.calls, ["html"]);
+  f.recover();
+  assert.equal((await f.api.exportDocument("pdf", {}, f.session.token)).bytes.length, 1);
+});
+
+test("real-worker batches stop at the combined cap and preserve queued edits and later exports", async t => {
+  const counts = new Int32Array(new SharedArrayBuffer(16)), size = 43 * 1024 * 1024;
+  const session = await workerSession(t, {
+    outputSizes: { html: size, pdf: size, epub: size, svg: 1 },
+    outputCounters: counts.buffer,
+  });
+  const token = session.token;
+  const publication = session.exportDocuments(Object.keys(MIME).map(format => ({
+    format, options: format === "svg" ? {} : { title: "output-size-fixture" },
+  })), token);
+  const changed = session.replaceSource("# Recovered source", { expectedRevision: token.revision });
+  await assert.rejects(publication, code("BUDGET_EXCEEDED"));
+  const updated = await changed;
+  assert.deepEqual([...counts], [1, 1, 1, 0], "no later expensive renderer runs after overflow");
+  assert.equal(session.disposed, false, "a render budget refusal is a recoverable operation error");
+  assert.equal(session.pendingOperations, 0); assert.equal(session.pendingBytes, 0);
+  assert.notEqual(updated.revision, token.revision);
+  assert.equal(await session.getSource(), "# Recovered source");
+  const result = await session.exportDocument("pdf", {}, session.token);
+  assert.equal(decode(result).markdown, "# Recovered source");
 });
 
 test("worker negotiates one multi-format RPC and an edit cannot interleave between its renders", async t => {

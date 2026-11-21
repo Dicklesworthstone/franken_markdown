@@ -1,3 +1,4 @@
+use franken_markdown::{parse_markdown, parse_markdown_spanned};
 use super::super::{Phase, Server, notification};
 use super::*;
 
@@ -80,6 +81,7 @@ fn call(marked: &str, name: &str) -> Result<(String, Json), Box<dyn std::error::
     let source = marked.replace('¦', "");
     let documents = BTreeMap::from([(URI.to_string(), buffer(&source, 7))]);
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(URI, &source, offset, name),
         URI,
@@ -95,6 +97,7 @@ fn failure(marked: &str, name: &str) -> Result<Failure, &'static str> {
     let source = marked.replace('¦', "");
     let documents = BTreeMap::from([(URI.to_string(), buffer(&source, 7))]);
     request(
+        Parser::default(),
         "textDocument/rename",
         &params(URI, &source, offset, name),
         URI,
@@ -200,6 +203,7 @@ fn cross_file_edits_keep_original_uris_versions_paths_queries_and_percent_fragme
         (unrelated_uri.to_string(), buffer(unrelated, 1)),
     ]);
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(URI, source, 3, "Next"),
         URI,
@@ -329,6 +333,7 @@ fn declaration_caret_boundary_accepts_title_end_but_not_the_following_paragraph(
         );
         let documents = BTreeMap::from([(URI.to_string(), buffer(&source, 4))]);
         let prepared = request(
+            Parser::default(),
             "textDocument/prepareRename",
             &params(URI, &source, "# Old".len(), "unused"),
             URI,
@@ -347,6 +352,7 @@ fn prepare_rename_returns_only_title_range_and_noop_keeps_inline_markup() -> Tes
     let source = "  ### **Old** ###\n";
     let documents = BTreeMap::from([(URI.to_string(), buffer(source, 4))]);
     let result = request(
+        Parser::default(),
         "textDocument/prepareRename",
         &params(URI, source, 8, "unused"),
         URI,
@@ -381,6 +387,7 @@ fn stale_buffers_and_file_identity_ambiguity_refuse_without_partial_results() ->
         .synchronized = false;
     let run = |documents: &BTreeMap<String, Buffer>| {
         request(
+            Parser::default(),
             "textDocument/rename",
             &params(URI, source, 3, "New"),
             URI,
@@ -443,6 +450,7 @@ fn ambiguous_extensionless_targets_and_unmapped_autolinks_refuse() -> TestResult
             documents.insert(uri.into(), buffer(text, 1));
         }
         let result = request(
+            Parser::default(),
             "textDocument/rename",
             &params(URI, source, 3, "New"),
             URI,
@@ -497,6 +505,7 @@ fn source_and_session_limits_remain_hard_limits_for_renames() -> TestResult {
         );
     }
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(URI, source, 3, "New"),
         URI,
@@ -555,6 +564,7 @@ fn live_changes_are_used_and_opaque_buffers_have_no_inferred_file_authority() ->
     let source = "# Old\n\n[local](#old) [file](guide.md#old)\n";
     let mut documents = BTreeMap::from([(uri.to_string(), buffer(source, 4))]);
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(uri, source, 3, "New"),
         uri,
@@ -571,6 +581,7 @@ fn live_changes_are_used_and_opaque_buffers_have_no_inferred_file_authority() ->
     documents.get_mut(uri).ok_or("missing source")?.version = 5;
     let current = &documents[uri];
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(uri, &current.text, 4, "Latest"),
         uri,

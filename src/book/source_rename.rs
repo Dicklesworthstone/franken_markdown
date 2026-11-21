@@ -441,18 +441,8 @@ fn include_path(origin: &str, target: &str) -> Result<String> {
 }
 
 fn include_token(path: &str) -> Result<String> {
-    if !path.contains('"') {
-        return Ok(format!("\"{path}\""));
-    }
-    if !path.contains('\'') {
-        return Ok(format!("'{path}'"));
-    }
-    if !path.starts_with(['\'', '"']) && path.trim() == path && !path.contains(':') {
-        return Ok(path.into());
-    }
-    Err(invalid(
-        "renamed include path cannot be quoted without changing its bytes",
-    ))
+    crate::transclude::include_path_token(path)
+        .map_err(|_| invalid("renamed include path cannot be quoted without changing its bytes"))
 }
 
 fn rewrite_source(

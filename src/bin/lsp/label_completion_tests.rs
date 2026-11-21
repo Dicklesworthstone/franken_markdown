@@ -17,7 +17,7 @@ fn params(source: &str, offset: usize) -> Json {
 fn complete(marked: &str) -> Result<(String, Json), Box<dyn std::error::Error>> {
     let offset = marked.find('¦').ok_or("missing caret")?;
     let source = marked.replace('¦', "");
-    let result = request(&params(&source, offset), &source)
+    let result = request(Parser::default(), &params(&source, offset), &source)
         .map_err(|(_, reason)| reason)?
         .unwrap_or_else(|| list(Vec::new(), false));
     Ok((source, result))
@@ -159,6 +159,7 @@ fn note_completion_refusals_preserve_rename_proof_and_resource_errors() -> TestR
         synchronized: true,
     };
     let error = footnotes::request(
+        Parser::default(),
         "textDocument/prepareRename",
         &params(source, offset),
         URI,
@@ -174,7 +175,7 @@ fn note_completion_refusals_preserve_rename_proof_and_resource_errors() -> TestR
         "[^re]\n\n```\n{}\n```\n\n[^research]: Evidence.\n",
         "[^literal] ".repeat(8193)
     );
-    let error = request(&params(&source, 4), &source)
+    let error = request(Parser::default(), &params(&source, 4), &source)
         .err()
         .ok_or("completion must preserve candidate-budget refusals")?;
     assert_eq!(error.0, -32803);
@@ -324,10 +325,10 @@ fn invalid_positions_and_document_budgets_fail_without_clamping_surrogates() {
         "position",
         object([("line", number(0)), ("character", number(1))]),
     )]);
-    assert_eq!(request(&bad, source).err().map(|e| e.0), Some(-32602));
+    assert_eq!(request(Parser::default(), &bad, source).err().map(|e| e.0), Some(-32602));
     let oversized = "a".repeat(MAX_DOCUMENT_BYTES + 1);
     assert_eq!(
-        request(&object([]), &oversized).err().map(|e| e.0),
+        request(Parser::default(), &object([]), &oversized).err().map(|e| e.0),
         Some(-32803)
     );
 }

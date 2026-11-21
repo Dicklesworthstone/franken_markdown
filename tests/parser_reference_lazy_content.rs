@@ -137,11 +137,24 @@ fn lazy_footnote_lookalikes_stay_inline_content_after_reference_removal() {
 }
 
 #[test]
-fn real_container_indentation_and_blank_boundaries_still_create_literal_code() {
-    for source in [
-        "> [r]: /real\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
-        "- [r]: /real\n      [hidden](/literal)\n  [fake]: /actual\n\n[fake]\n",
-        "> [r]: /real\n>\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
+fn only_a_real_blank_boundary_allows_code_after_a_reference_prefix() {
+    for (source, code) in [
+        (
+            "> [r]: /real\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
+            false,
+        ),
+        (
+            "- [r]: /real\n      [hidden](/literal)\n  [fake]: /actual\n\n[fake]\n",
+            false,
+        ),
+        (
+            "> [r]: /real\n>\n>     [hidden](/literal)\n> [fake]: /actual\n\n[fake]\n",
+            true,
+        ),
+        (
+            "- [r]: /real\n\n      [hidden](/literal)\n  [fake]: /actual\n\n[fake]\n",
+            true,
+        ),
     ] {
         let parsed = document(source);
         let blocks = match &parsed.blocks[0] {
@@ -149,16 +162,26 @@ fn real_container_indentation_and_blank_boundaries_still_create_literal_code() {
             Block::List(list) => &list.items[0].blocks,
             other => panic!("expected container: {other:?}"),
         };
-        assert_eq!(
-            blocks,
-            &[Block::CodeBlock {
+        let expected = if code {
+            Block::CodeBlock {
                 lang: None,
                 code: "[hidden](/literal)\n".into(),
-            }]
-        );
+            }
+        } else {
+            Block::Paragraph(vec![
+                link("hidden", "/literal"),
+                Inline::SoftBreak,
+                Inline::Text("[fake]: /actual".into()),
+            ])
+        };
+        assert_eq!(blocks, &[expected], "{source:?}");
         assert_eq!(
             parsed.blocks[1],
-            Block::Paragraph(vec![link("fake", "/actual")])
+            Block::Paragraph(vec![if code {
+                link("fake", "/actual")
+            } else {
+                Inline::Text("[fake]".into())
+            }])
         );
         let destinations = destination_spans(source);
         assert_eq!(
@@ -166,7 +189,7 @@ fn real_container_indentation_and_blank_boundaries_still_create_literal_code() {
                 .iter()
                 .map(|span| span.dest.as_str())
                 .collect::<Vec<_>>(),
-            ["/real", "/actual"]
+            ["/real", if code { "/actual" } else { "/literal" }]
         );
     }
 }

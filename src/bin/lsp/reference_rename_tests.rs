@@ -1,3 +1,4 @@
+use franken_markdown::parse_markdown;
 use super::super::{Phase, Server, notification};
 use super::*;
 
@@ -70,6 +71,7 @@ fn call(method: &str, marked: &str, name: &str) -> Result<(String, Option<Json>)
     let source = marked.replace('¦', "");
     let documents = BTreeMap::from([(URI.to_string(), buffer(&source))]);
     let result = request(
+        Parser::default(),
         method,
         &params(&source, offset, name),
         URI,

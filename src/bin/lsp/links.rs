@@ -6,9 +6,10 @@
 //! No source search is mistaken for parser provenance; no URI is ever opened.
 
 use franken_markdown::book::validation::{AnchorKind, ReferenceKind, analyze_document_links};
-use franken_markdown::{Document, SourceSpan, parse_markdown, parse_markdown_spanned};
+use franken_markdown::{Document, SourceSpan, };
 
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, Position, number, object, position, string,
     workspace_links,
 };
@@ -81,6 +82,50 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
     })
 }
 
+/// Select a completed destination without inventing a second URL grammar.
+/// Ordinary URLs keep their existing bounded lexical/probe path. Escaped
+/// punctuation, balanced parentheses, spaces in angle destinations and URLs on
+/// continuation lines use the core parser's exact source token. Either path
+/// must still prove one emitted Link and restore the complete original AST.
+fn parsed_candidate(parser: Parser, source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
+    if let Some(token) = candidate(source, span, offset) {
+        let complete_token = match source.as_bytes().get(token.end) {
+            Some(b'>') if token.angle => true,
+            Some(b')' | b' ' | b'\t' | b'\r' | b'\n') if !token.angle => true,
+            _ => false,
+        };
+        if complete_token {
+            return Some(token);
+        }
+    }
+    // Explicit URLs require this literal opener even when their label or
+    // destination crosses a line. Reference-only blocks need no extra parser
+    // pass before the existing bounded reference-use proof.
+    if !source.get(span.start..offset)?.contains("](") {
+        return None;
+    }
+    let mut selected = None;
+    for destination in parser.destinations(source) {
+        let raw = source.get(destination.range.clone())?;
+        let angle = raw.starts_with('<') && raw.ends_with('>');
+        let start = destination.range.start + usize::from(angle);
+        let end = destination.range.end - usize::from(angle);
+        if start < span.start || end > span.end || offset < start || offset > end {
+            continue;
+        }
+        if end - start > MAX_DESTINATION_BYTES || selected.is_some() {
+            return None;
+        }
+        selected = Some(Token {
+            start,
+            end,
+            fragment: None,
+            angle,
+        });
+    }
+    selected
+}
+
 fn matches_probe(probed: &Document, original: &Document, owner: usize, probe: &str) -> bool {
     probed.blocks.len() == original.blocks.len()
         && probed
@@ -104,6 +149,7 @@ fn unique_probe(source: &str, original: &Document) -> Option<String> {
 }
 
 fn probe_document(
+    parser: Parser,
     source: &str,
     span: SourceSpan,
     token: Token,
@@ -117,7 +163,7 @@ fn probe_document(
     amended.push_str(&probe);
     let suffix = amended.len();
     amended.push_str(&source[token.end..]);
-    let parsed = parse_markdown(&amended);
+    let parsed = parser.parse(&amended);
     if matches_probe(&parsed, original, owner, &probe) {
         return Some((parsed, probe));
     }
@@ -126,7 +172,7 @@ fn probe_document(
     // Never manufacture a closure across trailing prose, code, or another block.
     if completing && source.get(token.end..span.end)?.trim().is_empty() {
         amended.insert_str(suffix, if token.angle { ">)" } else { ")" });
-        let parsed = parse_markdown(&amended);
+        let parsed = parser.parse(&amended);
         if matches_probe(&parsed, original, owner, &probe) {
             return Some((parsed, probe));
         }
@@ -184,7 +230,9 @@ fn prefix_text(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<Json, Failure> {
+    let parser = Parser::default();
     request_resolving(
+        parser,
         method,
         params,
         uri,
@@ -195,6 +243,7 @@ fn request(method: &str, params: &Json, uri: &str, source: &str) -> Result<Json,
 }
 
 pub fn request_in_workspace(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -205,9 +254,10 @@ pub fn request_in_workspace(
         method,
         "textDocument/references" | "textDocument/documentHighlight"
     ) {
-        return usages::request(method, params, uri, documents);
+        return usages::request(parser, method, params, uri, documents);
     }
     request_resolving(
+        parser,
         method,
         params,
         uri,
@@ -218,6 +268,7 @@ pub fn request_in_workspace(
 }
 
 fn request_resolving<'a>(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -238,7 +289,7 @@ fn request_resolving<'a>(
     let offset = index
         .offset(source, requested)
         .map_err(|reason| (-32602, reason))?;
-    let document = parse_markdown_spanned(source);
+    let document = parser.spanned(source);
     let Some((owner, block)) = document
         .blocks
         .iter()
@@ -255,7 +306,11 @@ fn request_resolving<'a>(
     if span.len() > MAX_BLOCK_BYTES {
         return Err((-32803, "enclosing block exceeds the link navigation budget"));
     }
-    let token = candidate(source, span, offset);
+    let token = if completing {
+        candidate(source, span, offset)
+    } else {
+        parsed_candidate(parser, source, span, offset)
+    };
     let (spans, blocks): (Vec<_>, Vec<_>) = document
         .blocks
         .into_iter()
@@ -263,6 +318,7 @@ fn request_resolving<'a>(
         .unzip();
     let original = Document { blocks };
     let definition_source = DefinitionSource {
+        parser,
         uri,
         source,
         document: &original,
@@ -272,7 +328,7 @@ fn request_resolving<'a>(
     let Some(token) = token else {
         if !completing
             && let Some(destination) =
-                references::destination(source, span, offset, &original, owner)?
+                references::destination(parser, source, span, offset, &original, owner)?
         {
             return definition_source.resolve(&destination, &resolve);
         }
@@ -285,7 +341,7 @@ fn request_resolving<'a>(
     // proof. A lexical filename is no more authoritative than a lexical '#'.
     let fragment = token.fragment.unwrap_or(token.end);
     let Some((mut probed, probe)) =
-        probe_document(source, span, token, &original, owner, completing)
+        probe_document(parser, source, span, token, &original, owner, completing)
     else {
         return Ok(empty(completing));
     };
@@ -334,7 +390,7 @@ fn request_resolving<'a>(
         }
         // Targets are analyzed as authored: injecting a synthetic reference
         // could incorrectly make an unreferenced footnote become published.
-        analysis = analyze_document_links(&parse_markdown(target_source)).map_err(|_| {
+        analysis = analyze_document_links(&parser.parse(target_source)).map_err(|_| {
             (
                 -32803,
                 "target link analysis could not complete within its limits",
@@ -383,6 +439,7 @@ fn request_resolving<'a>(
 }
 
 struct DefinitionSource<'a> {
+    parser: Parser,
     uri: &'a str,
     source: &'a str,
     document: &'a Document,
@@ -403,7 +460,7 @@ impl DefinitionSource<'_> {
             if source.len() > MAX_DOCUMENT_BYTES {
                 return Err((-32803, "target document exceeds the link navigation budget"));
             }
-            return remote_definition(uri, source, destination);
+            return remote_definition(self.parser, uri, source, destination);
         }
         let analysis = analyze_document_links(self.document)
             .map_err(|_| (-32803, "link analysis could not complete within its limits"))?;
@@ -436,7 +493,7 @@ impl DefinitionSource<'_> {
 
 // Resolve against the target's own emitted anchors and source owners, not
 // headings merged across buffers. IDs and ambiguity come from the core analyzer.
-fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json, Failure> {
+fn remote_definition(parser: Parser, uri: &str, source: &str, destination: &str) -> Result<Json, Failure> {
     let index = LineIndex::new(source);
     let fragment = destination
         .split_once('#')
@@ -447,7 +504,7 @@ fn remote_definition(uri: &str, source: &str, destination: &str) -> Result<Json,
         let Some(id) = prefix_text(fragment) else {
             return Ok(Json::Null);
         };
-        let document = parse_markdown_spanned(source);
+        let document = parser.spanned(source);
         let (spans, blocks): (Vec<_>, Vec<_>) = document
             .blocks
             .into_iter()

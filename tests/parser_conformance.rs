@@ -201,11 +201,17 @@ fn malformed_multiline_reference_title_remains_visible_text() {
 }
 
 #[test]
-fn four_space_reference_title_line_is_not_consumed() {
+fn indented_reference_title_needs_a_blank_boundary_to_become_code() {
+    // CommonMark 0.31.2's reference implementation accepts any indentation on
+    // the next-line title. A blank line, rather than four columns, ends the
+    // definition's paragraph. Keep both sides of that boundary covered.
     let out = html("[id]: /ok\n    \"not a title\"\n\nSee [id].");
+    assert!(out.contains("<p>See <a href=\"/ok\" title=\"not a title\">id</a>.</p>"));
+    assert!(!out.contains("<pre>"));
 
-    assert!(out.contains("<a href=\"/ok\">id</a>"));
-    assert!(out.contains("<pre><code>\"not a title\"\n</code></pre>"));
+    let separated = html("[id]: /ok\n\n    \"not a title\"\n\nSee [id].");
+    assert!(separated.contains("<a href=\"/ok\">id</a>"));
+    assert!(separated.contains("<pre><code>\"not a title\"\n</code></pre>"));
 }
 
 #[test]

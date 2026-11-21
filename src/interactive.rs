@@ -66,6 +66,9 @@ fn push_source_json(s: &str, out: &mut String) {
 }
 
 /// Render an interactive self-hosting single-file HTML workspace.
+///
+/// This legacy infallible helper retains its font fallback behavior. Use
+/// [`render_interactive_html_checked`] when publishing caller-supplied fonts.
 #[must_use]
 pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOptions) -> String {
     if presentation::is_requested(opts) {
@@ -73,6 +76,22 @@ pub fn render_interactive_html(doc: &Document, markdown_src: &str, opts: &HtmlOp
     } else {
         render_workspace(doc, markdown_src, opts, false)
     }
+}
+
+/// Render an editable workspace after validating host fonts and weight pins.
+///
+/// # Errors
+/// Returns a typed input error before rendering when font data is invalid or
+/// a requested variable instance cannot be produced. Static faces continue to
+/// ignore weight pins. Successful output matches [`render_interactive_html`].
+pub fn render_interactive_html_checked(
+    doc: &Document,
+    markdown_src: &str,
+    opts: &HtmlOptions,
+) -> crate::Result<String> {
+    opts.font_assets.validate()?;
+    crate::html::validate_editable_font_usage(opts)?;
+    Ok(render_interactive_html(doc, markdown_src, opts))
 }
 
 pub(crate) fn render_interactive_html_advanced(

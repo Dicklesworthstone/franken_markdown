@@ -8,9 +8,10 @@ use franken_markdown::book::validation::DocumentLinkAnalysis;
 
 use super::super::{MAX_DOCUMENTS, MAX_SESSION_BYTES};
 use super::{
+    Parser,
     AnchorKind, Buffer, Document, Failure, Json, LineIndex, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES,
     MAX_DOCUMENT_BYTES, Position, ReferenceKind, SourceSpan, analyze_document_links, candidate,
-    number, object, parse_markdown_spanned, prefix_text, probe_document, range, references, string,
+    number, object, prefix_text, probe_document, range, references, string,
     structure, workspace_links,
 };
 
@@ -25,11 +26,11 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn parse(source: &str) -> Result<Self, Failure> {
+    fn parse(parser: Parser, source: &str) -> Result<Self, Failure> {
         if source.len() > MAX_DOCUMENT_BYTES {
             return Err((-32803, "document exceeds the reference search budget"));
         }
-        let (spans, blocks) = parse_markdown_spanned(source)
+        let (spans, blocks) = parser.spanned(source)
             .blocks
             .into_iter()
             .map(|block| (block.span, block.node))
@@ -64,6 +65,7 @@ struct Target<'a> {
 // Reuse definition navigation's parser probes, structural restoration and
 // publication check. A lexical match alone never selects the symbol to search.
 fn destination_at(
+    parser: Parser,
     source: &str,
     snapshot: &Snapshot,
     offset: usize,
@@ -81,9 +83,9 @@ fn destination_at(
         return Err((-32803, "enclosing block exceeds the link navigation budget"));
     }
     let Some(token) = candidate(source, span, offset) else {
-        return references::destination(source, span, offset, original, owner);
+        return references::destination(parser, source, span, offset, original, owner);
     };
-    let Some((mut probed, probe)) = probe_document(source, span, token, original, owner, false)
+    let Some((mut probed, probe)) = probe_document(parser, source, span, token, original, owner, false)
     else {
         return Ok(None);
     };
@@ -105,6 +107,7 @@ fn destination_at(
 }
 
 fn addressed_target<'a>(
+    parser: Parser,
     documents: &'a BTreeMap<String, Buffer>,
     origin: &'a str,
     snapshot: &Snapshot,
@@ -124,7 +127,7 @@ fn addressed_target<'a>(
         let Some((uri, source)) = workspace_links::resolve(documents, origin, destination)? else {
             return Ok(None);
         };
-        remote = Snapshot::parse(source)?;
+        remote = Snapshot::parse(parser, source)?;
         (uri, &remote)
     };
     let Ok(index) = target
@@ -146,6 +149,7 @@ fn addressed_target<'a>(
 }
 
 fn select_target<'a>(
+    parser: Parser,
     documents: &'a BTreeMap<String, Buffer>,
     uri: &'a str,
     source: &str,
@@ -155,8 +159,8 @@ fn select_target<'a>(
     let offset = LineIndex::new(source)
         .offset(source, requested)
         .map_err(|reason| (-32602, reason))?;
-    if let Some(destination) = destination_at(source, snapshot, offset)? {
-        return addressed_target(documents, uri, snapshot, &destination);
+    if let Some(destination) = destination_at(parser, source, snapshot, offset)? {
+        return addressed_target(parser, documents, uri, snapshot, &destination);
     }
     let Some(owner) = snapshot.owner(offset) else {
         return Ok(None);
@@ -215,6 +219,7 @@ impl<'a> Locations<'a> {
 }
 
 pub(super) fn request(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -257,8 +262,8 @@ pub(super) fn request(
         }
         source_bytes += document.text.len();
     }
-    let snapshot = Snapshot::parse(&buffer.text)?;
-    let Some(target) = select_target(documents, uri, &buffer.text, &snapshot, requested)? else {
+    let snapshot = Snapshot::parse(parser, &buffer.text)?;
+    let Some(target) = select_target(parser, documents, uri, &buffer.text, &snapshot, requested)? else {
         return Ok(Json::Array(Vec::new()));
     };
     // An unsynchronized buffer might contain another use. Never return a
@@ -279,7 +284,7 @@ pub(super) fn request(
         let current = if origin == uri {
             &snapshot
         } else {
-            other = Snapshot::parse(&document.text)?;
+            other = Snapshot::parse(parser, &document.text)?;
             &other
         };
         work += current.analysis.references.len();

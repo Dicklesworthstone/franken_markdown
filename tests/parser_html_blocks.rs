@@ -103,12 +103,12 @@ fn type_seven_does_not_interrupt_or_close_an_open_paragraph() {
 }
 
 #[test]
-fn type_seven_starts_after_completed_blocks_and_reference_definitions() {
+fn type_seven_starts_after_completed_blocks_and_blank_separated_definitions() {
     for prefix in [
         "# Heading\n",
         "```text\ncode\n```\n",
         "---\n",
-        "[outside]: /accepted\n",
+        "[outside]: /accepted\n\n",
         "A | B\n--- | ---\nx | y\n",
     ] {
         let source =
@@ -126,6 +126,75 @@ fn type_seven_starts_after_completed_blocks_and_reference_definitions() {
                 .all(|span| span.dest != "/secret")
         );
     }
+}
+
+#[test]
+fn type_seven_after_a_reference_prefix_preserves_real_paragraph_boundaries() {
+    // Both CommonMark 0.31.2 and cmark-gfm retain the paragraph opened by a
+    // definition prefix. A type-7 tag cannot interrupt it, but a heading can.
+    let source =
+        "[outside]: /accepted\n<span>\n# Literal heading\n[hidden]: /secret\n</span>\n\n[hidden]";
+    let document = parse_markdown(source);
+    assert!(first_html(&document.blocks).is_none());
+    assert_eq!(
+        document.blocks,
+        [
+            Block::Paragraph(vec![Inline::Html("<span>".into())]),
+            heading("Literal heading"),
+            Block::Paragraph(vec![Inline::Html("</span>".into())]),
+            Block::Paragraph(vec![Inline::Link {
+                dest: "/secret".into(),
+                title: None,
+                content: vec![Inline::Text("hidden".into())],
+            }]),
+        ]
+    );
+    let html = raw_fragment(source);
+    assert!(html.starts_with("<p><span></p>\n<h1"), "{html}");
+    assert!(html.contains("<p></span></p>"), "{html}");
+    let destinations = destination_spans(source);
+    assert_eq!(
+        destinations
+            .iter()
+            .map(|span| span.dest.as_str())
+            .collect::<Vec<_>>(),
+        ["/accepted", "/secret"]
+    );
+    for destination in destinations {
+        assert_eq!(&source[destination.range], destination.dest);
+    }
+    assert_eq!(parse_markdown_profiled(source).document, document);
+    assert_eq!(parse_markdown_spanned(source).to_document(), document);
+
+    // Without that genuine interruption the reference-looking line is prose,
+    // so it must not acquire destination authority just because tags surround it.
+    let source = "[outside]: /accepted\n<span>\n[hidden]: /secret\n</span>\n\n[hidden]";
+    let document = parse_markdown(source);
+    assert!(first_html(&document.blocks).is_none());
+    assert_eq!(document.blocks.len(), 2);
+    assert_eq!(document.blocks[1], paragraph("[hidden]"));
+    assert_eq!(destination_spans(source).len(), 1);
+    assert_eq!(destination_spans(source)[0].dest, "/accepted");
+    assert_eq!(
+        raw_fragment(source),
+        "<p><span>\n[hidden]: /secret\n</span></p>\n<p>[hidden]</p>\n"
+    );
+
+    // An unclosed type-7 tag has the same paragraph ownership. Retain the
+    // independently contributed no-closing-span regression as well.
+    let source = "[outside]: /accepted\n<span>\n[hidden]: /secret\n\n[hidden]";
+    let document = parse_markdown(source);
+    assert!(matches!(document.blocks[0], Block::Paragraph(_)));
+    assert_eq!(document.blocks.len(), 2);
+    assert_eq!(document.blocks[1], paragraph("[hidden]"));
+    assert!(first_html(&document.blocks).is_none());
+    assert_eq!(
+        raw_fragment(source),
+        "<p><span>\n[hidden]: /secret</p>\n<p>[hidden]</p>\n"
+    );
+    let spans = destination_spans(source);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].dest, "/accepted");
 }
 
 #[test]

@@ -574,7 +574,12 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
       const pdfAssets = pdf ? mergeExplicitImages(baseAssets, pdf.options.pdfImages) : baseAssets;
       fence(session, expected);
       const results = [];
+      let remainingOutputBytes = FLOW_EXPORT_BATCH_LIMIT;
       for (const { format, options, render } of jobs) {
+        // Every output must be nonempty. Once the retained publication fills
+        // its budget, another renderer cannot contribute an admissible result.
+        if (remainingOutputBytes === 0)
+          fail("BUDGET_EXCEEDED", "combined export output budget exceeded");
         const { maxOutputBytes, ...settings } = options;
         const assets = format === "pdf" ? pdfAssets : baseAssets;
         const output = await render(source, {
@@ -589,6 +594,12 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
         if (!output || output.format !== format || output.mimeType !== MIME[format])
           fail("INVALID_WASM_RESPONSE", "document renderer returned the wrong format");
         const bytes = byteView(output.bytes, maxOutputBytes);
+        if (!bytes.length) fail("INVALID_WASM_RESPONSE", "empty export result");
+        // Admit each output before making its owned copy, rather than retaining
+        // an over-budget batch until the final response validator rejects it.
+        if (bytes.length > remainingOutputBytes)
+          fail("BUDGET_EXCEEDED", "combined export output budget exceeded");
+        remainingOutputBytes -= bytes.length;
         checkDiagnostics(output.diagnostics, sourceLengthBytes);
         let archival;
         try { archival = pdfArchivalReceipt(output, settings); }

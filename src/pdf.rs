@@ -2306,7 +2306,11 @@ fn load_pdf_face_parts(
     Cow<'static, Ligatures>,
 )> {
     if let Some(font) = face.parsed {
-        crate::validate_render_font(slot, font)?;
+        // Parsed faces come from the immutable bundled registry. Keep their
+        // existing admission without repeating host TrueType subset checks.
+        if !font.has_glyf_outlines() {
+            crate::validate_render_font(slot, font)?;
+        }
         if let Some(layout) = face.layout {
             return Ok((
                 Cow::Borrowed(font),
@@ -2758,8 +2762,8 @@ impl RenderWarning {
                  as .notdef boxes (e.g. {sample:?})"
             ),
             Self::FontWeightIgnoredStatic { slot, weight } => format!(
-                "{slot} font-weight {weight} did not instance: the face has no wght axis, \
-                 or instancing failed and default outlines were kept \
+                "{slot} font-weight {weight} was ignored: the face has no wght axis; \
+                 static outlines were kept \
                  (pin a variable font, or drop --pdf-font-weight)"
             ),
             Self::MathFallback { source, reason } => format!(
@@ -2944,12 +2948,11 @@ fn source_render_warnings(
         let Some(weight) = opts.font_assets.slot_weight(slot) else {
             continue;
         };
-        let instanced = opts.font_assets.resolved_bytes(slot).and_then(|bytes| {
-            Font::parse(bytes.to_vec())
-                .ok()
-                .and_then(|font| font.instance(f32::from(weight)))
-        });
-        if instanced.is_none() {
+        let has_axis = opts
+            .font_assets
+            .resolved_bytes(slot)
+            .is_some_and(crate::font_bytes_have_wght);
+        if !has_axis {
             warnings.push(RenderWarning::FontWeightIgnoredStatic {
                 slot: slot.as_str().to_string(),
                 weight,
@@ -5255,17 +5258,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 layout_pdf_toc(max_depth.or(cx.opts.toc_depth), indent, out, cx);
                 return;
             }
-            if layout_standalone_image(inlines, indent, out, cx) {
-                return;
-            }
-            if let Some(images) =
-                inline_image::gallery_images(inlines, cx.faces, cx.type_scale.body)
-            {
-                // A row of large pictures keeps one figure line per picture
-                // instead of shrinking each to an icon inside a text line.
-                for image in images {
-                    layout_standalone_image(std::slice::from_ref(image), indent, out, cx);
-                }
+            if layout_image_paragraph(inlines, indent, out, cx) {
                 return;
             }
             if let [Inline::Text(text)] = inlines.as_slice()
@@ -5705,6 +5698,26 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         segs: Vec::new(),
         image: None,
     });
+}
+
+/// Image-only paragraphs share their figure/gallery policy in ordinary flow
+/// and at the start of a list item. Small badge rows stay in inline text layout.
+fn layout_image_paragraph(
+    inlines: &[Inline],
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) -> bool {
+    if layout_standalone_image(inlines, indent, out, cx) {
+        return true;
+    }
+    let Some(images) = inline_image::gallery_images(inlines, cx.faces, cx.type_scale.body) else {
+        return false;
+    };
+    for image in images {
+        layout_standalone_image(std::slice::from_ref(image), indent, out, cx);
+    }
+    true
 }
 
 fn layout_standalone_image(
@@ -19474,12 +19487,14 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                     );
                 }
             } else if let [Block::Paragraph(inlines)] = leading
-                && layout_standalone_image(inlines, content_indent, out, cx)
+                && layout_image_paragraph(inlines, content_indent, out, cx)
             {
                 // Keep the marker and leading figure on one indivisible row. The
                 // marker stays at the normal list size, aligned to the row's top;
                 // an image's height must never become the bullet's font size.
-                if let Some(line) = out.last_mut() {
+                // A gallery owns several figure rows; only its first gets the
+                // item's label, so later pictures can continue across pages.
+                if let Some(line) = out.get_mut(item_start_line) {
                     line.size = line.size.max(size);
                     line.segs.push(marker_seg);
                     if let Some(image) = &mut line.image {
@@ -23378,18 +23393,26 @@ fn serialize(
         seed.extend(keep.iter().map(|&c| source.glyph_index(c)));
         seed.extend(shaped_glyphs);
         let subset_started = profiler.checkpoint();
-        let (bytes, mut gid_lookup, format) = if !source.has_glyf_outlines() {
+        let strict_subset = !source.has_glyf_outlines() || matches!(&face.font, Cow::Owned(_));
+        let (bytes, mut gid_lookup, format) = if strict_subset {
             // ISO 32000-1 9.7.4.2: a name-keyed CFF program embedded as
             // OpenType under CIDFontType0 selects CharStrings directly by
             // GID. Preserve the same dense subset IDs used by Identity-H,
             // the width array, shaped text and ToUnicode; CIDToGIDMap is
-            // only valid for the TrueType descendant below.
+            // only valid for a TrueType descendant. Host TrueType faces also
+            // use strict subsetting: the legacy API repairs malformed glyphs
+            // into missing ink. Trusted registry faces retain their old path.
+            let kind = if source.has_glyf_outlines() {
+                "TrueType"
+            } else {
+                "CFF"
+            };
             let t0 = tail.then(subset_tail_now);
             let subset = source
                 .try_subset_glyphs_with_lookup(&seed, &keep)
                 .map_err(|err| {
                     RenderError::InvalidInput(format!(
-                        "{} CFF font could not be subset: {err}",
+                        "{} {kind} font could not be subset: {err}",
                         subset_tail_slot_name(slot)
                     ))
                 })?;

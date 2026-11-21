@@ -37,8 +37,12 @@ closure can validate unfinished syntax; the actual edit changes only the fragmen
 
 ## Definitions
 
-An explicit destination, or the text/label of a single-line reference use such
-as `[guide][install]`, can resolve to its published target. Forward references,
+An explicit destination, or the text/label of a reference use such as
+`[guide][install]`, can resolve to its published target. Completed explicit
+links support escaped punctuation, balanced parentheses, angle destinations
+with spaces, and destinations on continuation lines. Full, collapsed and
+shortcut references can span physical lines, including inside list and
+quotation containers. Forward references,
 duplicate headings, encoded fragments, query fragments and emitted footnote IDs
 follow book/HTML validation. Missing, invalid and ambiguous targets return null.
 An empty fragment addresses the document's zero-width start location. Reference
@@ -70,9 +74,9 @@ references, highlights, and versioned rename through a separate document-local
 provider; see [LSP_FOOTNOTES.md](LSP_FOOTNOTES.md). This includes unresolved
 references and definitions in unreferenced note bodies.
 
-Escaped/multiline explicit URL navigation and multiline reference-use navigation
-are not implemented. Definitions and full/collapsed/shortcut references support
-separate [reference-label rename](LSP_REFERENCE_RENAME.md), preserving visible
+Fragment and path completion retain their conservative single-line authoring
+syntax; the extended destination forms above are for definition navigation.
+Definitions and full/collapsed/shortcut references support separate [reference-label rename](LSP_REFERENCE_RENAME.md), preserving visible
 text, destinations and titles through parser-owned edits.
 
 ## Limits and verification
@@ -83,7 +87,9 @@ Probe selection is bounded to 32 attempts. Completion returns at most 256 items,
 with IDs of at most 1024 bytes and titles of at most 128 Unicode scalars; excess
 matches set `isIncomplete`. The core analyzer's admission limits remain in force.
 
-Explicit URL navigation uses at most two temporary probe parses. Reference-use
+Explicit URL navigation uses at most two temporary probe parses. Extended
+completed destinations additionally use the core parser's source-token pass;
+ordinary URL navigation retains its existing scan/probe path. Reference-use
 navigation admits at most eight candidate contexts, with one parse per candidate.
 These are bounded synchronous operations, not incremental parsing or frame-time
 promises. An oversized block or refused analysis returns RequestFailed; malformed
@@ -98,6 +104,8 @@ cargo test --test document_links_test
 
 The suites cover parser exclusions, target collisions, forward/encoded targets,
 partial destinations, exact edits, Unicode, nested origins, reference uses, notes,
-work limits, dispatch and current-version fencing. Rust compilation and execution
-remain unverified in the toolchain-less authoring environment. Lexical checks,
-source review and whitespace checks are not substitutes for these tests.
+work limits, dispatch and current-version fencing. Extended destination and
+multiline-reference cases exercise the real parser, analyzer and server request
+path, including literal-context exclusions and changed or closed target buffers.
+The protocol suite also launches the native server and exchanges framed LSP
+messages; it does not launch an editor client.

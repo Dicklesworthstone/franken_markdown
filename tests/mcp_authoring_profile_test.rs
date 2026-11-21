@@ -19,9 +19,11 @@ use franken_markdown::{
 type Args = BTreeMap<String, Json>;
 type Failure = (i32, String, &'static str);
 const SOURCE: &str = "*Term\n: definition*\n\n<!-- pagebreak -->\n\nTail.\n";
-const TOOLS: [&str; 6] = [
+const TOOLS: [&str; 8] = [
     "fmd.render_html",
     "fmd.render_pdf",
+    "fmd.render_svg",
+    "fmd.render_epub",
     "fmd.verify",
     "fmd.render_file",
     "fmd.render_book",

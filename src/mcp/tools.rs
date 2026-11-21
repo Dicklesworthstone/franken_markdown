@@ -19,6 +19,9 @@ pub(super) mod resources;
 #[path = "file_options.rs"]
 pub(super) mod file_options;
 
+#[path = "source_render.rs"]
+mod source_render;
+
 #[path = "book_tools.rs"]
 mod book_tools;
 
@@ -228,6 +231,11 @@ const VERIFY_FIELDS: &[Field] = &[
 ];
 const FILE_FIELDS: &[Field] = &[
     (
+        "expandIncludes",
+        "boolean",
+        "Expand bounded local Markdown includes inside the input file's directory (default false); image and font files are never loaded implicitly",
+    ),
+    (
         "images",
         "array",
         "Explicit image bytes keyed by Markdown destination; never fetched",
@@ -279,6 +287,18 @@ const TOOLS: &[ToolSpec] = &[
         &["markdown"],
     ),
     (
+        "fmd.render_svg",
+        "Render caller-supplied Markdown to a standalone SVG poster. Explicit image/font bytes are optional; recoverable rendering diagnostics accompany the SVG text in warnings. No file or network access.",
+        &[],
+        &["markdown"],
+    ),
+    (
+        "fmd.render_epub",
+        "Render caller-supplied Markdown to a deterministic EPUB, returned as base64. Optional images/fonts are supplied as explicit bytes; no file or network access.",
+        &[],
+        &["markdown"],
+    ),
+    (
         "fmd.verify",
         "Audit configured PDF layout, text, anchors, accessibility, and overflow, including strict pagination admission; not a PDF/A conformance validator.",
         VERIFY_FIELDS,
@@ -292,7 +312,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.render_file",
-        "Render a local Markdown file. HTML/SVG return text; PDF/EPUB return base64. Without out, both returns a JSON outputs array with format, mimeType, encoding and data. With out, all artifacts are rendered and staged before replacement; the source is protected.",
+        "Render a local Markdown file, optionally expanding local includes with expandIncludes. HTML/SVG return text; PDF/EPUB return base64. Without out, both returns a JSON outputs array with format, mimeType, encoding and data. With out, all artifacts are rendered and staged before replacement; the source and all included files are protected.",
         FILE_FIELDS,
         &["path"],
     ),
@@ -319,6 +339,12 @@ fn number_bounds(name: &str) -> Option<(f64, f64)> {
 }
 
 fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
+    if name == "fmd.render_svg" {
+        return file_options::source_fields("svg");
+    }
+    if name == "fmd.render_epub" {
+        return file_options::source_fields("epub");
+    }
     if name == "fmd.render_book" {
         return book_tools::fields();
     }
@@ -636,6 +662,14 @@ fn html_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
     })
 }
 
+/// EPUB consumes creator metadata in addition to the shared HTML settings.
+/// Keep the existing HTML/paired-export policy, where author is PDF-only.
+fn epub_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
+    let mut options = html_options(args)?;
+    options.author = string(args, "author").map(str::to_string);
+    Ok(options)
+}
+
 fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError> {
     let microtype = match string(args, "microtype")
         .unwrap_or("off")
@@ -820,7 +854,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             options.image_assets = assets.images;
             let doc = crate::parse_markdown_with_profile(source, options.profile);
             let html = if boolean(args, "interactiveHtml") {
-                crate::interactive::render_interactive_html(&doc, source, &options)
+                crate::interactive::render_interactive_html_checked(&doc, source, &options)
+                    .map_err(render_error)?
             } else {
                 crate::render_html_document(&doc, &options).map_err(render_error)?
             };
@@ -866,6 +901,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             Ok(wrap_text_content(&json))
         }
         "fmd.render_file" => super::file_render::render_file(args, limit),
+        "fmd.render_svg" => source_render::render_svg(args, limit),
+        "fmd.render_epub" => source_render::render_epub(args, limit),
         "fmd.render_book" => book_tools::render(args, limit),
         "fmd.verify_book" => book_tools::verify(args, limit),
         _ => Err((

@@ -197,7 +197,8 @@ fn generated_inventory(svg: &str) -> Result<Inventory, &'static str> {
     let mut position = 0;
     let preserve = svg.contains("class=\"fmd-diagram fmd-sequence\"")
         || svg.contains("class=\"fmd-diagram fmd-class\"")
-        || svg.contains("class=\"fmd-diagram fmd-er\"");
+        || svg.contains("class=\"fmd-diagram fmd-er\"")
+        || svg.contains("class=\"fmd-diagram fmd-timeline\"");
     while let Some(relative) = svg[position..].find('<') {
         let start = position + relative;
         let end = start + svg[start..].find('>').ok_or("incomplete diagram tag")?;

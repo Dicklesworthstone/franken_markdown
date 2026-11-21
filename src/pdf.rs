@@ -5255,17 +5255,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 layout_pdf_toc(max_depth.or(cx.opts.toc_depth), indent, out, cx);
                 return;
             }
-            if layout_standalone_image(inlines, indent, out, cx) {
-                return;
-            }
-            if let Some(images) =
-                inline_image::gallery_images(inlines, cx.faces, cx.type_scale.body)
-            {
-                // A row of large pictures keeps one figure line per picture
-                // instead of shrinking each to an icon inside a text line.
-                for image in images {
-                    layout_standalone_image(std::slice::from_ref(image), indent, out, cx);
-                }
+            if layout_image_paragraph(inlines, indent, out, cx) {
                 return;
             }
             if let [Inline::Text(text)] = inlines.as_slice()
@@ -5705,6 +5695,26 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         segs: Vec::new(),
         image: None,
     });
+}
+
+/// Image-only paragraphs share their figure/gallery policy in ordinary flow
+/// and at the start of a list item. Small badge rows stay in inline text layout.
+fn layout_image_paragraph(
+    inlines: &[Inline],
+    indent: f32,
+    out: &mut Vec<Line>,
+    cx: &mut LayoutCx<'_>,
+) -> bool {
+    if layout_standalone_image(inlines, indent, out, cx) {
+        return true;
+    }
+    let Some(images) = inline_image::gallery_images(inlines, cx.faces, cx.type_scale.body) else {
+        return false;
+    };
+    for image in images {
+        layout_standalone_image(std::slice::from_ref(image), indent, out, cx);
+    }
+    true
 }
 
 fn layout_standalone_image(
@@ -19474,12 +19484,14 @@ fn layout_list(list: &List, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<
                     );
                 }
             } else if let [Block::Paragraph(inlines)] = leading
-                && layout_standalone_image(inlines, content_indent, out, cx)
+                && layout_image_paragraph(inlines, content_indent, out, cx)
             {
                 // Keep the marker and leading figure on one indivisible row. The
                 // marker stays at the normal list size, aligned to the row's top;
                 // an image's height must never become the bullet's font size.
-                if let Some(line) = out.last_mut() {
+                // A gallery owns several figure rows; only its first gets the
+                // item's label, so later pictures can continue across pages.
+                if let Some(line) = out.get_mut(item_start_line) {
                     line.size = line.size.max(size);
                     line.segs.push(marker_seg);
                     if let Some(image) = &mut line.image {

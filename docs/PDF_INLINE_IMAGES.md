@@ -6,6 +6,14 @@ height. A paragraph containing a single image retains the standalone figure
 layout; a paragraph containing several large pictures can use the figure
 gallery layout.
 
+Image-only paragraphs at the start of bullet, numbered, and task-list items use
+the same gallery layout. Large screenshots remain separate readable figures at
+their natural size or containing-page fit. The item marker stays beside the
+first figure at the ordinary text size; subsequent figures can continue on later
+pages without repeating the marker. Image links, alt text, and nested list or
+blockquote ownership remain attached to each figure. Small badge rows and images
+mixed with prose retain inline placement.
+
 ## Size and fitting
 
 An inline image starts at its natural size, using 0.75 PDF points per image

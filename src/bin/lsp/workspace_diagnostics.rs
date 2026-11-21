@@ -8,7 +8,7 @@ use franken_markdown::SourceSpan;
 use franken_markdown::book::validation::{DocumentLinkAnalysis, ReferenceKind};
 
 use super::diagnostics::{self, MAX_DIAGNOSTICS, Snapshot};
-use super::{Buffer, Json, LineIndex, workspace_links};
+use super::{Parser, Buffer, Json, LineIndex, workspace_links};
 
 type Issue = (&'static str, &'static str);
 const MAX_REFERENCE_WORK: usize = 32_768;
@@ -45,6 +45,7 @@ impl Workspace {
     /// before any dependent can inspect the old anchor set.
     pub fn refresh(
         &mut self,
+        parser: Parser,
         documents: &BTreeMap<String, Buffer>,
         changed: Option<&str>,
     ) -> Vec<Json> {
@@ -64,7 +65,7 @@ impl Workspace {
             self.entries.insert(
                 uri.clone(),
                 Entry {
-                    snapshot: diagnostics::snapshot(buffer),
+                    snapshot: diagnostics::snapshot(parser, buffer),
                     sent: None,
                 },
             );

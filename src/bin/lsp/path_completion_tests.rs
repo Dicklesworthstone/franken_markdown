@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::super::super::{Phase, Position, Server, position};
-use super::super::request_in_workspace;
+use super::super::{Parser, request_in_workspace};
 use super::*;
 
 const ORIGIN: &str = "file:///docs/start.md";
@@ -31,7 +31,7 @@ fn call_in(uri: &str, marked: &str, documents: &BTreeMap<String, Buffer>) -> (St
             position(LineIndex::new(&source).position(&source, offset)),
         ),
     ]);
-    let result = request_in_workspace("textDocument/completion", &params, uri, &source, documents)
+    let result = request_in_workspace(Parser::default(), "textDocument/completion", &params, uri, &source, documents)
         .expect("completion request");
     (source, result)
 }

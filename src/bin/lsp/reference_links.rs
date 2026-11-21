@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use super::{
+    Parser,
     Document, Failure, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES, ReferenceKind, SourceSpan,
-    analyze_document_links, matches_probe, parse_markdown, structure, unique_probe,
+    analyze_document_links, matches_probe, structure, unique_probe,
 };
 
 const MAX_CANDIDATES: usize = 8;
@@ -91,6 +92,7 @@ fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candi
 }
 
 pub(super) fn destination(
+    parser: Parser,
     source: &str,
     span: SourceSpan,
     offset: usize,
@@ -110,7 +112,7 @@ pub(super) fn destination(
     let mut selected = None;
     for (index, candidate) in candidates.iter().enumerate() {
         if let Some(destination) =
-            prove_candidate(source, candidate, original, owner, &probe, None)?
+            prove_candidate(parser, source, candidate, original, owner, &probe, None)?
         {
             // Equivalent adjacent bracket parses can sometimes produce the
             // same AST. More than one proven context is still ambiguous.
@@ -131,7 +133,7 @@ pub(super) fn destination(
         // grant navigation from an image or another unproven source context.
         if index != selected_index
             && candidate.preceding.is_some()
-            && prove_candidate(source, candidate, original, owner, &probe, Some(&boundary))?
+            && prove_candidate(parser, source, candidate, original, owner, &probe, Some(&boundary))?
                 .is_some()
         {
             return Ok(None);
@@ -141,6 +143,7 @@ pub(super) fn destination(
 }
 
 fn prove_candidate(
+    parser: Parser,
     source: &str,
     candidate: &Candidate,
     original: &Document,
@@ -161,7 +164,7 @@ fn prove_candidate(
     amended.push_str(probe);
     amended.push(')');
     amended.push_str(&source[candidate.suffix.end..]);
-    let mut probed = parse_markdown(&amended);
+    let mut probed = parser.parse(&amended);
     if let Some(boundary) = boundary
         && probed
             .blocks

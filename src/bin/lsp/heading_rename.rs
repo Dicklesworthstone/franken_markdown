@@ -11,12 +11,12 @@ use std::ops::Range;
 use franken_markdown::book::validation::{
     AnchorKind, DocumentLinkAnalysis, analyze_document_links,
 };
-use franken_markdown::parse::{DestinationSpan, destination_spans};
+use franken_markdown::parse::{DestinationSpan};
 use franken_markdown::{
-    Block, Document, Inline, SourceSpan, parse_markdown, parse_markdown_spanned,
-};
+    Block, Document, Inline, SourceSpan, };
 
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
     object, position, string, workspace_links,
 };
@@ -101,10 +101,11 @@ fn content_candidate(source: &str, span: SourceSpan) -> Option<Range<usize>> {
 }
 
 fn select_heading(
+    parser: Parser,
     source: &str,
     offset: usize,
 ) -> Result<Option<(Heading, Document, DocumentLinkAnalysis)>, Failure> {
-    let parsed = parse_markdown_spanned(source);
+    let parsed = parser.spanned(source);
     let selected = parsed.blocks.iter().enumerate().find_map(|(index, block)| {
         // Parser spans exclude line endings. A caret immediately after the
         // title remains useful, but an exclusive end at another source node
@@ -138,7 +139,7 @@ fn select_heading(
         level,
         inlines: vec![Inline::Text(probe.to_string())],
     };
-    if parse_markdown(&amended) != expected {
+    if parser.parse(&amended) != expected {
         return Ok(None);
     }
     let analysis = analyze_document_links(&document)
@@ -328,6 +329,7 @@ fn probe_tokens(
 }
 
 fn proven_tokens(
+    parser: Parser,
     source: &str,
     original: &Document,
     tokens: Vec<DestinationSpan>,
@@ -351,7 +353,7 @@ fn proven_tokens(
         .map(|i| (format!("{prefix}{i}"), i))
         .collect();
     let probed = probe_tokens(source, &tokens, &prefix, |_| true)?;
-    let mut parsed = parse_markdown(&probed);
+    let mut parsed = parser.parse(&probed);
     let mut selected = BTreeSet::new();
     walk_links(&mut parsed.blocks, &mut |dest| {
         if let Some(index) = markers.get(dest) {
@@ -360,7 +362,7 @@ fn proven_tokens(
         Ok(())
     })?;
     let probed = probe_tokens(source, &tokens, &prefix, |i| selected.contains(&i))?;
-    let mut restored = parse_markdown(&probed);
+    let mut restored = parser.parse(&probed);
     walk_links(&mut restored.blocks, &mut |dest| {
         if let Some(&index) = markers.get(dest) {
             dest.clone_from(&tokens[index].dest);
@@ -457,6 +459,7 @@ fn changed_heading(
 
 /// Called only for rename/prepareRename after the footnote provider declines.
 pub(super) fn request(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -476,7 +479,7 @@ pub(super) fn request(
     let offset = index
         .offset(source, requested)
         .map_err(|reason| (-32602, reason))?;
-    let Some((heading, original, analysis)) = select_heading(source, offset)? else {
+    let Some((heading, original, analysis)) = select_heading(parser, source, offset)? else {
         return Ok(Json::Null);
     };
     if documents.len() > MAX_DOCUMENTS {
@@ -541,7 +544,7 @@ pub(super) fn request(
         let document = if origin == uri {
             original.clone()
         } else {
-            parse_markdown(source)
+            parser.parse(source)
         };
         let mut expected = if origin == uri {
             renamed.clone()
@@ -574,7 +577,7 @@ pub(super) fn request(
         }
         if affected {
             let mut candidates = Vec::new();
-            for token in destination_spans(source) {
+            for token in parser.destinations(source) {
                 token_count += 1;
                 if token_count > MAX_TOKENS || token.dest.len() > 8192 {
                     return Err((
@@ -592,7 +595,7 @@ pub(super) fn request(
                     candidates.push(token);
                 }
             }
-            for token in proven_tokens(source, &document, candidates)? {
+            for token in proven_tokens(parser, source, &document, candidates)? {
                 let range = token.fragment_range(source).ok_or((
                     -32803,
                     "heading destination has no independently editable fragment",
@@ -616,7 +619,7 @@ pub(super) fn request(
         if renamed_bytes > MAX_SESSION_BYTES {
             return Err((-32803, "renamed workspace exceeds the session byte budget"));
         }
-        if parse_markdown(&amended) != expected {
+        if parser.parse(&amended) != expected {
             return Err((
                 -32803,
                 "heading rename cannot preserve every Markdown link and surrounding syntax",

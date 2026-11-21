@@ -4,10 +4,9 @@
 use std::collections::BTreeSet;
 
 use franken_markdown::{
-    Block, HeadingSourceAnchor, SourceSpan, SpannedDocument, parse_markdown_spanned,
-};
+    Block, HeadingSourceAnchor, SourceSpan, SpannedDocument};
 
-use super::{Json, LineIndex, Position, number, object, position, string};
+use super::{Parser, Json, LineIndex, Position, number, object, position, string};
 
 pub const MAX_NAVIGATION_ITEMS: usize = 4096;
 const MAX_SELECTIONS: usize = 128;
@@ -27,8 +26,8 @@ struct Navigation<'a> {
 }
 
 impl<'a> Navigation<'a> {
-    fn new(source: &'a str) -> Result<Self, &'static str> {
-        let document = parse_markdown_spanned(source);
+    fn new(parser: Parser, source: &'a str) -> Result<Self, &'static str> {
+        let document = parser.spanned(source);
         let map = document
             .source_map(source)
             .map_err(|_| "source map could not be validated")?;
@@ -251,6 +250,7 @@ impl<'a> Navigation<'a> {
 }
 
 pub fn request(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -258,7 +258,7 @@ pub fn request(
     hierarchical: bool,
     folding_limit: usize,
 ) -> Result<Json, &'static str> {
-    let navigation = Navigation::new(source)?;
+    let navigation = Navigation::new(parser, source)?;
     match method {
         "textDocument/documentSymbol" => Ok(navigation.symbols(uri, hierarchical)),
         "textDocument/foldingRange" => Ok(navigation.folds(folding_limit)),
@@ -285,7 +285,7 @@ mod tests {
     fn outline_uses_parser_hierarchy_setext_and_not_fenced_headings() -> TestResult {
         let source =
             "# Root\n\n## Child\n\n```md\n# Not a heading\n```\n\n# Sibling\n\nSetext\n------\n";
-        let navigation = Navigation::new(source)?;
+        let navigation = Navigation::new(Parser::default(), source)?;
         let outline = navigation.symbols("untitled:test", true);
         let roots = array(&outline);
         assert_eq!(roots.len(), 2);
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn outline_selects_the_real_heading_after_compound_blocks() -> TestResult {
         let source = "---\ntitle: Document\n---\n\n> quote\nlazy continuation\n\n$$\nx + y\n\n# math, not a heading\n$$\n\nFirst\n: definition\n\nSecond\n: another\n\n# Real 😀\n";
-        let navigation = Navigation::new(source)?;
+        let navigation = Navigation::new(Parser::default(), source)?;
         let outline = navigation.symbols("untitled:compound", true);
         let roots = array(&outline);
         assert_eq!(roots.len(), 1);
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn section_range_contains_children_but_not_the_next_sibling() -> TestResult {
-        let navigation = Navigation::new("# A\n\n## B\ntext\n# C\n")?;
+        let navigation = Navigation::new(Parser::default(), "# A\n\n## B\ntext\n# C\n")?;
         assert_eq!(
             navigation.sections[0].end,
             navigation.sections[2].heading.source_span.start
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn folding_respects_exclusive_end_crlf_and_client_limit() -> TestResult {
-        let navigation = Navigation::new("# A\r\nbody\r\n# B\r\n```\r\ncode\r\n```\r\n")?;
+        let navigation = Navigation::new(Parser::default(), "# A\r\nbody\r\n# B\r\n```\r\ncode\r\n```\r\n")?;
         assert_eq!(
             navigation.fold(navigation.section_span(&navigation.sections[0])),
             Some((0, 1))
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn selection_chain_expands_from_unicode_caret_to_document() -> TestResult {
-        let navigation = Navigation::new("# Root\n\n## Child\n\nA😀B\n")?;
+        let navigation = Navigation::new(Parser::default(), "# Root\n\n## Child\n\nA😀B\n")?;
         let positions = Json::Array(vec![object([
             ("line", number(4)),
             ("character", number(3)),
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn empty_document_has_no_symbols_or_folds_but_has_a_selection() -> TestResult {
-        let navigation = Navigation::new("")?;
+        let navigation = Navigation::new(Parser::default(), "")?;
         assert!(array(&navigation.symbols("untitled:empty", true)).is_empty());
         assert!(array(&navigation.folds(4096)).is_empty());
         let positions = Json::Array(vec![object([

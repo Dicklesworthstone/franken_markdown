@@ -11,9 +11,10 @@ use std::collections::BTreeMap;
 use franken_markdown::book::validation::{
     AnchorKind, DocumentAnchor, DocumentLinkAnalysis, analyze_document_links,
 };
-use franken_markdown::{Block, Document, Inline, SourceSpan, parse_markdown};
+use franken_markdown::{Block, Document, Inline, SourceSpan};
 
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
     number, object, position, string, workspace_links,
 };
@@ -48,6 +49,7 @@ struct Note {
 }
 
 struct Inventory {
+    parser: Parser,
     document: Document,
     notes: Vec<Note>,
 }
@@ -208,8 +210,8 @@ fn probed_source(
 }
 
 impl Inventory {
-    fn parse(source: &str, candidates: Vec<Candidate>) -> Result<Self, Failure> {
-        let mut document = parse_markdown(source);
+    fn parse(parser: Parser, source: &str, candidates: Vec<Candidate>) -> Result<Self, Failure> {
+        let mut document = parser.parse(source);
         let mut count = 0;
         walk_blocks(&mut document.blocks, &mut |symbol| {
             if matches!(symbol, Symbol::Note(_, _)) {
@@ -222,6 +224,7 @@ impl Inventory {
         })?;
         if count == 0 {
             return Ok(Self {
+                parser,
                 document,
                 notes: Vec::new(),
             });
@@ -236,7 +239,7 @@ impl Inventory {
         let mut kinds = vec![None; candidates.len()];
         {
             let amended = probed_source(source, &candidates, &prefix, |_| true)?;
-            let mut probed = parse_markdown(&amended);
+            let mut probed = parser.parse(&amended);
             walk_blocks(&mut probed.blocks, &mut |symbol| {
                 if let Symbol::Note(id, kind) = symbol
                     && let Some(&index) = probes.get(id.as_str())
@@ -250,7 +253,7 @@ impl Inventory {
         // The first pass can change unrelated lexical lookalikes. Reparse ONLY
         // admitted note tokens, then require exact restoration of all semantics.
         let amended = probed_source(source, &candidates, &prefix, |index| kinds[index].is_some())?;
-        let mut restored = parse_markdown(&amended);
+        let mut restored = parser.parse(&amended);
         let mut orders = vec![None; candidates.len()];
         let mut mapped = 0;
         walk_blocks(&mut restored.blocks, &mut |symbol| {
@@ -283,7 +286,7 @@ impl Inventory {
                 })
             })
             .collect();
-        Ok(Self { document, notes })
+        Ok(Self { parser, document, notes })
     }
 }
 
@@ -291,10 +294,11 @@ impl Inventory {
 /// The caller may have closed an unfinished marker, but must preserve its
 /// existing text so code/HTML delimiters cannot disappear during the probe.
 pub(super) fn completion_labels(
+    parser: Parser,
     source: &str,
     selected: SourceSpan,
 ) -> Result<Option<Vec<String>>, Failure> {
-    let mut inventory = match Inventory::parse(source, candidates(source)?) {
+    let mut inventory = match Inventory::parse(parser, source, candidates(source)?) {
         Ok(inventory) => inventory,
         // A lexical candidate can straddle a closing code delimiter. The bulk
         // probe then cannot prove ownership; completion must offer no edit.
@@ -340,6 +344,7 @@ fn location(uri: &str, index: &LineIndex, source: &str, span: SourceSpan) -> Jso
 /// generated anchor, including links in currently dormant note bodies. Never
 /// guess at an unopened file or alter a different document's note namespace.
 fn check_rename_links(
+    parser: Parser,
     documents: &BTreeMap<String, Buffer>,
     uri: &str,
     document: &mut Document,
@@ -393,7 +398,7 @@ fn check_rename_links(
         let current = if origin == uri {
             &mut *document
         } else {
-            other = parse_markdown(&buffer.text);
+            other = parser.parse(&buffer.text);
             &mut other
         };
         walk_blocks(&mut current.blocks, &mut |symbol| {
@@ -427,12 +432,12 @@ fn check_rename_links(
     Ok(source_bytes)
 }
 
-fn valid_new_name(name: &str) -> bool {
+fn valid_new_name(parser: Parser, name: &str) -> bool {
     if name.is_empty() || name.len() > 128 {
         return false;
     }
     // The parser, not a divergent LSP label normalizer, defines accepted IDs.
-    parse_markdown(&format!("[^{name}]\n\n[^{name}]: note\n"))
+    parser.parse(&format!("[^{name}]\n\n[^{name}]: note\n"))
         == Document {
             blocks: vec![
                 Block::Paragraph(vec![Inline::FootnoteRef {
@@ -455,12 +460,13 @@ fn rename(
     index: &LineIndex,
     session_bytes: usize,
 ) -> Result<Json, Failure> {
+    let parser = inventory.parser;
     let source = &buffer.text;
     let other_buffer_bytes = session_bytes
         .checked_sub(source.len())
         .ok_or((-32803, "workspace exceeds the footnote rename budget"))?;
     let byte_budget = MAX_DOCUMENT_BYTES.min(MAX_SESSION_BYTES.saturating_sub(other_buffer_bytes));
-    if !valid_new_name(name) {
+    if !valid_new_name(parser, name) {
         return Err((
             -32602,
             "newName must be a parser-valid footnote label of 1..128 UTF-8 bytes",
@@ -502,7 +508,7 @@ fn rename(
         }
         Ok(())
     })?;
-    if parse_markdown(&amended) != expected {
+    if parser.parse(&amended) != expected {
         return Err((
             -32803,
             "new footnote label changes surrounding Markdown syntax",
@@ -545,6 +551,7 @@ fn rename(
 /// Footnotes are document-local, exact and case-sensitive, including dormant or
 /// unresolved references. Results use label-only ranges, never enclosing blocks.
 pub(super) fn request(
+    parser: Parser,
     method: &str,
     params: &Json,
     uri: &str,
@@ -568,7 +575,7 @@ pub(super) fn request(
         return Ok(None);
     }
     let candidates = candidates(source)?;
-    let mut inventory = Inventory::parse(source, candidates)?;
+    let mut inventory = Inventory::parse(parser, source, candidates)?;
     let Some(selected) = inventory
         .notes
         .iter()
@@ -624,7 +631,7 @@ pub(super) fn request(
         }
         "textDocument/prepareRename" | "textDocument/rename" => {
             let session_bytes =
-                check_rename_links(documents, uri, &mut inventory.document, &selected_id)?;
+                check_rename_links(parser, documents, uri, &mut inventory.document, &selected_id)?;
             if method == "textDocument/prepareRename" {
                 object([
                     ("range", range(&index, source, selected_range)),

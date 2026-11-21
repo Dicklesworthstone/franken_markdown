@@ -5,9 +5,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 
 use franken_markdown::book::validation::{AnchorKind, analyze_document_links};
-use franken_markdown::{Document, SourceSpan, parse_markdown_spanned};
+use franken_markdown::{Document, SourceSpan};
 
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
     number, object, position, string, text_field,
 };
@@ -81,6 +82,7 @@ fn rank(title: &str, anchor: &str, uri: &str, query: &str, terms: &[&str]) -> Op
 }
 
 pub(super) fn request(
+    parser: Parser,
     documents: &BTreeMap<String, Buffer>,
     params: &Json,
 ) -> Result<Json, Failure> {
@@ -121,7 +123,7 @@ pub(super) fn request(
         if !buffer.synchronized {
             continue;
         }
-        let parsed = parse_markdown_spanned(&buffer.text);
+        let parsed = parser.spanned(&buffer.text);
         let (spans, blocks): (Vec<_>, Vec<_>) = parsed
             .blocks
             .into_iter()

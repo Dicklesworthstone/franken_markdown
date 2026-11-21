@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use franken_markdown::parse_markdown;
 use super::super::{Phase, Server};
 use super::*;
 use franken_markdown::{Block, Inline};
@@ -280,6 +281,7 @@ fn hidden_note_links_do_not_consult_even_an_unsynchronized_remote_target() {
     let (source, offset) = marked("[^n]: [go](target.md#tar¦get)\n");
     // A resolver that would fail makes any accidental target lookup observable.
     let result = request_resolving(
+        Parser::default(),
         "textDocument/definition",
         &params(&source, offset),
         URI,
@@ -291,6 +293,7 @@ fn hidden_note_links_do_not_consult_even_an_unsynchronized_remote_target() {
     assert_eq!(result, Json::Null);
     // Keep a separate completion check: completion must apply the same visibility gate.
     let result = request_resolving(
+        Parser::default(),
         "textDocument/completion",
         &params(&source, offset),
         URI,

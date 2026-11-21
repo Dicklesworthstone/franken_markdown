@@ -10,6 +10,9 @@ use franken_markdown::mcp::{JsonValue as Json, parse_json, read_frame, write_fra
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "lsp_profiles/mod.rs"]
+mod profiles;
+
 #[test]
 fn real_path_completion_tracks_open_buffers_and_preserves_utf16_source_ranges() -> TestResult {
     let (status, replies) = session(&[

@@ -7,11 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use franken_markdown::parse::{DestinationSpan, destination_spans};
-use franken_markdown::{Block, Document, Inline, parse_markdown, transclude};
+use franken_markdown::parse::{DestinationSpan};
+use franken_markdown::{Block, Document, Inline, transclude};
 
 use super::workspace_links::FileKey;
 use super::{
+    Parser,
     Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, object,
     position, string,
 };
@@ -211,6 +212,7 @@ fn apply(source: &str, edits: &[Edit], limit: usize) -> Result<String, Failure> 
 }
 
 fn proven_roles(
+    parser: Parser,
     source: &str,
     original: &Document,
     existing: &BTreeSet<String>,
@@ -242,7 +244,7 @@ fn proven_roles(
         })
         .collect();
     let amended = apply(source, &edits, MAX_PROBE_BYTES)?;
-    let mut restored = parse_markdown(&amended);
+    let mut restored = parser.parse(&amended);
     walk_destinations(&mut restored.blocks, &mut |destination, role| {
         if let Some(&index) = markers.get(destination) {
             match role {
@@ -288,12 +290,13 @@ fn token_rewrite(
     }
 }
 
-fn no_active_includes(source: &str) -> Result<(), Failure> {
+fn no_active_includes(parser: Parser, source: &str) -> Result<(), Failure> {
     if transclude::has_includes(source)
-        && transclude::expand_includes_with_limit(
+        && transclude::expand_includes_with_limit_and_profile(
             source,
             &|_, _| Err("file rename does not resolve include sources".to_string()),
             MAX_DOCUMENT_BYTES,
+            parser.profile(),
         )
         .is_err()
     {
@@ -308,6 +311,7 @@ fn no_active_includes(source: &str) -> Result<(), Failure> {
 }
 
 pub(super) fn request(
+    parser: Parser,
     documents: &BTreeMap<String, Buffer>,
     params: &Json,
 ) -> Result<Json, Failure> {
@@ -329,14 +333,14 @@ pub(super) fn request(
             return Err((-32803, "workspace exceeds the file rename source budget"));
         }
         source_bytes += buffer.text.len();
-        no_active_includes(&buffer.text)?;
+        no_active_includes(parser, &buffer.text)?;
     }
     let mut budget = Budget::default();
     let mut owners = BTreeMap::new();
     let mut changes = Vec::new();
     for (origin, buffer) in documents {
         let source = &buffer.text;
-        let original = parse_markdown(source);
+        let original = parser.parse(source);
         let mut expected = original.clone();
         let mut existing = BTreeSet::new();
         let mut semantic_change = false;
@@ -363,12 +367,12 @@ pub(super) fn request(
             Ok(())
         })?;
         let mut edits = Vec::new();
-        let tokens = destination_spans(source);
+        let tokens = parser.destinations(source);
         budget.tokens += tokens.len();
         if budget.tokens > MAX_TOKENS {
             return Err((-32803, "file rename exceeds its source destination budget"));
         }
-        let roles = proven_roles(source, &original, &existing, &tokens)?;
+        let roles = proven_roles(parser, source, &original, &existing, &tokens)?;
         for (token, roles) in tokens.into_iter().zip(roles) {
             if let Some(destination) = token_rewrite(&plan, origin, &token, roles, &mut owners)? {
                 let text = token_text(source, &token, &destination)?;
@@ -387,7 +391,7 @@ pub(super) fn request(
         }
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         let amended = apply(source, &edits, MAX_DOCUMENT_BYTES)?;
-        if (semantic_change || !edits.is_empty()) && parse_markdown(&amended) != expected {
+        if (semantic_change || !edits.is_empty()) && parser.parse(&amended) != expected {
             return Err((
                 -32803,
                 "file rename cannot preserve every affected destination and surrounding Markdown",

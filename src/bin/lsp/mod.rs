@@ -8,6 +8,7 @@ mod heading_rename;
 mod label_completion;
 mod links;
 mod navigation;
+mod parser;
 mod reference_rename;
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,7 @@ use std::io::{self, BufRead, Write};
 use franken_markdown::mcp::{JsonValue as Json, parse_json, read_frame, write_frame};
 #[cfg(test)]
 use franken_markdown::parse_markdown_spanned;
+use parser::Parser;
 use text::{Buffer, LineIndex, MAX_DOCUMENT_BYTES, Position, integer};
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -103,6 +105,7 @@ struct Server {
     phase: Phase,
     documents: BTreeMap<String, Buffer>,
     diagnostics: workspace_diagnostics::Workspace,
+    parser: Parser,
     exit: Option<bool>,
     hierarchical_symbols: bool,
     folding_limit: Option<usize>,
@@ -147,6 +150,10 @@ impl Server {
             {
                 return vec![error(id, -32602, "initialize requires object params")];
             }
+            let parser = match Parser::initialize(message.get("params").unwrap_or(&Json::Null)) {
+                Ok(parser) => parser,
+                Err(reason) => return vec![error(id, -32602, reason)],
+            };
             let capabilities = message
                 .get("params")
                 .and_then(|p| p.get("capabilities"))
@@ -178,6 +185,7 @@ impl Server {
                     .and_then(|operations| operations.get("willRename"))
                     .and_then(Json::as_bool)
                     .unwrap_or(false);
+            self.parser = parser;
             self.phase = Phase::Running;
             return vec![response(
                 id,
@@ -275,7 +283,7 @@ impl Server {
         if let Some(id) = id {
             if method == "workspace/willRenameFiles" {
                 let result = if self.file_renames {
-                    file_rename::request(&self.documents, params)
+                    file_rename::request(self.parser, &self.documents, params)
                 } else {
                     Err((
                         -32601,
@@ -288,7 +296,7 @@ impl Server {
                 }];
             }
             if method == "workspace/symbol" {
-                return vec![match workspace_symbols::request(&self.documents, params) {
+                return vec![match workspace_symbols::request(self.parser, &self.documents, params) {
                     Ok(result) => response(id, result),
                     Err((code, reason)) => error(id, code, reason),
                 }];
@@ -337,7 +345,7 @@ impl Server {
             return Err((-32801, "document requires full-text resynchronization"));
         }
         if method == "textDocument/completion"
-            && let Some(result) = label_completion::request(params, &buffer.text)?
+            && let Some(result) = label_completion::request(self.parser, params, &buffer.text)?
         {
             return Ok(result);
         }
@@ -353,17 +361,17 @@ impl Server {
             if renaming && !self.versioned_edits {
                 return Err((-32601, "rename requires versioned documentChanges support"));
             }
-            if let Some(result) = footnotes::request(method, params, uri, buffer, &self.documents)?
+            if let Some(result) = footnotes::request(self.parser, method, params, uri, buffer, &self.documents)?
             {
                 return Ok(result);
             }
             if renaming {
                 if let Some(result) =
-                    reference_rename::request(method, params, uri, buffer, &self.documents)?
+                    reference_rename::request(self.parser, method, params, uri, buffer, &self.documents)?
                 {
                     return Ok(result);
                 }
-                return heading_rename::request(method, params, uri, buffer, &self.documents);
+                return heading_rename::request(self.parser, method, params, uri, buffer, &self.documents);
             }
         }
         if matches!(
@@ -373,9 +381,10 @@ impl Server {
                 | "textDocument/references"
                 | "textDocument/documentHighlight"
         ) {
-            return links::request_in_workspace(method, params, uri, &buffer.text, &self.documents);
+            return links::request_in_workspace(self.parser, method, params, uri, &buffer.text, &self.documents);
         }
         navigation::request(
+            self.parser,
             method,
             params,
             uri,
@@ -411,7 +420,7 @@ impl Server {
             synchronized: true,
         };
         self.documents.insert(uri.to_string(), buffer);
-        Ok(self.diagnostics.refresh(&self.documents, Some(uri)))
+        Ok(self.diagnostics.refresh(self.parser, &self.documents, Some(uri)))
     }
 
     fn change(&mut self, params: &Json) -> Result<Vec<Json>, &'static str> {
@@ -440,10 +449,10 @@ impl Server {
             changes,
             MAX_SESSION_BYTES.saturating_sub(other_bytes),
         ) {
-            Ok(()) => Ok(self.diagnostics.refresh(&self.documents, Some(uri))),
+            Ok(()) => Ok(self.diagnostics.refresh(self.parser, &self.documents, Some(uri))),
             Err(reason) if !buffer.synchronized => {
                 let mut replies = vec![log(reason), clear_diagnostics(uri)];
-                replies.extend(self.diagnostics.refresh(&self.documents, None));
+                replies.extend(self.diagnostics.refresh(self.parser, &self.documents, None));
                 Ok(replies)
             }
             Err(reason) => Err(reason),
@@ -455,7 +464,7 @@ impl Server {
         let uri = text_field(document, "uri")?;
         self.documents.remove(uri);
         let mut replies = vec![clear_diagnostics(uri)];
-        replies.extend(self.diagnostics.refresh(&self.documents, None));
+        replies.extend(self.diagnostics.refresh(self.parser, &self.documents, None));
         Ok(replies)
     }
 }

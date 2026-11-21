@@ -1,3 +1,4 @@
+use franken_markdown::parse::destination_spans;
 use super::super::{Phase, Position, Server, integer, number};
 use super::*;
 
@@ -106,7 +107,7 @@ fn changed(
     documents: &BTreeMap<String, Buffer>,
     moves: &[(&str, &str)],
 ) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
-    let result = request(documents, &params(moves)).map_err(|(_, reason)| reason)?;
+    let result = request(Parser::default(), documents, &params(moves)).map_err(|(_, reason)| reason)?;
     apply_changes(documents, &result)
 }
 
@@ -175,8 +176,8 @@ fn simultaneous_swaps_and_chains_do_not_reapply_a_move_or_depend_on_request_orde
     assert_eq!(swapped[a], "[B](A.md)\n");
     assert_eq!(swapped[b], "[A](B.md)\n");
     assert_eq!(
-        request(&documents, &params(&[(a, b), (b, a)])),
-        request(&documents, &params(&[(b, a), (a, b)]))
+        request(Parser::default(), &documents, &params(&[(a, b), (b, a)])),
+        request(Parser::default(), &documents, &params(&[(b, a), (a, b)]))
     );
     let chained = changed(&documents, &[(a, b), (b, c)])?;
     assert_eq!(chained[ROOT], "[A](B.md) [B](C.md)\n");
@@ -231,7 +232,7 @@ fn shared_and_unused_definitions_require_compatible_link_and_resource_edits() ->
     ] {
         let documents = buffers(&[(ROOT, source), ("file:///docs/guide.md", "# Guide\n")]);
         assert!(
-            request(&documents, &params(&moves))
+            request(Parser::default(), &documents, &params(&moves))
                 .err()
                 .is_some_and(|error| error.1.contains("incompatible")),
             "{source}"
@@ -292,6 +293,7 @@ fn closed_folder_endpoints_cannot_capture_aliases_or_overwrite_known_subtrees() 
     ]);
     assert!(
         request(
+            Parser::default(),
             &documents,
             &params(&[("file:///closed/folder/", "file:///docs/topic/")]),
         )
@@ -310,7 +312,7 @@ fn unopened_exact_targets_are_supported_but_unproven_aliases_are_refused() -> Te
         "[go](manual.md#intro)\n"
     );
     let documents = buffers(&[(ROOT, "[go](guide#intro)\n")]);
-    let error = request(&documents, &params(&moves))
+    let error = request(Parser::default(), &documents, &params(&moves))
         .err()
         .ok_or("an unopened alias must not be guessed")?;
     assert!(error.1.contains("target opened"));
@@ -320,7 +322,7 @@ fn unopened_exact_targets_are_supported_but_unproven_aliases_are_refused() -> Te
         ("file:///docs/guide/index.md", "# Intro\n"),
     ]);
     assert!(
-        request(&documents, &params(&moves))
+        request(Parser::default(), &documents, &params(&moves))
             .err()
             .is_some_and(|error| error.1.contains("ambiguous"))
     );
@@ -359,6 +361,7 @@ fn unicode_percent_encoding_and_entity_queries_preserve_exact_decoded_destinatio
     let source = "\u{feff}😀 [go](<chap&#116;er.md?view=1&amp;x=2&#35;caf%C3%A9> \"Keep\")\r\n";
     let documents = buffers(&[(ROOT, source)]);
     let result = request(
+        Parser::default(),
         &documents,
         &params(&[(
             "file:///docs/chapter.md",
@@ -421,6 +424,7 @@ fn affected_unmapped_autolinks_refuse_the_entire_edit_instead_of_returning_a_par
     let source = "[mapped](old.md)\n\n<file:///docs/old.md>\n";
     let documents = buffers(&[(ROOT, source)]);
     let error = request(
+        Parser::default(),
         &documents,
         &params(&[("file:///docs/old.md", "file:///docs/new.md")]),
     )
@@ -442,7 +446,7 @@ fn active_and_malformed_includes_are_refused_but_code_examples_are_safe() -> Tes
     ] {
         let documents = buffers(&[(ROOT, source)]);
         assert!(
-            request(&documents, &params(&moves))
+            request(Parser::default(), &documents, &params(&moves))
                 .err()
                 .is_some_and(|error| error.1.contains("transclusion")),
             "{source}"
@@ -467,7 +471,7 @@ fn stale_documents_aliases_and_known_resource_collisions_are_transactional_refus
         .ok_or("missing draft")?
         .synchronized = false;
     assert_eq!(
-        request(&documents, &params(&moves))
+        request(Parser::default(), &documents, &params(&moves))
             .err()
             .map(|error| error.0),
         Some(-32801)
@@ -477,7 +481,7 @@ fn stale_documents_aliases_and_known_resource_collisions_are_transactional_refus
         ("file://localhost/docs/README.md", "other revision"),
     ]);
     assert!(
-        request(&documents, &params(&moves))
+        request(Parser::default(), &documents, &params(&moves))
             .err()
             .is_some_and(|error| error.1.contains("aliases"))
     );
@@ -486,13 +490,13 @@ fn stale_documents_aliases_and_known_resource_collisions_are_transactional_refus
         ("file:///docs/new.md", "# Existing\n"),
     ]);
     assert!(
-        request(&documents, &params(&moves))
+        request(Parser::default(), &documents, &params(&moves))
             .err()
             .is_some_and(|error| error.1.contains("collides"))
     );
     let documents = buffers(&[(ROOT, "[old](old.md) ![existing](new.md)\n")]);
     assert!(
-        request(&documents, &params(&moves))
+        request(Parser::default(), &documents, &params(&moves))
             .err()
             .is_some_and(|error| error.1.contains("merge distinct"))
     );
@@ -522,18 +526,19 @@ fn request_validation_rejects_roots_overlaps_duplicate_identities_and_invalid_ur
             ("file:///docs/other.md", "file://localhost/new.md"),
         ],
     ] {
-        assert!(request(&documents, &params(&moves)).is_err(), "{moves:?}");
+        assert!(request(Parser::default(), &documents, &params(&moves)).is_err(), "{moves:?}");
     }
     assert_eq!(
-        request(&documents, &object([])).err().map(|error| error.0),
+        request(Parser::default(), &documents, &object([])).err().map(|error| error.0),
         Some(-32602)
     );
     assert_eq!(
-        request(&documents, &params(&[])).map_err(|(_, reason)| reason)?,
+        request(Parser::default(), &documents, &params(&[])).map_err(|(_, reason)| reason)?,
         Json::Null
     );
     assert_eq!(
         request(
+            Parser::default(),
             &documents,
             &params(&[("file:///docs/old.md", "file://localhost/docs/old.md")])
         )
@@ -557,7 +562,7 @@ fn operation_document_and_response_budgets_refuse_incomplete_changes() -> TestRe
             .collect(),
     );
     assert!(
-        request(&documents, &object([("files", files)]))
+        request(Parser::default(), &documents, &object([("files", files)]))
             .err()
             .is_some_and(|error| error.1.contains("128-operation"))
     );
@@ -565,6 +570,7 @@ fn operation_document_and_response_budgets_refuse_incomplete_changes() -> TestRe
     let documents = buffers(&[(ROOT, &oversized)]);
     assert!(
         request(
+            Parser::default(),
             &documents,
             &params(&[("file:///docs/old.md", "file:///docs/new.md")])
         )
@@ -575,6 +581,7 @@ fn operation_document_and_response_budgets_refuse_incomplete_changes() -> TestRe
     let documents = buffers(&[(ROOT, &source)]);
     assert!(
         request(
+            Parser::default(),
             &documents,
             &params(&[("file:///docs/old.md", "file:///docs/new.md")])
         )

@@ -51,6 +51,7 @@ fn search(
 ) -> Vec<Json> {
     array(
         request(
+            Parser::default(),
             "textDocument/references",
             &params(&documents[uri].text, needle, declaration),
             uri,
@@ -150,7 +151,7 @@ fn nested_heading_targets_keep_distinct_ids_even_when_their_source_owner_is_shar
 #[test]
 fn duplicate_heading_suffixes_follow_publication_instead_of_title_matching() {
     let source = "# Same\n\n# Same";
-    let snapshot = Snapshot::parse(source).unwrap();
+    let snapshot = Snapshot::parse(Parser::default(), source).unwrap();
     let first = snapshot
         .analysis
         .anchors
@@ -200,7 +201,7 @@ fn unicode_folded_reference_uses_share_the_parser_target_and_original_source_ran
     assert_eq!(rows, search(&docs, B, "ſ", false));
     assert_eq!(rows, search(&docs, A, "Topic", false));
     assert!(search(&docs, A, "Wrong", false).is_empty());
-    let spans = Snapshot::parse(source).unwrap().spans;
+    let spans = Snapshot::parse(Parser::default(), source).unwrap().spans;
     for (row, span) in rows.iter().zip(&spans) {
         assert_eq!(
             row.get("range"),
@@ -225,7 +226,7 @@ fn utf16_crlf_and_encoded_fragments_preserve_original_source_ranges() {
     let docs = documents(&[(A, source)]);
     let rows = search(&docs, A, "#caf%C3%A9", false);
     assert_eq!(starts(&rows), [(A.into(), 2), (A.into(), 4)]);
-    let spans = Snapshot::parse(source).unwrap().spans;
+    let spans = Snapshot::parse(Parser::default(), source).unwrap().spans;
     assert_eq!(
         rows[0].get("range"),
         Some(&range(&LineIndex::new(source), source, spans[1]))
@@ -244,7 +245,7 @@ fn utf16_crlf_and_encoded_fragments_preserve_original_source_ranges() {
         ),
     ]);
     assert_eq!(
-        request("textDocument/references", &invalid, A, &docs)
+        request(Parser::default(), "textDocument/references", &invalid, A, &docs)
             .unwrap_err()
             .0,
         -32602
@@ -257,12 +258,12 @@ fn stale_buffers_refuse_workspace_results_without_breaking_local_highlights() {
     docs.get_mut(B).unwrap().synchronized = false;
     let query = params(&docs[A].text, "Topic", false);
     assert_eq!(
-        request("textDocument/references", &query, A, &docs)
+        request(Parser::default(), "textDocument/references", &query, A, &docs)
             .unwrap_err()
             .0,
         -32801
     );
-    let rows = array(request("textDocument/documentHighlight", &query, A, &docs).unwrap());
+    let rows = array(request(Parser::default(), "textDocument/documentHighlight", &query, A, &docs).unwrap());
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get("kind").and_then(Json::as_u64), Some(3));
     assert_eq!(rows[1].get("kind").and_then(Json::as_u64), Some(2));
@@ -276,6 +277,7 @@ fn cross_buffer_highlights_return_only_current_document_usages() {
     ]);
     let rows = array(
         request(
+            Parser::default(),
             "textDocument/documentHighlight",
             &params(&docs[B].text, "a.md#topic", true),
             B,
@@ -302,7 +304,7 @@ fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
         }),
     )]);
     assert_eq!(
-        request("textDocument/references", &missing, A, &docs)
+        request(Parser::default(), "textDocument/references", &missing, A, &docs)
             .unwrap_err()
             .0,
         -32602
@@ -318,7 +320,7 @@ fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
         ("context", object([("includeDeclaration", string("true"))])),
     ]);
     assert_eq!(
-        request("textDocument/references", &invalid, A, &docs)
+        request(Parser::default(), "textDocument/references", &invalid, A, &docs)
             .unwrap_err()
             .0,
         -32602
@@ -326,7 +328,7 @@ fn malformed_context_and_unsynchronized_targets_return_protocol_errors() {
     docs.get_mut(A).unwrap().synchronized = false;
     let query = params(&docs[B].text, "a.md#topic", false);
     assert_eq!(
-        request("textDocument/references", &query, B, &docs)
+        request(Parser::default(), "textDocument/references", &query, B, &docs)
             .unwrap_err()
             .0,
         -32801
@@ -339,6 +341,7 @@ fn excessive_results_are_rejected_not_silently_truncated() {
     let docs = documents(&[(A, &source)]);
     assert_eq!(
         request(
+            Parser::default(),
             "textDocument/references",
             &params(&source, "Topic", false),
             A,

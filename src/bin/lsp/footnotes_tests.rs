@@ -37,6 +37,7 @@ fn call(
     let source = marked.replace('¦', "");
     let documents = BTreeMap::from([(URI.to_string(), buffer(&source))]);
     Ok(request(
+        Parser::default(),
         method,
         &params(&source, offset, name, declarations),
         URI,
@@ -147,7 +148,7 @@ fn references_keep_each_occurrence_and_exclude_other_case_and_unicode_spellings(
 fn nested_containers_notes_and_dormant_bodies_have_precise_symbols() -> TestResult {
     let source = "Root [^n].\n\n> Quote [^n].\n\n- List [^n].\n\n| Head | Other |\n| --- | --- |\n| [^n] | x |\n\nTerm\n: Definition [^n].\n\n[^n]: body\n\n    continuation [^n]\n\n[^unused]: dormant [^n]\n";
     let inventory =
-        Inventory::parse(source, candidates(source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
+        Inventory::parse(Parser::default(), source, candidates(source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
     let notes: Vec<_> = inventory
         .notes
         .iter()
@@ -272,6 +273,7 @@ fn rename_edits_are_local_versioned_and_leave_every_literal_byte_unchanged() -> 
         ),
     ]);
     let result = request(
+        Parser::default(),
         "textDocument/rename",
         &params(&source, offset, "猫😀", true),
         URI,
@@ -319,7 +321,7 @@ fn invalid_names_existing_names_and_context_changing_names_are_rejected() -> Tes
         );
     }
     let table = "| Header |\n| --- |\n| [^n¦] |\n\n[^n]: note\n";
-    assert!(valid_new_name("a|b"));
+    assert!(valid_new_name(Parser::default(), "a|b"));
     assert!(call("textDocument/rename", table, "a|b", true).is_err());
     let collision = "# fn-new\n\n[^n¦]\n\n[^n]: note\n";
     assert!(call("textDocument/rename", collision, "new", true).is_err());
@@ -365,6 +367,7 @@ fn cross_file_ordinary_anchor_links_and_stale_buffers_refuse_refactoring() -> Te
     for method in ["textDocument/prepareRename", "textDocument/rename"] {
         assert_eq!(
             request(
+                Parser::default(),
                 method,
                 &params(source, 2, "new", true),
                 URI,
@@ -383,6 +386,7 @@ fn cross_file_ordinary_anchor_links_and_stale_buffers_refuse_refactoring() -> Te
     other.synchronized = false;
     assert_eq!(
         request(
+            Parser::default(),
             "textDocument/rename",
             &params(source, 2, "new", true),
             URI,
@@ -396,6 +400,7 @@ fn cross_file_ordinary_anchor_links_and_stale_buffers_refuse_refactoring() -> Te
     // Read-only note navigation has no dependency on unrelated buffers.
     assert!(
         request(
+            Parser::default(),
             "textDocument/references",
             &params(source, 2, "new", true),
             URI,
@@ -425,11 +430,11 @@ fn a_large_namespace_uses_complete_bulk_provenance_and_limits_refuse_partial_res
 {
     let source = format!("{}\n\n[^n]: note\n", "[^n] ".repeat(1000));
     let inventory =
-        Inventory::parse(&source, candidates(&source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
+        Inventory::parse(Parser::default(), &source, candidates(&source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
     assert_eq!(inventory.notes.len(), 1001);
     let oversized = "[^n] ".repeat(MAX_SYMBOLS + 1);
     assert_eq!(
-        Inventory::parse(&oversized, candidates(&oversized).map_err(|(_, e)| e)?)
+        Inventory::parse(Parser::default(), &oversized, candidates(&oversized).map_err(|(_, e)| e)?)
             .err()
             .map(|(code, _)| code),
         Some(-32803)
@@ -458,7 +463,7 @@ fn request_coordinates_and_reference_context_are_validated() -> TestResult {
         ),
     ]);
     assert_eq!(
-        request("textDocument/definition", &bad, URI, buffer, &documents)
+        request(Parser::default(), "textDocument/definition", &bad, URI, buffer, &documents)
             .err()
             .map(|(code, _)| code),
         Some(-32602)
@@ -469,6 +474,7 @@ fn request_coordinates_and_reference_context_are_validated() -> TestResult {
     )]);
     assert_eq!(
         request(
+            Parser::default(),
             "textDocument/references",
             &no_context,
             URI,
@@ -481,6 +487,7 @@ fn request_coordinates_and_reference_context_are_validated() -> TestResult {
     );
     assert!(
         request(
+            Parser::default(),
             "textDocument/documentHighlight",
             &no_context,
             URI,
@@ -677,6 +684,7 @@ fn rename_honors_remaining_session_byte_budget() -> TestResult {
     // Each of two labels grows by three bytes; the second edit crosses the
     // session cap although the edited document is far below its own limit.
     let refused = request(
+        Parser::default(),
         "textDocument/rename",
         &params(source, 2, "longest", true),
         URI,
@@ -690,6 +698,7 @@ fn rename_honors_remaining_session_byte_budget() -> TestResult {
     // Exactly consuming the remaining budget and releasing bytes both work.
     for (name, remaining) in [("longer", 0), ("n", 10)] {
         let renamed = request(
+            Parser::default(),
             "textDocument/rename",
             &params(source, 2, name, true),
             URI,
@@ -725,6 +734,7 @@ fn possible_anchor_targets_through_open_uri_aliases_block_rename() -> TestResult
         for method in ["textDocument/prepareRename", "textDocument/rename"] {
             assert_eq!(
                 request(
+                    Parser::default(),
                     method,
                     &params(source, 2, "new", true),
                     URI,
@@ -742,6 +752,7 @@ fn possible_anchor_targets_through_open_uri_aliases_block_rename() -> TestResult
         documents.get_mut(alias).ok_or("alias")?.text = format!("{source}\n[see](#fn-n)\n");
         assert_eq!(
             request(
+                Parser::default(),
                 "textDocument/rename",
                 &params(source, 2, "new", true),
                 URI,
@@ -758,6 +769,7 @@ fn possible_anchor_targets_through_open_uri_aliases_block_rename() -> TestResult
         // ordinary anchor link depends on the renamed label.
         documents.get_mut(alias).ok_or("alias")?.text = source.to_string();
         let renamed = request(
+            Parser::default(),
             "textDocument/rename",
             &params(source, 2, "new", true),
             URI,
@@ -811,6 +823,7 @@ fn maximal_utf8_labels_remain_navigable_at_both_marker_edges() -> TestResult {
     let expected = source.rfind("[^").ok_or("definition")? + 2;
     for offset in [start, start + 1, start + 2, start + 2 + id.len()] {
         let definition = request(
+            Parser::default(),
             "textDocument/definition",
             &params(&source, offset, "unused", false),
             URI,

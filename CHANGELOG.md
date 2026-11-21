@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The language server accepts `initializationOptions.profile` to match the
+  CommonMark/GFM or GFM Plus grammar used for publication. The immutable session
+  profile reaches diagnostics, symbols, folding, selections, completion,
+  cross-document navigation and every rename proof. Invalid explicit profiles
+  fail before initialization; omitted settings retain the existing grammar.
 - Persistent Flow sessions accept an explicit CommonMark/GFM or GFM Plus
   dialect before parsing. The selected grammar survives edits, asset reloads,
   reflow and source replacement; dependency reuse and browser read receipts

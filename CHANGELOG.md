@@ -9,8 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-21
+
+A feature and reliability release (240+ commits since 0.7.0) shipping
+`franken_markdown` 0.8.0, `fmd-font` 0.5.0, `fmd-math` 0.4.0, and the verified
+browser/WASM package `@franken-suite/franken-markdown` 0.8.0. GitHub release
+binaries are built via DSR for x86_64 and aarch64 Linux (`gnu`, glibc 2.28
+floor), x86_64 and aarch64 macOS, and x86_64 Windows (`msvc`), alongside the
+qualified browser/WASM package tarball (`franken-suite-franken-markdown-0.8.0.tgz`).
+
+All three Rust crates declare and pass `rust-version = "1.88"` for the core
+library, `fmd-font`, `fmd-math`, and default `fmd` CLI (Cargo refuses Rust 1.85
+cleanly); enabling the optional `batch` feature requires Rust 1.95 or newer due
+to its `asupersync` dependency graph ([#18](https://github.com/Dicklesworthstone/franken_markdown/issues/18)).
+The independent `fuzz/Cargo.lock` lockfile is refreshed and verified under
+`cargo build --locked` and bounded fuzz smoke runs ([#19](https://github.com/Dicklesworthstone/franken_markdown/issues/19)).
+
+`fmd batch`, `fmd mcp` and `fmd-lsp` exist only in builds with the cargo
+features `batch`, `mcp` and `lsp`; the entries for them apply to such builds.
+The iOS app (`ios/`) is not shipped.
+
 ### Added
 
+- Native Mermaid `timeline` diagrams render across HTML, PDF, SVG posters, EPUB
+  and measured Flow output with titles, sections, periods, multiple and
+  continuation events, safe entities, line breaks and cluster-aware wrapping,
+  falling back to complete source on unsupported syntax or resource limits.
+- The language server preserves synchronized opened include graphs during
+  `workspace/willRenameFiles`, rebasing literal include paths, selectors and
+  nested origins across file or directory moves with full authoring-profile
+  proofs.
+- The MCP server adds `fmd.render_svg` and `fmd.render_epub` tools for
+  in-memory Markdown sources with explicit fonts, images, authoring-profile
+  selection, creator metadata and deterministic base64 EPUB output.
+- `fmd-font` 0.5.0 adds bounded TTC/OTC font collection inspection and face
+  extraction, CID-keyed CFF1 support, HVAR/MVAR variable metrics and sparse
+  `gvar` tuple interpolation, cross-lookup GPOS kerning accumulation with
+  bounded lookup expansion, and shared canonical backing for bundled fonts.
+- `fmd-math` 0.4.0 adds explicit display equation labels (`\tag{...}` and
+  `\tag*{...}`), optical math fonts at declared sizes, EC text metrics with
+  caller text-kerning control, native inline pifont crosses, refined TeX
+  wide-hat/wide-tilde/over-arrow/underline metrics, and semantic MathML text
+  islands.
 - The language server accepts `initializationOptions.profile` to match the
   CommonMark/GFM or GFM Plus grammar used for publication. The immutable session
   profile reaches diagnostics, symbols, folding, selections, completion,
@@ -267,6 +307,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spaces, matching plain labels. Emphasis, code, entities and reference syntax
   no longer erase word separation inside labels; paragraph-end trimming and
   editable destination spans retain their existing behavior.
+
+### Changed
+
+- Refreshed workspace dependencies (`Cargo.lock`), pinned `wasm-bindgen =0.2.130`,
+  and refreshed `fuzz/Cargo.lock` so `cargo build --manifest-path fuzz/Cargo.toml --bins --locked`
+  succeeds cleanly with zero security advisories ([#19](https://github.com/Dicklesworthstone/franken_markdown/issues/19)).
+- Updated PDF golden and quote-geometry snapshots for semantic `/Lbl` list
+  labels and cross-lookup GPOS kerning accumulation.
+- Adjusted WASM package raw size budget check to 8.6 MB while keeping the
+  compressed gzip budget at 3.4 MB (0.8.0 measures 3.29 MB gzip, 93.6 KiB
+  smaller than 0.6.0).
 
 ## [0.7.0] - 2026-11-03
 

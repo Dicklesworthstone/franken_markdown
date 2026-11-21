@@ -17,6 +17,8 @@ mod epub_metadata;
 mod epub_notes;
 #[path = "epub/theme.rs"]
 mod epub_theme;
+#[path = "epub/timeline.rs"]
+mod epub_timeline;
 #[path = "../src/zip.rs"]
 mod zip;
 

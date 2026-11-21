@@ -4,7 +4,8 @@ Mermaid fences use the same first-party SVG compiler in HTML, PDF, SVG posters,
 and EPUB. Rendering does not load Mermaid.js, execute scripts, or contact the
 network. Flowcharts (`graph`/`flowchart`), state diagrams
 (`stateDiagram`/`stateDiagram-v2`), class diagrams (`classDiagram`), entity-relationship
-diagrams (`erDiagram`), sequence diagrams (`sequenceDiagram`), and pie charts are supported. Other diagram types retain their source as a
+diagrams (`erDiagram`), sequence diagrams (`sequenceDiagram`), pie charts, and
+timelines (`timeline`) are supported. Other diagram types retain their source as a
 highlighted code block.
 
 ## Flowcharts
@@ -380,3 +381,72 @@ paths with bundled-font labels and preserves selectable diagram source; see
 
 The supported pie grammar follows the [official Mermaid pie syntax](https://mermaid.js.org/syntax/pie.html).
 See [the example document](../examples/pie-charts.md) for ready-to-render input.
+
+## Timelines
+
+````markdown
+```mermaid
+timeline
+    title Release roadmap
+    section Research
+    Week 1 : Interview users : Compare approaches
+    Week 2 : Build a prototype
+           : Review findings
+    section Delivery
+    Week 3 : Test the release<br>Fix blocking issues
+    Week 4 : Publish : Monitor feedback
+```
+````
+
+The `timeline` header is required, including inside an explicitly named
+`timeline` fence. A bare header and `timeline LR` lay out periods from left to
+right. `timeline TD` lays them out from top to bottom, with event cards beside
+their period. Period labels are arbitrary text, not parsed dates; their source
+order determines the order on the time axis. Repeated period labels remain
+distinct entries.
+
+Each period line contains its label, a colon, and one or more nonempty events
+separated by colons. A following line beginning with `:` adds events to that
+period. `section Name` starts a group whose periods share a color and a visible
+section band. Without sections, successive periods receive successive colors.
+A continuation cannot cross a section boundary, and every section must contain
+a period. A single optional `title` is displayed above the diagram. Blank lines
+and whole-line `%%` comments are ignored; `%%` within a label remains text.
+
+Labels wrap inside their cards. `<br>`, `<br/>`, and `<br />` introduce explicit
+line breaks, including blank lines. Encode a literal colon as `#58;`, `&#58;`,
+or `&#x3a;` so it does not begin another event. Named character references such
+as `&amp;` and `#infin;` are also decoded as text. Other markup is escaped;
+decoded markup is never interpreted as HTML or as another line break.
+Nonbreaking spaces and word joiners retain their meaning. Ordinary long words
+wrap at character-cluster boundaries, preserving combining marks and joined
+sequences; a single cluster or nonbreaking phrase wider than its card retains
+the complete source block instead of clipping text.
+
+All publication formats use this same native vector figure. PDF embeds vector
+paths and text with a figure tag, SVG posters embed the generated SVG, and EPUB
+includes inline SVG with the corresponding manifest property. Flow uses native
+paths and shaped text while keeping the original diagram source selectable.
+Labels must be supported by the active bundled or host shaping profile; a
+refused label preserves the whole source instead of publishing part of a
+figure. The SVG's title and description retain the title, section labels,
+periods, and every event in order.
+
+Admission is bounded to 64 KiB of source, 64 periods, 256 events, 32 sections,
+1024 UTF-8 bytes per source label or title, and 2048 wrapped text lines. A group
+of periods before the first named section counts toward the section limit.
+The generated canvas must also fit the shared SVG image limits: at most 16,384
+pixels on either side and 100,000,000 intrinsic pixels in total. These limits
+apply together, so a particularly tall or wide timeline can reach the canvas
+limit before exhausting the event count.
+
+Malformed or empty events, orphan continuations, empty sections, unsupported
+directions, and exceeded limits retain the **entire source block**. Mermaid
+frontmatter and initialization/configuration directives, custom styles and
+classes, interactions, and `accTitle`/`accDescr` metadata are outside this
+subset and likewise retain source. An explicitly named `timeline` fence owns
+its grammar: a different diagram header inside it does not reinterpret the
+block as another diagram type.
+
+The supported grammar follows the [official Mermaid timeline syntax](https://mermaid.js.org/syntax/timeline.html),
+including the `LR` and `TD` directions documented in Mermaid 11.14 and later.

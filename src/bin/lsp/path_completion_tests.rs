@@ -31,8 +31,15 @@ fn call_in(uri: &str, marked: &str, documents: &BTreeMap<String, Buffer>) -> (St
             position(LineIndex::new(&source).position(&source, offset)),
         ),
     ]);
-    let result = request_in_workspace(Parser::default(), "textDocument/completion", &params, uri, &source, documents)
-        .expect("completion request");
+    let result = request_in_workspace(
+        Parser::default(),
+        "textDocument/completion",
+        &params,
+        uri,
+        &source,
+        documents,
+    )
+    .expect("completion request");
     (source, result)
 }
 

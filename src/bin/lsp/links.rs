@@ -6,12 +6,11 @@
 //! No source search is mistaken for parser provenance; no URI is ever opened.
 
 use franken_markdown::book::validation::{AnchorKind, ReferenceKind, analyze_document_links};
-use franken_markdown::{Document, SourceSpan, };
+use franken_markdown::{Document, SourceSpan};
 
 use super::{
-    Parser,
-    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, Position, number, object, position, string,
-    workspace_links,
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, Parser, Position, number, object, position,
+    string, workspace_links,
 };
 use std::collections::BTreeMap;
 
@@ -87,7 +86,12 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
 /// punctuation, balanced parentheses, spaces in angle destinations and URLs on
 /// continuation lines use the core parser's exact source token. Either path
 /// must still prove one emitted Link and restore the complete original AST.
-fn parsed_candidate(parser: Parser, source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
+fn parsed_candidate(
+    parser: Parser,
+    source: &str,
+    span: SourceSpan,
+    offset: usize,
+) -> Option<Token> {
     if let Some(token) = candidate(source, span, offset) {
         let complete_token = match source.as_bytes().get(token.end) {
             Some(b'>') if token.angle => true,
@@ -493,7 +497,12 @@ impl DefinitionSource<'_> {
 
 // Resolve against the target's own emitted anchors and source owners, not
 // headings merged across buffers. IDs and ambiguity come from the core analyzer.
-fn remote_definition(parser: Parser, uri: &str, source: &str, destination: &str) -> Result<Json, Failure> {
+fn remote_definition(
+    parser: Parser,
+    uri: &str,
+    source: &str,
+    destination: &str,
+) -> Result<Json, Failure> {
     let index = LineIndex::new(source);
     let fragment = destination
         .split_once('#')

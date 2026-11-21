@@ -912,7 +912,7 @@ mod tests {
     fn unsupported_or_excessive_source_is_refused_as_a_complete_figure() {
         for source in [
             "gantt\ntitle Schedule\nsection Rendering\nCompile :2026-01-01, 1d",
-            "graph TD\nA-->B\nsubgraph hidden\nC-->D\nend",
+            "graph TD\nA-->B\nsubgraph hidden\ndirection LR\nC-->D\nend",
             "%%{init: {}}%%\ngraph TD\nA-->B",
         ] {
             assert!(compile(source, "mermaid").is_err());

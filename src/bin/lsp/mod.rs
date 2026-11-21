@@ -296,10 +296,12 @@ impl Server {
                 }];
             }
             if method == "workspace/symbol" {
-                return vec![match workspace_symbols::request(self.parser, &self.documents, params) {
-                    Ok(result) => response(id, result),
-                    Err((code, reason)) => error(id, code, reason),
-                }];
+                return vec![
+                    match workspace_symbols::request(self.parser, &self.documents, params) {
+                        Ok(result) => response(id, result),
+                        Err((code, reason)) => error(id, code, reason),
+                    },
+                ];
             }
             if matches!(
                 method,
@@ -361,17 +363,30 @@ impl Server {
             if renaming && !self.versioned_edits {
                 return Err((-32601, "rename requires versioned documentChanges support"));
             }
-            if let Some(result) = footnotes::request(self.parser, method, params, uri, buffer, &self.documents)?
+            if let Some(result) =
+                footnotes::request(self.parser, method, params, uri, buffer, &self.documents)?
             {
                 return Ok(result);
             }
             if renaming {
-                if let Some(result) =
-                    reference_rename::request(self.parser, method, params, uri, buffer, &self.documents)?
-                {
+                if let Some(result) = reference_rename::request(
+                    self.parser,
+                    method,
+                    params,
+                    uri,
+                    buffer,
+                    &self.documents,
+                )? {
                     return Ok(result);
                 }
-                return heading_rename::request(self.parser, method, params, uri, buffer, &self.documents);
+                return heading_rename::request(
+                    self.parser,
+                    method,
+                    params,
+                    uri,
+                    buffer,
+                    &self.documents,
+                );
             }
         }
         if matches!(
@@ -381,7 +396,14 @@ impl Server {
                 | "textDocument/references"
                 | "textDocument/documentHighlight"
         ) {
-            return links::request_in_workspace(self.parser, method, params, uri, &buffer.text, &self.documents);
+            return links::request_in_workspace(
+                self.parser,
+                method,
+                params,
+                uri,
+                &buffer.text,
+                &self.documents,
+            );
         }
         navigation::request(
             self.parser,
@@ -420,7 +442,9 @@ impl Server {
             synchronized: true,
         };
         self.documents.insert(uri.to_string(), buffer);
-        Ok(self.diagnostics.refresh(self.parser, &self.documents, Some(uri)))
+        Ok(self
+            .diagnostics
+            .refresh(self.parser, &self.documents, Some(uri)))
     }
 
     fn change(&mut self, params: &Json) -> Result<Vec<Json>, &'static str> {
@@ -449,7 +473,9 @@ impl Server {
             changes,
             MAX_SESSION_BYTES.saturating_sub(other_bytes),
         ) {
-            Ok(()) => Ok(self.diagnostics.refresh(self.parser, &self.documents, Some(uri))),
+            Ok(()) => Ok(self
+                .diagnostics
+                .refresh(self.parser, &self.documents, Some(uri))),
             Err(reason) if !buffer.synchronized => {
                 let mut replies = vec![log(reason), clear_diagnostics(uri)];
                 replies.extend(self.diagnostics.refresh(self.parser, &self.documents, None));

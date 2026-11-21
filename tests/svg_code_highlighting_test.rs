@@ -191,7 +191,7 @@ fn diagrams_keep_priority_and_unrecognized_diagrams_keep_complete_code() {
     assert_eq!(diagram, render(&code_document(source, None), &options));
     assert!(diagram.2.is_empty());
     assert!(diagram.0.contains("data:image/svg+xml;base64,"));
-    let unsupported = "classDiagram\n class Member {\n +String name\n }\n";
+    let unsupported = "gantt\n title Schedule\n section Build\n Compile :2026-01-01, 1d\n";
     let colored = render(&code_document(unsupported, Some("mermaid")), &options);
     let plain = render(
         &code_document(unsupported, Some("unknown-language")),

@@ -147,8 +147,12 @@ fn references_keep_each_occurrence_and_exclude_other_case_and_unicode_spellings(
 #[test]
 fn nested_containers_notes_and_dormant_bodies_have_precise_symbols() -> TestResult {
     let source = "Root [^n].\n\n> Quote [^n].\n\n- List [^n].\n\n| Head | Other |\n| --- | --- |\n| [^n] | x |\n\nTerm\n: Definition [^n].\n\n[^n]: body\n\n    continuation [^n]\n\n[^unused]: dormant [^n]\n";
-    let inventory =
-        Inventory::parse(Parser::default(), source, candidates(source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
+    let inventory = Inventory::parse(
+        Parser::default(),
+        source,
+        candidates(source).map_err(|(_, e)| e)?,
+    )
+    .map_err(|(_, e)| e)?;
     let notes: Vec<_> = inventory
         .notes
         .iter()
@@ -429,14 +433,22 @@ fn prepared_range_matches_rename_and_same_name_is_a_noop() -> TestResult {
 fn a_large_namespace_uses_complete_bulk_provenance_and_limits_refuse_partial_results() -> TestResult
 {
     let source = format!("{}\n\n[^n]: note\n", "[^n] ".repeat(1000));
-    let inventory =
-        Inventory::parse(Parser::default(), &source, candidates(&source).map_err(|(_, e)| e)?).map_err(|(_, e)| e)?;
+    let inventory = Inventory::parse(
+        Parser::default(),
+        &source,
+        candidates(&source).map_err(|(_, e)| e)?,
+    )
+    .map_err(|(_, e)| e)?;
     assert_eq!(inventory.notes.len(), 1001);
     let oversized = "[^n] ".repeat(MAX_SYMBOLS + 1);
     assert_eq!(
-        Inventory::parse(Parser::default(), &oversized, candidates(&oversized).map_err(|(_, e)| e)?)
-            .err()
-            .map(|(code, _)| code),
+        Inventory::parse(
+            Parser::default(),
+            &oversized,
+            candidates(&oversized).map_err(|(_, e)| e)?
+        )
+        .err()
+        .map(|(code, _)| code),
         Some(-32803)
     );
     let literals = format!("`{}`", "[^n] ".repeat(MAX_CANDIDATES + 1));
@@ -463,9 +475,16 @@ fn request_coordinates_and_reference_context_are_validated() -> TestResult {
         ),
     ]);
     assert_eq!(
-        request(Parser::default(), "textDocument/definition", &bad, URI, buffer, &documents)
-            .err()
-            .map(|(code, _)| code),
+        request(
+            Parser::default(),
+            "textDocument/definition",
+            &bad,
+            URI,
+            buffer,
+            &documents
+        )
+        .err()
+        .map(|(code, _)| code),
         Some(-32602)
     );
     let no_context = object([(

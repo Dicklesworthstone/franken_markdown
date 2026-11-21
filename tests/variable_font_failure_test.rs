@@ -172,8 +172,7 @@ fn existing_svg_and_epub_refuse_the_same_uninstantiable_font() {
             &fonts,
             &[],
         )
-        .err()
-        .expect("SVG already refuses a failed instance"),
+        .expect_err("SVG already refuses a failed instance"),
         franken_markdown::render_epub(
             &document,
             &HtmlOptions {
@@ -181,8 +180,7 @@ fn existing_svg_and_epub_refuse_the_same_uninstantiable_font() {
                 ..HtmlOptions::default()
             },
         )
-        .err()
-        .expect("EPUB already refuses a failed instance"),
+        .expect_err("EPUB already refuses a failed instance"),
     ] {
         assert!(matches!(error, RenderError::InvalidInput(_)), "{error}");
         assert!(error.to_string().contains("body-regular"), "{error}");

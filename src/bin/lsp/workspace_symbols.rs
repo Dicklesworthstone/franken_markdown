@@ -8,9 +8,8 @@ use franken_markdown::book::validation::{AnchorKind, analyze_document_links};
 use franken_markdown::{Document, SourceSpan};
 
 use super::{
-    Parser,
-    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
-    number, object, position, string, text_field,
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Parser,
+    Position, number, object, position, string, text_field,
 };
 
 const MAX_RESULTS: usize = 256;

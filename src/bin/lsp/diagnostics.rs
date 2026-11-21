@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use franken_markdown::book::validation::{DocumentLinkAnalysis, analyze_document_links};
 use franken_markdown::{DiagnosticSeverity, Document, SourceSpan};
 
-use super::{Parser, Buffer, Json, LineIndex, notification, number, object, position, string};
+use super::{Buffer, Json, LineIndex, Parser, notification, number, object, position, string};
 
 pub(super) const MAX_DIAGNOSTICS: usize = 1024;
 const MAX_MESSAGE_CHARS: usize = 512;
@@ -171,9 +171,9 @@ fn publish(uri: &str, buffer: &Buffer) -> Json {
 
 #[cfg(test)]
 mod tests {
-    use franken_markdown::parse_markdown_spanned;
     use super::super::{Phase, Server, parse_json};
     use super::*;
+    use franken_markdown::parse_markdown_spanned;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

@@ -11,14 +11,12 @@ use std::ops::Range;
 use franken_markdown::book::validation::{
     AnchorKind, DocumentLinkAnalysis, analyze_document_links,
 };
-use franken_markdown::parse::{DestinationSpan};
-use franken_markdown::{
-    Block, Document, Inline, SourceSpan, };
+use franken_markdown::parse::DestinationSpan;
+use franken_markdown::{Block, Document, Inline, SourceSpan};
 
 use super::{
-    Parser,
-    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
-    object, position, string, workspace_links,
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Parser,
+    Position, object, position, string, workspace_links,
 };
 
 type Failure = (i32, &'static str);

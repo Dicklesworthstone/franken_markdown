@@ -78,11 +78,21 @@ log_check() {
 #          accents and typeset display math. Release v0.5.0 ratchet; parity and
 #          smoke gates are unchanged and pass. Trimming is a follow-up.
 #
+#   0.8.0 (Mermaid diagrams, optical math faces, TTC/OTC, CID CFF1, dialects)
+#          measured raw=8,437,739 gzip=3,291,091 (wasm-bindgen 0.2.130)
+#          budget 8,600,000 / 3,400,000 (+735,927 raw / +16,317 gzip vs 0.5.0,
+#          and -93,649 gzip vs 0.6.0's 3,384,740 gzip).
+#          Shipped contributors added across 0.6.0-0.8.0: optical CM math faces,
+#          TTC/OTC extraction, CID-keyed CFF1, HVAR/MVAR variable fonts, native
+#          Mermaid flowcharts/subgraphs/state/class/ER/timeline compilers,
+#          authoring-dialect selection, and Flow EPUB/SVG publishing.
+#          Gzip transfer budget (3,400,000) remains unchanged and passes.
+#
 # PREVIOUS_* is the last ratchet's *measured* size (signed delta in the log).
 # Update PREVIOUS_* and BUDGET_* together.
-PREVIOUS_RAW=7701812
-PREVIOUS_GZIP=3274774
-BUDGET_RAW=7900000
+PREVIOUS_RAW=8437739
+PREVIOUS_GZIP=3291091
+BUDGET_RAW=8600000
 BUDGET_GZIP=3400000
 
 target="wasm32-unknown-unknown"

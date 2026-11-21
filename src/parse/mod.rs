@@ -9316,31 +9316,41 @@ mod refdef_paragraph_tests {
 
     #[test]
     fn a_boundary_def_before_an_ordered_marker_inside_a_blockquote_keeps_both() {
-        // 2nd-review regression: a boundary ref-def resets the collector's paragraph
-        // state, so a following non-interrupting ordered marker inside the same
-        // blockquote is a list at a boundary and its nested def is still collected.
-        // Previously the def line was misread as open paragraph text, the list was
-        // skipped as a lazy continuation, and the second def was silently dropped
-        // (the block parser stripped it, leaving the use unresolved).
+        // CommonMark 0.31.2: a leading reference definition does not end the
+        // paragraph it begins, so an immediately following non-`1.` ordered
+        // marker stays literal paragraph content rather than starting a list.
         let out = html("> [a]: /x\n> 2. [b]: /y\n\n[a] and [b]");
         assert!(out.contains("href=\"/x\""), "first def resolves: {out}");
         assert!(
-            out.contains("href=\"/y\""),
-            "second (nested) def resolves: {out}"
+            !out.contains("href=\"/y\"") && out.contains("<p>2. [b]: /y</p>"),
+            "no-blank non-1 ordered marker stays literal paragraph text: {out}"
         );
-        // Same shape with a table between the def and the marker (also resets state).
+        // With an explicit blank line inside the blockquote, `2.` starts a
+        // real ordered list at a block boundary and its nested def resolves.
+        let blank_sep = html("> [a]: /x\n>\n> 2. [b]: /y\n\n[a] and [b]");
+        assert!(
+            blank_sep.contains("href=\"/x\"") && blank_sep.contains("href=\"/y\""),
+            "blank-separated nested def resolves: {blank_sep}"
+        );
+        // Same shape with a table between the def and the marker (resets state).
         let t = html("> [a]: /x\n> | h |\n> | - |\n> 2. [b]: /y\n\n[a] and [b]");
         assert!(
             t.contains("href=\"/x\"") && t.contains("href=\"/y\""),
             "{t}"
         );
-        // The boundary def may carry its title on the next line; both lines are
-        // skipped (the two-line form) so the following ordered marker is still at a
-        // boundary and its nested def resolves.
+        // Two-line titled refdef without a blank line keeps the following `2.`
+        // marker in the same paragraph; with a blank line, both resolve.
         let titled = html("> [a]: /x\n> \"title for a\"\n> 2. [b]: /y\n\n[a] and [b]");
         assert!(
-            titled.contains("title=\"title for a\"") && titled.contains("href=\"/y\""),
+            titled.contains("title=\"title for a\"")
+                && !titled.contains("href=\"/y\"")
+                && titled.contains("<p>2. [b]: /y</p>"),
             "{titled}"
+        );
+        let titled_blank = html("> [a]: /x\n> \"title for a\"\n>\n> 2. [b]: /y\n\n[a] and [b]");
+        assert!(
+            titled_blank.contains("title=\"title for a\"") && titled_blank.contains("href=\"/y\""),
+            "{titled_blank}"
         );
     }
 }

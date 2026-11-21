@@ -1,6 +1,6 @@
-use franken_markdown::parse_markdown;
 use super::super::{Phase, Server, notification};
 use super::*;
+use franken_markdown::parse_markdown;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const URI: &str = "file:///docs/reference.md";

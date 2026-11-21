@@ -18,7 +18,9 @@ fn document(source: &str) -> Document {
     assert_eq!(parse_markdown_profiled(source).document, document);
     assert_eq!(parse_markdown_spanned(source).to_document(), document);
     assert_eq!(
-        parse_markdown_spanned_profiled(source).document.to_document(),
+        parse_markdown_spanned_profiled(source)
+            .document
+            .to_document(),
         document
     );
     document
@@ -115,8 +117,7 @@ fn consecutive_multiline_definitions_preserve_their_shared_paragraph() {
 #[test]
 fn indented_leading_definitions_and_titles_keep_reference_authority() {
     for indent in ["    ", "        ", "\t"] {
-        let source =
-            format!("[r]: /first\n{indent}\"Title\"\n{indent}[s]: /second\n\n[r] [s]\n");
+        let source = format!("[r]: /first\n{indent}\"Title\"\n{indent}[s]: /second\n\n[r] [s]\n");
         assert_eq!(
             fragment(&source),
             "<p><a href=\"/first\" title=\"Title\">r</a> <a href=\"/second\">s</a></p>\n"
@@ -181,7 +182,8 @@ fn setext_heading_requires_visible_text_after_the_reference_prefix() {
 
 #[test]
 fn continued_paragraph_keeps_original_crlf_unicode_source_ranges() {
-    let source = "\u{feff}[r]: /réal\r\n\t**café** [link](/café) [r]\r\n[fake]: /phantom\r\n\r\n[fake]\r\n";
+    let source =
+        "\u{feff}[r]: /réal\r\n\t**café** [link](/café) [r]\r\n[fake]: /phantom\r\n\r\n[fake]\r\n";
     let parsed = document(source);
     assert_eq!(parsed.blocks.len(), 2);
     assert!(

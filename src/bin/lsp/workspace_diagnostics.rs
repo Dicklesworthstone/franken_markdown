@@ -8,7 +8,7 @@ use franken_markdown::SourceSpan;
 use franken_markdown::book::validation::{DocumentLinkAnalysis, ReferenceKind};
 
 use super::diagnostics::{self, MAX_DIAGNOSTICS, Snapshot};
-use super::{Parser, Buffer, Json, LineIndex, workspace_links};
+use super::{Buffer, Json, LineIndex, Parser, workspace_links};
 
 type Issue = (&'static str, &'static str);
 const MAX_REFERENCE_WORK: usize = 32_768;

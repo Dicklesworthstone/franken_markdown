@@ -103,7 +103,7 @@ where
 }
 
 /// True iff two paths name the same existing on-disk file.
-#[cfg(feature = "batch")]
+#[cfg(all(test, feature = "batch"))]
 pub(crate) fn same_existing_file(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {

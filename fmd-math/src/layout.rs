@@ -2769,14 +2769,14 @@ impl Engine {
         // rule 18 must see the character, not the taller accent box, and
         // a subscript suppresses the character's italic correction as
         // usual. Keep the accent's existing position over the character.
-        if let Some(nucleus) = base.and_then(character_accent_nucleus) {
-            if self.lay_node(nucleus, ctx)?.char_glyph.is_some() {
-                let mut scripted = self.scripts(Some(nucleus), sub, sup, primes, ctx)?;
-                scripted.boxx.height = scripted.boxx.height.max(base_laid.boxx.height);
-                scripted.boxx.depth = scripted.boxx.depth.max(base_laid.boxx.depth);
-                scripted.boxx.children[0].node = MNode::Box(base_laid.boxx);
-                return Ok(scripted);
-            }
+        if let Some(nucleus) = base.and_then(character_accent_nucleus)
+            && self.lay_node(nucleus, ctx)?.char_glyph.is_some()
+        {
+            let mut scripted = self.scripts(Some(nucleus), sub, sup, primes, ctx)?;
+            scripted.boxx.height = scripted.boxx.height.max(base_laid.boxx.height);
+            scripted.boxx.depth = scripted.boxx.depth.max(base_laid.boxx.depth);
+            scripted.boxx.children[0].node = MNode::Box(base_laid.boxx);
+            return Ok(scripted);
         }
         let base_is_char = base_laid.char_glyph.is_some() || base.is_none();
         let delta = base_laid.italic;

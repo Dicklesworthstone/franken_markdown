@@ -34,7 +34,7 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "fmd-font"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "fmd-fuzz"
@@ -47,14 +47,14 @@ dependencies = [
 
 [[package]]
 name = "fmd-math"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fmd-font",
 ]
 
 [[package]]
 name = "franken_markdown"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fmd-font",
  "fmd-math",

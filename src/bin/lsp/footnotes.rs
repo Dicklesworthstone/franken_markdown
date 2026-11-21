@@ -14,9 +14,8 @@ use franken_markdown::book::validation::{
 use franken_markdown::{Block, Document, Inline, SourceSpan};
 
 use super::{
-    Parser,
-    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Position,
-    number, object, position, string, workspace_links,
+    Buffer, Json, LineIndex, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS, MAX_SESSION_BYTES, Parser,
+    Position, number, object, position, string, workspace_links,
 };
 
 type Failure = (i32, &'static str);
@@ -286,7 +285,11 @@ impl Inventory {
                 })
             })
             .collect();
-        Ok(Self { parser, document, notes })
+        Ok(Self {
+            parser,
+            document,
+            notes,
+        })
     }
 }
 
@@ -630,8 +633,13 @@ pub(super) fn request(
             )
         }
         "textDocument/prepareRename" | "textDocument/rename" => {
-            let session_bytes =
-                check_rename_links(parser, documents, uri, &mut inventory.document, &selected_id)?;
+            let session_bytes = check_rename_links(
+                parser,
+                documents,
+                uri,
+                &mut inventory.document,
+                &selected_id,
+            )?;
             if method == "textDocument/prepareRename" {
                 object([
                     ("range", range(&index, source, selected_range)),

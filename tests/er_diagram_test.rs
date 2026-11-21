@@ -41,8 +41,10 @@ fn path_points(tag: &str) -> Vec<(f32, f32)> {
         .collect();
     assert_eq!(numbers.len() % 2, 0, "{tag}");
     numbers
-        .chunks_exact(2)
-        .map(|pair| (pair[0], pair[1]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[x, y]| (x, y))
         .collect()
 }
 

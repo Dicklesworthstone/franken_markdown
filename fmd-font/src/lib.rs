@@ -2363,8 +2363,10 @@ fn parse_coverage_glyphs_budgeted(
             budget.spend(count)?;
             Some(
                 bytes
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&pair| u16::from_be_bytes(pair))
                     .collect(),
             )
         }
@@ -3070,8 +3072,10 @@ fn parse_ligature_subst_budgeted(
             // declaration must not allocate its claimed maximum first.
             budget.spend(count + 1)?;
             let components = component_bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&pair| u16::from_be_bytes(pair))
                 .collect();
             rules.entry(first).or_default().push(LigRule {
                 components,
@@ -5593,7 +5597,7 @@ mod synthetic_font_tests {
     #[test]
     fn gsub_component_budget_is_shared_across_distinct_subtables() {
         let subtable = overlapping_ligature_components(140, 4096);
-        let one = gsub_ligatures_of(bounded_gsub_table(&[subtable.clone()]));
+        let one = gsub_ligatures_of(bounded_gsub_table(std::slice::from_ref(&subtable)));
         assert_eq!(one.rules[&10].len(), 140);
         assert_eq!(one.max_rule_len(), 4096);
         let mut input = vec![4096; 4096];

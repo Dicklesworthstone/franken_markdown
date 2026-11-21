@@ -3,10 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use franken_markdown::{
-    Block, HeadingSourceAnchor, SourceSpan, SpannedDocument};
+use franken_markdown::{Block, HeadingSourceAnchor, SourceSpan, SpannedDocument};
 
-use super::{Parser, Json, LineIndex, Position, number, object, position, string};
+use super::{Json, LineIndex, Parser, Position, number, object, position, string};
 
 pub const MAX_NAVIGATION_ITEMS: usize = 4096;
 const MAX_SELECTIONS: usize = 128;
@@ -344,7 +343,10 @@ mod tests {
 
     #[test]
     fn folding_respects_exclusive_end_crlf_and_client_limit() -> TestResult {
-        let navigation = Navigation::new(Parser::default(), "# A\r\nbody\r\n# B\r\n```\r\ncode\r\n```\r\n")?;
+        let navigation = Navigation::new(
+            Parser::default(),
+            "# A\r\nbody\r\n# B\r\n```\r\ncode\r\n```\r\n",
+        )?;
         assert_eq!(
             navigation.fold(navigation.section_span(&navigation.sections[0])),
             Some((0, 1))

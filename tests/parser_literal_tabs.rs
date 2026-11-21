@@ -9,7 +9,11 @@ use franken_markdown::{
 
 fn document(source: &str) -> Document {
     let document = parse_markdown(source);
-    assert_eq!(parse_markdown_profiled(source).document, document, "{source:?}");
+    assert_eq!(
+        parse_markdown_profiled(source).document,
+        document,
+        "{source:?}"
+    );
     assert_eq!(
         parse_markdown_spanned(source).to_document(),
         document,
@@ -55,8 +59,7 @@ fn fenced_makefile_recipes_keep_tabs_in_the_ast_and_copyable_html() {
         let source = format!("```\n{body}```\n");
         let parsed = document(&source);
         assert_eq!(code_blocks(&parsed), [body.as_str()]);
-        let html =
-            franken_markdown::html::render_fragment(&parsed.blocks, &HtmlOptions::default());
+        let html = franken_markdown::html::render_fragment(&parsed.blocks, &HtmlOptions::default());
         assert_eq!(html, format!("<pre><code>{body}</code></pre>\n"));
     }
 }
@@ -138,7 +141,9 @@ fn multiline_inline_literals_and_unicode_destination_spans_stay_aligned() {
         assert_eq!(spans[0].dest, "/réel#heading");
         assert_eq!(&source[spans[0].range.clone()], "/réel#heading");
         assert_eq!(
-            parse_markdown_spanned(&source).blocks[0].span.slice(&source),
+            parse_markdown_spanned(&source).blocks[0]
+                .span
+                .slice(&source),
             Some(source.trim_end_matches(['\r', '\n']))
         );
     }
@@ -152,8 +157,7 @@ fn nested_inline_code_keeps_tabs_without_promoting_its_hidden_link() {
         "Use [^n].\n\n[^n]: `α\n    \t[hidden](/wrong)\n    ω` [visible](/réel#heading)",
     ] {
         let parsed = document(source);
-        let html =
-            franken_markdown::html::render_fragment(&parsed.blocks, &HtmlOptions::default());
+        let html = franken_markdown::html::render_fragment(&parsed.blocks, &HtmlOptions::default());
         assert!(html.contains("\t[hidden](/wrong)"), "{html}");
         let spans = destination_spans(source);
         assert_eq!(spans.len(), 1, "{source:?}: {spans:?}");

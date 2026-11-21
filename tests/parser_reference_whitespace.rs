@@ -9,8 +9,8 @@ use franken_markdown::parse::{
     ReferenceLabelForm, destination_spans, parse_inlines, reference_label_spans,
 };
 use franken_markdown::{
-    Block, HtmlOptions, Inline, parse_markdown, parse_markdown_profiled,
-    parse_markdown_spanned, parse_markdown_spanned_profiled,
+    Block, HtmlOptions, Inline, parse_markdown, parse_markdown_profiled, parse_markdown_spanned,
+    parse_markdown_spanned_profiled,
 };
 
 fn text(value: &str) -> Inline {
@@ -102,11 +102,12 @@ fn reference_keys_and_exact_source_ranges_agree_across_parse_surfaces() {
     assert_eq!(parse_markdown_profiled(source).document, document);
     assert_eq!(parse_markdown_spanned(source).to_document(), document);
     assert_eq!(
-        parse_markdown_spanned_profiled(source).document.to_document(),
+        parse_markdown_spanned_profiled(source)
+            .document
+            .to_document(),
         document
     );
-    let html =
-        franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
+    let html = franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
     assert_eq!(html.matches("href=\"/ascii\"").count(), 1, "{html}");
     assert_eq!(html.matches("href=\"/unicode#part\"").count(), 2, "{html}");
     let labels = reference_label_spans(source);
@@ -141,7 +142,11 @@ fn multiline_titles_do_not_treat_unicode_content_as_blank_lines() {
             let source = format!("[ref]: /target{opening}\"{title}\"\n\n[label][ref]\n");
             assert_eq!(
                 parse_markdown(&source).blocks,
-                [Block::Paragraph(vec![link("label", "/target", Some(&title))])],
+                [Block::Paragraph(vec![link(
+                    "label",
+                    "/target",
+                    Some(&title)
+                )])],
                 "{source:?}"
             );
         }
@@ -163,8 +168,7 @@ fn ascii_blank_lines_still_reject_multiline_titles_and_empty_labels() {
 fn preserved_title_content_never_becomes_markup_or_an_editable_destination() {
     let source = "[ref]: /safe \"first\n\u{a0}\n<script>[hidden](/hidden)</script>&quot; onmouseover=&quot;x\"\n\n[label][ref]\n";
     let document = parse_markdown(source);
-    let html =
-        franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
+    let html = franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
     assert!(html.contains("href=\"/safe\""), "{html}");
     assert!(html.contains("&lt;script&gt;"), "{html}");
     assert!(!html.contains("<script>"), "{html}");

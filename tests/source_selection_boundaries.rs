@@ -88,13 +88,14 @@ fn caret_copy_returns_the_enclosing_markdown_block() -> Result<(), SourceMapErro
     let source = "Before\n\nA *styled* paragraph.\n\nAfter\n";
     let document = parse_markdown_spanned(source);
     let map = DocumentSourceMap::from_spanned_document(&document, source)?;
-    let expected = document.blocks[1]
-        .span
-        .slice(source)
-        .ok_or(SourceMapError::SourceOutOfBounds {
-            offset: document.blocks[1].span.end,
-            source_len: source.len(),
-        })?;
+    let expected =
+        document.blocks[1]
+            .span
+            .slice(source)
+            .ok_or(SourceMapError::SourceOutOfBounds {
+                offset: document.blocks[1].span.end,
+                source_len: source.len(),
+            })?;
     let offset =
         map.rendered_text()
             .find("styled")

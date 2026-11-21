@@ -27,7 +27,9 @@ fn fragment(source: &str, allow_raw_html: bool) -> String {
     assert_eq!(parse_markdown_profiled(source).document, document);
     assert_eq!(parse_markdown_spanned(source).to_document(), document);
     assert_eq!(
-        parse_markdown_spanned_profiled(source).document.to_document(),
+        parse_markdown_spanned_profiled(source)
+            .document
+            .to_document(),
         document
     );
     franken_markdown::html::render_fragment(

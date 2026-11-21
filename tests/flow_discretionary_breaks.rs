@@ -55,11 +55,17 @@ fn texts(display: &DisplayList) -> Vec<&DisplayTextRun> {
 }
 
 fn copied_text(display: &DisplayList) -> String {
-    texts(display).iter().map(|text| text.text.as_str()).collect()
+    texts(display)
+        .iter()
+        .map(|text| text.text.as_str())
+        .collect()
 }
 
 fn without_hints(source: &str) -> String {
-    source.chars().filter(|ch| !matches!(*ch, SHY | ZWSP)).collect()
+    source
+        .chars()
+        .filter(|ch| !matches!(*ch, SHY | ZWSP))
+        .collect()
 }
 
 fn shaped(visible: &str, style: FlowInlineStyle) -> OwnedTextRun {
@@ -279,17 +285,22 @@ fn an_isolated_linked_soft_hyphen_keeps_its_own_face_and_navigation() {
         ..FlowInlineStyle::default()
     };
     let hyphen = shaped("-", bold);
-    let width = shaped("banana", FlowInlineStyle::default()).total_advance
-        + hyphen.total_advance
-        + 0.01;
+    let width =
+        shaped("banana", FlowInlineStyle::default()).total_advance + hyphen.total_advance + 0.01;
     let narrow = render(source, width, true);
     let fragments = texts(&narrow);
-    let selected = fragments.iter().find(|text| text.text.contains(SHY)).unwrap();
+    let selected = fragments
+        .iter()
+        .find(|text| text.text.contains(SHY))
+        .unwrap();
     assert_eq!(selected.text, "\u{00ad}");
     assert_visible(selected.font_run.as_ref().unwrap(), &hyphen);
     assert_hyphen_owned_by_hint(selected);
     assert_eq!(copied_text(&narrow), "banana\u{00ad}land");
-    let links: Vec<_> = narrow.anchors().filter(|anchor| !anchor.is_heading).collect();
+    let links: Vec<_> = narrow
+        .anchors()
+        .filter(|anchor| !anchor.is_heading)
+        .collect();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].anchor_id, "#break");
     assert_eq!(links[0].bounds, selected.bounds);
@@ -368,7 +379,8 @@ fn leading_trailing_and_hint_only_text_never_invent_visible_hyphens() {
 
 #[test]
 fn wide_table_grid_uses_visible_widths_without_losing_authored_cell_text() {
-    let source = "| Te\u{00ad}rm | Meaning |\n| --- | --- |\n| **co\u{00ad}operate** | plain\u{200b}text |";
+    let source =
+        "| Te\u{00ad}rm | Meaning |\n| --- | --- |\n| **co\u{00ad}operate** | plain\u{200b}text |";
     let actual = render(source, 600.0, true);
     let expected = render(&without_hints(source), 600.0, true);
     let borders = |display: &DisplayList| {
@@ -416,7 +428,10 @@ fn bounded_hint_separated_spans_match_whole_context_in_prose_math_and_tables() {
             .to_styled_display_list(bounded, |text, size, role, style| {
                 longest_call = longest_call.max(text.len());
                 assert!(text.len() <= 96, "a work window exceeded its host budget");
-                assert!(!text.contains([SHY, ZWSP]), "prose controls leaked to the host");
+                assert!(
+                    !text.contains([SHY, ZWSP]),
+                    "prose controls leaked to the host"
+                );
                 fonts.shape(text, size, role, style)
             })
             .unwrap();
@@ -445,12 +460,16 @@ fn browser_selections_copy_original_hints_and_hit_tests_use_source_utf16() {
         let state = BrowserFlowSession::new(source, "sans", options(width)).unwrap();
         let display = render(source, width, true);
         assert_eq!(
-            state.copy_source(1, SourceSpan::new(0, source.len())).unwrap(),
+            state
+                .copy_source(1, SourceSpan::new(0, source.len()))
+                .unwrap(),
             source,
         );
         assert!(state.reading_json(1, 1, 0, 16).unwrap().contains(source));
         for (index, item) in display.items().iter().enumerate() {
-            let DisplayItem::Text(text) = item else { continue };
+            let DisplayItem::Text(text) = item else {
+                continue;
+            };
             let run = text.font_run.as_ref().unwrap();
             assert_source_clusters(text);
             let selected = state
@@ -478,8 +497,15 @@ fn browser_selections_copy_original_hints_and_hit_tests_use_source_utf16() {
                         .unwrap();
                     assert!(selected.contains(&format!("\"text\":\"{ch}\"")));
                 } else if ch.len_utf16() == 2 {
-                    assert!(state.select_item_json(1, 1, index, start, start + 1).is_err());
-                    assert!(run.caret_at_utf16(start + 1, CaretAffinity::Leading).is_none());
+                    assert!(
+                        state
+                            .select_item_json(1, 1, index, start, start + 1)
+                            .is_err()
+                    );
+                    assert!(
+                        run.caret_at_utf16(start + 1, CaretAffinity::Leading)
+                            .is_none()
+                    );
                 }
             }
         }
@@ -495,13 +521,11 @@ fn code_and_unrenderable_tex_keep_literal_control_bytes_at_the_host_boundary() {
     ] {
         let fonts = BundledFlowFonts::new(FontFamily::Sans).unwrap();
         let mut saw_literal = false;
-        let result = engine(source).to_styled_display_list(
-            options(800.0),
-            |text, size, role, style| {
+        let result =
+            engine(source).to_styled_display_list(options(800.0), |text, size, role, style| {
                 saw_literal |= text.contains(ZWSP);
                 fonts.shape(text, size, role, style)
-            },
-        );
+            });
         assert!(saw_literal, "literal bytes were projected away: {source:?}");
         assert!(matches!(result, Err(FlowLayoutError::Shaping(_))));
     }
@@ -545,7 +569,10 @@ fn hints_after_spaces_retain_word_breaks_even_in_their_own_styled_span() {
                         .take_while(|text| text.bounds.y == first_y)
                         .collect();
                     assert_eq!(
-                        first.iter().map(|text| text.text.as_str()).collect::<String>(),
+                        first
+                            .iter()
+                            .map(|text| text.text.as_str())
+                            .collect::<String>(),
                         format!("foo {hint}"),
                     );
                     let visible: Vec<_> = first
@@ -585,7 +612,11 @@ fn documents_without_hints_keep_plain_ligatures_and_math_fallback_placement() {
     let plain = render("of`f`ice", 800.0, false);
     let expected = shaped("office", FlowInlineStyle::default());
     let lines = texts(&plain);
-    assert_eq!(lines.len(), 1, "unstyled code boundaries must still coalesce");
+    assert_eq!(
+        lines.len(),
+        1,
+        "unstyled code boundaries must still coalesce"
+    );
     assert_eq!(lines[0].text, "office");
     assert_visible(lines[0].font_run.as_ref().unwrap(), &expected);
 
@@ -612,7 +643,11 @@ fn documents_without_hints_keep_plain_ligatures_and_math_fallback_placement() {
             .filter(|text| text.math_fallback.is_some())
             .collect();
         assert!(!fallback.is_empty());
-        assert!(fallback.iter().all(|text| text.font_size == options(width).code_size));
+        assert!(
+            fallback
+                .iter()
+                .all(|text| text.font_size == options(width).code_size)
+        );
     }
 }
 
@@ -620,7 +655,11 @@ fn documents_without_hints_keep_plain_ligatures_and_math_fallback_placement() {
 fn a_hyphen_that_does_not_fit_cannot_destroy_a_fitting_unbroken_ligature() {
     let expected = shaped("fi", FlowInlineStyle::default());
     let hyphenated = shaped("f-", FlowInlineStyle::default());
-    assert_eq!(expected.clusters.len(), 1, "fixture needs the real fi ligature");
+    assert_eq!(
+        expected.clusters.len(),
+        1,
+        "fixture needs the real fi ligature"
+    );
     assert!(
         expected.total_advance + 0.01 < hyphenated.total_advance,
         "fixture needs fi to fit where its hyphenated prefix does not",
@@ -639,7 +678,11 @@ fn a_hyphen_that_does_not_fit_cannot_destroy_a_fitting_unbroken_ligature() {
             }
             assert_eq!(
                 copied_text(&display),
-                if suffix.is_empty() { "f\u{00ad}ifi" } else { "f\u{00ad}ifi " },
+                if suffix.is_empty() {
+                    "f\u{00ad}ifi"
+                } else {
+                    "f\u{00ad}ifi "
+                },
             );
         }
     }
@@ -651,13 +694,13 @@ fn narrow_table_cells_choose_a_real_hyphen_or_a_fitting_unbroken_ligature() {
     let tail = shaped("b", FlowInlineStyle::default());
     let unbroken = shaped("ab", FlowInlineStyle::default());
     let minimum = hyphenated.total_advance.max(tail.total_advance);
-    assert!(minimum < unbroken.total_advance, "fixture needs a genuine split");
+    assert!(
+        minimum < unbroken.total_advance,
+        "fixture needs a genuine split"
+    );
     let hyphen_width = (minimum + unbroken.total_advance) * 0.5;
     let ligature = shaped("fi", FlowInlineStyle::default());
-    assert!(
-        ligature.total_advance + 0.01
-            < shaped("f-", FlowInlineStyle::default()).total_advance
-    );
+    assert!(ligature.total_advance + 0.01 < shaped("f-", FlowInlineStyle::default()).total_advance);
     for (cell, first_source, first_visible, tail, width, selected) in [
         ("a\u{00ad}b", "a\u{00ad}", "a-", "b", hyphen_width, true),
         (
@@ -702,9 +745,7 @@ fn narrow_table_cells_choose_a_real_hyphen_or_a_fitting_unbroken_ligature() {
                 .items()
                 .iter()
                 .filter_map(|item| match item {
-                    DisplayItem::Vector(vector)
-                        if vector.shape == VectorShapeType::TableBorder =>
-                    {
+                    DisplayItem::Vector(vector) if vector.shape == VectorShapeType::TableBorder => {
                         Some(vector.bounds)
                     }
                     _ => None,

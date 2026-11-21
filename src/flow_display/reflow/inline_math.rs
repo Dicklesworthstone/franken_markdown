@@ -130,7 +130,8 @@ where
                 start += 1;
                 continue;
             }
-            let mut atoms = self.math_atoms(text, runs, start..window.end, size, role, &inventory, true)?;
+            let mut atoms =
+                self.math_atoms(text, runs, start..window.end, size, role, &inventory, true)?;
             let mut first = 0usize;
             let mut retry = false;
             while first < atoms.len() {
@@ -168,14 +169,24 @@ where
                 let mut minimum_end = first + 1;
                 if role != FlowTextRole::Code {
                     while minimum_end < atoms.len()
-                        && discretionary::prohibited_boundary(text, runs, atoms[minimum_end].bytes.start, role)
+                        && discretionary::prohibited_boundary(
+                            text,
+                            runs,
+                            atoms[minimum_end].bytes.start,
+                            role,
+                        )
                     {
                         minimum_end += 1;
                     }
                     end = end.max(minimum_end);
                     while end > minimum_end
                         && end < atoms.len()
-                        && discretionary::prohibited_boundary(text, runs, atoms[end].bytes.start, role)
+                        && discretionary::prohibited_boundary(
+                            text,
+                            runs,
+                            atoms[end].bytes.start,
+                            role,
+                        )
                     {
                         end -= 1;
                     }
@@ -191,13 +202,16 @@ where
                     }
                     break;
                 }
-                let mut preferred = discretionary::at_boundary(
-                    text, runs, atoms[end - 1].bytes.end, role,
-                ).is_some();
+                let mut preferred =
+                    discretionary::at_boundary(text, runs, atoms[end - 1].bytes.end, role)
+                        .is_some();
                 let mut emergency_end = measured_end.max(minimum_end);
                 while emergency_end > minimum_end
                     && discretionary::prohibited_boundary(
-                        text, runs, atoms[emergency_end - 1].bytes.end, role,
+                        text,
+                        runs,
+                        atoms[emergency_end - 1].bytes.end,
+                        role,
                     )
                 {
                     emergency_end -= 1;
@@ -220,7 +234,10 @@ where
                         break (fragments, final_width);
                     }
                     let Some(next) = discretionary::next_line_end(
-                        minimum_end, end, &mut preferred, &mut emergency,
+                        minimum_end,
+                        end,
+                        &mut preferred,
+                        &mut emergency,
                         |candidate| atoms[candidate - 1].word_break,
                     ) else {
                         return Err(FlowLayoutError::ClusterTooWide {
@@ -230,7 +247,13 @@ where
                     };
                     end = next;
                     if role != FlowTextRole::Code {
-                        while end > minimum_end && discretionary::prohibited_boundary(text, runs, atoms[end].bytes.start, role)
+                        while end > minimum_end
+                            && discretionary::prohibited_boundary(
+                                text,
+                                runs,
+                                atoms[end].bytes.start,
+                                role,
+                            )
                         {
                             end -= 1;
                         }
@@ -242,7 +265,9 @@ where
                 let direction = fragments
                     .iter()
                     .find_map(|part| match part {
-                        Fragment::Text { run, .. } if !run.glyphs.is_empty() => Some(run.context.direction),
+                        Fragment::Text { run, .. } if !run.glyphs.is_empty() => {
+                            Some(run.context.direction)
+                        }
                         Fragment::Text { .. } => None,
                         Fragment::Math { .. } => None,
                     })
@@ -256,7 +281,9 @@ where
                     ));
                 }
                 let measured = fragments.iter().all(|part| match part {
-                    Fragment::Text { run, .. } => run.glyphs.is_empty() || run.vertical_metrics.is_some(),
+                    Fragment::Text { run, .. } => {
+                        run.glyphs.is_empty() || run.vertical_metrics.is_some()
+                    }
                     Fragment::Math { .. } => true,
                 });
                 if has_math && !measured {
@@ -326,7 +353,8 @@ where
                             let spec = &runs[run_index];
                             let ink = if spec.active_link_target().is_some() {
                                 "link"
-                            } else if (spec.style.code && self.inline_styles) || fallback.is_some() {
+                            } else if (spec.style.code && self.inline_styles) || fallback.is_some()
+                            {
                                 "code"
                             } else {
                                 color
@@ -400,7 +428,13 @@ where
                 {
                     let context_start = next.bytes.start;
                     let replacement = self.math_atoms(
-                        text, runs, context_start..context_end, size, role, &inventory, true,
+                        text,
+                        runs,
+                        context_start..context_end,
+                        size,
+                        role,
+                        &inventory,
+                        true,
                     )?;
                     let tail = atoms.partition_point(|part| part.bytes.end <= context_end);
                     atoms.splice(first..tail, replacement);
@@ -432,7 +466,9 @@ where
         available_width: f32,
     ) -> Result<(f64, f64), FlowLayoutError> {
         validate_ranges(text, runs)?;
-        let mut intrinsic = text.chars().any(discretionary::is_hint)
+        let mut intrinsic = text
+            .chars()
+            .any(discretionary::is_hint)
             .then(|| discretionary::Intrinsic::new(self.options.max_shape_bytes));
         let mut inventory = Inventory::default();
         let mut start = 0usize;
@@ -480,9 +516,15 @@ where
                                     .all(|ch| ch == ' ' || ch == '\t')
                                 || (index + 1 < atoms.len()
                                     && (discretionary::word_boundary(
-                                        text, runs, atom.bytes.clone(), role,
+                                        text,
+                                        runs,
+                                        atom.bytes.clone(),
+                                        role,
                                     ) || discretionary::contains_boundary(
-                                        text, runs, atom.bytes.clone(), role,
+                                        text,
+                                        runs,
+                                        atom.bytes.clone(),
+                                        role,
                                     )))
                         })
                         .map(|index| index + 1)
@@ -512,11 +554,21 @@ where
                     minimum = minimum.max(group_advance);
                     if let Some(intrinsic) = &mut intrinsic {
                         let cost = self.table_hint_cost(
-                            text, runs, group_start..atom.bytes.end, group_advance, role,
+                            text,
+                            runs,
+                            group_start..atom.bytes.end,
+                            group_advance,
+                            role,
                         )?;
                         intrinsic.push(
-                            if atom.math { 1.0 } else { f64::from(atom.advance) }, cost,
-                            &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                            if atom.math {
+                                1.0
+                            } else {
+                                f64::from(atom.advance)
+                            },
+                            cost,
+                            &mut self.shape_bytes,
+                            self.options.max_total_shape_bytes,
                         )?;
                     }
                 }
@@ -658,12 +710,15 @@ where
             let end = newline.unwrap_or(spec.range.end);
             let available = self.options.max_shape_bytes.saturating_sub(used);
             let admitted = end.min(position.saturating_add(available));
-            if position > start && cjk_boundary(text, position)
+            if position > start
+                && cjk_boundary(text, position)
                 && !discretionary::prohibited_boundary(text, runs, position, role)
             {
                 safe = Some(position);
             }
-            if let Some(candidate) = discretionary::measurement_boundary(text, runs, role, position, end, available) {
+            if let Some(candidate) =
+                discretionary::measurement_boundary(text, runs, role, position, end, available)
+            {
                 safe = Some(candidate);
             }
             if admitted < end {
@@ -738,9 +793,9 @@ where
                 role,
                 style,
             )?;
-            for cluster in discretionary::measured_clusters(
-                text, runs, start, &measured, role, split_hints,
-            ) {
+            for cluster in
+                discretionary::measured_clusters(text, runs, start, &measured, role, split_hints)
+            {
                 let word_break = spec.math.is_none()
                     && discretionary::word_boundary(text, runs, cluster.bytes.clone(), role);
                 atoms.push(Atom {
@@ -813,7 +868,9 @@ where
                 size,
                 role,
                 style,
-                selected.filter(|at| (start..end).contains(at)).map(|at| at - start),
+                selected
+                    .filter(|at| (start..end).contains(at))
+                    .map(|at| at - start),
             )?;
             fragments.push(Fragment::Text {
                 run,

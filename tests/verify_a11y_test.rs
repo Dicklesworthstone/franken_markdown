@@ -247,7 +247,11 @@ fn literal_html_in_code_comments_and_escaped_text_is_not_audited() {
     ];
     for source in sources {
         let report = a11y_report(source, &PdfOptions::default());
-        assert!(report.findings.is_empty(), "{source}: {:?}", report.findings);
+        assert!(
+            report.findings.is_empty(),
+            "{source}: {:?}",
+            report.findings
+        );
         assert_eq!(report.verdict, "clean");
     }
 }
@@ -276,7 +280,11 @@ fn profiled_html_audits_preserve_source_and_deterministic_reports() {
                 .iter()
                 .map(|finding| finding.code)
                 .collect::<Vec<_>>(),
-            ["heading_level_skip", "generic_link_text", "missing_alt_text"]
+            [
+                "heading_level_skip",
+                "generic_link_text",
+                "missing_alt_text"
+            ]
         );
         let repeated = filter_a11y(verify_pdf_result(&document, &options).unwrap());
         assert_eq!(to_json(&report), to_json(&repeated));

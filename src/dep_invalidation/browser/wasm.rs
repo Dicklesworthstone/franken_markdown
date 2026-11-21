@@ -65,8 +65,8 @@ impl FmdFlowSession {
         leading: f32,
         profile: &str,
     ) -> Result<FmdFlowSession, JsValue> {
-        let profile = crate::wasm_abi::parse_authoring_profile(Some(profile))
-            .map_err(JsValue::from_str)?;
+        let profile =
+            crate::wasm_abi::parse_authoring_profile(Some(profile)).map_err(JsValue::from_str)?;
         BrowserFlowSession::new_with_profile(
             source,
             font,
@@ -79,7 +79,9 @@ impl FmdFlowSession {
 
     #[wasm_bindgen(getter)]
     pub fn profile(&self) -> Option<String> {
-        self.inner.profile().map(|profile| profile.as_str().to_owned())
+        self.inner
+            .profile()
+            .map(|profile| profile.as_str().to_owned())
     }
 
     #[wasm_bindgen(getter)]

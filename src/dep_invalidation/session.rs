@@ -372,8 +372,9 @@ fn completed(
     limits: FlowDisplayLimits,
     profile: Option<crate::Profile>,
 ) -> Result<ResumableFlowDisplay, FlowDisplayError> {
-    let mut engine =
-        ResumableFlowDisplay::try_with_limits_and_profile(source, batch, revision, limits, profile)?;
+    let mut engine = ResumableFlowDisplay::try_with_limits_and_profile(
+        source, batch, revision, limits, profile,
+    )?;
     // Do not collect another copy of all emitted blocks as process_all does.
     while engine.step()?.is_some() {}
     Ok(engine)

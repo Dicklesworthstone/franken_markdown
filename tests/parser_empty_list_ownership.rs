@@ -43,19 +43,14 @@ fn blank_after_any_empty_item_keeps_following_blocks_outside_the_list() {
         for prefix in [String::new(), format!("{marker} first\n")] {
             for blank in ["\n", " \t\n", "\n\n"] {
                 for indent in 0..=7 {
-                    let source = format!(
-                        "{prefix}{marker}\n{blank}{}outside\n",
-                        " ".repeat(indent)
-                    );
+                    let source =
+                        format!("{prefix}{marker}\n{blank}{}outside\n", " ".repeat(indent));
                     let parsed = document(&source);
                     assert_eq!(parsed.blocks.len(), 2, "{source:?}: {parsed:?}");
                     let outer = list(&parsed.blocks[0]);
                     assert!(outer.tight, "{source:?}");
                     assert_eq!(outer.items.len(), 1 + usize::from(!prefix.is_empty()));
-                    assert!(
-                        outer.items.last().unwrap().blocks.is_empty(),
-                        "{source:?}"
-                    );
+                    assert!(outer.items.last().unwrap().blocks.is_empty(), "{source:?}");
                     let expected = if indent < 4 {
                         paragraph("outside")
                     } else {
@@ -78,10 +73,7 @@ fn blank_separated_siblings_still_form_one_loose_list_after_empty_items() {
     for (marker, next) in [("-", "-"), ("*", "*"), ("1.", "2."), ("7)", "8)")] {
         for prefix in [String::new(), format!("{marker} first\n")] {
             for indent in 0..=3 {
-                let source = format!(
-                    "{prefix}{marker}\n\n{}{next} next\n",
-                    " ".repeat(indent)
-                );
+                let source = format!("{prefix}{marker}\n\n{}{next} next\n", " ".repeat(indent));
                 let parsed = document(&source);
                 assert_eq!(parsed.blocks.len(), 1, "{source:?}: {parsed:?}");
                 let outer = list(&parsed.blocks[0]);
@@ -144,9 +136,7 @@ fn blank_after_an_empty_item_does_not_reinterpret_other_block_openers() {
 #[test]
 fn code_after_an_empty_item_cannot_define_a_phantom_reference() {
     for marker in ["-", "1.", "7)"] {
-        let source = format!(
-            "{marker} first\n{marker}\n\n    [réf]: /literal\n\nUse [réf].\n"
-        );
+        let source = format!("{marker} first\n{marker}\n\n    [réf]: /literal\n\nUse [réf].\n");
         for newline in ["\n", "\r\n", "\r"] {
             let source = source.replace('\n', newline);
             let parsed = document(&source);

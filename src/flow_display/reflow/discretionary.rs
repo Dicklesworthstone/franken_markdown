@@ -27,15 +27,11 @@ fn prose_at(runs: &[FlowInlineRun], at: usize, role: FlowTextRole) -> bool {
         .is_none_or(|run| !run.style.code && run.math.is_none())
 }
 
-fn before_hints(
-    text: &str,
-    runs: &[FlowInlineRun],
-    at: usize,
-    role: FlowTextRole,
-) -> Option<char> {
-    text.get(..at)?.char_indices().rev().find_map(|(offset, ch)| {
-        (!is_hint(ch) || !prose_at(runs, offset, role)).then_some(ch)
-    })
+fn before_hints(text: &str, runs: &[FlowInlineRun], at: usize, role: FlowTextRole) -> Option<char> {
+    text.get(..at)?
+        .char_indices()
+        .rev()
+        .find_map(|(offset, ch)| (!is_hint(ch) || !prose_at(runs, offset, role)).then_some(ch))
 }
 
 fn bound_mark(ch: char) -> bool {
@@ -64,10 +60,7 @@ pub(super) fn at_boundary(
     role: FlowTextRole,
 ) -> Option<Hint> {
     let right = text.get(at..)?.chars().next()?;
-    if right.is_whitespace()
-        || bound_mark(right)
-        || (is_hint(right) && prose_at(runs, at, role))
-    {
+    if right.is_whitespace() || bound_mark(right) || (is_hint(right) && prose_at(runs, at, role)) {
         return None;
     }
     let mut start = at;
@@ -111,7 +104,9 @@ pub(super) fn prohibited_boundary(
     if is_hint(right) && prose_at(runs, at, role) {
         return true;
     }
-    let Some((left_at, left)) = text.get(..at).and_then(|head| head.char_indices().next_back())
+    let Some((left_at, left)) = text
+        .get(..at)
+        .and_then(|head| head.char_indices().next_back())
     else {
         return false;
     };
@@ -157,12 +152,7 @@ pub(super) fn word_boundary(
 }
 
 /// Source candidates in a single bounded measurement window.
-fn hints(
-    text: &str,
-    runs: &[FlowInlineRun],
-    range: Range<usize>,
-    role: FlowTextRole,
-) -> Vec<Hint> {
+fn hints(text: &str, runs: &[FlowInlineRun], range: Range<usize>, role: FlowTextRole) -> Vec<Hint> {
     let mut hints = Vec::new();
     if role == FlowTextRole::Code {
         return hints;
@@ -223,17 +213,17 @@ pub(super) fn measured_clusters(
     } else {
         Vec::new()
     }
-        .into_iter()
-        .filter(|hint| {
-            // ASCII letter/digit ligatures may be reshaped at an authored
-            // boundary. Unknown-script host clusters remain indivisible;
-            // a source hint is not evidence that their grapheme can be split.
-            let right = text[hint.end..].chars().next();
-            let left = text[..hint.end].chars().rev().find(|ch| !is_hint(*ch));
-            left.is_some_and(|ch| ch.is_ascii_alphanumeric())
-                && right.is_some_and(|ch| ch.is_ascii_alphanumeric())
-        })
-        .collect();
+    .into_iter()
+    .filter(|hint| {
+        // ASCII letter/digit ligatures may be reshaped at an authored
+        // boundary. Unknown-script host clusters remain indivisible;
+        // a source hint is not evidence that their grapheme can be split.
+        let right = text[hint.end..].chars().next();
+        let left = text[..hint.end].chars().rev().find(|ch| !is_hint(*ch));
+        left.is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && right.is_some_and(|ch| ch.is_ascii_alphanumeric())
+    })
+    .collect();
     let mut logical: Vec<_> = run.clusters.iter().collect();
     logical.sort_by_key(|cluster| cluster.byte_range.start);
     let mut out = Vec::with_capacity(logical.len() + hints.len());
@@ -350,7 +340,8 @@ impl Intrinsic {
         limit: usize,
     ) -> Result<(), FlowLayoutError> {
         fn charge(work: &mut usize, limit: usize) -> Result<(), FlowLayoutError> {
-            *work = work.checked_add(1)
+            *work = work
+                .checked_add(1)
                 .filter(|count| *count <= limit)
                 .ok_or(FlowLayoutError::BudgetExceeded("total shaping bytes"))?;
             Ok(())
@@ -415,8 +406,7 @@ where
         if prohibited_boundary(text, runs, unit.end, role) {
             return Ok(None);
         }
-        let Some(marker) = at_boundary(text, runs, unit.end, role)
-            .and_then(|hint| hint.hyphen)
+        let Some(marker) = at_boundary(text, runs, unit.end, role).and_then(|hint| hint.hyphen)
         else {
             return Ok(Some(0.0));
         };
@@ -424,18 +414,24 @@ where
         let spec = runs.get(index);
         let style = spec.map_or(FlowInlineStyle::default(), |spec| spec.style);
         let size = self.inline_size(self.options.body_size, style);
-        let same_style = spec.is_none_or(|spec| {
-            spec.range.start <= unit.start && spec.range.end >= unit.end
-        });
+        let same_style =
+            spec.is_none_or(|spec| spec.range.start <= unit.start && spec.range.end >= unit.end);
         let extra = if same_style && unit.len() <= self.options.max_shape_bytes {
             let shaped = self.shaped_discretionary(
-                &text[unit.clone()], size, role, style, Some(marker - unit.start),
+                &text[unit.clone()],
+                size,
+                role,
+                style,
+                Some(marker - unit.start),
             )?;
             (f64::from(shaped.total_advance) - advance).max(0.0)
         } else {
             // A preceding formula or another face cannot join to this glyph.
             // Its atomic width is already included in the unit's advance.
-            f64::from(self.shaped_with_style("-", size, role, style)?.total_advance)
+            f64::from(
+                self.shaped_with_style("-", size, role, style)?
+                    .total_advance,
+            )
         };
         Ok(Some(extra))
     }
@@ -452,7 +448,10 @@ pub(super) fn next_line_end(
     word_break: impl Fn(usize) -> bool,
 ) -> Option<usize> {
     if *preferred {
-        if let Some(previous) = (minimum..end).rev().find(|candidate| word_break(*candidate)) {
+        if let Some(previous) = (minimum..end)
+            .rev()
+            .find(|candidate| word_break(*candidate))
+        {
             return Some(previous);
         }
         *preferred = false;
@@ -460,11 +459,7 @@ pub(super) fn next_line_end(
             return Some(original);
         }
     }
-    if end > minimum {
-        Some(end - 1)
-    } else {
-        None
-    }
+    if end > minimum { Some(end - 1) } else { None }
 }
 
 pub(super) struct Projection {
@@ -494,7 +489,10 @@ impl Projection {
             visible.push(if selected == Some(at) { '-' } else { ch });
             boundaries.push((visible.len(), at + ch.len_utf8(), utf16));
         }
-        Self { visible, boundaries }
+        Self {
+            visible,
+            boundaries,
+        }
     }
 
     pub(super) fn restore(
@@ -516,9 +514,13 @@ impl Projection {
             });
         } else {
             for cluster in &mut run.clusters {
-                let start = self.boundaries.binary_search_by_key(&cluster.byte_range.start, |b| b.0)
+                let start = self
+                    .boundaries
+                    .binary_search_by_key(&cluster.byte_range.start, |b| b.0)
                     .map_err(|_| FlowLayoutError::InvalidShapedRun)?;
-                let end = self.boundaries.binary_search_by_key(&cluster.byte_range.end, |b| b.0)
+                let end = self
+                    .boundaries
+                    .binary_search_by_key(&cluster.byte_range.end, |b| b.0)
                     .map_err(|_| FlowLayoutError::InvalidShapedRun)?;
                 cluster.byte_range = self.boundaries[start].1..self.boundaries[end].1;
                 cluster.utf16_range = self.boundaries[start].2..self.boundaries[end].2;
@@ -532,8 +534,8 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    use super::*;
     use super::super::{FlowLayoutOptions, Reflow, tests::measured};
+    use super::*;
     use crate::display::{DisplayItem, DisplayTextRun};
     use crate::flow_display::ResumableFlowDisplay;
     use crate::text::{CaretAffinity, Direction};
@@ -598,7 +600,9 @@ mod tests {
         assert_eq!(run.clusters[0].glyph_range, 0..0);
         assert_eq!(run.total_advance, 0.0);
         assert_eq!(
-            run.caret_at_utf16(2, CaretAffinity::Trailing).unwrap().byte_offset,
+            run.caret_at_utf16(2, CaretAffinity::Trailing)
+                .unwrap()
+                .byte_offset,
             source.len(),
         );
         assert!(run.selection_rects(0..source.len(), 0.0, 20.0).is_empty());
@@ -646,9 +650,9 @@ mod tests {
             for joiner in ['\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}'] {
                 let before = format!("{joiner}{hint}a");
                 let after = format!("a{hint}{joiner}");
-                assert!(at_boundary(
-                    &before, &[], joiner.len_utf8() + hint.len_utf8(), role,
-                ).is_none());
+                assert!(
+                    at_boundary(&before, &[], joiner.len_utf8() + hint.len_utf8(), role,).is_none()
+                );
                 assert!(at_boundary(&after, &[], 1 + hint.len_utf8(), role).is_none());
             }
         }
@@ -667,7 +671,8 @@ mod tests {
                 ..FlowLayoutOptions::default()
             },
             &mut shape,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             reflow.shaped("\u{00ad}", 14.0, FlowTextRole::Body),
             Err(FlowLayoutError::BudgetExceeded("total shaping bytes")),
@@ -678,20 +683,31 @@ mod tests {
     #[test]
     fn a_hyphen_that_does_not_fit_uses_an_earlier_authored_opportunity() {
         let source = "ab\u{00ad}cd\u{00ad}ef";
-        let list = engine(source).to_shaped_display_list(
-            FlowLayoutOptions {
-                viewport_width: 40.0,
-                ..FlowLayoutOptions::default()
-            },
-            measured,
-        ).unwrap();
-        let text: Vec<_> = list.items().iter().filter_map(|item| match item {
-            DisplayItem::Text(text) => Some(text),
-            _ => None,
-        }).collect();
+        let list = engine(source)
+            .to_shaped_display_list(
+                FlowLayoutOptions {
+                    viewport_width: 40.0,
+                    ..FlowLayoutOptions::default()
+                },
+                measured,
+            )
+            .unwrap();
+        let text: Vec<_> = list
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
         assert_eq!(text[0].text, "ab\u{00ad}");
         assert_eq!(text[0].bounds.width, 30.0);
-        assert_eq!(text.iter().map(|part| part.text.as_str()).collect::<String>(), source);
+        assert_eq!(
+            text.iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            source
+        );
         assert!(text.iter().all(|part| part.bounds.width <= 40.0));
     }
 
@@ -699,31 +715,33 @@ mod tests {
     fn plain_adapter_preserves_inline_code_hints_without_changing_its_size_or_ink() {
         let markdown = "co\u{00ad}de \u{0060}raw\u{200b}code\u{0060}";
         let mut seen_literal = false;
-        let list = engine(markdown).to_shaped_display_list(
-            FlowLayoutOptions::default(),
-            |text, size, role| {
+        let list = engine(markdown)
+            .to_shaped_display_list(FlowLayoutOptions::default(), |text, size, role| {
                 if text.contains("raw\u{200b}code") {
                     seen_literal = true;
                 } else {
                     assert!(!text.chars().any(is_hint));
                 }
                 measured(text, size, role)
-            },
-        ).unwrap();
+            })
+            .unwrap();
         assert!(seen_literal);
-        let literal = list.items().iter().find_map(|item| match item {
-            DisplayItem::Text(text) if text.text == "raw\u{200b}code" => Some(text),
-            _ => None,
-        }).unwrap();
+        let literal = list
+            .items()
+            .iter()
+            .find_map(|item| match item {
+                DisplayItem::Text(text) if text.text == "raw\u{200b}code" => Some(text),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(literal.font_size, 14.0);
         assert_eq!(literal.color_role, "text");
     }
 
     #[test]
     fn source_only_style_fragments_do_not_invent_a_direction_conflict() {
-        let list = engine("a**\u{00ad}**b").to_styled_display_list(
-            FlowLayoutOptions::default(),
-            |text, size, role, _style| {
+        let list = engine("a**\u{00ad}**b")
+            .to_styled_display_list(FlowLayoutOptions::default(), |text, size, role, _style| {
                 let mut run = measured(text, size, role)?;
                 if !text.is_empty() {
                     // One visible scalar per fragment makes this a truthful
@@ -731,14 +749,26 @@ mod tests {
                     run.context.direction = Direction::RightToLeft;
                 }
                 Ok(run)
-            },
-        ).unwrap();
-        let text: Vec<&DisplayTextRun> = list.items().iter().filter_map(|item| match item {
-            DisplayItem::Text(text) => Some(text),
-            _ => None,
-        }).collect();
-        assert_eq!(text.iter().map(|part| part.text.as_str()).collect::<String>(), "a\u{00ad}b");
-        assert_eq!(text.iter().filter(|part| part.bounds.width == 0.0).count(), 1);
+            })
+            .unwrap();
+        let text: Vec<&DisplayTextRun> = list
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text.iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            "a\u{00ad}b"
+        );
+        assert_eq!(
+            text.iter().filter(|part| part.bounds.width == 0.0).count(),
+            1
+        );
     }
     #[test]
     fn a_fitting_whole_ligature_survives_an_unfittable_authored_prefix() {
@@ -755,11 +785,16 @@ mod tests {
                 })
             } else {
                 engine.to_shaped_display_list(options, measured)
-            }.unwrap();
-            let first = list.items().iter().find_map(|item| match item {
-                DisplayItem::Text(text) => Some(text),
-                _ => None,
-            }).unwrap();
+            }
+            .unwrap();
+            let first = list
+                .items()
+                .iter()
+                .find_map(|item| match item {
+                    DisplayItem::Text(text) => Some(text),
+                    _ => None,
+                })
+                .unwrap();
             assert_eq!(first.text, "f\u{00ad}i");
             assert_eq!(first.bounds.width, 10.0);
             assert_eq!(first.font_run.as_ref().unwrap().glyphs.len(), 1);
@@ -830,13 +865,23 @@ mod tests {
             let mut reflow = Reflow::new(FlowLayoutOptions::default(), &mut shape).unwrap();
             let cases = [
                 ("a\u{00ad}b", if hyphen < 10.0 { 12.0 } else { 20.0 }, 20.0),
-                ("a\u{00ad}b\u{00ad}c", if hyphen < 10.0 { 12.0 } else { 30.0 }, 30.0),
-                ("a\u{00ad}bcd", if hyphen < 10.0 { 12.0 } else { 20.0 }, 40.0),
+                (
+                    "a\u{00ad}b\u{00ad}c",
+                    if hyphen < 10.0 { 12.0 } else { 30.0 },
+                    30.0,
+                ),
+                (
+                    "a\u{00ad}bcd",
+                    if hyphen < 10.0 { 12.0 } else { 20.0 },
+                    40.0,
+                ),
                 ("f\u{00ad}i", 10.0, 10.0),
             ];
             for (source, minimum, preferred) in cases {
                 assert_eq!(
-                    reflow.cell_measures(source, &[], FlowTextRole::TableCell).unwrap(),
+                    reflow
+                        .cell_measures(source, &[], FlowTextRole::TableCell)
+                        .unwrap(),
                     (minimum, preferred),
                     "{source:?}, hyphen={hyphen}",
                 );
@@ -852,7 +897,9 @@ mod tests {
         intrinsic.push(0.0, None, &mut work, 10).unwrap();
         assert_eq!(
             intrinsic.push(0.0, None, &mut work, 10),
-            Err(FlowLayoutError::BudgetExceeded("table shaping window cannot settle a unit")),
+            Err(FlowLayoutError::BudgetExceeded(
+                "table shaping window cannot settle a unit"
+            )),
         );
         let mut intrinsic = Intrinsic::new(8);
         let mut work = 0;
@@ -861,5 +908,4 @@ mod tests {
             Err(FlowLayoutError::BudgetExceeded("total shaping bytes")),
         );
     }
-
 }

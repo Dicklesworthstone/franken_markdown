@@ -377,8 +377,17 @@ impl Cursor<'_> {
             || (identity
                 && matches!(
                     value,
-                    "erDiagram" | "direction" | "style" | "classDef" | "class" | "click"
-                        | "subgraph" | "end" | "accTitle" | "accDescr" | "title"
+                    "erDiagram"
+                        | "direction"
+                        | "style"
+                        | "classDef"
+                        | "class"
+                        | "click"
+                        | "subgraph"
+                        | "end"
+                        | "accTitle"
+                        | "accDescr"
+                        | "title"
                 ))
         {
             return None;
@@ -420,7 +429,10 @@ impl Cursor<'_> {
             value.strip_prefix('*').unwrap_or(value)
         };
         if value.len() > MAX_ID_BYTES
-            || stem.chars().next().is_none_or(|ch| !(ch.is_alphabetic() || ch == '_'))
+            || stem
+                .chars()
+                .next()
+                .is_none_or(|ch| !(ch.is_alphabetic() || ch == '_'))
             || !stem.chars().all(|ch| {
                 ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | ',' | '[' | ']' | '(' | ')')
             })
@@ -450,7 +462,9 @@ impl Cursor<'_> {
 // two ems, including wide W/M glyphs in the fixed SVG font family. Wrapped lines
 // are source slices: no text is omitted, ellipsized or reinterpreted as markup.
 fn units(text: &str) -> usize {
-    text.chars().map(|ch| if ch.is_ascii() { 1 } else { 2 }).sum()
+    text.chars()
+        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+        .sum()
 }
 
 fn wrap(text: &str, columns: usize) -> Vec<String> {
@@ -486,8 +500,14 @@ impl EntityBox {
     fn new(entity: &Entity) -> Self {
         let title = wrap(&entity.label, 48);
         let mut columns = [0.0_f32; 4];
-        let keys = entity.attributes.iter().any(|attribute| !attribute.keys.is_empty());
-        let comments = entity.attributes.iter().any(|attribute| !attribute.comment.is_empty());
+        let keys = entity
+            .attributes
+            .iter()
+            .any(|attribute| !attribute.keys.is_empty());
+        let comments = entity
+            .attributes
+            .iter()
+            .any(|attribute| !attribute.comment.is_empty());
         let mut rows = Vec::new();
         let mut row_heights = Vec::new();
         for attribute in &entity.attributes {
@@ -507,14 +527,23 @@ impl EntityBox {
             row_heights.push(lines as f32 * LINE_HEIGHT + 12.0);
             rows.push(row);
         }
-        let title_width = title.iter().map(|line| units(line)).max().unwrap_or(0) as f32 * 13.0 + 24.0;
+        let title_width =
+            title.iter().map(|line| units(line)).max().unwrap_or(0) as f32 * 13.0 + 24.0;
         let width = title_width.max(columns.iter().sum()).max(120.0);
         if !rows.is_empty() {
             columns[1] += width - columns.iter().sum::<f32>();
         }
         let header_height = title.len() as f32 * LINE_HEIGHT + 16.0;
         let height = header_height + row_heights.iter().sum::<f32>();
-        Self { title, rows, columns, row_heights, header_height, width, height }
+        Self {
+            title,
+            rows,
+            columns,
+            row_heights,
+            header_height,
+            width,
+            height,
+        }
     }
 }
 
@@ -525,18 +554,25 @@ pub(super) fn render(source: &str) -> Option<String> {
     for id in &diagram.order {
         let entity = diagram.entities.get(id)?;
         let measured = EntityBox::new(entity);
-        nodes.insert(id.clone(), FlowNode {
-            label: entity.label.clone(),
-            shape: NodeShape::Rectangle,
-            layer: 0,
-            x: 0.0,
-            y: 0.0,
-            width: measured.width + PORT_SPACE * 2.0,
-            height: measured.height + PORT_SPACE * 2.0,
-        });
+        nodes.insert(
+            id.clone(),
+            FlowNode {
+                label: entity.label.clone(),
+                shape: NodeShape::Rectangle,
+                layer: 0,
+                x: 0.0,
+                y: 0.0,
+                width: measured.width + PORT_SPACE * 2.0,
+                height: measured.height + PORT_SPACE * 2.0,
+            },
+        );
         boxes.insert(id.clone(), measured);
     }
-    let edges: Vec<_> = diagram.relationships.iter().map(|relation| relation.edge.clone()).collect();
+    let edges: Vec<_> = diagram
+        .relationships
+        .iter()
+        .map(|relation| relation.edge.clone())
+        .collect();
     super::assign_flowchart_layers(&mut nodes, &diagram.order, &edges);
     let (mut width, mut height) =
         super::layout_flowchart_nodes(&mut nodes, &diagram.order, &edges, diagram.dir);
@@ -544,7 +580,10 @@ pub(super) fn render(source: &str) -> Option<String> {
         super::layout_flowchart_returns(&mut nodes, &edges, diagram.dir, &mut width, &mut height);
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-er\" role=\"img\" font-family=\"Arial,Helvetica,sans-serif\" xml:space=\"preserve\">\n<title>Entity relationship diagram</title>\n<desc>",
-        SvgInt(width), SvgInt(height), SvgInt(width), SvgInt(height)
+        SvgInt(width),
+        SvgInt(height),
+        SvgInt(width),
+        SvgInt(height)
     );
     for relationship in &diagram.relationships {
         let from = &diagram.entities.get(&relationship.edge.from)?.label;
@@ -553,7 +592,11 @@ pub(super) fn render(source: &str) -> Option<String> {
             "{from} ({}) to {to} ({}), {}: {}. ",
             relationship.from_card.name(),
             relationship.to_card.name(),
-            if relationship.edge.dashed { "non-identifying" } else { "identifying" },
+            if relationship.edge.dashed {
+                "non-identifying"
+            } else {
+                "identifying"
+            },
             relationship.edge.label.as_deref().unwrap_or("")
         )));
     }
@@ -590,7 +633,11 @@ pub(super) fn render(source: &str) -> Option<String> {
         let from = nodes.get(&edge.from)?;
         let to = nodes.get(&edge.to)?;
         let (x1, y1, x2, y2) = super::get_edge_endpoints(from, to, diagram.dir);
-        let dash = if edge.dashed { " stroke-dasharray=\"4,4\"" } else { "" };
+        let dash = if edge.dashed {
+            " stroke-dasharray=\"4,4\""
+        } else {
+            ""
+        };
         let (label_x, label_y, label_width) = if let Some(route) = route {
             let [a, b, c, d, e, f] = route.points;
             svg.push_str(&format!(
@@ -608,11 +655,20 @@ pub(super) fn render(source: &str) -> Option<String> {
             };
             svg.push_str(&format!(
                 "<path d=\"M {} {} C {} {}, {} {}, {} {}\" class=\"fmd-er-edge\"{dash} />\n",
-                SvgNum(x1), SvgNum(y1), SvgNum(cx1), SvgNum(cy1),
-                SvgNum(cx2), SvgNum(cy2), SvgNum(x2), SvgNum(y2)
+                SvgNum(x1),
+                SvgNum(y1),
+                SvgNum(cx1),
+                SvgNum(cy1),
+                SvgNum(cx2),
+                SvgNum(cy2),
+                SvgNum(x2),
+                SvgNum(y2)
             ));
-            ((x1 + x2) / 2.0, (y1 + y2) / 2.0,
-                super::flowchart_label_width(edge.label.as_deref().unwrap_or("")))
+            (
+                (x1 + x2) / 2.0,
+                (y1 + y2) / 2.0,
+                super::flowchart_label_width(edge.label.as_deref().unwrap_or("")),
+            )
         };
         endpoint(
             &mut svg,
@@ -645,14 +701,19 @@ pub(super) fn render(source: &str) -> Option<String> {
 }
 
 fn endpoint(svg: &mut String, origin: (f32, f32), axis: (f32, f32), card: Cardinality, dash: &str) {
-    let point = |distance: f32, cross: f32| (
-        origin.0 + axis.0 * distance - axis.1 * cross,
-        origin.1 + axis.1 * distance + axis.0 * cross,
-    );
+    let point = |distance: f32, cross: f32| {
+        (
+            origin.0 + axis.0 * distance - axis.1 * cross,
+            origin.1 + axis.1 * distance + axis.0 * cross,
+        )
+    };
     let line = |svg: &mut String, from: (f32, f32), to: (f32, f32), extra: &str| {
         svg.push_str(&format!(
             "<path d=\"M {} {} L {} {}\" class=\"fmd-er-cardinality\"{extra} />\n",
-            SvgNum(from.0), SvgNum(from.1), SvgNum(to.0), SvgNum(to.1)
+            SvgNum(from.0),
+            SvgNum(from.1),
+            SvgNum(to.0),
+            SvgNum(to.1)
         ));
     };
     let metadata = format!("{dash} data-cardinality=\"{}\"", card.name());
@@ -663,7 +724,12 @@ fn endpoint(svg: &mut String, origin: (f32, f32), axis: (f32, f32), card: Cardin
         let c = point(2.0, 6.0);
         svg.push_str(&format!(
             "<path d=\"M {} {} L {} {} L {} {}\" class=\"fmd-er-cardinality\" />\n",
-            SvgNum(a.0), SvgNum(a.1), SvgNum(b.0), SvgNum(b.1), SvgNum(c.0), SvgNum(c.1)
+            SvgNum(a.0),
+            SvgNum(a.1),
+            SvgNum(b.0),
+            SvgNum(b.1),
+            SvgNum(c.0),
+            SvgNum(c.1)
         ));
     } else {
         line(svg, point(6.0, -6.0), point(6.0, 6.0), "");
@@ -672,7 +738,8 @@ fn endpoint(svg: &mut String, origin: (f32, f32), axis: (f32, f32), card: Cardin
         let center = point(20.0, 0.0);
         svg.push_str(&format!(
             "<circle cx=\"{}\" cy=\"{}\" r=\"4\" class=\"fmd-er-cardinality-circle\" />\n",
-            SvgNum(center.0), SvgNum(center.1)
+            SvgNum(center.0),
+            SvgNum(center.1)
         ));
     } else {
         line(svg, point(19.0, -6.0), point(19.0, 6.0), "");
@@ -681,19 +748,41 @@ fn endpoint(svg: &mut String, origin: (f32, f32), axis: (f32, f32), card: Cardin
 
 fn draw_entity(svg: &mut String, node: &FlowNode, measured: &EntityBox) {
     let (x, y) = (node.x + PORT_SPACE, node.y + PORT_SPACE);
-    rect(svg, x, y, measured.width, measured.height, "fmd-er-entity-bg");
-    rect(svg, x, y, measured.width, measured.header_height, "fmd-er-entity-header");
+    rect(
+        svg,
+        x,
+        y,
+        measured.width,
+        measured.height,
+        "fmd-er-entity-bg",
+    );
+    rect(
+        svg,
+        x,
+        y,
+        measured.width,
+        measured.header_height,
+        "fmd-er-entity-header",
+    );
     for (line, text) in measured.title.iter().enumerate() {
         svg.push_str(&format!(
             "<text x=\"{}\" y=\"{}\" class=\"fmd-er-title\">{}</text>\n",
-            SvgNum(x + measured.width / 2.0), SvgNum(y + 22.0 + line as f32 * LINE_HEIGHT),
+            SvgNum(x + measured.width / 2.0),
+            SvgNum(y + 22.0 + line as f32 * LINE_HEIGHT),
             escape_svg_text(text)
         ));
     }
     let mut row_y = y + measured.header_height;
     for (index, (row, height)) in measured.rows.iter().zip(&measured.row_heights).enumerate() {
         if index % 2 == 1 {
-            rect(svg, x, row_y, measured.width, *height, "fmd-er-entity-stripe");
+            rect(
+                svg,
+                x,
+                row_y,
+                measured.width,
+                *height,
+                "fmd-er-entity-stripe",
+            );
         }
         rule(svg, (x, row_y), (x + measured.width, row_y));
         let mut cell_x = x;
@@ -705,7 +794,8 @@ fn draw_entity(svg: &mut String, node: &FlowNode, measured: &EntityBox) {
                 if !text.is_empty() {
                     svg.push_str(&format!(
                         "<text x=\"{}\" y=\"{}\" class=\"fmd-er-attribute\">{}</text>\n",
-                        SvgNum(cell_x + CELL_PAD), SvgNum(row_y + 20.0 + line as f32 * LINE_HEIGHT),
+                        SvgNum(cell_x + CELL_PAD),
+                        SvgNum(row_y + 20.0 + line as f32 * LINE_HEIGHT),
                         escape_svg_text(text)
                     ));
                 }
@@ -717,23 +807,40 @@ fn draw_entity(svg: &mut String, node: &FlowNode, measured: &EntityBox) {
     let mut cell_x = x;
     for width in measured.columns.into_iter().filter(|width| *width > 0.0) {
         if cell_x > x {
-            rule(svg, (cell_x, y + measured.header_height), (cell_x, y + measured.height));
+            rule(
+                svg,
+                (cell_x, y + measured.header_height),
+                (cell_x, y + measured.height),
+            );
         }
         cell_x += width;
     }
-    rect(svg, x, y, measured.width, measured.height, "fmd-er-entity-border");
+    rect(
+        svg,
+        x,
+        y,
+        measured.width,
+        measured.height,
+        "fmd-er-entity-border",
+    );
 }
 
 fn rect(svg: &mut String, x: f32, y: f32, width: f32, height: f32, class: &str) {
     svg.push_str(&format!(
         "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" class=\"{class}\" />\n",
-        SvgNum(x), SvgNum(y), SvgNum(width), SvgNum(height)
+        SvgNum(x),
+        SvgNum(y),
+        SvgNum(width),
+        SvgNum(height)
     ));
 }
 
 fn rule(svg: &mut String, start: (f32, f32), end: (f32, f32)) {
     svg.push_str(&format!(
         "<path d=\"M {} {} L {} {}\" class=\"fmd-er-cell-rule\" />\n",
-        SvgNum(start.0), SvgNum(start.1), SvgNum(end.0), SvgNum(end.1)
+        SvgNum(start.0),
+        SvgNum(start.1),
+        SvgNum(end.0),
+        SvgNum(end.1)
     ));
 }

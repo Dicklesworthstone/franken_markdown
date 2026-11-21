@@ -2,7 +2,8 @@
 
 use super::{
     accessibility_audit, accessibility_audit_profiled, accessibility_audit_profiled_inner,
-    document_stats, document_stats_profiled, document_stats_profiled_inner, parse_authoring_profile,
+    document_stats, document_stats_profiled, document_stats_profiled_inner,
+    parse_authoring_profile,
 };
 use crate::Profile;
 
@@ -25,7 +26,10 @@ fn authoring_profile_admission_preserves_omission_and_rejects_unknown_values() {
         // Invalid admission must happen before parsing or PDF layout, without
         // constructing a JsValue on a native test host.
         let expected = Err("profile must be commonmark-gfm or gfm-plus");
-        assert_eq!(document_stats_profiled_inner("source", Some(value)), expected);
+        assert_eq!(
+            document_stats_profiled_inner("source", Some(value)),
+            expected
+        );
         assert_eq!(
             accessibility_audit_profiled_inner("source", Some(value)),
             expected
@@ -85,8 +89,7 @@ fn profiled_stats_apply_the_authoring_page_break_transform() {
 #[test]
 fn profiled_accessibility_respects_code_spans_crossing_colon_lines() {
     let source = "`Term\n: ![](missing.png)`\n";
-    let commonmark =
-        accessibility_audit_profiled(source, Some("commonmark-gfm".into())).unwrap();
+    let commonmark = accessibility_audit_profiled(source, Some("commonmark-gfm".into())).unwrap();
     let plus = accessibility_audit_profiled(source, Some("gfm-plus".into())).unwrap();
     assert!(
         !commonmark.contains("\"code\":\"missing_alt_text\""),
@@ -101,8 +104,7 @@ fn profiled_accessibility_respects_code_spans_crossing_colon_lines() {
 #[test]
 fn profiled_accessibility_uses_the_matching_pdf_page_break_policy() {
     let source = "# First\n\nBefore.\n\n<!-- pagebreak -->\n\n# Second\n\nAfter.\n";
-    let commonmark =
-        accessibility_audit_profiled(source, Some("commonmark-gfm".into())).unwrap();
+    let commonmark = accessibility_audit_profiled(source, Some("commonmark-gfm".into())).unwrap();
     let plus = accessibility_audit_profiled(source, Some("gfm-plus".into())).unwrap();
     assert!(commonmark.contains("\"page_count\":1,"), "{commonmark}");
     assert!(plus.contains("\"page_count\":2,"), "{plus}");

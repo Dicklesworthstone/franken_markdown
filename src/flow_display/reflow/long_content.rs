@@ -46,7 +46,9 @@ where
         }];
         let runs = if plain { &unstyled[..] } else { runs };
         validate_ranges(text, runs)?;
-        let mut intrinsic = text.chars().any(discretionary::is_hint)
+        let mut intrinsic = text
+            .chars()
+            .any(discretionary::is_hint)
             .then(|| discretionary::Intrinsic::new(self.options.max_shape_bytes));
         let cap = f64::from(available);
         let mut minimum = 1.0_f64;
@@ -82,9 +84,15 @@ where
                             cluster.separator
                                 || (index + 1 < clusters.len()
                                     && (discretionary::word_boundary(
-                                        text, runs, cluster.bytes.clone(), role,
+                                        text,
+                                        runs,
+                                        cluster.bytes.clone(),
+                                        role,
                                     ) || discretionary::contains_boundary(
-                                        text, runs, cluster.bytes.clone(), role,
+                                        text,
+                                        runs,
+                                        cluster.bytes.clone(),
+                                        role,
                                     )))
                         })
                         .map(|index| index + 1)
@@ -104,11 +112,17 @@ where
                     minimum = minimum.max(group_advance);
                     if let Some(intrinsic) = &mut intrinsic {
                         let cost = self.table_hint_cost(
-                            text, runs, group_start..cluster.bytes.end, group_advance, role,
+                            text,
+                            runs,
+                            group_start..cluster.bytes.end,
+                            group_advance,
+                            role,
                         )?;
                         intrinsic.push(
-                            f64::from(cluster.advance), cost,
-                            &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                            f64::from(cluster.advance),
+                            cost,
+                            &mut self.shape_bytes,
+                            self.options.max_total_shape_bytes,
                         )?;
                     }
                     advance = (advance + f64::from(cluster.advance)).min(cap);

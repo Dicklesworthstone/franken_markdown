@@ -647,9 +647,8 @@ fn exact_heading_keeps_end_at_quote_and_list_item_boundaries() {
 
     let options = tight_exact_options();
     for document in &documents {
-        let rendered =
-            render_pdf_document_reported(document, &options, PdfEmitOptions::default())
-                .expect("a trailing heading cannot capture an unrelated source container");
+        let rendered = render_pdf_document_reported(document, &options, PdfEmitOptions::default())
+            .expect("a trailing heading cannot capture an unrelated source container");
         assert!(rendered.pagination.page_breaks.is_exact());
         let pages = painted_pages(&rendered.bytes);
         assert_eq!(pages.len(), 2);
@@ -661,8 +660,7 @@ fn exact_heading_keeps_end_at_quote_and_list_item_boundaries() {
         assert!(pages[1].rules.is_empty());
         assert_eq!(
             rendered,
-            render_pdf_document_reported(document, &options, PdfEmitOptions::monolithic())
-                .unwrap()
+            render_pdf_document_reported(document, &options, PdfEmitOptions::monolithic()).unwrap()
         );
         let best_effort = PdfOptions {
             strict_pagination: false,

@@ -782,7 +782,9 @@ where
                 return Err(FlowLayoutError::InvalidShapedRun);
             }
         }
-        let mut intrinsic = text.chars().any(discretionary::is_hint)
+        let mut intrinsic = text
+            .chars()
+            .any(discretionary::is_hint)
             .then(|| discretionary::Intrinsic::new(self.options.max_shape_bytes));
         let mut minimum = 1.0_f64;
         let mut preferred = 1.0_f64;
@@ -814,7 +816,12 @@ where
                     let mut logical: Vec<_> = run.clusters.iter().collect();
                     logical.sort_by_key(|cluster| cluster.byte_range.start);
                     for cluster in logical {
-                        if !discretionary::prohibited_boundary(text, runs, start + cluster.byte_range.start, role) {
+                        if !discretionary::prohibited_boundary(
+                            text,
+                            runs,
+                            start + cluster.byte_range.start,
+                            role,
+                        ) {
                             group_advance = 0.0;
                             group_start = start + cluster.byte_range.start;
                         }
@@ -822,12 +829,17 @@ where
                         minimum = minimum.max(group_advance);
                         if let Some(intrinsic) = &mut intrinsic {
                             let cost = self.table_hint_cost(
-                                text, runs, group_start..start + cluster.byte_range.end,
-                                group_advance, role,
+                                text,
+                                runs,
+                                group_start..start + cluster.byte_range.end,
+                                group_advance,
+                                role,
                             )?;
                             intrinsic.push(
-                                f64::from(cluster.advance()), cost,
-                                &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                                f64::from(cluster.advance()),
+                                cost,
+                                &mut self.shape_bytes,
+                                self.options.max_total_shape_bytes,
                             )?;
                         }
                     }
@@ -838,7 +850,12 @@ where
                 let mut logical: Vec<_> = run.clusters.iter().collect();
                 logical.sort_by_key(|cluster| cluster.byte_range.start);
                 for cluster in logical {
-                    if !discretionary::prohibited_boundary(text, runs, offset + cluster.byte_range.start, role) {
+                    if !discretionary::prohibited_boundary(
+                        text,
+                        runs,
+                        offset + cluster.byte_range.start,
+                        role,
+                    ) {
                         group_advance = 0.0;
                         group_start = offset + cluster.byte_range.start;
                     }
@@ -846,12 +863,17 @@ where
                     minimum = minimum.max(group_advance);
                     if let Some(intrinsic) = &mut intrinsic {
                         let cost = self.table_hint_cost(
-                            text, runs, group_start..offset + cluster.byte_range.end,
-                            group_advance, role,
+                            text,
+                            runs,
+                            group_start..offset + cluster.byte_range.end,
+                            group_advance,
+                            role,
                         )?;
                         intrinsic.push(
-                            f64::from(cluster.advance()), cost,
-                            &mut self.shape_bytes, self.options.max_total_shape_bytes,
+                            f64::from(cluster.advance()),
+                            cost,
+                            &mut self.shape_bytes,
+                            self.options.max_total_shape_bytes,
                         )?;
                     }
                 }

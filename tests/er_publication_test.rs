@@ -17,7 +17,15 @@ const SOURCE: &str = concat!(
 fn entity_tables_and_relationships_become_figures_in_html_pdf_and_svg() {
     let html = render_html(SOURCE, &HtmlOptions::default()).unwrap();
     assert!(html.contains("class=\"fmd-diagram fmd-er\""));
-    for label in ["CUSTOMER", "ORDER", "email", "customer_id", "PK", "FK", "UK"] {
+    for label in [
+        "CUSTOMER",
+        "ORDER",
+        "email",
+        "customer_id",
+        "PK",
+        "FK",
+        "UK",
+    ] {
         assert!(html.contains(&format!(">{label}</text>")), "{label}");
     }
     assert!(html.contains("places &amp; tracks"));
@@ -45,7 +53,8 @@ fn entity_tables_and_relationships_become_figures_in_html_pdf_and_svg() {
 
 #[test]
 fn unsupported_entity_features_retain_the_complete_source_in_html_and_pdf() {
-    let source = "```mermaid\nerDiagram\nCUSTOMER ||--o{ ORDER : places\nstyle CUSTOMER fill:red\n```\n";
+    let source =
+        "```mermaid\nerDiagram\nCUSTOMER ||--o{ ORDER : places\nstyle CUSTOMER fill:red\n```\n";
     let html = render_html(source, &HtmlOptions::default()).unwrap();
     assert!(html.contains("language-mermaid"));
     assert!(!html.contains("class=\"fmd-diagram fmd-er\""));

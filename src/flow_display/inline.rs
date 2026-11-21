@@ -53,7 +53,10 @@ pub(super) fn render_runs(
     if styled {
         return Cow::Borrowed(runs);
     }
-    if !runs.iter().any(|run| run.math.is_some() || (literal_hints && run.style.code)) {
+    if !runs
+        .iter()
+        .any(|run| run.math.is_some() || (literal_hints && run.style.code))
+    {
         return Cow::Borrowed(&[]);
     }
     let mut plain: Vec<FlowInlineRun> = Vec::new();

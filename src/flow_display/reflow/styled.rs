@@ -156,14 +156,24 @@ where
                     let mut minimum_end = first + 1;
                     while role != FlowTextRole::Code
                         && minimum_end < clusters.len()
-                        && discretionary::prohibited_boundary(text, runs, clusters[minimum_end - 1].bytes.end, role)
+                        && discretionary::prohibited_boundary(
+                            text,
+                            runs,
+                            clusters[minimum_end - 1].bytes.end,
+                            role,
+                        )
                     {
                         minimum_end += 1;
                     }
                     end = end.max(minimum_end);
                     while role != FlowTextRole::Code
                         && end > minimum_end
-                        && discretionary::prohibited_boundary(text, runs, clusters[end - 1].bytes.end, role)
+                        && discretionary::prohibited_boundary(
+                            text,
+                            runs,
+                            clusters[end - 1].bytes.end,
+                            role,
+                        )
                     {
                         end -= 1;
                     }
@@ -178,13 +188,16 @@ where
                         }
                         break;
                     }
-                    let mut preferred = discretionary::at_boundary(
-                        text, runs, clusters[end - 1].bytes.end, role,
-                    ).is_some();
+                    let mut preferred =
+                        discretionary::at_boundary(text, runs, clusters[end - 1].bytes.end, role)
+                            .is_some();
                     let mut emergency_end = measured_end.max(minimum_end);
                     while emergency_end > minimum_end
                         && discretionary::prohibited_boundary(
-                            text, runs, clusters[emergency_end - 1].bytes.end, role,
+                            text,
+                            runs,
+                            clusters[emergency_end - 1].bytes.end,
+                            role,
                         )
                     {
                         emergency_end -= 1;
@@ -204,7 +217,10 @@ where
                             break (fragments, final_width);
                         }
                         let Some(next) = discretionary::next_line_end(
-                            minimum_end, end, &mut preferred, &mut emergency,
+                            minimum_end,
+                            end,
+                            &mut preferred,
+                            &mut emergency,
                             |candidate| clusters[candidate - 1].word_break,
                         ) else {
                             return Err(FlowLayoutError::ClusterTooWide {
@@ -215,7 +231,12 @@ where
                         end = next;
                         while role != FlowTextRole::Code
                             && end > minimum_end
-                            && discretionary::prohibited_boundary(text, runs, clusters[end - 1].bytes.end, role)
+                            && discretionary::prohibited_boundary(
+                                text,
+                                runs,
+                                clusters[end - 1].bytes.end,
+                                role,
+                            )
                         {
                             end -= 1;
                         }
@@ -227,11 +248,12 @@ where
                         .iter()
                         .find(|part| !part.run.glyphs.is_empty())
                         .unwrap_or(initial)
-                        .run.context.direction;
-                    if fragments
-                        .iter()
-                        .any(|part| !part.run.glyphs.is_empty() && part.run.context.direction != direction)
-                    {
+                        .run
+                        .context
+                        .direction;
+                    if fragments.iter().any(|part| {
+                        !part.run.glyphs.is_empty() && part.run.context.direction != direction
+                    }) {
                         return Err(FlowLayoutError::Shaping(
                             "mixed-direction styled line requires paragraph-level bidi resolution"
                                 .to_owned(),
@@ -333,9 +355,8 @@ where
                             role,
                             spec.style,
                         )?;
-                        let replacement = measured_clusters(
-                            text, runs, context_start, &measured, index, role,
-                        );
+                        let replacement =
+                            measured_clusters(text, runs, context_start, &measured, index, role);
                         let tail = clusters.partition_point(|part| part.bytes.end <= context_end);
                         clusters.splice(first..tail, replacement);
                     }
@@ -390,7 +411,9 @@ where
                 size,
                 role,
                 spec.style,
-                selected.filter(|at| (start..end).contains(at)).map(|at| at - start),
+                selected
+                    .filter(|at| (start..end).contains(at))
+                    .map(|at| at - start),
             )?;
             out.push(Fragment {
                 run,
@@ -459,9 +482,9 @@ pub(super) fn measurement_window_end(
     if end - start <= limit {
         return Ok(end);
     }
-    discretionary::measurement_boundary(text, runs, role, start, end, limit).ok_or(FlowLayoutError::BudgetExceeded(
-        "word exceeds shaping window",
-    ))
+    discretionary::measurement_boundary(text, runs, role, start, end, limit).ok_or(
+        FlowLayoutError::BudgetExceeded("word exceeds shaping window"),
+    )
 }
 
 pub(super) fn validate_ranges(text: &str, runs: &[FlowInlineRun]) -> Result<(), FlowLayoutError> {

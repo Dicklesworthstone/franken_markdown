@@ -9,7 +9,8 @@ use franken_markdown::{HtmlOptions, PdfOptions, parse_markdown, render_html, ren
 const FLOW: &str = "```mermaid\ngraph TD\n  A[Start] --> B{Decide}\n  B -->|yes| C[Done]\n```\n";
 const SEQUENCE: &str = "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hi\n```\n";
 const PIE: &str = "```mermaid\npie title Pets\n  \"Dogs\" : 386\n```\n";
-const UNSUPPORTED: &str = "```mermaid\ngantt\ntitle Schedule\nsection Rendering\nCompile :2026-01-01, 1d\n```\n";
+const UNSUPPORTED: &str =
+    "```mermaid\ngantt\ntitle Schedule\nsection Rendering\nCompile :2026-01-01, 1d\n```\n";
 
 fn runs(markdown: &str) -> Vec<VerifyTextRun> {
     verification_text_layer(&parse_markdown(markdown), &PdfOptions::default())

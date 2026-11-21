@@ -225,7 +225,9 @@ fn grammar_identity_is_present_on_every_browser_read_receipt() {
     for json in [
         state.snapshot_json(revision, layout, 0, 100, true).unwrap(),
         state.reading_json(revision, layout, 0, 100).unwrap(),
-        state.asset_inventory_json(revision, layout, 0, 100).unwrap(),
+        state
+            .asset_inventory_json(revision, layout, 0, 100)
+            .unwrap(),
         state.pending_assets_json(revision, 0, 100).unwrap(),
         state
             .viewport_json(
@@ -238,7 +240,9 @@ fn grammar_identity_is_present_on_every_browser_read_receipt() {
             )
             .unwrap(),
         state.hit_test_json(revision, layout, 1.0, 1.0).unwrap(),
-        state.select_item_json(revision, layout, item, 0, 4).unwrap(),
+        state
+            .select_item_json(revision, layout, item, 0, 4)
+            .unwrap(),
     ] {
         assert_eq!(
             json.matches("\"profile\":\"commonmark-gfm\"").count(),

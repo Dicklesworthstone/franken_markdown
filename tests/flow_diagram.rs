@@ -981,7 +981,10 @@ fn class_diagrams_keep_members_relationships_and_exact_source_in_narrow_flow() {
             "implements",
             "renders & caches",
         ] {
-            assert!(visible.contains(label), "lost class diagram label {label:?}");
+            assert!(
+                visible.contains(label),
+                "lost class diagram label {label:?}"
+            );
         }
         assert!(!visible.contains("Diagram source fallback:"));
         assert!(

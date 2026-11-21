@@ -40,7 +40,10 @@ fn path_points(tag: &str) -> Vec<(f32, f32)> {
         .filter_map(|part| part.parse().ok())
         .collect();
     assert_eq!(numbers.len() % 2, 0, "{tag}");
-    numbers.chunks_exact(2).map(|pair| (pair[0], pair[1])).collect()
+    numbers
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
 }
 
 #[test]
@@ -51,23 +54,52 @@ fn schema_keeps_entities_attributes_aliases_keys_comments_and_relationships() {
     assert_eq!(svg.matches("class=\"fmd-er-entity-border\"").count(), 4);
     assert_eq!(svg.matches("class=\"fmd-er-edge\"").count(), 3);
     assert!(svg.contains(">Customer account</text>"));
-    assert!(!svg.contains(">CUSTOMER</text>"), "late alias wins over implicit label");
+    assert!(
+        !svg.contains(">CUSTOMER</text>"),
+        "late alias wins over implicit label"
+    );
     for text in [
-        "ORDER", "LINE_ITEM", "PRODUCT", "int", "id", "PK", "FK", "UK", "PK, FK",
-        "Stable identifier", "email", "string?", "nickname", "customer_id", "order_id",
-        "product_id", "decimal(10,2)", "amount", "Exact amount", "places", "contains",
+        "ORDER",
+        "LINE_ITEM",
+        "PRODUCT",
+        "int",
+        "id",
+        "PK",
+        "FK",
+        "UK",
+        "PK, FK",
+        "Stable identifier",
+        "email",
+        "string?",
+        "nickname",
+        "customer_id",
+        "order_id",
+        "product_id",
+        "decimal(10,2)",
+        "amount",
+        "Exact amount",
+        "places",
+        "contains",
         "appears in",
     ] {
         assert!(svg.contains(&format!(">{text}</text>")), "{text}");
     }
-    assert!(!svg.contains(">*id</text>"), "starred primary key has a key column");
+    assert!(
+        !svg.contains(">*id</text>"),
+        "starred primary key has a key column"
+    );
     assert_eq!(
         svg.lines()
-            .filter(|line| line.contains("class=\"fmd-er-edge\"") && line.contains("stroke-dasharray"))
+            .filter(
+                |line| line.contains("class=\"fmd-er-edge\"") && line.contains("stroke-dasharray")
+            )
             .count(),
         1
     );
-    assert!(!svg.contains("<g"), "shared Flow accepts only flat generated scenes");
+    assert!(
+        !svg.contains("<g"),
+        "shared Flow accepts only flat generated scenes"
+    );
     assert_eq!(svg, render_diagram_svg(SCHEMA, "mermaid").unwrap());
     assert_eq!(svg, render_diagram_svg(SCHEMA, "").unwrap());
     assert_eq!(svg, render_diagram_svg(SCHEMA, "er").unwrap());
@@ -77,20 +109,42 @@ fn schema_keeps_entities_attributes_aliases_keys_comments_and_relationships() {
 
 #[test]
 fn all_symbolic_cardinalities_keep_their_independent_zero_one_and_many_marks() {
-    let left = [("|o", true, false), ("||", false, false), ("}o", true, true), ("}|", false, true)];
-    let right = [("o|", true, false), ("||", false, false), ("o{", true, true), ("|{", false, true)];
+    let left = [
+        ("|o", true, false),
+        ("||", false, false),
+        ("}o", true, true),
+        ("}|", false, true),
+    ];
+    let right = [
+        ("o|", true, false),
+        ("||", false, false),
+        ("o{", true, true),
+        ("|{", false, true),
+    ];
     for (first, optional_a, many_a) in left {
         for (second, optional_b, many_b) in right {
-            let svg = render_diagram_svg(&format!("erDiagram\nA {first}--{second} B : relates"), "er")
-                .unwrap();
-            let symbols: Vec<_> = svg.lines()
+            let svg =
+                render_diagram_svg(&format!("erDiagram\nA {first}--{second} B : relates"), "er")
+                    .unwrap();
+            let symbols: Vec<_> = svg
+                .lines()
                 .filter(|line| line.contains("class=\"fmd-er-cardinality\""))
                 .collect();
-            let forked = symbols.iter().filter(|line| path_points(line).len() == 3).count();
-            let stems = symbols.iter().filter(|line| line.contains("data-cardinality=")).count();
+            let forked = symbols
+                .iter()
+                .filter(|line| path_points(line).len() == 3)
+                .count();
+            let stems = symbols
+                .iter()
+                .filter(|line| line.contains("data-cardinality="))
+                .count();
             let bars = symbols.len() - forked - stems;
             assert_eq!(stems, 2);
-            assert_eq!(forked, usize::from(many_a) + usize::from(many_b), "{first} {second}");
+            assert_eq!(
+                forked,
+                usize::from(many_a) + usize::from(many_b),
+                "{first} {second}"
+            );
             assert_eq!(
                 svg.matches("class=\"fmd-er-cardinality-circle\"").count(),
                 usize::from(optional_a) + usize::from(optional_b),
@@ -98,12 +152,17 @@ fn all_symbolic_cardinalities_keep_their_independent_zero_one_and_many_marks() {
             );
             assert_eq!(
                 bars,
-                usize::from(!many_a) + usize::from(!many_b)
-                    + usize::from(!optional_a) + usize::from(!optional_b),
+                usize::from(!many_a)
+                    + usize::from(!many_b)
+                    + usize::from(!optional_a)
+                    + usize::from(!optional_b),
                 "{first} {second}"
             );
             assert!(!svg.contains("marker-start="));
-            assert!(!svg.contains("marker-end="), "crow feet are actual portable geometry");
+            assert!(
+                !svg.contains("marker-end="),
+                "crow feet are actual portable geometry"
+            );
         }
     }
 }
@@ -134,12 +193,16 @@ fn quoted_names_and_aliases_own_syntax_and_escape_markup() {
     assert_eq!(svg.matches("class=\"fmd-er-entity-border\"").count(), 2);
     assert_eq!(svg.matches("class=\"fmd-er-edge\"").count(), 1);
     assert!(svg.contains("xml:space=\"preserve\""));
-    assert_eq!(svg, render_diagram_svg(&source.replace('\n', "\r\n"), "mermaid").unwrap());
+    assert_eq!(
+        svg,
+        render_diagram_svg(&source.replace('\n', "\r\n"), "mermaid").unwrap()
+    );
 }
 
 #[test]
 fn attribute_blocks_preserve_source_order_and_can_extend_an_existing_entity() {
-    let source = "erDiagram\nA {}\nA { int first PK }\nA {\nstring second\n}\nA[Account]\nA[Account]\n";
+    let source =
+        "erDiagram\nA {}\nA { int first PK }\nA {\nstring second\n}\nA[Account]\nA[Account]\n";
     let svg = render_diagram_svg(source, "er").unwrap();
     assert_eq!(svg.matches("class=\"fmd-er-entity-border\"").count(), 1);
     assert_eq!(svg.matches(">Account</text>").count(), 1);
@@ -151,27 +214,41 @@ fn attribute_blocks_preserve_source_order_and_can_extend_an_existing_entity() {
 #[test]
 fn cardinality_marks_face_the_entity_and_keep_the_declared_direction() {
     for (direction, axis) in [
-        ("TB", (0.0_f32, 1.0_f32)), ("BT", (0.0, -1.0)),
-        ("LR", (1.0, 0.0)), ("RL", (-1.0, 0.0)),
+        ("TB", (0.0_f32, 1.0_f32)),
+        ("BT", (0.0, -1.0)),
+        ("LR", (1.0, 0.0)),
+        ("RL", (-1.0, 0.0)),
     ] {
         let svg = render_diagram_svg(
-            &format!("erDiagram\ndirection {direction}\nA }}|--o{{ B : relates"), "er"
-        ).unwrap();
-        let nodes: Vec<_> = svg.lines()
+            &format!("erDiagram\ndirection {direction}\nA }}|--o{{ B : relates"),
+            "er",
+        )
+        .unwrap();
+        let nodes: Vec<_> = svg
+            .lines()
             .filter(|line| line.contains("class=\"fmd-er-entity-border\""))
             .collect();
-        let centers: Vec<_> = nodes.iter().map(|node| (
-            number(node, "x") + number(node, "width") / 2.0,
-            number(node, "y") + number(node, "height") / 2.0,
-        )).collect();
-        assert!((centers[1].0 - centers[0].0) * axis.0
-            + (centers[1].1 - centers[0].1) * axis.1 > 0.0, "{direction}");
-        let stems: Vec<_> = svg.lines()
+        let centers: Vec<_> = nodes
+            .iter()
+            .map(|node| {
+                (
+                    number(node, "x") + number(node, "width") / 2.0,
+                    number(node, "y") + number(node, "height") / 2.0,
+                )
+            })
+            .collect();
+        assert!(
+            (centers[1].0 - centers[0].0) * axis.0 + (centers[1].1 - centers[0].1) * axis.1 > 0.0,
+            "{direction}"
+        );
+        let stems: Vec<_> = svg
+            .lines()
             .filter(|line| line.contains("data-cardinality="))
             .map(path_points)
             .collect();
         assert_eq!(stems.len(), 2);
-        let forks: Vec<_> = svg.lines()
+        let forks: Vec<_> = svg
+            .lines()
             .filter(|line| line.contains("class=\"fmd-er-cardinality\""))
             .map(path_points)
             .filter(|points| points.len() == 3)
@@ -191,8 +268,10 @@ fn cardinality_marks_face_the_entity_and_keep_the_declared_direction() {
             assert_eq!(outward(fork[0]), outward(fork[2]));
             let node = nodes[index];
             let (x, y, w, h) = (
-                number(node, "x"), number(node, "y"),
-                number(node, "width"), number(node, "height"),
+                number(node, "x"),
+                number(node, "y"),
+                number(node, "width"),
+                number(node, "height"),
             );
             let expected = (
                 x + w / 2.0 + axis.0 * sign * w / 2.0,
@@ -214,25 +293,33 @@ fn self_parallel_and_return_relationships_keep_distinct_paths_and_captions() {
         "A ||--|{ C : \"another relation\"\n",
     );
     for direction in ["TB", "BT", "LR", "RL"] {
-        let svg = render_diagram_svg(&format!("erDiagram\ndirection {direction}\n{body}"), "er")
-            .unwrap();
-        let paths: Vec<_> = svg.lines()
+        let svg =
+            render_diagram_svg(&format!("erDiagram\ndirection {direction}\n{body}"), "er").unwrap();
+        let paths: Vec<_> = svg
+            .lines()
             .filter(|line| line.contains("class=\"fmd-er-edge\""))
             .map(|line| attribute(line, "d"))
             .collect();
         assert_eq!(paths.len(), 5);
-        assert_ne!(paths[0], paths[1], "{direction}: parallel relationships overlap");
-        let captions: Vec<_> = svg.lines()
+        assert_ne!(
+            paths[0], paths[1],
+            "{direction}: parallel relationships overlap"
+        );
+        let captions: Vec<_> = svg
+            .lines()
             .filter(|line| line.contains("class=\"fmd-er-label-bg\""))
             .map(|line| {
                 let (x, y) = (number(line, "x"), number(line, "y"));
                 [x, y, x + number(line, "width"), y + number(line, "height")]
-            }).collect();
+            })
+            .collect();
         assert_eq!(captions.len(), 5);
         for (index, a) in captions.iter().enumerate() {
             for b in &captions[index + 1..] {
-                assert!(a[2] <= b[0] || a[0] >= b[2] || a[3] <= b[1] || a[1] >= b[3],
-                    "{direction}: captions overlap {a:?} {b:?}");
+                assert!(
+                    a[2] <= b[0] || a[0] >= b[2] || a[3] <= b[1] || a[1] >= b[3],
+                    "{direction}: captions overlap {a:?} {b:?}"
+                );
             }
         }
         let root = svg.lines().next().unwrap();
@@ -261,8 +348,14 @@ fn self_parallel_and_return_relationships_keep_distinct_paths_and_captions() {
 fn wide_letters_fit_entity_titles_and_each_attribute_column() {
     let title = "W".repeat(48);
     let svg = render_diagram_svg(&format!("erDiagram\nA[\"{title}\"]"), "er").unwrap();
-    let node = svg.lines().find(|line| line.contains("class=\"fmd-er-entity-border\"")).unwrap();
-    let text = svg.lines().find(|line| line.contains("class=\"fmd-er-title\"")).unwrap();
+    let node = svg
+        .lines()
+        .find(|line| line.contains("class=\"fmd-er-entity-border\""))
+        .unwrap();
+    let text = svg
+        .lines()
+        .find(|line| line.contains("class=\"fmd-er-title\""))
+        .unwrap();
     // W in the declared Arial/Helvetica family uses about .94 em. Reserve .95
     // here: the former eight-pixel heuristic would clip a sustained wide run.
     let half_ink = 48.0 * 13.0 * 0.95 / 2.0;
@@ -272,17 +365,32 @@ fn wide_letters_fit_entity_titles_and_each_attribute_column() {
     let name = "W".repeat(32);
     let comment = "M".repeat(40);
     let svg = render_diagram_svg(
-        &format!("erDiagram\nA {{ string {name} PK \"{comment}\" }}"), "er"
-    ).unwrap();
-    let node = svg.lines().find(|line| line.contains("class=\"fmd-er-entity-border\"")).unwrap();
-    let row: Vec<_> = svg.lines()
+        &format!("erDiagram\nA {{ string {name} PK \"{comment}\" }}"),
+        "er",
+    )
+    .unwrap();
+    let node = svg
+        .lines()
+        .find(|line| line.contains("class=\"fmd-er-entity-border\""))
+        .unwrap();
+    let row: Vec<_> = svg
+        .lines()
         .filter(|line| line.contains("class=\"fmd-er-attribute\""))
         .collect();
     assert_eq!(row.len(), 4);
     for (index, line) in row.iter().enumerate() {
-        let content = line.split_once('>').unwrap().1.split_once("</text>").unwrap().0;
-        let right = row.get(index + 1)
-            .map_or(number(node, "x") + number(node, "width"), |next| number(next, "x"));
+        let content = line
+            .split_once('>')
+            .unwrap()
+            .1
+            .split_once("</text>")
+            .unwrap()
+            .0;
+        let right = row
+            .get(index + 1)
+            .map_or(number(node, "x") + number(node, "width"), |next| {
+                number(next, "x")
+            });
         let ink = content.chars().count() as f32 * 12.0 * 0.95;
         assert!(number(line, "x") + ink < right, "{line}");
         assert!(number(line, "y") < number(node, "y") + number(node, "height"));
@@ -292,20 +400,42 @@ fn wide_letters_fit_entity_titles_and_each_attribute_column() {
 #[test]
 fn malformed_and_unsupported_input_refuses_the_entire_diagram() {
     for suffix in [
-        "A ||--o{ B", "A ||--o{ B :", "A ||--o{ : label",
-        "A ||--o{ B : multiple unquoted words", "A ||--o{ B : \"unclosed",
-        "A o|--|{ B : wrong_side", "A ||--> B : wrong_arrow",
-        "A ||..|{ B : label trailing", "A ||--o{ B : label; C",
-        "A ||--o{ B : label\nA { int", "A { int id } trailing",
-        "A { int id PK, PK }", "A { int id PK, UNKNOWN }",
-        "A { int id \"unterminated }", "A { 123 id }", "A { int 123 }",
-        "A { int id } }", "A[Alias] ||--o{ B : label", "A[\"Unclosed]",
-        "A:::highlight", "A ||--o{ B:::highlight : label",
-        "style A fill:red", "classDef highlight fill:red", "class A highlight",
-        "subgraph Group\nA\nend", "accTitle: Required title", "accDescr: Required prose",
-        "%%{init: {theme: 'dark'}}%%", "%% {init: {theme: 'dark'}}%%",
-        "direction SIDEWAYS", "direction TD", "direction LR\ndirection RL",
-        "A; B", "{", "}", "end",
+        "A ||--o{ B",
+        "A ||--o{ B :",
+        "A ||--o{ : label",
+        "A ||--o{ B : multiple unquoted words",
+        "A ||--o{ B : \"unclosed",
+        "A o|--|{ B : wrong_side",
+        "A ||--> B : wrong_arrow",
+        "A ||..|{ B : label trailing",
+        "A ||--o{ B : label; C",
+        "A ||--o{ B : label\nA { int",
+        "A { int id } trailing",
+        "A { int id PK, PK }",
+        "A { int id PK, UNKNOWN }",
+        "A { int id \"unterminated }",
+        "A { 123 id }",
+        "A { int 123 }",
+        "A { int id } }",
+        "A[Alias] ||--o{ B : label",
+        "A[\"Unclosed]",
+        "A:::highlight",
+        "A ||--o{ B:::highlight : label",
+        "style A fill:red",
+        "classDef highlight fill:red",
+        "class A highlight",
+        "subgraph Group\nA\nend",
+        "accTitle: Required title",
+        "accDescr: Required prose",
+        "%%{init: {theme: 'dark'}}%%",
+        "%% {init: {theme: 'dark'}}%%",
+        "direction SIDEWAYS",
+        "direction TD",
+        "direction LR\ndirection RL",
+        "A; B",
+        "{",
+        "}",
+        "end",
     ] {
         let source = format!("erDiagram\nExisting ||--o{{ Kept : retains\n{suffix}");
         assert!(render_diagram_svg(&source, "mermaid").is_none(), "{source}");
@@ -314,10 +444,15 @@ fn malformed_and_unsupported_input_refuses_the_entire_diagram() {
 
 #[test]
 fn admission_limits_apply_to_complete_source_entities_relationships_and_attributes() {
-    let entities = (0..256).map(|index| format!("E{index}\n")).collect::<String>();
+    let entities = (0..256)
+        .map(|index| format!("E{index}\n"))
+        .collect::<String>();
     let exact = format!("erDiagram\n{entities}");
     assert_eq!(
-        render_diagram_svg(&exact, "er").unwrap().matches("class=\"fmd-er-entity-border\"").count(),
+        render_diagram_svg(&exact, "er")
+            .unwrap()
+            .matches("class=\"fmd-er-entity-border\"")
+            .count(),
         256
     );
     assert!(render_diagram_svg(&format!("{exact}Overflow"), "er").is_none());
@@ -325,16 +460,30 @@ fn admission_limits_apply_to_complete_source_entities_relationships_and_attribut
     let relationships = "A ||--o{ B : owns\n".repeat(1024);
     let exact = format!("erDiagram\n{relationships}");
     assert_eq!(
-        render_diagram_svg(&exact, "er").unwrap().matches("class=\"fmd-er-edge\"").count(), 1024
+        render_diagram_svg(&exact, "er")
+            .unwrap()
+            .matches("class=\"fmd-er-edge\"")
+            .count(),
+        1024
     );
     assert!(render_diagram_svg(&format!("{exact}A ||--o{{ B : extra"), "er").is_none());
 
-    let attributes = (0..128).map(|index| format!("int field{index}\n")).collect::<String>();
+    let attributes = (0..128)
+        .map(|index| format!("int field{index}\n"))
+        .collect::<String>();
     let exact = format!("erDiagram\nA {{\n{attributes}}}");
-    assert!(render_diagram_svg(&exact, "er").unwrap().contains(">field127</text>"));
-    assert!(render_diagram_svg(&format!("erDiagram\nA {{\n{attributes}int extra\n}}"), "er").is_none());
+    assert!(
+        render_diagram_svg(&exact, "er")
+            .unwrap()
+            .contains(">field127</text>")
+    );
+    assert!(
+        render_diagram_svg(&format!("erDiagram\nA {{\n{attributes}int extra\n}}"), "er").is_none()
+    );
 
-    let entities = (0..16).map(|index| format!("E{index} {{\n{attributes}}}\n")).collect::<String>();
+    let entities = (0..16)
+        .map(|index| format!("E{index} {{\n{attributes}}}\n"))
+        .collect::<String>();
     let exact = format!("erDiagram\n{entities}");
     assert!(render_diagram_svg(&exact, "er").is_some());
     assert!(render_diagram_svg(&format!("{exact}Extra {{ int field }}"), "er").is_none());
@@ -360,9 +509,15 @@ fn admission_limits_apply_to_complete_source_entities_relationships_and_attribut
 #[test]
 fn explicit_er_language_requires_its_header_and_owns_its_grammar() {
     for source in [
-        "", "erDiagram", "erDiagramExtra\nA", "A ||--o{ B : relates",
-        "flowchart TD\nA --> B", "sequenceDiagram\nA->>B: Message",
-        "stateDiagram-v2\nA --> B", "pie\n\"A\": 1", "+---+\n| A |\n+---+",
+        "",
+        "erDiagram",
+        "erDiagramExtra\nA",
+        "A ||--o{ B : relates",
+        "flowchart TD\nA --> B",
+        "sequenceDiagram\nA->>B: Message",
+        "stateDiagram-v2\nA --> B",
+        "pie\n\"A\": 1",
+        "+---+\n| A |\n+---+",
     ] {
         assert!(render_diagram_svg(source, "er").is_none(), "{source}");
     }
@@ -378,5 +533,9 @@ fn quoted_tabs_have_explicit_width_without_merging_entity_identities() {
     assert_eq!(svg.matches(">A    B</text>").count(), 2);
     assert!(svg.contains(">label    words</text>"));
     assert!(svg.contains(">comment    words</text>"));
-    assert!(!svg.lines().filter(|line| line.starts_with("<text ")).any(|line| line.contains('\t')));
+    assert!(
+        !svg.lines()
+            .filter(|line| line.starts_with("<text "))
+            .any(|line| line.contains('\t'))
+    );
 }

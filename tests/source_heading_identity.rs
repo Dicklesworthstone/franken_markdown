@@ -10,7 +10,9 @@ fn published_ids(html: &str) -> Vec<&str> {
             if !matches!(level, "1" | "2" | "3" | "4" | "5" | "6") {
                 return None;
             }
-            rest.strip_prefix(" id=\"")?.split_once('"').map(|(id, _)| id)
+            rest.strip_prefix(" id=\"")?
+                .split_once('"')
+                .map(|(id, _)| id)
         })
         .collect()
 }
@@ -36,7 +38,10 @@ fn check(source: &str, published: &[&str], primary: &[&str]) {
         assert_eq!(map.resolve_source_anchor(&heading.slug), Some(heading));
         assert_eq!(heading.source_span, parsed.blocks[heading.block_index].span);
         assert!(heading.source_span.slice(source).is_some());
-        assert!(map.rendered_text().is_char_boundary(heading.rendered_offset));
+        assert!(
+            map.rendered_text()
+                .is_char_boundary(heading.rendered_offset)
+        );
     }
 }
 
@@ -71,7 +76,10 @@ fn nested_body_headings_reserve_ids_without_inventing_primary_ranges() {
     let map = parsed.source_map(source).unwrap();
     assert!(map.resolve_source_anchor("a").is_none());
     assert_eq!(
-        map.resolve_source_anchor("a-2").unwrap().source_span.slice(source),
+        map.resolve_source_anchor("a-2")
+            .unwrap()
+            .source_span
+            .slice(source),
         Some("# A")
     );
 }
@@ -104,11 +112,7 @@ fn omitted_and_duplicate_notes_keep_source_slots_without_claiming_ids() {
         "Use[^used].\n\n",
         "# A-2\n",
     );
-    check(
-        source,
-        &["a", "a-2", "a-2-2", "a-3"],
-        &["a-2", "a-2-2"],
-    );
+    check(source, &["a", "a-2", "a-2-2", "a-3"], &["a-2", "a-2-2"]);
 }
 
 #[test]
@@ -127,7 +131,9 @@ fn unicode_setext_and_line_endings_preserve_exact_primary_source_ownership() {
 #[test]
 fn headless_preview_resolves_the_published_collision_target() {
     let source = "> # A\n\n# A\n\n# A-2\n\n# A\n";
-    let output = HeadlessFlowConsumer::default().consume_source(source).unwrap();
+    let output = HeadlessFlowConsumer::default()
+        .consume_source(source)
+        .unwrap();
     let heading = output.source_map.resolve_source_anchor("a-2-2").unwrap();
     assert_eq!(heading.title, "A-2");
     assert_eq!(heading.source_span.slice(source), Some("# A-2"));

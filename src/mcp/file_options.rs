@@ -65,6 +65,7 @@ fn supports(target: &str, name: &str) -> bool {
 pub(crate) struct PreparedOptions {
     pub target: &'static str,
     pub profile: Option<Profile>,
+    pub expand_includes: bool,
     pub html: HtmlOptions,
     pub pdf: PdfOptions,
     pub pdf_a: PdfASettings,
@@ -140,6 +141,7 @@ pub(crate) fn prepare(args: &JsonValue) -> Result<PreparedOptions, ToolError> {
     Ok(PreparedOptions {
         target,
         profile,
+        expand_includes: boolean(args, "expandIncludes"),
         html,
         pdf,
         pdf_a,

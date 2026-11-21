@@ -228,6 +228,11 @@ const VERIFY_FIELDS: &[Field] = &[
 ];
 const FILE_FIELDS: &[Field] = &[
     (
+        "expandIncludes",
+        "boolean",
+        "Expand bounded local Markdown includes inside the input file's directory (default false); image and font files are never loaded implicitly",
+    ),
+    (
         "images",
         "array",
         "Explicit image bytes keyed by Markdown destination; never fetched",
@@ -292,7 +297,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.render_file",
-        "Render a local Markdown file. HTML/SVG return text; PDF/EPUB return base64. Without out, both returns a JSON outputs array with format, mimeType, encoding and data. With out, all artifacts are rendered and staged before replacement; the source is protected.",
+        "Render a local Markdown file, optionally expanding local includes with expandIncludes. HTML/SVG return text; PDF/EPUB return base64. Without out, both returns a JSON outputs array with format, mimeType, encoding and data. With out, all artifacts are rendered and staged before replacement; the source and all included files are protected.",
         FILE_FIELDS,
         &["path"],
     ),

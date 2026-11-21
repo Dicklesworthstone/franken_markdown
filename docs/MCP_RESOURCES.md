@@ -3,8 +3,10 @@
 `fmd.render_html`, `fmd.render_pdf`, and `fmd.render_file` accept optional
 `images` and `fonts` arrays. Each payload is caller-supplied canonical padded
 base64, not a URL or path to read. The file tool reads only its explicitly
-requested Markdown file. Markdown image destinations do not authorize asset
-reads or network requests.
+requested Markdown file by default; `expandIncludes: true` also authorizes bounded
+Markdown includes inside its directory (see
+[file options](MCP_FILE_OPTIONS.md#local-markdown-includes)). Markdown image
+destinations do not authorize asset reads or network requests.
 
 ```json
 {

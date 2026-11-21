@@ -1,5 +1,6 @@
 //! Native file rendering for MCP. The core still receives only an AST/options.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -10,6 +11,7 @@ use super::tools::{ToolError, engine_failure, wrap_text_content};
 use super::{ERROR_INPUT_ERROR, ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED};
 use super::{JsonValue, base64_encode};
 use crate::PdfAMode;
+use crate::cli::protected_paths::ProtectedInputs;
 use crate::file_write::{OutputFile, write_outputs_staged};
 
 struct Source {
@@ -127,6 +129,26 @@ fn aliases_source(source: &Source, destination: &Path) -> bool {
     false
 }
 
+fn protect_outputs(
+    source: &Source,
+    inputs: &ProtectedInputs,
+    destinations: &[PathBuf],
+) -> Result<(), ToolError> {
+    for destination in destinations {
+        if aliases_source(source, destination) || inputs.source_for(destination).is_some() {
+            return Err((
+                ERROR_INVALID_OPTIONS,
+                format!(
+                    "Output '{}' would overwrite a Markdown source or included file",
+                    destination.display()
+                ),
+                "output_overwrites_input",
+            ));
+        }
+    }
+    Ok(())
+}
+
 struct Artifact {
     format: &'static str,
     mime: &'static str,
@@ -181,6 +203,29 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         ));
     }
     let source = read_source(Path::new(path), limit)?;
+    let mut inputs = ProtectedInputs::default();
+    inputs.insert(Path::new(path));
+    let mut markdown = Cow::Borrowed(source.text.as_str());
+    if prepared.expand_includes && crate::transclude::has_includes(&source.text) {
+        // The explicit switch grants only the same bounded document-root
+        // reads as native render/watch. Resource URLs remain explicit byte
+        // bindings; rebasing an included image never authorizes a file read.
+        let expansion = crate::watch::expand_file_includes_with_profile(
+            &source.text,
+            Path::new(path),
+            limit,
+            prepared.profile,
+        );
+        for input in expansion.input_paths() {
+            inputs.insert(input);
+        }
+        markdown = Cow::Owned(expansion.result.map_err(|message| {
+            input_error(
+                format!("Cannot expand includes in '{path}': {message}"),
+                "include_error",
+            )
+        })?);
+    }
     let destinations: Vec<PathBuf> = match out {
         None => Vec::new(),
         Some(out) if target == "both" => vec![
@@ -189,18 +234,7 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         ],
         Some(out) => vec![PathBuf::from(out)],
     };
-    for destination in &destinations {
-        if aliases_source(&source, destination) {
-            return Err((
-                ERROR_INVALID_OPTIONS,
-                format!(
-                    "Output '{}' would overwrite the Markdown source",
-                    destination.display()
-                ),
-                "output_overwrites_input",
-            ));
-        }
-    }
+    protect_outputs(&source, &inputs, &destinations)?;
     let assets = resources::parse(args)?;
     let title = Path::new(path)
         .file_stem()
@@ -226,14 +260,14 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         pdf_options.image_assets = assets.images;
     }
     // Parse once, including for paired HTML/PDF output.
-    let document = crate::parse_markdown_with_profile(&source.text, prepared.profile);
+    let document = crate::parse_markdown_with_profile(&markdown, prepared.profile);
     let render_error =
         |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     let mut artifacts = Vec::new();
     let mut svg_warnings = Vec::new();
     if matches!(target, "html" | "both") {
         let html = if prepared.interactive {
-            crate::interactive::render_interactive_html(&document, &source.text, &html_options)
+            crate::interactive::render_interactive_html(&document, &markdown, &html_options)
         } else {
             crate::render_html_document(&document, &html_options).map_err(render_error)?
         };
@@ -284,6 +318,9 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         });
     }
     if !destinations.is_empty() {
+        // Recheck current aliases after rendering against captured identities.
+        // A rejected paired publication replaces neither sibling.
+        protect_outputs(&source, &inputs, &destinations)?;
         // Every render and source-identity check finishes before any file write.
         let outputs: Vec<_> = destinations
             .iter()

@@ -6,6 +6,7 @@
 //! No source search is mistaken for parser provenance; no URI is ever opened.
 
 use franken_markdown::book::validation::{AnchorKind, ReferenceKind, analyze_document_links};
+use franken_markdown::parse::destination_spans;
 use franken_markdown::{Document, SourceSpan, parse_markdown, parse_markdown_spanned};
 
 use super::{
@@ -79,6 +80,50 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
         fragment,
         angle,
     })
+}
+
+/// Select a completed destination without inventing a second URL grammar.
+/// Ordinary URLs keep their existing bounded lexical/probe path. Escaped
+/// punctuation, balanced parentheses, spaces in angle destinations and URLs on
+/// continuation lines use the core parser's exact source token. Either path
+/// must still prove one emitted Link and restore the complete original AST.
+fn parsed_candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
+    if let Some(token) = candidate(source, span, offset) {
+        let complete_token = match source.as_bytes().get(token.end) {
+            Some(b'>') if token.angle => true,
+            Some(b')' | b' ' | b'\t' | b'\r' | b'\n') if !token.angle => true,
+            _ => false,
+        };
+        if complete_token {
+            return Some(token);
+        }
+    }
+    // Explicit URLs require this literal opener even when their label or
+    // destination crosses a line. Reference-only blocks need no extra parser
+    // pass before the existing bounded reference-use proof.
+    if !source.get(span.start..offset)?.contains("](") {
+        return None;
+    }
+    let mut selected = None;
+    for destination in destination_spans(source) {
+        let raw = source.get(destination.range.clone())?;
+        let angle = raw.starts_with('<') && raw.ends_with('>');
+        let start = destination.range.start + usize::from(angle);
+        let end = destination.range.end - usize::from(angle);
+        if start < span.start || end > span.end || offset < start || offset > end {
+            continue;
+        }
+        if end - start > MAX_DESTINATION_BYTES || selected.is_some() {
+            return None;
+        }
+        selected = Some(Token {
+            start,
+            end,
+            fragment: None,
+            angle,
+        });
+    }
+    selected
 }
 
 fn matches_probe(probed: &Document, original: &Document, owner: usize, probe: &str) -> bool {
@@ -255,7 +300,11 @@ fn request_resolving<'a>(
     if span.len() > MAX_BLOCK_BYTES {
         return Err((-32803, "enclosing block exceeds the link navigation budget"));
     }
-    let token = candidate(source, span, offset);
+    let token = if completing {
+        candidate(source, span, offset)
+    } else {
+        parsed_candidate(source, span, offset)
+    };
     let (spans, blocks): (Vec<_>, Vec<_>) = document
         .blocks
         .into_iter()

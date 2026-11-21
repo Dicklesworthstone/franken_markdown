@@ -58,6 +58,71 @@ fn full_collapsed_and_shortcut_references_resolve_from_labels_or_link_text() {
 }
 
 #[test]
+fn multiline_reference_text_and_labels_resolve_through_the_real_parser() {
+    for body in [
+        "[read\nthis¦][guide]",
+        "[read\nthis][gui¦de]",
+        "[read][multi\nline¦]",
+        "[multi\nline¦][]",
+        "[multi\nline¦]",
+        "> [read\n> this¦][guide]",
+        "> [read][multi\n> line¦]",
+        "- [read\n  this¦][guide]",
+        "- [read][multi\n  line¦]",
+        "Use[^n].\n\n[^n]: [read\n    this¦][guide]",
+    ] {
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = format!(
+                "# Target\n\n{body}\n\n[guide]: #target \"Keep title\"\n[multi line]: #target\n"
+            )
+            .replace('\n', newline);
+            let result = call("textDocument/definition", &source);
+            assert_eq!(
+                result.get("uri").and_then(Json::as_str),
+                Some(URI),
+                "{source:?}"
+            );
+            assert_eq!(
+                start(&result),
+                Some(&position(Position {
+                    line: 0,
+                    character: 0
+                })),
+                "{source:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiline_reference_proposals_preserve_literal_contexts_and_block_boundaries() {
+    for body in [
+        "![read\nthis¦][guide]",
+        "`[read\nthis¦][guide]`",
+        "```md\n[read\nthis¦][guide]\n```",
+        "<span title=\"[read\nthis¦][guide]\">text</span>",
+        "[read\n\nthis¦][guide]",
+        "> [read\n>\n> this¦][guide]",
+        "- [read\n\n- this¦][guide]",
+        "[^n]: [read\n    this¦][guide]",
+        "[read][miss\ning¦]",
+    ] {
+        let source = format!("# Target\n\n{body}\n\n[guide]: #target\n");
+        assert_eq!(
+            call("textDocument/definition", &source),
+            Json::Null,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn multiline_adjacent_ambiguity_stays_inert() {
+    let source = "# Target\n\n[x\nx][x\nx¦][x\nx]\n\n[x x]: #target \"Keep title\"\n";
+    assert_eq!(call("textDocument/definition", source), Json::Null);
+}
+
+#[test]
 fn parser_owns_case_whitespace_forward_definitions_and_first_definition_precedence() {
     let source = "[go][  A   B¦ ]\n\n[a b]: #first\n[A B]: #second\n\n# First\n\n# Second\n";
     assert_eq!(
@@ -361,10 +426,14 @@ fn source_scanner_and_probe_work_have_explicit_budgets() {
         candidates(&source, SourceSpan::new(0, source.len()), 2),
         Err((-32803, _))
     ));
-    assert!(
-        candidates("[multi\nline]", SourceSpan::new(0, 12), 2)
-            .unwrap()
-            .is_empty()
+    // Multiline proposals retain the same byte/context budgets. Only the
+    // complete AST proof in destination() can turn them into navigation.
+    assert_eq!(
+        candidates("[multi\nline]", SourceSpan::new(0, 12), 2).unwrap(),
+        [Candidate {
+            suffix: 12..12,
+            preceding: None
+        }]
     );
     let collisions: String = (0..32).map(|n| format!("#fmd-lsp-probe-{n} ")).collect();
     let source = format!("# Target\n\n{collisions}\n\n[go][i¦d]\n\n[id]: #target");

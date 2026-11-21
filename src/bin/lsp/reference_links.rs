@@ -46,7 +46,9 @@ fn candidates(source: &str, span: SourceSpan, offset: usize) -> Result<Vec<Candi
                 cursor += 2;
                 continue;
             }
-            b'\r' | b'\n' => stack.clear(), // No invented multiline source range.
+            // Brackets may span physical lines, including stripped container
+            // prefixes. They only propose a source range: the complete AST
+            // probe below still owns recognition and semantic correspondence.
             b'[' => stack.push(cursor),
             b']' => {
                 if let Some(open) = stack.pop() {

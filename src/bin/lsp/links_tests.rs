@@ -75,6 +75,172 @@ fn definition_resolves_encoded_forward_heading_without_changing_the_source() -> 
 }
 
 #[test]
+fn completed_destinations_keep_parser_owned_escapes_parentheses_and_line_boundaries() -> TestResult
+{
+    for body in [
+        r"[go](\#tar¦get)",
+        r"[go](?q=some\(thing\)#tar¦get)",
+        "[go](?q=some(thing)#tar¦get)",
+        r"[go](<\#tar¦get>)",
+        "[go](\n#tar¦get\n\"Keep title\")",
+        "> [go](\n> #tar¦get\n> \"Keep title\")",
+        "- [go](\n  #tar¦get\n  \"Keep title\")",
+        "[go\nwith **text**](\\#tar¦get)",
+    ] {
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = format!("# Target\n\n{body}\n").replace('\n', newline);
+            let result = call("textDocument/definition", &source)?;
+            assert_eq!(
+                result.get("uri").and_then(Json::as_str),
+                Some("untitled:links"),
+                "{source:?}"
+            );
+            assert_eq!(
+                result.get("range").and_then(|r| r.get("start")),
+                Some(&position(Position {
+                    line: 0,
+                    character: 0
+                })),
+                "{source:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn parser_owned_destination_tokens_do_not_authorize_literal_or_unpublished_sources() -> TestResult {
+    for body in [
+        r"![go](\#tar¦get)",
+        r"`[go](\#tar¦get)`",
+        "```md\n[go](\\#tar¦get)\n```",
+        r#"<span title="[go](\#tar¦get)">text</span>"#,
+        r#"[go](#wrong "title ](\#tar¦get)")"#,
+        r"$[go](\#tar¦get)$",
+        "[^n]: [go](\\#tar¦get)",
+        "[go](\\#tar¦get",
+        "[go](<#tar\nget¦>)",
+    ] {
+        let source = format!("# Target\n\n{body}\n");
+        assert_eq!(
+            call("textDocument/definition", &source)?,
+            Json::Null,
+            "{body}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn extended_destinations_resolve_only_current_open_buffers_with_exact_client_uris() -> TestResult {
+    let source_uri = "file:///docs/source.md";
+    for (body, target_uri) in [
+        (
+            r"[go](guide\(part\).md#ta¦rget)",
+            "file:///docs/guide%28part%29.md",
+        ),
+        (
+            "[go](guide(part).md#ta¦rget)",
+            "file:///docs/guide%28part%29.md",
+        ),
+        (
+            "[go](<guide one.md#ta¦rget>)",
+            "file:///docs/guide%20one.md",
+        ),
+        (
+            "[go](\r\n<guide one.md#ta¦rget>\r\n\"Read\")",
+            "file:///docs/guide%20one.md",
+        ),
+    ] {
+        let (source, offset) = marked(&format!("😀 {body}\r\n"))?;
+        let mut server = Server {
+            phase: Phase::Running,
+            ..Server::default()
+        };
+        for (uri, text) in [
+            (source_uri, source.as_str()),
+            (target_uri, "# Intro\r\n\r\n# Target\r\n"),
+        ] {
+            server.documents.insert(
+                uri.to_string(),
+                Buffer {
+                    text: text.to_string(),
+                    version: 1,
+                    synchronized: true,
+                },
+            );
+        }
+        let params = object([
+            ("textDocument", object([("uri", string(source_uri))])),
+            (
+                "position",
+                position(LineIndex::new(&source).position(&source, offset)),
+            ),
+        ]);
+        let result = server
+            .navigate("textDocument/definition", &params)
+            .map_err(|(_, reason)| reason)?;
+        assert_eq!(
+            result.get("uri").and_then(Json::as_str),
+            Some(target_uri),
+            "{body}"
+        );
+        assert_eq!(
+            result.get("range").and_then(|r| r.get("start")),
+            Some(&position(Position {
+                line: 2,
+                character: 0
+            })),
+            "{body}"
+        );
+        server.change(&object([
+            (
+                "textDocument",
+                object([("uri", string(source_uri)), ("version", number(2))]),
+            ),
+            (
+                "contentChanges",
+                Json::Array(vec![object([(
+                    "text",
+                    string(&source.replace("#target", "#intro")),
+                )])]),
+            ),
+        ]))?;
+        let changed = server
+            .navigate("textDocument/definition", &params)
+            .map_err(|(_, reason)| reason)?;
+        assert_eq!(
+            changed.get("range").and_then(|r| r.get("start")),
+            Some(&position(Position {
+                line: 0,
+                character: 0
+            })),
+            "{body}"
+        );
+        server
+            .documents
+            .get_mut(target_uri)
+            .ok_or("missing target")?
+            .synchronized = false;
+        assert!(matches!(
+            server.navigate("textDocument/definition", &params),
+            Err((-32801, _))
+        ));
+        server.close(&object([(
+            "textDocument",
+            object([("uri", string(target_uri))]),
+        )]))?;
+        assert_eq!(
+            server
+                .navigate("textDocument/definition", &params)
+                .map_err(|(_, reason)| reason)?,
+            Json::Null
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn edit_replaces_only_fragment_preserving_query_title_and_surrogate_coordinates() -> TestResult {
     let marked_source = "# Same\r\n\r\n😀 [go](?mode=read#sa¦me-old \"Keep title\") tail\r\n";
     let (source, offset) = marked(marked_source)?;

@@ -2,7 +2,9 @@
 
 `fmd.render_file` accepts flat rendering options alongside `path`, `to`, `out`,
 `images`, `fonts`, and `expandIncludes`. The HTML/PDF option builders are shared
-with `fmd.render_html` and `fmd.render_pdf`, not reimplemented in the file loader.
+with `fmd.render_html` and `fmd.render_pdf`; EPUB and SVG also share their
+applicability rules and builders with the stateless
+[source publication tools](MCP_SOURCE_EXPORTS.md).
 
 All targets accept `profile: "commonmark-gfm"` or `profile: "gfm-plus"`.
 The source is parsed under that dialect before any output transforms, including
@@ -51,7 +53,7 @@ JSON `outputs` array; single-format output retains its existing text/base64 form
 | `html` | The `fmd.render_html` options, including CSS, appearance, TOC, font container and interactive HTML |
 | `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages, baseline grid, strict pagination and PDF/A |
 | `both` | The union of HTML and PDF options; each renderer consumes its own fields |
-| `epub` | HTML theme, font scale, title, language, CSS, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
+| `epub` | HTML theme, font scale, title, author, language, CSS, font embedding, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
 | `svg` | `profile`, `font`, `fontScale`, `maxWidthPt` (144..14400 points), `toc`, `tocDepth`, and explicit resources |
 
 `images` and `fonts` work for all targets. They contain explicit bytes; destinations
@@ -72,6 +74,11 @@ See [PDF layout and verification](MCP_PDF_CONFIGURATION.md) for
 An enabled baseline grid and `fitToPages` are incompatible and fail before source
 I/O. Strict-pagination failures preserve their typed `pagination_*` reason and
 leave both paired destinations unchanged.
+
+EPUB `author` is preserved in its escaped creator metadata and publication
+identity. Omission retains the native default. The existing HTML/PDF paired
+contract is unchanged: `author` affects its PDF artifact only, and HTML-only
+requests still reject it.
 
 The default target remains HTML. Omitted titles retain the filename-stem default;
 explicit empty titles and surrounding whitespace are preserved. Source parsing is

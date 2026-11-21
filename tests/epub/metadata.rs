@@ -211,3 +211,136 @@ fn native_html_and_epub_use_frontmatter_and_explicit_author_precedence() {
         }
     }
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_source_and_file_epub_preserve_creator_and_publication_identity() {
+    use franken_markdown::mcp::{
+        ERROR_RENDER_FAILED, INVALID_PARAMS, JsonValue as Json, base64_encode, handle_tool_call,
+        parse_json,
+    };
+    use std::collections::BTreeMap;
+
+    let text = |value: &str| Json::String(value.to_owned());
+    let call = |name: &str, arguments: BTreeMap<String, Json>| {
+        handle_tool_call(
+            Some(&Json::Object(BTreeMap::from([
+                ("name".into(), Json::String(name.to_owned())),
+                ("arguments".into(), Json::Object(arguments)),
+            ]))),
+            1024 * 1024,
+        )
+    };
+    let content = |value: Json| {
+        assert_eq!(value.get("isError"), Some(&Json::Bool(false)));
+        let Json::Array(items) = value.get("content").unwrap() else {
+            panic!("expected MCP content")
+        };
+        items[0]
+            .get("text")
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_owned()
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "fmd-mcp-epub-author-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("chapter.md");
+    std::fs::write(&path, SOURCE).unwrap();
+
+    let source_args = BTreeMap::from([
+        ("markdown".into(), text(SOURCE)),
+        ("title".into(), text("Publication")),
+    ]);
+    let mut file_args = BTreeMap::from([
+        ("path".into(), text(&path.to_string_lossy())),
+        ("title".into(), text("Publication")),
+        ("to".into(), text("epub")),
+    ]);
+    let defaults = HtmlOptions {
+        title: Some("Publication".into()),
+        ..HtmlOptions::default()
+    };
+    let baseline = render_epub(&parse_markdown(SOURCE), &defaults).unwrap();
+    let creator = "  Ada & <Research> \"É中\"\nTeam  ";
+    let authored = render_epub(
+        &parse_markdown(SOURCE),
+        &HtmlOptions {
+            author: Some(creator.into()),
+            ..defaults
+        },
+    )
+    .unwrap();
+    let metadata = entry_text(&authored, "OEBPS/content.opf");
+    assert_well_formed_xml(&metadata);
+    assert!(
+        metadata.contains("<dc:creator>  Ada &amp; &lt;Research&gt; \"É中\"\nTeam  </dc:creator>")
+    );
+    assert_ne!(identifier(&baseline), identifier(&authored));
+    assert!(!entry_text(&baseline, "OEBPS/content.opf").contains("<dc:creator>"));
+    for member in [
+        "OEBPS/chapter-1.xhtml",
+        "OEBPS/nav.xhtml",
+        "OEBPS/style.css",
+    ] {
+        assert_eq!(entry_text(&baseline, member), entry_text(&authored, member));
+    }
+
+    for (name, request) in [
+        ("fmd.render_epub", &source_args),
+        ("fmd.render_file", &file_args),
+    ] {
+        assert_eq!(
+            content(call(name, request.clone()).unwrap()),
+            base64_encode(&baseline)
+        );
+        let mut request = request.clone();
+        request.insert("author".into(), text(creator));
+        let actual = content(call(name, request.clone()).unwrap());
+        assert_eq!(actual, base64_encode(&authored), "{name}");
+        assert_eq!(actual, content(call(name, request.clone()).unwrap()));
+        request.insert("author".into(), text("Invalid\u{000b}creator"));
+        let error = call(name, request).unwrap_err();
+        assert_eq!(error.0, ERROR_RENDER_FAILED);
+        assert!(error.1.contains("content.opf"), "{error:?}");
+    }
+
+    // Creator support is an EPUB addition. Existing HTML/PDF pairs still apply
+    // author only to their PDF side, rather than changing the HTML metadata.
+    file_args.insert("to".into(), text("both"));
+    let before = parse_json(&content(
+        call("fmd.render_file", file_args.clone()).unwrap(),
+    ))
+    .unwrap();
+    file_args.insert("author".into(), text(creator));
+    let after = parse_json(&content(
+        call("fmd.render_file", file_args.clone()).unwrap(),
+    ))
+    .unwrap();
+    let Json::Array(before) = before.get("outputs").unwrap() else {
+        panic!("paired output")
+    };
+    let Json::Array(after) = after.get("outputs").unwrap() else {
+        panic!("paired output")
+    };
+    assert_eq!(before[0].get("format"), Some(&text("html")));
+    assert_eq!(before[1].get("format"), Some(&text("pdf")));
+    assert_eq!(before[0].get("data"), after[0].get("data"));
+    assert_ne!(before[1].get("data"), after[1].get("data"));
+
+    let mut html = source_args;
+    html.insert("author".into(), text(creator));
+    assert_eq!(call("fmd.render_html", html).unwrap_err().0, INVALID_PARAMS);
+    file_args.insert("to".into(), text("html"));
+    assert_eq!(
+        call("fmd.render_file", file_args).unwrap_err().2,
+        "unsupported_target_option"
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), SOURCE);
+}

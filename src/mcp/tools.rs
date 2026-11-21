@@ -19,6 +19,9 @@ pub(super) mod resources;
 #[path = "file_options.rs"]
 pub(super) mod file_options;
 
+#[path = "source_render.rs"]
+mod source_render;
+
 #[path = "book_tools.rs"]
 mod book_tools;
 
@@ -284,6 +287,18 @@ const TOOLS: &[ToolSpec] = &[
         &["markdown"],
     ),
     (
+        "fmd.render_svg",
+        "Render caller-supplied Markdown to a standalone SVG poster. Explicit image/font bytes are optional; recoverable rendering diagnostics accompany the SVG text in warnings. No file or network access.",
+        &[],
+        &["markdown"],
+    ),
+    (
+        "fmd.render_epub",
+        "Render caller-supplied Markdown to a deterministic EPUB, returned as base64. Optional images/fonts are supplied as explicit bytes; no file or network access.",
+        &[],
+        &["markdown"],
+    ),
+    (
         "fmd.verify",
         "Audit configured PDF layout, text, anchors, accessibility, and overflow, including strict pagination admission; not a PDF/A conformance validator.",
         VERIFY_FIELDS,
@@ -324,6 +339,12 @@ fn number_bounds(name: &str) -> Option<(f64, f64)> {
 }
 
 fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
+    if name == "fmd.render_svg" {
+        return file_options::source_fields("svg");
+    }
+    if name == "fmd.render_epub" {
+        return file_options::source_fields("epub");
+    }
     if name == "fmd.render_book" {
         return book_tools::fields();
     }
@@ -641,6 +662,14 @@ fn html_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
     })
 }
 
+/// EPUB consumes creator metadata in addition to the shared HTML settings.
+/// Keep the existing HTML/paired-export policy, where author is PDF-only.
+fn epub_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
+    let mut options = html_options(args)?;
+    options.author = string(args, "author").map(str::to_string);
+    Ok(options)
+}
+
 fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError> {
     let microtype = match string(args, "microtype")
         .unwrap_or("off")
@@ -872,6 +901,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             Ok(wrap_text_content(&json))
         }
         "fmd.render_file" => super::file_render::render_file(args, limit),
+        "fmd.render_svg" => source_render::render_svg(args, limit),
+        "fmd.render_epub" => source_render::render_epub(args, limit),
         "fmd.render_book" => book_tools::render(args, limit),
         "fmd.verify_book" => book_tools::verify(args, limit),
         _ => Err((

@@ -2067,13 +2067,15 @@ fn run_render_with_preview(
         };
         let is_interactive = args.interactive_html || matches!(args.to, Target::InteractiveHtml);
         if is_interactive {
-            let html = crate::interactive::render_interactive_html(&doc, &src, &opts);
-            Some(html)
+            match crate::interactive::render_interactive_html_checked(&doc, &src, &opts) {
+                Ok(html) => Some(html),
+                Err(error) => return fail_render(error, json),
+            }
         } else if !want_preview {
             if let Err(error) = opts
                 .font_assets
                 .validate()
-                .and_then(|()| crate::html::validate_cff_font_usage(&doc, &opts))
+                .and_then(|()| crate::html::validate_font_usage(&doc, &opts))
             {
                 return fail_render(error, json);
             }
@@ -3427,7 +3429,7 @@ fn report_font_pin_warnings(assets: &FontAssets, json: bool) {
         let Some(weight) = assets.slot_weight(slot) else {
             continue;
         };
-        if !font_pin_failed_to_instance(assets, slot, weight) {
+        if !font_pin_ignored_static(assets, slot) {
             continue;
         }
         let warning = RenderWarning::FontWeightIgnoredStatic {
@@ -3446,17 +3448,12 @@ fn report_font_pin_warnings(assets: &FontAssets, json: bool) {
     }
 }
 
-/// True when this slot has host (or VF-shared) bytes and `Font::instance`
-/// could not produce a face at `weight`. A pin with no host bytes is a
-/// no-op on the bundled path — not a static-face ignore.
-fn font_pin_failed_to_instance(assets: &FontAssets, slot: FontAssetSlot, weight: u16) -> bool {
-    let Some(bytes) = assets.resolved_bytes(slot) else {
-        return false;
-    };
-    crate::text::Font::parse(bytes.to_vec())
-        .ok()
-        .and_then(|font| font.instance(f32::from(weight)))
-        .is_none()
+/// A static host face cannot honor a pin. A failed variable instance is a
+/// render error, while a pin with no host bytes remains the bundled no-op.
+fn font_pin_ignored_static(assets: &FontAssets, slot: FontAssetSlot) -> bool {
+    assets
+        .resolved_bytes(slot)
+        .is_some_and(|bytes| !crate::font_bytes_have_wght(bytes))
 }
 
 fn report_font_assets(assets: &FontAssets) {
@@ -4745,7 +4742,7 @@ mod overwrite_guard_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod font_pin_warning_tests {
-    use super::font_pin_failed_to_instance;
+    use super::font_pin_ignored_static;
     use crate::{FontAssetSlot, FontAssets};
 
     #[test]
@@ -4755,7 +4752,7 @@ mod font_pin_warning_tests {
             .set_slot_weight(FontAssetSlot::BodyRegular, 650)
             .unwrap();
         assert!(
-            !font_pin_failed_to_instance(&assets, FontAssetSlot::BodyRegular, 650),
+            !font_pin_ignored_static(&assets, FontAssetSlot::BodyRegular),
             "no host face: the pin is unused, not ignored on a static face"
         );
     }
@@ -4771,7 +4768,7 @@ mod font_pin_warning_tests {
             .with_slot_weight(FontAssetSlot::BodyRegular, 650)
             .unwrap();
         assert!(
-            font_pin_failed_to_instance(&assets, FontAssetSlot::BodyRegular, 650),
+            font_pin_ignored_static(&assets, FontAssetSlot::BodyRegular),
             "bundled Plex is static; a 650 pin must not instance"
         );
     }

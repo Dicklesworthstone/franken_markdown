@@ -17,7 +17,7 @@ use crate::wasm::{self, WasmRenderOptions};
 use crate::{
     BookInput, DarkModePolicy, FontAssetSlot, Theme, ZipWriter, book_pdf_document, build_book,
     build_search_index, compute_diff, compute_doc_stats, inject_book_nav, parse_markdown,
-    render_epub, render_html_document, render_interactive_html, rewrite_links_for_site,
+    render_epub, render_html_document, render_interactive_html_checked, rewrite_links_for_site,
     search_index_json,
 };
 
@@ -336,7 +336,8 @@ pub fn render_interactive_html_configured(
     options.lang = empty_to_none(lang);
     options.font_scale = positive_f32(font_scale, "fontScale")?;
     let document = parse_markdown(markdown);
-    let html = render_interactive_html(&document, markdown, &options.html_options());
+    let html = render_interactive_html_checked(&document, markdown, &options.html_options())
+        .map_err(render_error_to_js)?;
     Ok(artifact_result(
         "interactive-html",
         "text/html; charset=utf-8",
@@ -442,11 +443,14 @@ pub fn render_interactive_html_configured_advanced(
     )?;
     apply_font_weights(&mut options, &font_weights)?;
     let document = parse_markdown(markdown);
-    let html = crate::interactive::render_interactive_html_advanced(
-        &document,
-        markdown,
-        &options.html_options(),
-    );
+    let html_options = options.html_options();
+    html_options
+        .font_assets
+        .validate()
+        .map_err(render_error_to_js)?;
+    crate::html::validate_editable_font_usage(&html_options).map_err(render_error_to_js)?;
+    let html =
+        crate::interactive::render_interactive_html_advanced(&document, markdown, &html_options);
     if html.len() > 256 * MIB {
         return Err(JsValue::from_str(
             "Interactive workspace output exceeds 256 MiB",

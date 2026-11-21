@@ -267,7 +267,12 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
     let mut svg_warnings = Vec::new();
     if matches!(target, "html" | "both") {
         let html = if prepared.interactive {
-            crate::interactive::render_interactive_html(&document, &markdown, &html_options)
+            crate::interactive::render_interactive_html_checked(
+                &document,
+                &markdown,
+                &html_options,
+            )
+            .map_err(render_error)?
         } else {
             crate::render_html_document(&document, &html_options).map_err(render_error)?
         };

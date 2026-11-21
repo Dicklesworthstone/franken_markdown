@@ -20,6 +20,27 @@ bold slot's effective weight (default 700).
 
 Static host faces ignore a weight pin (`FontWeightIgnoredStatic`).
 
+The checked HTML and PDF APIs reject a variable face when its requested
+instance cannot be produced. A parseable `wght` axis does not establish that
+its variation tables, resulting metrics, outlines, or work requirements are
+supported. These failures return `RenderError::InvalidInput` with a
+`font_instance:` prefix naming the semantic slot and requested weight; they
+never publish the original variable face as if the pin had succeeded. The
+implicit bold slot is checked at its own effective weight, even when the
+regular instance succeeds. Supply a supported variable font or a prepared
+static face when this error occurs.
+
+HTML performs this check before writing any bytes, for compact subsets and
+full embedding. PDF applies it before fitting, pagination and emission, also
+for diagnostic, profiled, PDF/A and browser-safe Rust APIs. SVG and EPUB retain
+their existing refusal of uninstantiable fonts. Static-font pins continue to
+preserve their original outlines and warning behavior. The low-level
+infallible `html::render` and interactive HTML helpers keep their compatible
+signatures; callers requiring typed admission should use
+`render_html_document`, `render_html_document_to_writer`, or
+`render_interactive_html_checked`. The CLI, MCP tools, and browser resource
+APIs use checked admission before publishing editable HTML as well.
+
 Each sparse `gvar` tuple infers its missing point deltas on the original
 outline coordinates before its region weight is applied. Only those completed
 tuple contributions are summed. This preserves distinct sparse regions when

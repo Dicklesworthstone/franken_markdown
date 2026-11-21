@@ -825,7 +825,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             options.image_assets = assets.images;
             let doc = crate::parse_markdown_with_profile(source, options.profile);
             let html = if boolean(args, "interactiveHtml") {
-                crate::interactive::render_interactive_html(&doc, source, &options)
+                crate::interactive::render_interactive_html_checked(&doc, source, &options)
+                    .map_err(render_error)?
             } else {
                 crate::render_html_document(&doc, &options).map_err(render_error)?
             };

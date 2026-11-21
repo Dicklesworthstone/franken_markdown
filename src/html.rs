@@ -218,27 +218,43 @@ pub(crate) fn stylesheet(doc: &Document, opts: &HtmlOptions) -> String {
         .map_or_else(|| default_css(doc, opts), sanitize_custom_css)
 }
 
-/// The checked document API refuses a CFF program it cannot subset. Full
-/// embedding delegates complete glyph programs to the browser after the
-/// shared structural font admission. The longstanding infallible HTML helpers
-/// retain their full-font fallback.
-pub(crate) fn validate_cff_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
-    if opts.custom_css.is_some() || opts.font_embedding == FontEmbedding::Full {
-        return Ok(());
-    }
+/// Checked publication refuses failed variable instances and CFF programs it
+/// cannot subset. The longstanding infallible HTML helpers retain their
+/// compatible full-font fallback; native and browser publishers use this
+/// admission before producing bytes.
+pub(crate) fn validate_font_usage(doc: &Document, opts: &HtmlOptions) -> crate::Result<()> {
+    let subset = opts.custom_css.is_none() && opts.font_embedding == FontEmbedding::Subset;
+    validate_fonts(subset.then_some(doc), opts)
+}
+
+/// Editable HTML embeds complete faces, including styles absent from the
+/// initial source. It still must produce every selected variable instance.
+pub(crate) fn validate_editable_font_usage(opts: &HtmlOptions) -> crate::Result<()> {
+    validate_fonts(None, opts)
+}
+
+fn validate_fonts(subset_doc: Option<&Document>, opts: &HtmlOptions) -> crate::Result<()> {
     let mut usage = None;
     for slot in FontAssetSlot::ALL {
         let Some(bytes) = opts.font_assets.resolved_bytes(slot) else {
             continue;
         };
-        // CFF1 is static. Inspect the outline kind before any variable-font
-        // instancing so this extra preflight leaves TrueType work unchanged.
         let font = Font::parse(bytes.to_vec()).map_err(|err| {
             crate::RenderError::InvalidInput(format!(
                 "html_cff_font: {} font could not be parsed: {err}",
                 slot.as_str()
             ))
         })?;
+        if font.instance_bounds(*b"wght").is_some() {
+            // Reuse this already parsed face. A failed pin must not reach the
+            // infallible stylesheet helper's original-font fallback, including
+            // Full embedding and the regular face's inherited bold weight.
+            crate::instance_render_font(slot, font, opts.font_assets.effective_weight(slot))?;
+            continue;
+        }
+        let Some(doc) = subset_doc else {
+            continue;
+        };
         if font.has_glyf_outlines() {
             continue;
         }

@@ -2758,8 +2758,8 @@ impl RenderWarning {
                  as .notdef boxes (e.g. {sample:?})"
             ),
             Self::FontWeightIgnoredStatic { slot, weight } => format!(
-                "{slot} font-weight {weight} did not instance: the face has no wght axis, \
-                 or instancing failed and default outlines were kept \
+                "{slot} font-weight {weight} was ignored: the face has no wght axis; \
+                 static outlines were kept \
                  (pin a variable font, or drop --pdf-font-weight)"
             ),
             Self::MathFallback { source, reason } => format!(
@@ -2944,12 +2944,11 @@ fn source_render_warnings(
         let Some(weight) = opts.font_assets.slot_weight(slot) else {
             continue;
         };
-        let instanced = opts.font_assets.resolved_bytes(slot).and_then(|bytes| {
-            Font::parse(bytes.to_vec())
-                .ok()
-                .and_then(|font| font.instance(f32::from(weight)))
-        });
-        if instanced.is_none() {
+        let has_axis = opts
+            .font_assets
+            .resolved_bytes(slot)
+            .is_some_and(crate::font_bytes_have_wght);
+        if !has_axis {
             warnings.push(RenderWarning::FontWeightIgnoredStatic {
                 slot: slot.as_str().to_string(),
                 weight,

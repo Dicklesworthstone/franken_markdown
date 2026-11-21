@@ -167,7 +167,7 @@ pub use flow_display::{
     ResumableFlowDisplay, StepResult, UnresolvedAsset,
 };
 pub use footnotes::{EndnoteTarget, PreparedEndnotes};
-pub use interactive::render_interactive_html;
+pub use interactive::{render_interactive_html, render_interactive_html_checked};
 pub use lang_dispatch::{
     DispatchAuditReceipt, DispatchError, DispatchRequest, DispatchResult, LanguageId,
     LanguageRegistry, LanguageRouteRegistration, MAX_ALIASES_PER_ROUTE, MAX_REGISTERED_LANGUAGES,
@@ -600,7 +600,8 @@ fn font_bytes_have_wght(bytes: &[u8]) -> bool {
 }
 
 /// Parse host font bytes and, when they carry a `wght` axis, instance at
-/// `weight`. Static faces are returned unchanged (the pin is ignored).
+/// `weight`. Static faces are returned unchanged (the pin is ignored), while
+/// a failed variable instance is an error rather than default-weight output.
 pub(crate) fn instance_host_font(
     slot: FontAssetSlot,
     bytes: &[u8],
@@ -613,10 +614,27 @@ pub(crate) fn instance_host_font(
         ))
     })?;
     validate_render_font(slot, &font)?;
+    instance_render_font(slot, font, weight)
+}
+
+/// Consume an already parsed face so admission and actual loading share the
+/// same variable-font failure policy without parsing its bytes again.
+pub(crate) fn instance_render_font(
+    slot: FontAssetSlot,
+    font: text::Font,
+    weight: u16,
+) -> Result<text::Font> {
     if font.instance_bounds(*b"wght").is_none() {
         return Ok(font);
     }
-    Ok(font.instance(f32::from(weight)).unwrap_or(font))
+    font.instance(f32::from(weight)).ok_or_else(|| {
+        RenderError::InvalidInput(format!(
+            "font_instance: {} font cannot be instantiated at font-weight {weight}; \
+             its variation data, resulting outlines or metrics are invalid or exceed supported limits; \
+             supply a supported variable font or a prepared static face",
+            slot.as_str()
+        ))
+    })
 }
 
 /// Authoring profile for Markdown parsing and rendering (ryu4.4).
@@ -1160,10 +1178,11 @@ pub fn parse_markdown_spanned_profiled_with_profile(
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
 /// invalid (empty, over the size limit, or not a supported TrueType/CFF1
-/// OpenType face), or a used CFF glyph cannot be subset deterministically.
+/// OpenType face), a requested variable instance cannot be produced, or a
+/// used CFF glyph cannot be subset deterministically.
 pub fn render_html_document(doc: &Document, opts: &HtmlOptions) -> Result<String> {
     opts.font_assets.validate()?;
-    html::validate_cff_font_usage(doc, opts)?;
+    html::validate_font_usage(doc, opts)?;
     Ok(html::render(doc, opts))
 }
 
@@ -1188,7 +1207,7 @@ pub fn render_html_document_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
 ) -> Result<usize> {
     opts.font_assets.validate()?;
-    html::validate_cff_font_usage(doc, opts)?;
+    html::validate_font_usage(doc, opts)?;
     Ok(html::render_to_writer(doc, opts, writer)?)
 }
 
@@ -1197,8 +1216,8 @@ pub fn render_html_document_to_writer<W: std::io::Write + ?Sized>(
 /// # Errors
 /// Returns [`RenderError::InvalidInput`] when a host-supplied font asset is
 /// invalid (empty, over the size limit, or not a subsettable TrueType/CFF1 face);
-/// otherwise propagates renderer errors. The HTML and PDF renderers share this
-/// one AST.
+/// a requested variable instance cannot be produced; otherwise propagates
+/// renderer errors. The HTML and PDF renderers share this one AST.
 pub fn render_pdf_document(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>> {
     render_pdf_document_emitted(doc, opts, PdfEmitOptions::default())
 }

@@ -116,10 +116,7 @@ pub(super) fn font_warnings(assets: &FontAssets) -> Vec<String> {
         .filter_map(|slot| {
             let weight = assets.slot_weight(slot)?;
             let bytes = assets.resolved_bytes(slot)?;
-            let instanced = crate::text::Font::parse(bytes.to_vec())
-                .ok()
-                .and_then(|font| font.instance(f32::from(weight)));
-            instanced.is_none().then(|| {
+            (!crate::font_bytes_have_wght(bytes)).then(|| {
                 warning_text(&RenderWarning::FontWeightIgnoredStatic {
                     slot: slot.as_str().to_owned(),
                     weight,

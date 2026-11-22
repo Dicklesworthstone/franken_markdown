@@ -44,7 +44,7 @@ fn mcp_tools_list_schema_contract() {
         })
         .expect("tools array");
 
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 11);
     let names: std::collections::BTreeSet<_> = tools
         .iter()
         .map(|tool| tool.get("name").and_then(JsonValue::as_str).unwrap())
@@ -53,12 +53,14 @@ fn mcp_tools_list_schema_contract() {
         names,
         [
             "fmd.capabilities",
+            "fmd.diff",
             "fmd.render_book",
             "fmd.render_epub",
             "fmd.render_file",
             "fmd.render_html",
             "fmd.render_pdf",
             "fmd.render_svg",
+            "fmd.stats",
             "fmd.verify",
             "fmd.verify_book"
         ]

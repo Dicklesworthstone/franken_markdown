@@ -22,6 +22,9 @@ pub(super) mod file_options;
 #[path = "source_render.rs"]
 mod source_render;
 
+#[path = "analysis.rs"]
+mod analysis;
+
 #[path = "book_tools.rs"]
 mod book_tools;
 
@@ -263,6 +266,18 @@ const FILE_FIELDS: &[Field] = &[
 ];
 const TOOLS: &[ToolSpec] = &[
     (
+        "fmd.stats",
+        "Analyze caller-supplied Markdown for word counts, readability, structure, heading outline and link findings. Returns the shared document-statistics JSON; no rendering, includes, file or network access.",
+        analysis::STATS_FIELDS,
+        &["markdown"],
+    ),
+    (
+        "fmd.diff",
+        "Compare two caller-supplied Markdown revisions. Returns typed semantic changes with old/new block indices by default, or a self-contained HTML review with format='html'. Both revisions share one authoring profile and one combined source-byte budget; no file or network access.",
+        analysis::DIFF_FIELDS,
+        &["oldMarkdown", "newMarkdown"],
+    ),
+    (
         "fmd.verify_book",
         "Check chapter, heading and footnote navigation in explicitly supplied chapters/include sources. Returns the shared expanded-html-navigation report; no rendering, assets, file reads or network requests. Findings are report data, not a PDF/EPUB conformance claim.",
         book_tools::SOURCE_FIELDS,
@@ -439,6 +454,17 @@ pub fn tools_list_result() -> JsonValue {
                             ),
                         );
                     }
+                    if *name == "format" {
+                        property.insert(
+                            "enum".to_string(),
+                            JsonValue::Array(
+                                ["json", "html"]
+                                    .into_iter()
+                                    .map(|value| JsonValue::String(value.to_string()))
+                                    .collect(),
+                            ),
+                        );
+                    }
                     ((*name).to_string(), JsonValue::Object(property))
                 })
                 .collect();
@@ -544,6 +570,8 @@ fn validate_arguments(
         if !args.contains_key(*name) {
             let reason = match *name {
                 "markdown" => "missing_markdown",
+                "oldMarkdown" => "missing_old_markdown",
+                "newMarkdown" => "missing_new_markdown",
                 "chapters" => "missing_chapters",
                 _ => "missing_path",
             };
@@ -846,6 +874,8 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
     let render_error =
         |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     match name {
+        "fmd.stats" => analysis::stats(args, limit),
+        "fmd.diff" => analysis::diff(args, limit),
         "fmd.render_html" => {
             let source = markdown(args, limit)?;
             let mut options = html_options(args)?;

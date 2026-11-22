@@ -7,7 +7,10 @@
 use crate::ast::{Block, Document, Inline};
 use crate::theme::Theme;
 
+mod canonical;
 mod html;
+
+use canonical::canonical_block;
 
 /// High-level change metrics between two Markdown documents.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -706,10 +709,6 @@ pub struct DiffReport {
     pub identical: bool,
 }
 
-/// Separator/marker bytes used inside canonical keys. Key equality is all
-/// that matters, so these never leak into rendered output.
-const KEY_SEP: char = '\u{4}';
-
 /// A top-level block reduced to its diff-relevant fingerprint.
 struct KeyedBlock {
     /// Coarse block-kind tag (see `block_tag`).
@@ -794,202 +793,6 @@ fn block_name(tag: u8) -> &'static str {
 /// This is what makes paragraph reflow a no-op for the differ.
 fn normalize_prose(text: &str) -> String {
     text.split_whitespace().collect::<Vec<&str>>().join(" ")
-}
-
-/// Canonical structural text for a block. Prose is whitespace-normalized;
-/// code/math/HTML payloads stay verbatim. Inline structure (emphasis, code
-/// spans, links, images, math, footnote refs) is preserved as markers, so a
-/// formatting change is a real diff.
-fn canonical_block(block: &Block, with_dests: bool) -> String {
-    match block {
-        Block::PageBreak => "\u{0}pagebreak".to_string(),
-        Block::Heading { level, inlines } => {
-            let mut s = String::from("h");
-            s.push_str(&level.to_string());
-            s.push(':');
-            canonical_inlines(inlines, with_dests, &mut s);
-            normalize_prose(&s)
-        }
-        Block::Paragraph(inlines) => {
-            let mut s = String::new();
-            canonical_inlines(inlines, with_dests, &mut s);
-            normalize_prose(&s)
-        }
-        Block::CodeBlock { lang, code } => {
-            let mut s = String::from("c:");
-            if let Some(lang) = lang {
-                s.push_str(lang);
-            }
-            s.push(':');
-            s.push_str(code.trim_end());
-            s
-        }
-        Block::BlockQuote(inner) => canonical_children(inner, with_dests),
-        Block::List(list) => {
-            let mut s = String::from(if list.ordered { "ol" } else { "ul" });
-            s.push_str(&list.start.to_string());
-            s.push(if list.tight { 't' } else { 'l' });
-            for item in &list.items {
-                s.push(KEY_SEP);
-                s.push_str(match item.task {
-                    Some(true) => "[x]",
-                    Some(false) => "[ ]",
-                    None => "",
-                });
-                for child in &item.blocks {
-                    s.push(KEY_SEP);
-                    s.push_str(&canonical_block(child, with_dests));
-                }
-            }
-            s
-        }
-        Block::Table(table) => {
-            let mut s = String::new();
-            for align in &table.align {
-                s.push_str(&(*align as u8).to_string());
-            }
-            for cell in &table.head {
-                s.push(KEY_SEP);
-                push_canonical_cell(cell, with_dests, &mut s);
-            }
-            for row in &table.rows {
-                s.push(KEY_SEP);
-                for cell in row {
-                    s.push(KEY_SEP);
-                    push_canonical_cell(cell, with_dests, &mut s);
-                }
-            }
-            s
-        }
-        Block::ThematicBreak => String::from("hr"),
-        Block::HtmlBlock(html) => {
-            let mut s = String::from("H:");
-            s.push_str(html);
-            s
-        }
-        Block::FootnoteDefinition { id, blocks } => {
-            let mut s = String::from("f:");
-            s.push_str(id);
-            s.push(KEY_SEP);
-            s.push_str(&canonical_children(blocks, with_dests));
-            s
-        }
-        Block::MathBlock(math) => {
-            let mut s = String::from("m:");
-            s.push_str(math.trim());
-            s
-        }
-        Block::DefinitionList(items) => {
-            let mut s = String::from("dl");
-            for item in items {
-                for term in &item.terms {
-                    s.push(KEY_SEP);
-                    push_canonical_cell(term, with_dests, &mut s);
-                }
-                for def in &item.definitions {
-                    s.push(KEY_SEP);
-                    s.push(KEY_SEP);
-                    push_canonical_cell(def, with_dests, &mut s);
-                }
-            }
-            s
-        }
-    }
-}
-
-fn canonical_children(blocks: &[Block], with_dests: bool) -> String {
-    blocks
-        .iter()
-        .map(|b| canonical_block(b, with_dests))
-        .collect::<Vec<String>>()
-        .join("\u{4}")
-}
-
-/// A table cell / definition-list entry is prose: normalize its whitespace.
-fn push_canonical_cell(inlines: &[Inline], with_dests: bool, out: &mut String) {
-    let mut cell = String::new();
-    canonical_inlines(inlines, with_dests, &mut cell);
-    out.push_str(&normalize_prose(&cell));
-}
-
-fn canonical_inlines(inlines: &[Inline], with_dests: bool, out: &mut String) {
-    for inline in inlines {
-        match inline {
-            Inline::Text(text) => out.push_str(text),
-            Inline::Emphasis(children) => {
-                out.push_str("\u{1}em\u{2}");
-                canonical_inlines(children, with_dests, out);
-                out.push('\u{3}');
-            }
-            Inline::Strong(children) => {
-                out.push_str("\u{1}strong\u{2}");
-                canonical_inlines(children, with_dests, out);
-                out.push('\u{3}');
-            }
-            Inline::Strikethrough(children) => {
-                out.push_str("\u{1}del\u{2}");
-                canonical_inlines(children, with_dests, out);
-                out.push('\u{3}');
-            }
-            Inline::Code(code) => {
-                out.push_str("\u{1}code\u{2}");
-                out.push_str(code);
-                out.push('\u{3}');
-            }
-            Inline::Link {
-                dest,
-                title,
-                content,
-            } => {
-                out.push_str("\u{1}a\u{2}");
-                canonical_inlines(content, with_dests, out);
-                if with_dests {
-                    out.push('\u{1}');
-                    out.push_str(dest);
-                    if let Some(title) = title {
-                        out.push('\u{1}');
-                        out.push_str(title);
-                    }
-                }
-                out.push('\u{3}');
-            }
-            Inline::Image { dest, title, alt } => {
-                out.push_str("\u{1}img\u{2}");
-                out.push_str(alt);
-                if with_dests {
-                    out.push('\u{1}');
-                    out.push_str(dest);
-                    if let Some(title) = title {
-                        out.push('\u{1}');
-                        out.push_str(title);
-                    }
-                }
-                out.push('\u{3}');
-            }
-            Inline::SoftBreak => out.push(' '),
-            Inline::HardBreak => out.push_str("\u{1}br\u{2}"),
-            Inline::Html(html) => {
-                out.push_str("\u{1}html\u{2}");
-                out.push_str(html);
-                out.push('\u{3}');
-            }
-            Inline::FootnoteRef { id } => {
-                out.push_str("\u{1}fn\u{2}");
-                out.push_str(id);
-                out.push('\u{3}');
-            }
-            Inline::Math(math) => {
-                out.push_str("\u{1}math\u{2}");
-                out.push_str(math.trim());
-                out.push('\u{3}');
-            }
-            Inline::DisplayMath(math) => {
-                out.push_str("\u{1}dmath\u{2}");
-                out.push_str(math.trim());
-                out.push('\u{3}');
-            }
-        }
-    }
 }
 
 /// Link/image destinations of a block, in document order.
@@ -1259,7 +1062,7 @@ fn first_dest_diff(old: &[String], new: &[String]) -> (String, String) {
 fn changed_change(old: &KeyedBlock, new: &KeyedBlock, oi: usize, ni: usize) -> Change {
     let (kind, summary) = match old.tag {
         0 => {
-            let summary = if old.plain == new.plain {
+            let summary = if old.plain == new.plain && old.level != new.level {
                 format!(
                     "heading level changed {} -> {}: \"{}\"",
                     old.level,
@@ -1272,6 +1075,11 @@ fn changed_change(old: &KeyedBlock, new: &KeyedBlock, oi: usize, ni: usize) -> C
                     old.level,
                     new.level,
                     snippet(&old.plain),
+                    snippet(&new.plain)
+                )
+            } else if old.plain == new.plain {
+                format!(
+                    "heading content or formatting changed: \"{}\"",
                     snippet(&new.plain)
                 )
             } else {
@@ -1292,6 +1100,14 @@ fn changed_change(old: &KeyedBlock, new: &KeyedBlock, oi: usize, ni: usize) -> C
                         new: new_dest.clone(),
                     },
                     format!("link target changed: {old_dest} -> {new_dest}"),
+                )
+            } else if old.plain == new.plain {
+                (
+                    ChangeKind::ParagraphEdited,
+                    format!(
+                        "paragraph content or formatting changed: \"{}\"",
+                        snippet(&new.plain)
+                    ),
                 )
             } else {
                 (

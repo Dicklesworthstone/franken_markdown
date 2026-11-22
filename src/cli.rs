@@ -123,6 +123,9 @@ struct DiffArgs {
     /// Emit machine-readable JSON diff to stdout.
     #[arg(long)]
     json: bool,
+    /// Authoring dialect for both revisions: commonmark-gfm or gfm-plus.
+    #[arg(long, value_name = "PROFILE")]
+    profile: Option<String>,
     /// Maximum Markdown input bytes accepted before parsing (default 64 MiB).
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
@@ -139,6 +142,9 @@ struct StatsArgs {
     /// Emit machine-readable JSON stats to stdout.
     #[arg(long)]
     json: bool,
+    /// Authoring dialect to analyze: commonmark-gfm or gfm-plus.
+    #[arg(long, value_name = "PROFILE")]
+    profile: Option<String>,
     /// Maximum Markdown input bytes accepted before parsing (default 64 MiB).
     #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES)]
     max_input_bytes: u64,
@@ -4386,6 +4392,10 @@ fn run_doctor_health(json: bool) -> ExitCode {
 
 fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
     let json = args.json || global_json;
+    let profile = match parse_profile_value(args.profile.as_deref(), json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
     let input_path = args.input.display().to_string();
     let md = match read_input(
         if args.text.is_some() {
@@ -4406,7 +4416,14 @@ fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
             );
         }
     };
-    let doc = crate::parse_markdown(&md);
+    let doc = crate::parse_markdown_with_profile(&md, profile);
+    // Explicit analysis follows publication semantics. Keep the omitted
+    // profile's historical report, including ordinary page-break comments.
+    let doc = if profile.is_some() {
+        crate::apply_profile(&doc, profile)
+    } else {
+        std::borrow::Cow::Borrowed(&doc)
+    };
     let stats = crate::doc_stats::compute_doc_stats(&md, &doc);
     if json {
         emit_stdout(&stats.to_json())
@@ -4417,6 +4434,10 @@ fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
 
 fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = args.json || global_json;
+    let profile = match parse_profile_value(args.profile.as_deref(), json) {
+        Ok(profile) => profile,
+        Err(code) => return code,
+    };
     let old_path = args.old_file.display().to_string();
     let new_path = args.new_file.display().to_string();
 
@@ -4433,8 +4454,20 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         }
     };
 
-    let doc_a = crate::parse_markdown(&old_md);
-    let doc_b = crate::parse_markdown(&new_md);
+    let doc_a = crate::parse_markdown_with_profile(&old_md, profile);
+    let doc_b = crate::parse_markdown_with_profile(&new_md, profile);
+    // Compare the same authored structure that publication sees, without
+    // rewriting either input or changing the legacy omitted-profile diff.
+    let doc_a = if profile.is_some() {
+        crate::apply_profile(&doc_a, profile)
+    } else {
+        std::borrow::Cow::Borrowed(&doc_a)
+    };
+    let doc_b = if profile.is_some() {
+        crate::apply_profile(&doc_b, profile)
+    } else {
+        std::borrow::Cow::Borrowed(&doc_b)
+    };
     let diff = crate::diff::compute_diff(&doc_a, &doc_b, &old_path, &new_path);
 
     if json {
@@ -4475,7 +4508,11 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         }
     };
 
-    let html_out = diff.to_html(&theme);
+    let html_out = diff.to_html_with_options(&HtmlOptions {
+        theme,
+        profile,
+        ..HtmlOptions::default()
+    });
     if let Some(out_path) = args.out {
         if out_path.as_os_str() == "-" {
             emit_stdout(&html_out)

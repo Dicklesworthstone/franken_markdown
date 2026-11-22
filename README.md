@@ -807,6 +807,31 @@ One `--pdf-image` mapping can serve both header and footer. In `watch`, changing
 the selected logo file triggers a rebuild even when Markdown does not reference it.
 Position and height flags require the corresponding header or footer image flag.
 
+### `stats` and `diff`
+
+Analyze a document's structure, readability and link findings, or compare two
+revisions with a semantic JSON report or self-contained HTML review:
+
+```bash
+fmd stats README.md --profile commonmark-gfm --json
+fmd stats --text $'Term\n: Definition' --profile gfm-plus
+fmd diff before.md after.md --profile commonmark-gfm --out review.html
+fmd diff before.md after.md --profile gfm-plus --json
+```
+
+`--profile` selects the authoring grammar before parsing. For example,
+`commonmark-gfm` preserves emphasis and links that span a line beginning with
+`:`, while `gfm-plus` recognizes definition lists. A diff applies the same
+profile to both revisions and its HTML report. Explicit GFM-Plus analysis also
+recognizes standalone page-break comments, so harmless indentation changes to
+the same page-break marker do not appear as semantic changes.
+
+Omitting `--profile` retains the historical reports, including their treatment
+of page-break comments. `stats` accepts a file, `-` for stdin, or `--text`;
+`diff` accepts `-` for either revision. Both commands inspect the supplied text
+without expanding includes or loading publication resources. Invalid profiles
+exit 64 before input is read, and `--max-input-bytes` still bounds each input.
+
 ### `config`
 
 Read or edit the native CLI config. This never touches the WASM/core renderer.

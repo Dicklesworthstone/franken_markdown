@@ -65,7 +65,8 @@ pub type ResolveResult = std::result::Result<Option<(String, String)>, String>;
 /// ranges identify cycles, so different snippets of the same file can include
 /// each other without a false cycle. Only selected content is expanded.
 /// Named snippets remove their boundary lines and nested anchor marker lines;
-/// line selections preserve original UTF-8 bytes and line endings.
+/// LF, CRLF, and lone CR each end one line. Selections preserve original UTF-8
+/// bytes and line endings.
 ///
 /// # Errors
 /// Reports missing/malformed includes, cycles, depth over 16, more than 4096
@@ -132,7 +133,7 @@ pub struct ExpansionSpan {
     pub source_id: usize,
     pub original: Range<usize>,
     /// True only for separators inserted by expansion. Their original range
-    /// is empty and points to the end of the selected source fragment.
+    /// is empty and points to a source-fragment boundary.
     pub generated: bool,
 }
 
@@ -423,11 +424,34 @@ impl Expansion<'_> {
         original_start: usize,
         generated: bool,
     ) -> Result<()> {
-        if text.len() > self.max_output_bytes.saturating_sub(self.output.len()) {
+        // Logical-line slices never split a source CRLF. Across independent
+        // fragments, however, a trailing CR and a leading LF are two breaks;
+        // joining them directly would erase a blank line. Complete the first
+        // terminator with a generated LF before retaining the incoming one.
+        let separate_breaks = self.output.ends_with('\r') && text.starts_with('\n');
+        let appended_bytes = text.len().checked_add(usize::from(separate_breaks));
+        if appended_bytes.is_none_or(|bytes| {
+            bytes > self.max_output_bytes.saturating_sub(self.output.len())
+        }) {
             return Err(RenderError::InvalidInput(format!(
                 "include_size: expanded document exceeds {} bytes",
                 self.max_output_bytes
             )));
+        }
+        if separate_breaks {
+            if let Some(mapping) = &mut self.mapping
+                && let Some(previous) = mapping.spans.last()
+            {
+                let source_id = previous.source_id;
+                let boundary = previous.original.end;
+                mapping.record(
+                    self.output.len()..self.output.len() + 1,
+                    source_id,
+                    boundary..boundary,
+                    true,
+                )?;
+            }
+            self.output.push('\n');
         }
         if let Some(mapping) = &mut self.mapping {
             let original_end = if generated {
@@ -486,7 +510,7 @@ impl Expansion<'_> {
         let mut literal_code_index = 0;
         let mut line_offset = source_offset;
         let mut fence: Option<(u8, usize)> = None;
-        for line in src.split_inclusive('\n') {
+        for line in crate::parse::logical_lines_inclusive(src) {
             let original_start = line_offset;
             line_offset += line.len();
             if strip_anchors && anchor_marker(line).is_some() {
@@ -603,7 +627,7 @@ impl Expansion<'_> {
             );
             self.stack.pop();
             result?;
-            if !self.output[start..].ends_with('\n') {
+            if !self.output[start..].ends_with(['\r', '\n']) {
                 let included_source_id = self.source_id(&resolved);
                 self.append("\n", included_source_id, range.end, true)?;
             }
@@ -729,7 +753,7 @@ impl Selection {
                 let mut offset = 0;
                 let mut first = None;
                 let mut count = 0;
-                for line in content.split_inclusive('\n') {
+                for line in crate::parse::logical_lines_inclusive(content) {
                     count += 1;
                     if count == *start {
                         first = Some(offset);
@@ -751,7 +775,7 @@ impl Selection {
                 let mut offset = 0;
                 let mut first = None;
                 let mut last = None;
-                for line in content.split_inclusive('\n') {
+                for line in crate::parse::logical_lines_inclusive(content) {
                     if let Some((closing, marker)) = anchor_marker(line)
                         && marker == name.as_str()
                     {

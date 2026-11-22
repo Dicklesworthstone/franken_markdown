@@ -6,6 +6,7 @@
 
 use crate::ast::{Block, Document, Inline};
 use crate::theme::Theme;
+use std::collections::{BTreeMap, VecDeque};
 
 mod canonical;
 mod html;
@@ -113,24 +114,30 @@ pub fn compute_diff(
                     }
                 }
 
+                // Keep the first unused insertion of each compatible kind.
+                // Scanning every insertion again for each deletion made the
+                // bounded LCS fallback quadratic on large replacement edits.
+                let mut candidates: [VecDeque<usize>; 5] = Default::default();
+                for (index, block) in inss.iter().enumerate() {
+                    if let Some(kind) = pairable_block_kind(block) {
+                        candidates[kind].push_back(index);
+                    }
+                }
                 let mut used_inss = vec![false; inss.len()];
                 for del in dels {
-                    let mut matched = false;
-                    for (ins_idx, ins) in inss.iter().enumerate() {
-                        if !used_inss[ins_idx] && can_pair_blocks(&del, ins) {
-                            used_inss[ins_idx] = true;
-                            let inline_diff = diff_block_inlines(&del, ins, &mut stats);
-                            stats.modified_blocks += 1;
-                            blocks.push(DiffBlock::Modified {
-                                old: Box::new(del.clone()),
-                                new: Box::new(ins.clone()),
-                                inline_diff,
-                            });
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if !matched {
+                    let paired =
+                        pairable_block_kind(&del).and_then(|kind| candidates[kind].pop_front());
+                    if let Some(ins_idx) = paired {
+                        let ins = &inss[ins_idx];
+                        used_inss[ins_idx] = true;
+                        let inline_diff = diff_block_inlines(&del, ins, &mut stats);
+                        stats.modified_blocks += 1;
+                        blocks.push(DiffBlock::Modified {
+                            old: Box::new(del),
+                            new: Box::new(ins.clone()),
+                            inline_diff,
+                        });
+                    } else {
                         stats.deleted_blocks += 1;
                         count_block_words(&del, &mut stats.words_deleted);
                         blocks.push(DiffBlock::Deleted(del));
@@ -167,15 +174,15 @@ pub fn compute_diff(
 }
 
 #[inline(always)]
-fn can_pair_blocks(a: &Block, b: &Block) -> bool {
-    matches!(
-        (a, b),
-        (Block::Paragraph(_), Block::Paragraph(_))
-            | (Block::Heading { .. }, Block::Heading { .. })
-            | (Block::CodeBlock { .. }, Block::CodeBlock { .. })
-            | (Block::Table(_), Block::Table(_))
-            | (Block::MathBlock(_), Block::MathBlock(_))
-    )
+fn pairable_block_kind(block: &Block) -> Option<usize> {
+    match block {
+        Block::Paragraph(_) => Some(0),
+        Block::Heading { .. } => Some(1),
+        Block::CodeBlock { .. } => Some(2),
+        Block::Table(_) => Some(3),
+        Block::MathBlock(_) => Some(4),
+        _ => None,
+    }
 }
 
 fn diff_block_inlines(old: &Block, new: &Block, stats: &mut DiffStats) -> Vec<DiffInline> {
@@ -286,7 +293,7 @@ fn collect_inline_words<'a>(inline: &'a Inline, words: &mut Vec<&'a str>) {
     }
 }
 
-/// Maximum DP cells before lcs_diff falls back to a whole-replacement diff.
+/// Maximum DP cells before trying a bounded edit-frontier search.
 /// 16M cells = 64 MB of u32; beyond that, the quadratic cost is a DoS vector.
 const LCS_MAX_CELLS: usize = 16 * 1024 * 1024;
 
@@ -332,9 +339,17 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
             out.extend(sub_new.iter().cloned().map(RawDiffItem::Inserted));
         } else if sub_n == 0 {
             out.extend(sub_old.iter().cloned().map(RawDiffItem::Deleted));
-        } else if sub_m.saturating_mul(sub_n) > LCS_MAX_CELLS {
-            out.extend(sub_old.iter().cloned().map(RawDiffItem::Deleted));
-            out.extend(sub_new.iter().cloned().map(RawDiffItem::Inserted));
+        } else if sub_m
+            .saturating_add(1)
+            .saturating_mul(sub_n.saturating_add(1))
+            > LCS_MAX_CELLS
+        {
+            if let Some(edits) = bounded_myers_edits(sub_old, sub_new) {
+                append_sequence_edits(&mut out, sub_old, sub_new, &edits);
+            } else {
+                out.extend(sub_old.iter().cloned().map(RawDiffItem::Deleted));
+                out.extend(sub_new.iter().cloned().map(RawDiffItem::Inserted));
+            }
         } else {
             let stride = sub_n + 1;
             let mut dp = vec![0u32; (sub_m + 1) * stride];
@@ -380,6 +395,266 @@ fn lcs_diff<T: PartialEq + Clone>(old: &[T], new: &[T]) -> Vec<RawDiffItem<T>> {
     }
 
     out
+}
+
+/// A single edit at the predecessor coordinates of an edit-graph edge.
+/// Matching snakes are implicit between edges, so reconstruction stores O(D)
+/// edits rather than allocating an index pair for every unchanged element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SequenceEdit {
+    old: usize,
+    new: usize,
+    insert: bool,
+}
+
+const MYERS_MAX_WORK: usize = 4 * 1024 * 1024;
+const MYERS_MAX_TRACE_CELLS: usize = 1024 * 1024;
+const UNREACHABLE: usize = usize::MAX;
+
+/// Exact shortest edit paths for large, lightly edited documents. Both the
+/// frontier walk and comparisons inside matching snakes spend the same work
+/// budget. Packed parity frontiers cap the trace at 1M usize cells (8 MiB on
+/// 64-bit hosts); exhaustion returns no partial alignment or guessed matches.
+fn bounded_myers_edits<T: PartialEq>(old: &[T], new: &[T]) -> Option<Vec<SequenceEdit>> {
+    let mut remaining = MYERS_MAX_WORK;
+    let mut trace: Vec<Vec<usize>> = Vec::new();
+    let mut trace_cells = 0usize;
+    for depth in 0usize.. {
+        let row_len = depth.checked_add(1)?;
+        trace_cells = trace_cells.checked_add(row_len)?;
+        if trace_cells > MYERS_MAX_TRACE_CELLS {
+            return None;
+        }
+        let mut frontier = vec![UNREACHABLE; row_len];
+        for (index, furthest) in frontier.iter_mut().enumerate() {
+            remaining = remaining.checked_sub(1)?;
+            let (mut x, mut y) = if depth == 0 {
+                (0, 0)
+            } else {
+                let Some(step) = myers_step(&trace[depth - 1], depth, index, old.len(), new.len())
+                else {
+                    continue;
+                };
+                (
+                    step.old + usize::from(!step.insert),
+                    step.new + usize::from(step.insert),
+                )
+            };
+            while x < old.len() && y < new.len() {
+                remaining = remaining.checked_sub(1)?;
+                if old[x] != new[y] {
+                    break;
+                }
+                x += 1;
+                y += 1;
+            }
+            *furthest = x;
+            if x == old.len() && y == new.len() {
+                let mut edits = Vec::with_capacity(depth);
+                // The completed snake's predecessor belongs to the previous
+                // frontier. The final partially-filled row is never needed.
+                for distance in (1..=depth).rev() {
+                    let index = if x >= y {
+                        (distance + x - y) / 2
+                    } else {
+                        (distance - (y - x)) / 2
+                    };
+                    let step =
+                        myers_step(&trace[distance - 1], distance, index, old.len(), new.len())?;
+                    x = step.old;
+                    y = step.new;
+                    edits.push(step);
+                }
+                edits.reverse();
+                return Some(edits);
+            }
+        }
+        trace.push(frontier);
+    }
+    None
+}
+
+/// Choose the furthest reachable predecessor on one Myers diagonal. On equal
+/// post-edit x coordinates insertion wins, matching the standard frontier rule.
+fn myers_step(
+    previous: &[usize],
+    depth: usize,
+    index: usize,
+    old_len: usize,
+    new_len: usize,
+) -> Option<SequenceEdit> {
+    let position = |index: usize| {
+        let &x = previous.get(index)?;
+        if x == UNREACHABLE {
+            return None;
+        }
+        let twice = index * 2;
+        let y = if twice >= depth - 1 {
+            x.checked_sub(twice - (depth - 1))?
+        } else {
+            x.checked_add(depth - 1 - twice)?
+        };
+        Some((x, y))
+    };
+    let deletion = index.checked_sub(1).and_then(position).and_then(|(x, y)| {
+        (x < old_len && y <= new_len).then_some(SequenceEdit {
+            old: x,
+            new: y,
+            insert: false,
+        })
+    });
+    let insertion = position(index).and_then(|(x, y)| {
+        (x <= old_len && y < new_len).then_some(SequenceEdit {
+            old: x,
+            new: y,
+            insert: true,
+        })
+    });
+    match (deletion, insertion) {
+        (Some(del), Some(ins)) if ins.old > del.old => Some(ins),
+        (Some(del), _) => Some(del),
+        (_, insertion) => insertion,
+    }
+}
+
+fn append_sequence_edits<T: Clone>(
+    out: &mut Vec<RawDiffItem<T>>,
+    old: &[T],
+    new: &[T],
+    edits: &[SequenceEdit],
+) {
+    let (mut old_cursor, mut new_cursor) = (0, 0);
+    for edit in edits {
+        debug_assert_eq!(edit.old - old_cursor, edit.new - new_cursor);
+        out.extend(
+            old[old_cursor..edit.old]
+                .iter()
+                .cloned()
+                .map(RawDiffItem::Unchanged),
+        );
+        old_cursor = edit.old;
+        new_cursor = edit.new;
+        if edit.insert {
+            out.push(RawDiffItem::Inserted(new[new_cursor].clone()));
+            new_cursor += 1;
+        } else {
+            out.push(RawDiffItem::Deleted(old[old_cursor].clone()));
+            old_cursor += 1;
+        }
+    }
+    debug_assert_eq!(old.len() - old_cursor, new.len() - new_cursor);
+    out.extend(
+        old[old_cursor..]
+            .iter()
+            .cloned()
+            .map(RawDiffItem::Unchanged),
+    );
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sequence_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Independent insert/delete edit-distance oracle. This deliberately uses
+    /// the ordinary distance recurrence, not Myers frontiers or backtracking.
+    fn edit_distance(old: &[u8], new: &[u8]) -> usize {
+        let mut previous: Vec<usize> = (0..=new.len()).collect();
+        for (i, left) in old.iter().enumerate() {
+            let mut current = vec![i + 1];
+            for (j, right) in new.iter().enumerate() {
+                current.push(if left == right {
+                    previous[j]
+                } else {
+                    previous[j + 1].min(current[j]) + 1
+                });
+            }
+            previous = current;
+        }
+        previous[new.len()]
+    }
+
+    #[test]
+    fn bounded_myers_matches_independent_optimal_distance_and_replays_both_inputs() {
+        let mut cases = vec![Vec::new()];
+        for length in 1..=4 {
+            for mut encoded in 0..3usize.pow(length) {
+                let mut sequence = Vec::new();
+                for _ in 0..length {
+                    sequence.push((encoded % 3) as u8);
+                    encoded /= 3;
+                }
+                cases.push(sequence);
+            }
+        }
+        for old in &cases {
+            for new in &cases {
+                let edits = bounded_myers_edits(old, new).unwrap();
+                assert_eq!(edits.len(), edit_distance(old, new), "{old:?} -> {new:?}");
+                let mut diff = Vec::new();
+                append_sequence_edits(&mut diff, old, new, &edits);
+                let before: Vec<_> = diff
+                    .iter()
+                    .filter_map(|item| match item {
+                        RawDiffItem::Unchanged(value) | RawDiffItem::Deleted(value) => Some(*value),
+                        RawDiffItem::Inserted(_) => None,
+                    })
+                    .collect();
+                let after: Vec<_> = diff
+                    .iter()
+                    .filter_map(|item| match item {
+                        RawDiffItem::Unchanged(value) | RawDiffItem::Inserted(value) => {
+                            Some(*value)
+                        }
+                        RawDiffItem::Deleted(_) => None,
+                    })
+                    .collect();
+                assert_eq!(&before, old);
+                assert_eq!(&after, new);
+            }
+        }
+    }
+
+    #[test]
+    fn small_lcs_keeps_the_established_ambiguous_tie_choice() {
+        assert_eq!(
+            lcs_diff(&['a', 'b'], &['b', 'a']),
+            [
+                RawDiffItem::Deleted('a'),
+                RawDiffItem::Unchanged('b'),
+                RawDiffItem::Inserted('a'),
+            ]
+        );
+    }
+
+    #[test]
+    fn disjoint_myers_search_is_bounded_and_never_returns_a_partial_path() {
+        struct Counted<'a> {
+            value: usize,
+            comparisons: &'a Cell<usize>,
+        }
+        impl PartialEq for Counted<'_> {
+            fn eq(&self, other: &Self) -> bool {
+                self.comparisons.set(self.comparisons.get() + 1);
+                self.value == other.value
+            }
+        }
+        let comparisons = Cell::new(0);
+        let values = |range: std::ops::Range<usize>| {
+            range
+                .map(|value| Counted {
+                    value,
+                    comparisons: &comparisons,
+                })
+                .collect::<Vec<_>>()
+        };
+        let old = values(0..12_000);
+        let new = values(12_000..24_000);
+        assert!(bounded_myers_edits(&old, &new).is_none());
+        assert!(comparisons.get() > 0);
+        assert!(comparisons.get() <= MYERS_MAX_WORK);
+    }
 }
 
 fn count_block_words(block: &Block, count: &mut usize) {
@@ -651,9 +926,9 @@ mod tests {
 //   on the new side.
 // - Moves are detected by an exact-key match among otherwise unmatched
 //   blocks (bounded to 4M candidate pairs; past that the blocks fall back to
-//   add/remove reporting). The LCS middle is bounded to 16M DP cells, with a
-//   memory-free greedy in-order scan beyond that, so adversarial inputs
-//   cannot force an out-of-memory abort.
+//   add/remove reporting). The LCS middle is bounded to 16M DP cells, with an
+//   indexed greedy in-order scan beyond that. Candidate pairing is indexed
+//   too, so a memory fallback cannot reopen a quadratic whole-document scan.
 // - The AST carries no frontmatter block, so `FrontmatterChanged` is
 //   reserved and never emitted.
 // - Block kinds without a dedicated `ChangeKind` (block quote, thematic
@@ -966,7 +1241,7 @@ fn snippet(text: &str) -> String {
 /// Alignment between two keyed block sequences: anchor pairs plus matched
 /// flags. Common prefixes/suffixes are trimmed first; the middle is aligned
 /// with the shared `lcs_diff` core over canonical keys, bounded to 16M DP
-/// cells with a memory-free greedy in-order scan beyond that.
+/// cells with an indexed greedy in-order scan beyond that.
 struct Alignment {
     anchors: Vec<(usize, usize)>,
     matched_old: Vec<bool>,
@@ -1018,18 +1293,22 @@ fn align_blocks(old: &[KeyedBlock], new: &[KeyedBlock]) -> Alignment {
             }
         }
     } else if om > 0 && nm > 0 {
+        let mut positions: BTreeMap<(u8, &str), Vec<usize>> = BTreeMap::new();
+        for (index, block) in new.iter().enumerate().take(end_new).skip(start) {
+            positions
+                .entry((block.tag, block.key.as_str()))
+                .or_default()
+                .push(index);
+        }
         let mut cursor = start;
-        for i in start..end_old {
-            let mut j = cursor;
-            while j < end_new {
-                if old[i].same_block(&new[j]) {
-                    matched_old[i] = true;
-                    matched_new[j] = true;
-                    anchors.push((i, j));
-                    cursor = j + 1;
-                    break;
-                }
-                j += 1;
+        for (i, block) in old.iter().enumerate().take(end_old).skip(start) {
+            if let Some(indices) = positions.get(&(block.tag, block.key.as_str()))
+                && let Some(&j) = indices.get(indices.partition_point(|&index| index < cursor))
+            {
+                matched_old[i] = true;
+                matched_new[j] = true;
+                anchors.push((i, j));
+                cursor = j + 1;
             }
         }
     }
@@ -1238,15 +1517,18 @@ fn pair_gap(
 ) {
     let gap_olds: Vec<usize> = olds.filter(|&i| !matched_old[i]).collect();
     let gap_news: Vec<usize> = news.filter(|&i| !matched_new[i]).collect();
+    let mut candidates: BTreeMap<u8, VecDeque<usize>> = BTreeMap::new();
+    for (index, &ni) in gap_news.iter().enumerate() {
+        candidates
+            .entry(nkeys[ni].tag)
+            .or_default()
+            .push_back(index);
+    }
     let mut used_new = vec![false; gap_news.len()];
     for &oi in &gap_olds {
-        let mut paired = None;
-        for (k, &ni) in gap_news.iter().enumerate() {
-            if !used_new[k] && nkeys[ni].tag == okeys[oi].tag {
-                paired = Some(k);
-                break;
-            }
-        }
+        let paired = candidates
+            .get_mut(&okeys[oi].tag)
+            .and_then(VecDeque::pop_front);
         match paired {
             Some(k) => {
                 used_new[k] = true;
@@ -1292,28 +1574,37 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
     let rem_count = matched_old.iter().filter(|&&m| !m).count();
     let add_count = matched_new.iter().filter(|&&m| !m).count();
     if rem_count.saturating_mul(add_count) <= MAX_MOVE_CELLS {
+        let mut candidates: BTreeMap<(u8, &str), VecDeque<usize>> = BTreeMap::new();
+        for (ni, nkey) in nkeys.iter().enumerate() {
+            if !matched_new[ni] {
+                candidates
+                    .entry((nkey.tag, nkey.key.as_str()))
+                    .or_default()
+                    .push_back(ni);
+            }
+        }
         for (oi, okey) in okeys.iter().enumerate() {
             if matched_old[oi] {
                 continue;
             }
-            for (ni, nkey) in nkeys.iter().enumerate() {
-                if !matched_new[ni] && okey.same_block(nkey) {
-                    matched_old[oi] = true;
-                    matched_new[ni] = true;
-                    changes.push(Change {
-                        kind: ChangeKind::BlockMoved,
-                        summary: format!(
-                            "{} moved from block {} to block {}: \"{}\"",
-                            block_name(okey.tag),
-                            oi,
-                            ni,
-                            snippet(&okey.plain)
-                        ),
-                        old_index: Some(oi),
-                        new_index: Some(ni),
-                    });
-                    break;
-                }
+            if let Some(ni) = candidates
+                .get_mut(&(okey.tag, okey.key.as_str()))
+                .and_then(VecDeque::pop_front)
+            {
+                matched_old[oi] = true;
+                matched_new[ni] = true;
+                changes.push(Change {
+                    kind: ChangeKind::BlockMoved,
+                    summary: format!(
+                        "{} moved from block {} to block {}: \"{}\"",
+                        block_name(okey.tag),
+                        oi,
+                        ni,
+                        snippet(&okey.plain)
+                    ),
+                    old_index: Some(oi),
+                    new_index: Some(ni),
+                });
             }
         }
     }

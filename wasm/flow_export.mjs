@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { authoringProfileReceipt, isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -601,8 +601,11 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
           fail("BUDGET_EXCEEDED", "combined export output budget exceeded");
         remainingOutputBytes -= bytes.length;
         checkDiagnostics(output.diagnostics, sourceLengthBytes);
-        let archival;
-        try { archival = pdfArchivalReceipt(output, settings); }
+        let archival, authoring;
+        try {
+          authoring = authoringProfileReceipt(output, profile);
+          archival = pdfArchivalReceipt(output, settings);
+        }
         catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
         results.push(Object.freeze({
           schemaVersion: 1,
@@ -610,7 +613,7 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
           format,
           mimeType: MIME[format],
           font,
-          ...(profile === undefined ? {} : { profile }),
+          ...authoring,
           sourceLengthBytes,
           assetCount: assets.pdfImages.length,
           assetBytes: assets.assetBytes,

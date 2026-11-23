@@ -70,6 +70,7 @@ if (!isMainThread) {
           (_key, value) => value instanceof Uint8Array ? [...value] : value));
         previousBytes = bytes;
         const result = { format, mimeType, extension, bytes,
+          ...(options.profile === undefined ? {} : { profile: options.profile }),
           sourceLength: new TextEncoder().encode(source).length, diagnostics: [],
           text() { return "not cloneable"; } };
         if (source === "wrong-format") result.format = "unrecognized";
@@ -867,14 +868,19 @@ if (!isMainThread) {
     const outputs = ["html", "pdf", "svg", "epub"].map(format => api.render(format, "Term\n: Definition", options));
     options.profile = "gfm-plus";
     await active;
-    for (const output of await Promise.all(outputs))
+    for (const output of await Promise.all(outputs)) {
       assert.equal(JSON.parse(output.text()).options.profile, "commonmark-gfm");
+      assert.equal(output.profile, "commonmark-gfm");
+    }
     const targets = ["html", "pdf", "svg", "epub"].map((format, index) => ({
       format, options: { profile: index % 2 ? "gfm-plus" : "commonmark-gfm" },
     }));
     const pending = api.publish("publication", targets);
     for (const target of targets) target.options.profile = "invalid-after-admission";
-    assert.deepEqual((await pending).outputs.map(output => JSON.parse(output.text()).options.profile),
+    const publication = await pending;
+    assert.deepEqual(publication.outputs.map(output => JSON.parse(output.text()).options.profile),
+      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus"]);
+    assert.deepEqual(publication.outputs.map(output => output.profile),
       ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus"]);
     assert.equal(api.pendingBytes, 0);
   });

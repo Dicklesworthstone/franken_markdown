@@ -72,6 +72,7 @@ function renderer(format) {
   return async (source, options) => {
     renderCalls.push({ format, source, options });
     return { format, mimeType: mime[format], diagnostics: [],
+      ...(options.profile === undefined ? {} : { profile: options.profile }),
       bytes: new TextEncoder().encode(JSON.stringify({ source, options })) };
   };
 }

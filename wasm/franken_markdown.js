@@ -223,7 +223,7 @@ export async function renderHtml(markdown, options = {}) {
   // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
   await init();
   applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, toc === undefined);
-  return normalizeResult(render(...args));
+  return normalizeResult(render(...args), profile);
 }
 
 export async function renderPdf(markdown, options = {}) {
@@ -335,7 +335,7 @@ export async function renderPdf(markdown, options = {}) {
         running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
         running?.imageDestinations ?? [], running?.imagePositions ?? new Uint32Array(),
         running?.imageHeights ?? new Uint32Array(), typography, archival.pdfA ?? "off",
-        archival.pdfAStrict ?? false, baselineGridPt, profile));
+        archival.pdfAStrict ?? false, baselineGridPt, profile), profile);
       return archival.pdfA ? Object.freeze({ ...result, ...archival }) : result;
     }
     if (archival.pdfA) {
@@ -539,7 +539,7 @@ export async function renderSvg(markdown, options = {}) {
     if (supportsNavigation) {
       applySourceMetadata(prepared.args, { toc: 15, tocDepth: 16 }, prepared.inheritToc);
     }
-    if (typeof render === "function") return normalizeResult(render(...prepared.args));
+    if (typeof render === "function") return normalizeResult(render(...prepared.args), profile);
     const legacy = normalizeResult(renderSvgConfigured(...prepared.args.slice(0, 5)));
     // New JavaScript cannot give an older binary complete renderer diagnostics.
     return Object.freeze({ ...legacy, diagnostics: [...legacy.diagnostics, {
@@ -691,7 +691,7 @@ export async function renderEpub(markdown, options = {}) {
     prepared.args.length = legacyArgumentCount;
   }
   if (typeof render === "function") {
-    return normalizeResult(render(...prepared.args));
+    return normalizeResult(render(...prepared.args), profile);
   }
   if (prepared.requiresAdvanced || prepared.args[7] || prepared.args[8] !== undefined) {
     const error = new Error("EPUB assets, CSS and navigation require a WASM package rebuilt from matching source");
@@ -1363,7 +1363,10 @@ export async function createRenderer(input) {
   });
 }
 
-function normalizeResult(result) {
+// A profile is supplied only after its checked native binding completed. The
+// receipt lets worker/Flow callers reject an older facade that ignores options;
+// unprofiled calls retain their exact legacy envelope.
+function normalizeResult(result, profile) {
   let bytes;
   let diagnostics;
   let format;
@@ -1383,6 +1386,7 @@ function normalizeResult(result) {
     }
   }
   const output = {
+    ...(profile === undefined ? {} : { profile }),
     format,
     mimeType,
     extension,

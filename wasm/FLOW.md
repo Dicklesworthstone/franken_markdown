@@ -62,8 +62,12 @@ Omitting `profile` preserves the existing extended grammar and the legacy native
 constructor. Explicit profiles require the generated `FmdFlowSession.withProfile`
 binding; an older binary fails with `UNSUPPORTED_WASM_PACKAGE`. Profiled native
 pages and publications carry the selected `profile`, and mismatched metadata is
-rejected before exposing a response. The authoring dialect does not expand the
-bundled text shaper's script coverage or grant access to images or files.
+rejected before exposing a response. Each publication must also receive the
+matching dialect acknowledgment from its document renderer; the session cannot
+supply that acknowledgment on an older renderer's behalf. Missing or mismatched
+renderer acknowledgments fail with `UNSUPPORTED_WASM_PACKAGE`, including within
+multi-format publications. The authoring dialect does not expand the bundled
+text shaper's script coverage or grant access to images or files.
 
 ## Coordinates and optimistic transactions
 

@@ -4,6 +4,8 @@ import { renderHtml, renderPdf, renderSvg, renderEpub, renderBookPdf, renderBook
 import { renderDocumentBatch } from "./document-batch.js";
 import { createBook, renderBookChapterPreview, type BookOptions } from "./book.js";
 import { createBookWorker, createBookPublicationWorker } from "./book-worker.js";
+import { createWorkerRenderer } from "./document-worker.js";
+import type { FmdAuthoringProfile } from "./franken_markdown.js";
 
 const source = "Term\n: Definition";
 await renderHtml(source, { profile: "commonmark-gfm", fontEmbedding: "full" });
@@ -12,6 +14,14 @@ await renderSvg(source, { profile: "commonmark-gfm", maxWidthPt: 720 });
 await renderEpub(source, { profile: "gfm-plus" });
 const renderer = await createRenderer();
 await renderer.renderHtml(source, { profile: "gfm-plus" });
+const directProfile: FmdAuthoringProfile | undefined = (await renderer.renderHtml(source, { profile: "commonmark-gfm" })).profile;
+const documents = createWorkerRenderer();
+const documentProfile: FmdAuthoringProfile | undefined = (await documents.renderPdf(source, { profile: "gfm-plus" })).profile;
+const outputs = (await documents.publish(source, [{ format: "svg", options: { profile: "commonmark-gfm" } }])).outputs;
+const publicationProfile: FmdAuthoringProfile | undefined = outputs[0]?.profile;
+const interactiveProfile: undefined = (await documents.renderInteractiveHtml(source)).profile;
+void [directProfile, documentProfile, publicationProfile, interactiveProfile];
+documents.dispose();
 for await (const _receipt of renderDocumentBatch([
   { format: "html", source, options: { profile: "commonmark-gfm" } },
   { source, targets: [{ format: "pdf", options: { profile: "gfm-plus" } }] },

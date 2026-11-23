@@ -19,7 +19,7 @@ function gate() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
-async function fixture({ profiled = true, short = false, hold, failure } = {}) {
+async function fixture({ profiled = true, short = false, modern = false, hold, failure } = {}) {
   const calls = [];
   let inits = 0, frees = 0;
   const render = (name, format, count) => {
@@ -58,6 +58,10 @@ async function fixture({ profiled = true, short = false, hold, failure } = {}) {
   ]) bindings[name] = render(name, format, count);
   if (profiled) for (const route of routes)
     bindings[route.binding] = render(route.binding, route.format, route.count - Number(short));
+  if (modern) {
+    bindings.renderSvgConfiguredNavigation = render("renderSvgConfiguredNavigation", "svg", 17);
+    bindings.renderEpubConfiguredMetadata = render("renderEpubConfiguredMetadata", "epub", 21);
+  }
   const native = new SyntheticModule(Object.keys(bindings), function() {
     for (const [name, value] of Object.entries(bindings)) this.setExport(name, value);
   });
@@ -91,6 +95,8 @@ for (const route of routes) {
       assert.equal(call.args[0], "Term\n: Definition");
       assert.equal(output.format, route.format);
       assert.equal(output.sourceLength, utf8("Term\n: Definition").length);
+      assert.equal(output.profile, profile, "the successful profiled binding must acknowledge its dialect");
+      assert.equal(Object.isFrozen(output), true);
     }
     assert.equal(f.frees, 2);
   });
@@ -149,12 +155,29 @@ test("omitted and undefined profiles retain every legacy route and exact argumen
     ["renderEpub", {}, "renderEpubConfiguredAdvanced", 18],
     ["renderEpub", { fontEmbedding: "full" }, "renderEpubConfiguredAdvanced", 19],
   ]) {
-    await f.api[method]("source", options);
+    const legacy = await f.api[method]("source", options);
+    assert.equal(Object.hasOwn(legacy, "profile"), false);
     const omitted = f.calls.at(-1);
     assert.equal(omitted.name, name); assert.equal(omitted.args.length, count);
     await f.api[method]("source", { ...options, profile: undefined });
     assert.deepEqual(f.calls.at(-1), omitted);
   }
+});
+
+test("SVG navigation and EPUB metadata bindings acknowledge their explicitly selected grammar", async () => {
+  const f = await fixture({ modern: true });
+  for (const profile of ["commonmark-gfm", "gfm-plus"]) {
+    const svg = await f.api.renderSvg("Term\n: Definition", { profile, toc: true, tocDepth: 2 });
+    assert.equal(svg.profile, profile);
+    assert.equal(f.calls.at(-1).name, "renderSvgConfiguredNavigation");
+    assert.deepEqual(f.calls.at(-1).args.slice(14), [profile, true, 2]);
+    const epub = await f.api.renderEpub("Term\n: Definition", { profile, author: "Author Ω" });
+    assert.equal(epub.profile, profile);
+    assert.equal(f.calls.at(-1).name, "renderEpubConfiguredMetadata");
+    assert.deepEqual(f.calls.at(-1).args.slice(19), [profile, "Author Ω"]);
+  }
+  assert.equal(Object.hasOwn(await f.api.renderSvg("source"), "profile"), false);
+  assert.equal(Object.hasOwn(await f.api.renderEpub("source"), "profile"), false);
 });
 
 test("profiled PDF preserves paper, running images, typography, archival mode and baseline grid", async () => {
@@ -174,6 +197,7 @@ test("profiled PDF preserves paper, running images, typography, archival mode an
   options.typography.pareto = false; image.fill(8); font.fill(9);
   hold.resolve();
   const output = await pending, args = f.calls[0].args;
+  assert.equal(output.profile, "commonmark-gfm");
   assert.equal(args.length, 40);
   assert.deepEqual([...args[9]], [1, 2]); assert.deepEqual([...args[11]], [3, 4]);
   assert.equal(args[16][0], 550);

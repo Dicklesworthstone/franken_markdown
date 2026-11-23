@@ -231,6 +231,8 @@ export interface FmdInteractiveRenderOptions extends Pick<FmdRenderOptions,
 }
 
 export interface FmdRenderOutput {
+  /** Present only after a matching native renderer applied an explicit dialect. */
+  readonly profile?: FmdAuthoringProfile;
   format: FmdOutputFormat;
   mimeType: string;
   extension: "html" | "pdf" | "svg" | "epub" | "zip";

@@ -67,6 +67,18 @@ losing them. Format-specific TypeScript declarations describe the allowlists.
 Raw HTML is escaped by default; `allowRawHtml` is an explicit HTML/PDF option.
 Worker rendering is not a sandbox for subsequently displaying or opening output.
 
+HTML, PDF, SVG and EPUB accept `profile: "commonmark-gfm"` or
+`profile: "gfm-plus"`. The source, dialect and resources are captured together
+before queueing. Each successful output carries its acknowledged `profile`;
+`publish()` retains the dialect selected for each individual target. The worker
+checks the renderer's acknowledgment, and the client checks it again against the
+captured request. An older facade that ignores the dialect fails with
+`UNSUPPORTED_WASM_PACKAGE`; a missing or changed acknowledgment in a worker reply
+fails with `WORKER_PROTOCOL_ERROR`. Either failure closes the document worker and
+publishes no partial edition. Omission retains legacy rendering and outputs
+without a `profile` field. Lightweight interactive HTML does not support dialect
+selection.
+
 PDF accepts `page` with `size: "letter"`, `"a4"`, `"a5"`, `"legal"`, `"tabloid"`, or explicit
 `size: { widthPt, heightPt }`, optional `orientation`, and uniform or per-side
 `margins`. Units are PDF points, not CSS pixels. Dimensions must be 144..14400;

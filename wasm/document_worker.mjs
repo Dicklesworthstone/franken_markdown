@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { analysisAuthoringProfileReceipt, isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { analysisAuthoringProfileReceipt, authoringProfileReceipt, isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -195,7 +195,16 @@ function snapshot(input, maxOutputBytes) {
   }
   return { args: [input.format, input.source, options, maxOutputBytes], transfer };
 }
-function result(value, format, max, expectedLength, expectedPolicy) {
+function renderProfile(value, expected, code = "WORKER_PROTOCOL_ERROR") {
+  // Without a captured request, validate the receipt's shape only. Every native
+  // invocation and every client fulfillment also checks the captured policy,
+  // including omission; a worker may never invent or drop a selected dialect.
+  const profile = expected === undefined
+    ? Object.getOwnPropertyDescriptor(value, "profile")?.value : expected.profile;
+  try { return authoringProfileReceipt(value, profile, code); }
+  catch (error) { fail(error.code, error.message); }
+}
+function result(value, format, max, expectedLength, expectedPolicy, profileCode) {
   const spec = format === "diff-html" ? ["renderSemanticDiff", "text/html; charset=utf-8", "html"] : FORMATS[format];
   if (!value || value.format !== format || value.mimeType !== spec[1] || value.extension !== spec[2]
       || !Number.isSafeInteger(value.sourceLength) || value.sourceLength < 0
@@ -206,6 +215,7 @@ function result(value, format, max, expectedLength, expectedPolicy) {
     fail("WORKER_PROTOCOL_ERROR", "invalid document result");
   try { pdfArchivalReceipt(value, expectedPolicy, "WORKER_PROTOCOL_ERROR"); }
   catch (error) { fail(error.code, error.message); }
+  renderProfile(value, expectedPolicy, profileCode);
   bytes(value.bytes, max);
   let size = 0;
   for (const item of value.diagnostics) {
@@ -308,6 +318,7 @@ function ownedOutput(output) {
   return { format: output.format, mimeType: output.mimeType, extension: output.extension,
     sourceLength: output.sourceLength, bytes: new Uint8Array(output.bytes),
     ...pdfArchivalReceipt(output),
+    ...renderProfile(output),
     diagnostics: output.diagnostics.map(({ severity, start, end, message, code, scope }) => ({
       severity, start, end, message,
       ...(code === undefined ? {} : { code }),
@@ -426,7 +437,7 @@ async function publishInWorker(engine, input, max) {
   // every output succeeds; keep copies independent of reused native storage.
   for (const target of input.targets) {
     const output = await engine[FORMATS[target.format][0]](input.source, target.options);
-    result(output, target.format, max - totalBytes, input.sourceLength, target.options);
+    result(output, target.format, max - totalBytes, input.sourceLength, target.options, "UNSUPPORTED_WASM_PACKAGE");
     publicationDiagnosticBudget([...outputs, output]);
     totalBytes += output.bytes.byteLength;
     outputs.push(ownedOutput(output));
@@ -501,7 +512,9 @@ export function createWorkerRenderer(options = {}) {
       const expected = format === "compare"
         ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength, profile: input.options.profile }
         : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format),
-          policies: input.targets.map(target => normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict)) }
+          policies: input.targets.map(target => ({
+            ...normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict), profile: target.options.profile,
+          })) }
         : input.sourceLength;
       const prepare = () => {
         if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
@@ -556,7 +569,7 @@ export function installDocumentWorker(endpoint, loadRenderer) {
       if (method === "compare") return await compareInWorker(engine, input, max);
       if (method === "publish") return await publishInWorker(engine, input, max);
       const output = await engine[FORMATS[method][0]](input.source, input.options);
-      result(output, method, max, input.sourceLength, input.options);
+      result(output, method, max, input.sourceLength, input.options, "UNSUPPORTED_WASM_PACKAGE");
       // Never detach a binding's storage. Only transfer the owned boundary copy;
       // helper functions in the public render result are deliberately not cloned.
       const value = ownedOutput(output);

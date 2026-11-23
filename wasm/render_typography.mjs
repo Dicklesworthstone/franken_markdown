@@ -28,18 +28,21 @@ export function normalizeAnalysisOptions(value = {}) {
   return Object.freeze(profile === undefined ? {} : { profile });
 }
 
-/** Check that both native analyses consumed the requested grammar. A legacy
- * facade that ignores extra arguments cannot supply a successful receipt. */
-export function analysisAuthoringProfileReceipt(report, expected, code = "UNSUPPORTED_WASM_PACKAGE") {
+/** Check that a renderer or analysis consumed the requested grammar. A legacy
+ * facade that ignores extra arguments cannot supply a successful receipt.
+ * Read only an own data property; an accessor is not an acknowledgment. */
+export function authoringProfileReceipt(report, expected, code = "UNSUPPORTED_WASM_PACKAGE") {
   const field = report && typeof report === "object"
     ? Object.getOwnPropertyDescriptor(report, "profile") : undefined;
   const profile = field?.value;
   if ((field && !Object.hasOwn(field, "value")) || profile !== expected
       || (profile !== undefined && profile !== "commonmark-gfm" && profile !== "gfm-plus")) {
-    throw Object.assign(new Error("Document analysis did not acknowledge the requested Markdown dialect; rebuild matching renderer and worker packages"), { code });
+    throw Object.assign(new Error("Document output did not acknowledge the requested Markdown dialect; rebuild matching renderer and worker packages"), { code });
   }
   return profile === undefined ? {} : { profile };
 }
+
+export const analysisAuthoringProfileReceipt = authoringProfileReceipt;
 
 /** Capture native typography controls, without retaining caller objects or
  * invoking accessors. Missing and explicit false values keep their spelling. */

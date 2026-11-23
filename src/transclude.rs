@@ -430,9 +430,9 @@ impl Expansion<'_> {
         // terminator with a generated LF before retaining the incoming one.
         let separate_breaks = self.output.ends_with('\r') && text.starts_with('\n');
         let appended_bytes = text.len().checked_add(usize::from(separate_breaks));
-        if appended_bytes.is_none_or(|bytes| {
-            bytes > self.max_output_bytes.saturating_sub(self.output.len())
-        }) {
+        if appended_bytes
+            .is_none_or(|bytes| bytes > self.max_output_bytes.saturating_sub(self.output.len()))
+        {
             return Err(RenderError::InvalidInput(format!(
                 "include_size: expanded document exceeds {} bytes",
                 self.max_output_bytes

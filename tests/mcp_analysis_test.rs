@@ -80,11 +80,7 @@ fn discovery_advertises_exact_source_fields_profiles_and_output_formats() {
     let listing = tools_list_result();
     let tools = array(listing.get("tools").unwrap());
     for (name, fields, required) in [
-        (
-            "fmd.stats",
-            &["markdown", "profile"][..],
-            &["markdown"][..],
-        ),
+        ("fmd.stats", &["markdown", "profile"][..], &["markdown"][..]),
         (
             "fmd.diff",
             &["oldMarkdown", "newMarkdown", "profile", "format"][..],
@@ -103,7 +99,10 @@ fn discovery_advertises_exact_source_fields_profiles_and_output_formats() {
         );
         let properties = schema.get("properties").unwrap().as_object().unwrap();
         assert_eq!(
-            properties.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
             fields.iter().copied().collect::<BTreeSet<_>>()
         );
         for property in properties.values() {
@@ -127,19 +126,34 @@ fn stats_returns_native_intelligence_and_original_utf8_counts() {
     let source = "# Overview β\r\n\r\nA [broken link](#absent).\r\n\r\n- [x] Done\r\n";
     let result = call("fmd.stats", stats_args(source));
     assert_eq!(result, call("fmd.stats", stats_args(source)));
-    let expected =
-        franken_markdown::doc_stats::compute_doc_stats(source, &parse_markdown(source));
+    let expected = franken_markdown::doc_stats::compute_doc_stats(source, &parse_markdown(source));
     assert_eq!(content(&result), expected.to_json());
     let report = report(&result);
     assert_eq!(report.get("schema"), Some(&text("fmd-document-stats-v1")));
-    assert_eq!(report.get("bytes").and_then(Json::as_u64), Some(source.len() as u64));
+    assert_eq!(
+        report.get("bytes").and_then(Json::as_u64),
+        Some(source.len() as u64)
+    );
     let structure = report.get("structure").unwrap();
-    assert_eq!(structure.get("headings_total").and_then(Json::as_u64), Some(1));
-    assert_eq!(structure.get("task_items_completed").and_then(Json::as_u64), Some(1));
-    assert_eq!(array(report.get("outline").unwrap())[0].get("text"), Some(&text("Overview β")));
-    assert!(array(report.get("findings").unwrap()).iter().any(|finding| {
-        finding.get("code").and_then(Json::as_str) == Some("broken_internal_anchor")
-    }));
+    assert_eq!(
+        structure.get("headings_total").and_then(Json::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        structure.get("task_items_completed").and_then(Json::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        array(report.get("outline").unwrap())[0].get("text"),
+        Some(&text("Overview β"))
+    );
+    assert!(
+        array(report.get("findings").unwrap())
+            .iter()
+            .any(|finding| {
+                finding.get("code").and_then(Json::as_str) == Some("broken_internal_anchor")
+            })
+    );
 }
 
 #[test]
@@ -156,9 +170,18 @@ fn stats_selects_grammar_before_cross_line_links_and_preserves_legacy_comments()
         }
         let report = report(&call("fmd.stats", args));
         let structure = report.get("structure").unwrap();
-        assert_eq!(structure.get("paragraphs").and_then(Json::as_u64), Some(paragraphs));
-        assert_eq!(structure.get("links_total").and_then(Json::as_u64), Some(links));
-        assert_eq!(report.get("bytes").and_then(Json::as_u64), Some(source.len() as u64));
+        assert_eq!(
+            structure.get("paragraphs").and_then(Json::as_u64),
+            Some(paragraphs)
+        );
+        assert_eq!(
+            structure.get("links_total").and_then(Json::as_u64),
+            Some(links)
+        );
+        assert_eq!(
+            report.get("bytes").and_then(Json::as_u64),
+            Some(source.len() as u64)
+        );
     }
     let source = "<!-- pagebreak -->\n";
     let legacy = call("fmd.stats", stats_args(source));
@@ -173,8 +196,17 @@ fn stats_selects_grammar_before_cross_line_links_and_preserves_legacy_comments()
         if profile == "commonmark-gfm" {
             assert_eq!(result, legacy);
         } else {
-            assert_eq!(report(&result).get("characters").and_then(Json::as_u64), Some(0));
-            assert!(report(&legacy).get("characters").and_then(Json::as_u64).unwrap() > 0);
+            assert_eq!(
+                report(&result).get("characters").and_then(Json::as_u64),
+                Some(0)
+            );
+            assert!(
+                report(&legacy)
+                    .get("characters")
+                    .and_then(Json::as_u64)
+                    .unwrap()
+                    > 0
+            );
         }
     }
 }
@@ -185,8 +217,16 @@ fn diff_returns_typed_changes_and_original_block_indices_instead_of_only_counts(
         ("# Old\n", "## New\n", "heading_changed"),
         ("[same](first)\n", "[same](second)\n", "link_target_changed"),
         ("- one\n- two\n", "- one\n- three\n", "list_changed"),
-        ("| A |\n|---|\n| old |\n", "| A |\n|---|\n| new |\n", "table_changed"),
-        ("```rust\nold\n```\n", "```python\nnew\n```\n", "code_block_changed"),
+        (
+            "| A |\n|---|\n| old |\n",
+            "| A |\n|---|\n| new |\n",
+            "table_changed",
+        ),
+        (
+            "```rust\nold\n```\n",
+            "```python\nnew\n```\n",
+            "code_block_changed",
+        ),
     ] {
         let result = call("fmd.diff", diff_args(old, new));
         assert_eq!(result, call("fmd.diff", diff_args(old, new)));
@@ -198,7 +238,13 @@ fn diff_returns_typed_changes_and_original_block_indices_instead_of_only_counts(
         assert_eq!(change.get("kind"), Some(&text(kind)));
         assert_eq!(change.get("old_index").and_then(Json::as_u64), Some(0));
         assert_eq!(change.get("new_index").and_then(Json::as_u64), Some(0));
-        assert!(!change.get("summary").and_then(Json::as_str).unwrap().is_empty());
+        assert!(
+            !change
+                .get("summary")
+                .and_then(Json::as_str)
+                .unwrap()
+                .is_empty()
+        );
         match kind {
             "heading_changed" => assert_eq!(change.get("level").and_then(Json::as_u64), Some(2)),
             "link_target_changed" => {
@@ -209,7 +255,10 @@ fn diff_returns_typed_changes_and_original_block_indices_instead_of_only_counts(
             _ => {}
         }
     }
-    let report = report(&call("fmd.diff", diff_args("# Keep\n", "# Keep\n\n## Added\n")));
+    let report = report(&call(
+        "fmd.diff",
+        diff_args("# Keep\n", "# Keep\n\n## Added\n"),
+    ));
     let changes = changes(&report);
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].get("kind"), Some(&text("heading_added")));
@@ -229,9 +278,11 @@ fn diff_retains_semantic_whitespace_and_move_behavior() {
             &parse_markdown(new),
         ))
     );
-    assert!(changes(&report(&result)).iter().any(|change| {
-        change.get("kind").and_then(Json::as_str) == Some("block_moved")
-    }));
+    assert!(
+        changes(&report(&result))
+            .iter()
+            .any(|change| { change.get("kind").and_then(Json::as_str) == Some("block_moved") })
+    );
     let mut args = diff_args("One  word.\n", "One word.\n");
     args.insert("format".to_owned(), text("json"));
     let report = report(&call("fmd.diff", args));
@@ -243,7 +294,10 @@ fn diff_retains_semantic_whitespace_and_move_behavior() {
 fn diff_uses_one_grammar_for_both_revisions_and_page_break_transforms() {
     let old = "*Term\n: old value*\n";
     let new = "*Term\n: new value*\n";
-    for (profile, kind) in [("commonmark-gfm", "paragraph_edited"), ("gfm-plus", "list_changed")] {
+    for (profile, kind) in [
+        ("commonmark-gfm", "paragraph_edited"),
+        ("gfm-plus", "list_changed"),
+    ] {
         let mut args = diff_args(old, new);
         args.insert("profile".to_owned(), text(profile));
         let report = report(&call("fmd.diff", args.clone()));
@@ -291,7 +345,8 @@ fn html_review_keeps_safe_full_revisions_anchors_and_footnotes() {
             &parse_markdown(&new),
             "Before",
             "Current",
-        ).to_html(&Theme::default())
+        )
+        .to_html(&Theme::default())
     );
     assert!(html.starts_with("<!DOCTYPE html>"));
     assert!(html.contains("Old note.") && html.contains("New note."));
@@ -308,8 +363,18 @@ fn html_review_keeps_safe_full_revisions_anchors_and_footnotes() {
 
 #[test]
 fn admission_rejects_unknown_fields_types_profiles_and_formats() {
-    for (name, base) in [("fmd.stats", stats_args("x")), ("fmd.diff", diff_args("x", "y"))] {
-        for field in ["path", "out", "images", "fonts", "expandIncludes", "allowRawHtml"] {
+    for (name, base) in [
+        ("fmd.stats", stats_args("x")),
+        ("fmd.diff", diff_args("x", "y")),
+    ] {
+        for field in [
+            "path",
+            "out",
+            "images",
+            "fonts",
+            "expandIncludes",
+            "allowRawHtml",
+        ] {
             let mut args = base.clone();
             args.insert(field.to_owned(), Json::Bool(true));
             let error = call_limit(name, args, 0).unwrap_err();
@@ -319,14 +384,20 @@ fn admission_rejects_unknown_fields_types_profiles_and_formats() {
             let mut args = base.clone();
             args.insert("profile".to_owned(), text(invalid));
             let error = call_limit(name, args, 0).unwrap_err();
-            assert_eq!((error.0, error.2), (ERROR_INVALID_OPTIONS, "invalid_profile"));
+            assert_eq!(
+                (error.0, error.2),
+                (ERROR_INVALID_OPTIONS, "invalid_profile")
+            );
         }
         let mut args = base;
         args.insert("profile".to_owned(), Json::Null);
         let error = call_limit(name, args, 0).unwrap_err();
         assert_eq!((error.0, error.2), (INVALID_PARAMS, "invalid_params"));
     }
-    for (field, reason) in [("oldMarkdown", "missing_old_markdown"), ("newMarkdown", "missing_new_markdown")] {
+    for (field, reason) in [
+        ("oldMarkdown", "missing_old_markdown"),
+        ("newMarkdown", "missing_new_markdown"),
+    ] {
         let mut args = diff_args("x", "y");
         args.remove(field);
         let error = call_limit("fmd.diff", args, 0).unwrap_err();
@@ -352,19 +423,28 @@ fn admission_rejects_unknown_fields_types_profiles_and_formats() {
 fn source_budgets_count_combined_utf8_bytes_and_admit_empty_documents() {
     assert!(call_limit("fmd.stats", stats_args("β"), 2).is_ok());
     let error = call_limit("fmd.stats", stats_args("β"), 1).unwrap_err();
-    assert_eq!((error.0, error.2), (ERROR_INPUT_TOO_LARGE, "input_too_large"));
+    assert_eq!(
+        (error.0, error.2),
+        (ERROR_INPUT_TOO_LARGE, "input_too_large")
+    );
     assert!(call_limit("fmd.stats", stats_args(""), 0).is_ok());
     for format in ["json", "html"] {
         let mut args = diff_args("β", "😀");
         args.insert("format".to_owned(), text(format));
         // Each revision fits five bytes; together they require six.
         let error = call_limit("fmd.diff", args.clone(), 5).unwrap_err();
-        assert_eq!((error.0, error.2), (ERROR_INPUT_TOO_LARGE, "input_too_large"));
+        assert_eq!(
+            (error.0, error.2),
+            (ERROR_INPUT_TOO_LARGE, "input_too_large")
+        );
         assert!(call_limit("fmd.diff", args, 6).is_ok());
         for (old, new) in [("β😀", ""), ("", "β😀")] {
             let mut args = diff_args(old, new);
             args.insert("format".to_owned(), text(format));
-            assert_eq!(call_limit("fmd.diff", args, 5).unwrap_err().0, ERROR_INPUT_TOO_LARGE);
+            assert_eq!(
+                call_limit("fmd.diff", args, 5).unwrap_err().0,
+                ERROR_INPUT_TOO_LARGE
+            );
         }
     }
     let result = call_limit("fmd.diff", diff_args("", ""), 0).unwrap();
@@ -389,13 +469,21 @@ fn actual_json_lines_and_framed_sessions_recover_after_analysis_errors() {
     let mut html = diff_args("a", "b");
     html.insert("format".to_owned(), text("html"));
     let messages = [
-        object([("jsonrpc", text("2.0")), ("id", Json::Number(1.0)), ("method", text("initialize"))]),
+        object([
+            ("jsonrpc", text("2.0")),
+            ("id", Json::Number(1.0)),
+            ("method", text("initialize")),
+        ]),
         tool_request(2, "fmd.stats", invalid_profile),
         tool_request(3, "fmd.diff", diff_args("β", "😀")),
         tool_request(4, "fmd.stats", stats_args("Hi.")),
         tool_request(5, "fmd.diff", diff_args("a", "b")),
         tool_request(6, "fmd.diff", html),
-        object([("jsonrpc", text("2.0")), ("method", text("tools/call")), ("params", params("fmd.diff", diff_args("a", "b")))]),
+        object([
+            ("jsonrpc", text("2.0")),
+            ("method", text("tools/call")),
+            ("params", params("fmd.diff", diff_args("a", "b"))),
+        ]),
     ];
     for framed in [false, true] {
         let mut input = Vec::new();
@@ -411,7 +499,12 @@ fn actual_json_lines_and_framed_sessions_recover_after_analysis_errors() {
         let mut output = Vec::new();
         let count = serve_stdio(&mut Cursor::new(input), &mut output, 5, MAX_FRAME_BYTES).unwrap();
         assert_eq!(count, messages.len());
-        assert_eq!(std::str::from_utf8(&output).unwrap().starts_with("Content-Length:"), framed);
+        assert_eq!(
+            std::str::from_utf8(&output)
+                .unwrap()
+                .starts_with("Content-Length:"),
+            framed
+        );
         let mut cursor = Cursor::new(output);
         let mut replies = Vec::new();
         while let Some(frame) = read_frame(&mut cursor, MAX_FRAME_BYTES).unwrap() {
@@ -419,17 +512,31 @@ fn actual_json_lines_and_framed_sessions_recover_after_analysis_errors() {
         }
         assert_eq!(replies.len(), 6, "notifications must not produce a reply");
         for (index, reply) in replies.iter().enumerate() {
-            assert_eq!(reply.get("id").and_then(Json::as_u64), Some(index as u64 + 1));
+            assert_eq!(
+                reply.get("id").and_then(Json::as_u64),
+                Some(index as u64 + 1)
+            );
         }
         for (reply, code, reason) in [
             (&replies[1], ERROR_INVALID_OPTIONS, "invalid_profile"),
             (&replies[2], ERROR_INPUT_TOO_LARGE, "input_too_large"),
         ] {
             let error = reply.get("error").unwrap();
-            assert_eq!(error.get("code").and_then(Json::as_f64), Some(f64::from(code)));
-            assert_eq!(error.get("data").unwrap().get("reason"), Some(&text(reason)));
+            assert_eq!(
+                error.get("code").and_then(Json::as_f64),
+                Some(f64::from(code))
+            );
+            assert_eq!(
+                error.get("data").unwrap().get("reason"),
+                Some(&text(reason))
+            );
         }
-        assert_eq!(report(replies[3].get("result").unwrap()).get("words").and_then(Json::as_u64), Some(1));
+        assert_eq!(
+            report(replies[3].get("result").unwrap())
+                .get("words")
+                .and_then(Json::as_u64),
+            Some(1)
+        );
         assert_eq!(changes(&report(replies[4].get("result").unwrap())).len(), 1);
         assert!(content(replies[5].get("result").unwrap()).starts_with("<!DOCTYPE html>"));
     }

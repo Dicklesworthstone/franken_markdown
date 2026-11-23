@@ -279,10 +279,19 @@ fn financial_citations_retain_decimal_geometry_and_epub_navigation() {
         assert_eq!(widths.len(), 3, "citations must retain financial alignment");
         assert!(widths.iter().all(|width| *width == widths[0]));
         assert!(chapter.contains(".5<sup class=\"footnote-ref\" id=\"fnref-2\">"));
-        assert!(chapter.contains("href=\"#fn-audit\" epub:type=\"noteref\" role=\"doc-noteref\">2</a>"));
-        assert!(chapter.contains("href=\"#fn-units\" epub:type=\"noteref\" role=\"doc-noteref\">3</a>"));
+        assert!(
+            chapter.contains("href=\"#fn-audit\" epub:type=\"noteref\" role=\"doc-noteref\">2</a>")
+        );
+        assert!(
+            chapter.contains("href=\"#fn-units\" epub:type=\"noteref\" role=\"doc-noteref\">3</a>")
+        );
         assert_eq!(chapter.matches("Audited statement.").count(), 1);
-        assert_eq!(chapter.matches("border-bottom:3px double currentColor").count(), 1);
+        assert_eq!(
+            chapter
+                .matches("border-bottom:3px double currentColor")
+                .count(),
+            1
+        );
         assert_eq!(tags(&chapter, "tr").len(), 4);
     }
 }

@@ -91,9 +91,10 @@ pub(super) fn render_cells(
         if !header
             && alignment == Align::Decimal
             && let Some(width) = widths.get(column).copied().flatten()
-            && let Some(text) = decimal_cell_text_with_footnotes(cell, |inline| {
-                matches!(inline, Inline::FootnoteRef { id } if state.footnote_defs.contains_key(id.as_str()))
-            })
+            && let Some(text) = decimal_cell_text_with_footnotes(
+                cell,
+                |inline| matches!(inline, Inline::FootnoteRef { id } if state.footnote_defs.contains_key(id.as_str())),
+            )
             && let Some(anchor) = decimal_anchor(&text)
         {
             render_decimal(cell, anchor, width, out, opts, state);
@@ -175,13 +176,16 @@ pub(super) fn suffix_widths(
     for row in rows {
         for (cell, width) in row.cells.iter().zip(&mut widths) {
             if let Some(current) = *width
-                && let Some(text) = decimal_cell_text_with_footnotes(cell, |inline| {
-                    matches!(inline, Inline::FootnoteRef { id } if notes.contains_key(id))
-                })
+                && let Some(text) = decimal_cell_text_with_footnotes(
+                    cell,
+                    |inline| matches!(inline, Inline::FootnoteRef { id } if notes.contains_key(id)),
+                )
                 && let Some(anchor) = decimal_anchor(&text)
             {
                 let (_, after) = split_decimal_cell(cell, anchor);
-                *width = metrics.width(&after, false, &notes).map(|value| current.max(value));
+                *width = metrics
+                    .width(&after, false, &notes)
+                    .map(|value| current.max(value));
             }
         }
     }
@@ -235,7 +239,11 @@ fn table_note_numbers(
     }
     let mut notes = BTreeMap::new();
     let mut next = state.footnote_numbers.len() + 1;
-    for cell in table.head.iter().chain(rows.iter().flat_map(|row| row.cells)) {
+    for cell in table
+        .head
+        .iter()
+        .chain(rows.iter().flat_map(|row| row.cells))
+    {
         collect(cell, state, &mut notes, &mut next);
     }
     notes
@@ -276,7 +284,12 @@ impl<'a> Metrics<'a> {
         self.faces[index].as_ref()
     }
 
-    fn width(&mut self, cell: &[Inline], header: bool, notes: &BTreeMap<String, usize>) -> Option<f32> {
+    fn width(
+        &mut self,
+        cell: &[Inline],
+        header: bool,
+        notes: &BTreeMap<String, usize>,
+    ) -> Option<f32> {
         let mut runs = Vec::new();
         styled_runs(cell, header, false, notes, &mut runs);
         let mut width = 0.0f32;
@@ -319,7 +332,8 @@ fn styled_runs(
             Inline::Text(text) => {
                 let style = FontStyle::new(bold, italic);
                 if let Some((last_style, last_text, note)) = runs.last_mut()
-                    && *last_style == style && !*note
+                    && *last_style == style
+                    && !*note
                 {
                     last_text.push_str(text);
                 } else {
@@ -360,7 +374,10 @@ mod tests {
             table,
             &crate::table_format::financial_rows(table).unwrap(),
             opts,
-            &mut RenderState { root_blocks: &doc.blocks, ..RenderState::default() },
+            &mut RenderState {
+                root_blocks: &doc.blocks,
+                ..RenderState::default()
+            },
         )
     }
 
@@ -383,9 +400,15 @@ mod tests {
         };
         let measured = widths(source, &opts);
         let mut metrics = Metrics::new(&opts);
-        let regular = metrics.width(&[Inline::Text(".2".into())], false, &BTreeMap::new()).unwrap();
+        let regular = metrics
+            .width(&[Inline::Text(".2".into())], false, &BTreeMap::new())
+            .unwrap();
         let bold = metrics
-            .width(&[Inline::Strong(vec![Inline::Text(".3456".into())])], false, &BTreeMap::new())
+            .width(
+                &[Inline::Strong(vec![Inline::Text(".3456".into())])],
+                false,
+                &BTreeMap::new(),
+            )
             .unwrap();
         let rate = metrics
             .width(&[Inline::Text(".12345%".into())], false, &BTreeMap::new())

@@ -239,12 +239,19 @@ fn annotated_amounts_align_painted_decimals_and_preserve_note_links() {
             let pdf = render_pdf(SOURCE, &opts).unwrap();
             let paint = glyphs(&pdf);
             let expected = dot(&row(&paint, "A"));
+            // Bundled Sans carries native Unicode superscript glyphs (¹/²),
+            // whereas bundled Serif uses scalar fallback digits (1/2) per
+            // src/pdf.rs fallback_char while keeping semantic note provenance.
+            let (m1, m2) = match font {
+                FontFamily::Sans => ("¹", "²"),
+                FontFamily::Serif => ("1", "2"),
+            };
             for (label, text) in [
-                ("A", "A123.4"),
-                ("B", "B12.34¹"),
-                ("C", "C7.125¹²"),
-                ("D", "D(25.50)²"),
-                ("F", "F-3.25²"),
+                ("A", "A123.4".to_string()),
+                ("B", format!("B12.34{m1}")),
+                ("C", format!("C7.125{m1}{m2}")),
+                ("D", format!("D(25.50){m2}")),
+                ("F", format!("F-3.25{m2}")),
             ] {
                 let data = row(&paint, label);
                 assert_eq!(row_text(&data), text);
@@ -259,7 +266,7 @@ fn annotated_amounts_align_painted_decimals_and_preserve_note_links() {
                 );
             }
             let integer = row(&paint, "E");
-            assert_eq!(row_text(&integer), "E9¹");
+            assert_eq!(row_text(&integer), format!("E9{m1}"));
             let nine = integer.iter().find(|glyph| glyph.text == "9").unwrap();
             assert!(
                 (nine.x + nine.width - expected).abs() < 0.03,
@@ -268,12 +275,81 @@ fn annotated_amounts_align_painted_decimals_and_preserve_note_links() {
             let raw = String::from_utf8_lossy(&pdf);
             assert!(raw.contains("/URI (https://example.com/amount)"));
             assert!(raw.contains("/URI (https://example.com/linked-note)"));
-            for number in [1, 2] {
+            let id_tree = raw
+                .split_once("/IDTree << /Names [")
+                .expect("tagged footnotes emit an /IDTree")
+                .1
+                .split_once("] >>")
+                .unwrap()
+                .0;
+            let dest_ys: Vec<f32> = raw
+                .lines()
+                .filter(|line| line.contains("/Subtype /Link"))
+                .filter_map(|line| line.split_once("/Dest ["))
+                .map(|(_, rest)| {
+                    let fields: Vec<_> =
+                        rest.split_once(']').unwrap().0.split_whitespace().collect();
+                    assert_eq!(&fields[1..5], &["0", "R", "/XYZ", "null"]);
+                    fields[5].parse::<f32>().unwrap()
+                })
+                .collect();
+            // 5 forward citation links (3 to note 1, 2 to note 2) + 2 return links
+            // from the footnote definitions back to their first citing rows (B and C).
+            assert_eq!(
+                dest_ys.len(),
+                7,
+                "expected 7 internal footnote link destinations (5 forward + 2 backrefs), got {dest_ys:?}"
+            );
+            for (row_label, note_name) in [("B", "note 1 backref"), ("C", "note 2 backref")] {
+                let first_use = row(&paint, row_label);
+                let first_ref = first_use.first().unwrap();
+                let expected_return_y = first_ref.y + first_ref.size * 0.9;
+                let return_matches = dest_ys
+                    .iter()
+                    .filter(|&&y| (y - expected_return_y).abs() < 1.5)
+                    .count();
+                assert_eq!(
+                    return_matches, 1,
+                    "{note_name} expected 1 return /Dest link near row {row_label} y={expected_return_y:.2}, got {dest_ys:?}"
+                );
+            }
+            for (number, expected_count, note_text) in
+                [(1, 3, "Audited amount"), (2, 2, "Measurement basis")]
+            {
                 assert!(raw.contains(&format!("/ID (fmd-note-{number})")));
-                assert!(raw.contains("/S /Reference "), "references stay structured");
                 assert!(
-                    raw.contains(&format!("(fmd-fn-{number})")),
-                    "notes retain named destinations"
+                    id_tree.contains(&format!("(fmd-note-{number})")),
+                    "notes retain /IDTree name entries"
+                );
+                assert!(raw.contains("/S /Reference "), "references stay structured");
+                let mut rows_by_y: BTreeMap<i32, Vec<&Glyph>> = BTreeMap::new();
+                for glyph in &paint {
+                    rows_by_y
+                        .entry((glyph.y * 100.0).round() as i32)
+                        .or_default()
+                        .push(glyph);
+                }
+                let (_, note_glyphs) = rows_by_y
+                    .iter()
+                    .find(|(_, glyphs)| {
+                        let mut sorted: Vec<&Glyph> = glyphs.to_vec();
+                        sorted.sort_by(|a, b| a.x.total_cmp(&b.x));
+                        let line: String = sorted.iter().map(|g| g.text.as_str()).collect();
+                        line.contains(note_text)
+                    })
+                    .unwrap_or_else(|| panic!("missing rendered note text {note_text:?}"));
+                let note_ref = note_glyphs
+                    .iter()
+                    .max_by(|a, b| a.size.total_cmp(&b.size))
+                    .unwrap();
+                let expected_y = note_ref.y + note_ref.size * 0.9;
+                let matches = dest_ys
+                    .iter()
+                    .filter(|&&y| (y - expected_y).abs() < 0.5)
+                    .count();
+                assert_eq!(
+                    matches, expected_count,
+                    "note {number} ({note_text}) expected {expected_count} resolved /Dest links near y={expected_y:.2}, got {dest_ys:?}"
                 );
             }
             assert!(

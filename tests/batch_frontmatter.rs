@@ -275,6 +275,7 @@ fn public_batch_api_merges_metadata_without_replacing_explicit_options() {
     let receipt = run_batch_blocking(plan, &opts).unwrap();
     assert_eq!(receipt.ok_count(), 1, "{}", receipt.to_json());
     let mut expected_html = opts.html.clone();
+    expected_html.author = Some("Document author".into());
     expected_html.lang = Some("fr".into());
     expected_html.toc = true;
     expected_html.toc_depth = Some(2);

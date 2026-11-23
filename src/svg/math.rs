@@ -45,6 +45,7 @@ impl Poster {
                     image: None,
                     warning: None,
                     shaped: None,
+                    navigation: Vec::new(),
                 }
             }
             Err(warning) => {
@@ -61,6 +62,7 @@ impl Poster {
                     image: None,
                     warning: Some(warning),
                     shaped: None,
+                    navigation: Vec::new(),
                 }
             }
         }

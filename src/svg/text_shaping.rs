@@ -8,7 +8,7 @@ use std::cell::OnceCell;
 use std::ops::Range;
 
 use super::super::{Ink, SLOT_COUNT};
-use super::{Op, Poster, RStyle, SvgWarning};
+use super::{Op, Poster, RStyle, SvgWarning, navigation::NavigationSpan};
 use franken_markdown::text::{Kerning, Ligatures};
 
 #[path = "text_composition.rs"]
@@ -70,6 +70,70 @@ pub(in super::super) struct ShapedText {
 }
 
 impl ShapedText {
+    /// Project exact source ownership onto the prepared glyph advance, without
+    /// changing its shape. When a metadata boundary lies inside an indivisible
+    /// ligature or composed mark cluster, divide that cluster's advance among
+    /// its source scalars. This deterministic hit-test partition gives each
+    /// owner a distinct region; it does not claim font-provided caret metrics.
+    /// Cluster ink still supplies the vertical envelope for every such region.
+    pub(super) fn navigation_regions(
+        &self,
+        text: &str,
+        spans: &[NavigationSpan],
+        x: f64,
+        mut record: impl FnMut(&NavigationSpan, (f64, f64, f64, f64)),
+    ) {
+        debug_assert_eq!(spans.first().map(|span| span.bytes.start), Some(0));
+        debug_assert_eq!(spans.last().map(|span| span.bytes.end), Some(text.len()));
+        let mut owner = 0;
+        let mut pen = x;
+        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        for cluster in &self.clusters {
+            let start = pen;
+            let glyphs = &self.glyphs[cluster.glyphs.clone()];
+            // Follow paint's absolute pen and operation order exactly. Adding
+            // a relative sum afterwards can move a quantized hit-test edge.
+            for index in cluster.glyphs.clone() {
+                pen += self.glyphs[index].advance;
+                if index + 1 < self.glyphs.len() {
+                    pen += self.glyphs[index].kern_after;
+                }
+            }
+            let advance = pen - start;
+            let above = glyphs.iter().map(|glyph| glyph.above).fold(0.0, f64::max);
+            let below = glyphs.iter().map(|glyph| glyph.below).fold(0.0, f64::max);
+            let source = &text[cluster.bytes.clone()];
+            let count = source.chars().count();
+            for (scalar, (byte, _)) in source.char_indices().enumerate() {
+                let byte = cluster.bytes.start + byte;
+                while spans.get(owner).is_some_and(|span| span.bytes.end <= byte) {
+                    if let Some(rect) = bounds.take() {
+                        record(&spans[owner], rect);
+                    }
+                    owner += 1;
+                }
+                let left = start + advance * scalar as f64 / count as f64;
+                let right = if scalar + 1 == count {
+                    pen
+                } else {
+                    start + advance * (scalar + 1) as f64 / count as f64
+                };
+                if let Some(rect) = &mut bounds {
+                    rect.1 = right;
+                    rect.2 = rect.2.max(above);
+                    rect.3 = rect.3.max(below);
+                } else {
+                    bounds = Some((left, right, above, below));
+                }
+            }
+        }
+        if let Some(rect) = bounds
+            && let Some(span) = spans.get(owner)
+        {
+            record(span, rect);
+        }
+    }
+
     /// Position of a retained glyph cluster, including the preceding pair
     /// adjustment and its actual paint offset. A virtual integer anchor omits
     /// the outgoing adjustment to a following suffix instead.

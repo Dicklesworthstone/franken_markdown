@@ -5,7 +5,7 @@
 //! create glue. Final lines, code spans and nonbreaking spaces retain their
 //! existing semantics; the painter never has to honor fictitious shrink.
 
-use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word, discretionary};
+use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word, discretionary, navigation};
 use franken_markdown::layout::{
     FORCED_BREAK_PENALTY, Glue, LayoutUnit, ParagraphItem, ParagraphLayoutScratch, Penalty,
     TextBox, break_paragraph_into,
@@ -49,7 +49,9 @@ impl Paragraph {
             hints: authored.hints,
         };
         if !self.greedy {
-            self.runs = self.runs.saturating_add(group.runs.len());
+            for run in &group.runs {
+                self.runs = self.runs.saturating_add(navigation::source_runs(run));
+            }
             self.text_bytes = self.text_bytes.saturating_add(authored.source_bytes);
             if self.groups.len() == MAX_WORDS
                 || self.runs > MAX_RUNS
@@ -246,6 +248,7 @@ fn limit_warning(group: &mut Group) {
             image: None,
             warning: Some(warning),
             shaped: None,
+            navigation: Vec::new(),
         });
     }
 }

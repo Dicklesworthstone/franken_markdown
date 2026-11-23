@@ -243,6 +243,7 @@ impl Poster {
                     formula: None,
                     warning: None,
                     shaped: None,
+                    navigation: Vec::new(),
                     image: Some(ImageRun {
                         image,
                         width,
@@ -270,6 +271,7 @@ impl Poster {
                     image: None,
                     warning: Some(warning),
                     shaped: None,
+                    navigation: Vec::new(),
                 }
             }
         }

@@ -19,6 +19,7 @@ fn group(width: f64, gap: f64) -> Group {
             image: None,
             warning: None,
             shaped: None,
+            navigation: Vec::new(),
         }],
         gap,
         hints: Vec::new(),

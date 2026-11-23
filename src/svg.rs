@@ -417,6 +417,19 @@ impl RStyle {
     fn font_style(self) -> FontStyle {
         FontStyle::new(self.bold, self.italic)
     }
+
+    /// Navigation ownership does not change the glyphs or their appearance.
+    fn same_paint(self, other: Self) -> bool {
+        Self {
+            link: None,
+            note_reference: None,
+            ..self
+        } == Self {
+            link: None,
+            note_reference: None,
+            ..other
+        }
+    }
 }
 
 /// A flattened inline piece: styled text or a forced line break.
@@ -442,6 +455,10 @@ struct Word {
     /// Exact prepared text used by wrapping, vertical layout and painting.
     /// Images and formulas carry their independent prepared data above.
     shaped: Option<text::ShapedText>,
+    /// Exact source ownership when metadata-only boundaries share one shape.
+    /// Empty means that `style` owns the entire text, avoiding per-word storage
+    /// for ordinary documents and uniformly linked text.
+    navigation: Vec<text::NavigationSpan>,
 }
 
 // ---------------------------------------------------------------------------

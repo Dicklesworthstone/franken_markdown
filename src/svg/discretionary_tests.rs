@@ -126,6 +126,7 @@ fn trailing_zero_ink_diagnostics_survive_on_exactly_one_physical_fragment() {
         image: None,
         warning: None,
         shaped: None,
+        navigation: Vec::new(),
     }];
     let authored = discretionary::normalize(&mut runs);
     let mut flow = TextFlow::default();
@@ -150,6 +151,7 @@ fn trailing_zero_ink_diagnostics_survive_on_exactly_one_physical_fragment() {
             formula: None,
             image: None,
             shaped: None,
+            navigation: Vec::new(),
             warning: Some(SvgWarning {
                 code: "svg_paragraph_limit",
                 message: "limit".into(),

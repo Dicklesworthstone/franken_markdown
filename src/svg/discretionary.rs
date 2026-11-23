@@ -4,7 +4,7 @@
 //! Knuth-Plass breaks; only reshaped, fitting physical lines may be installed.
 
 use super::paragraph::{self, Group, upper_units};
-use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word};
+use super::{Poster, RStyle, Shaper, SvgWarning, TextFlow, Word, navigation};
 use franken_markdown::layout::{
     FORCED_BREAK_PENALTY, Glue, LayoutUnit, ParagraphItem, ParagraphLayoutScratch, Penalty,
     TextBox, break_paragraph_into,
@@ -55,6 +55,7 @@ fn text_run(text: String, style: RStyle) -> Word {
         image: None,
         warning: None,
         shaped: None,
+        navigation: Vec::new(),
     }
 }
 
@@ -188,7 +189,7 @@ fn fragment(
                 if start == 0 {
                     part.warning = run.warning.clone();
                 }
-                prepare(&mut part, shaper, size);
+                navigation::slice(run, &mut part, start..stop);
                 part
             };
             part.gap = 0.0;
@@ -200,9 +201,12 @@ fn fragment(
         offset = end;
     }
     if let Some(hint) = hyphen.filter(|hint| hint.hyphen) {
-        join_text(&mut result, "-", hint.style);
-        if let Some(last) = result.last_mut() {
-            prepare(last, shaper, size);
+        result.push(text_run("-".to_owned(), hint.style));
+    }
+    navigation::coalesce(&mut result);
+    for run in &mut result {
+        if run.formula.is_none() && run.image.is_none() && run.shaped.is_none() {
+            prepare(run, shaper, size);
         }
     }
     result

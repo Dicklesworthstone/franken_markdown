@@ -383,12 +383,25 @@ fn svg_links_unsafe_nested_ast_links_cannot_inherit_an_outer_destination() {
     p.flatten(&inlines, RStyle::BODY, &mut pieces);
     let lines = p.wrap(&pieces, 11.0, 400.0);
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0].len(), 3);
+    assert_eq!(lines[0].len(), 1);
+    assert_eq!(lines[0][0].text, "beforemiddleafter");
+    assert_eq!(lines[0][0].navigation.len(), 3);
     p.draw_words(&lines[0], 0.0, 30.0, 11.0);
+    let positions: Vec<_> = p
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glyph { x, .. } => Some(*x),
+            _ => None,
+        })
+        .collect();
     let nav = p.navigation.borrow();
     assert_eq!(nav.regions.len(), 2);
-    assert_eq!(nav.regions[0].rect.right, lines[0][0].w);
-    assert_eq!(nav.regions[1].rect.left, lines[0][0].w + lines[0][1].w);
+    // The six-glyph "before" and "middle" spans remain separate interactive
+    // owners inside one shape. Their boundaries must match the actual emitted
+    // glyph positions, including any cross-boundary pair adjustment.
+    assert_eq!(nav.regions[0].rect.right, positions[6]);
+    assert_eq!(nav.regions[1].rect.left, positions[12]);
     drop(nav);
     let (bytes, report, warnings) = p.emit(100.0);
     let out = String::from_utf8(bytes).unwrap();

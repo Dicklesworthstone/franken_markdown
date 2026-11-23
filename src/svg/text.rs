@@ -7,6 +7,10 @@ mod shaping;
 pub(super) use shaping::ShapedText;
 use shaping::Shaper;
 
+#[path = "text_navigation.rs"]
+mod navigation;
+pub(super) use navigation::NavigationSpan;
+
 #[path = "text_wrapping.rs"]
 mod wrapping;
 use wrapping::place_shaped;
@@ -89,8 +93,10 @@ impl Poster {
         if word.is_empty() {
             return;
         }
-        // Shape after equal-style pieces have coalesced. Retain that exact
-        // result so sizing and painting cannot disagree or repeat mark work.
+        // Navigation-only boundaries must not interrupt kerning, ligatures or
+        // combining sequences. Ownership remains attached to source ranges,
+        // separately from the one prepared shape used by layout and painting.
+        navigation::coalesce(&mut word);
         for run in &mut word {
             if run.formula.is_none() && run.image.is_none() {
                 let prepared = shaper.shape(&run.text, run.style, size);
@@ -175,7 +181,31 @@ impl Poster {
                 let prepared = Shaper::new(self).shape(&word.text, word.style, size);
                 pen = prepared.paint(self, pen, baseline, word.style, size);
             }
-            if word.style.link.is_some() || word.style.note_reference.is_some() {
+            if !word.navigation.is_empty() {
+                if let Some(prepared) = &word.shaped {
+                    prepared.navigation_regions(
+                        &word.text,
+                        &word.navigation,
+                        start,
+                        |span, rect| {
+                            let nominal_above = size * 0.85;
+                            let above = rect.2.max(nominal_above);
+                            let below = rect.3.max((size - nominal_above).max(0.0));
+                            let bounds = (
+                                rect.0,
+                                baseline - above,
+                                rect.1,
+                                baseline - above + (above + below),
+                            );
+                            let mut navigation = self.navigation.borrow_mut();
+                            if let Some(number) = span.note_reference {
+                                navigation.note_reference(number, bounds);
+                            }
+                            navigation.record(span.link, Some(bounds), &mut previous_link);
+                        },
+                    );
+                }
+            } else if word.style.link.is_some() || word.style.note_reference.is_some() {
                 let (ascent, height) =
                     self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
                 let bounds = (start, baseline - ascent, pen, baseline - ascent + height);
@@ -216,6 +246,7 @@ fn append_run(flow: &mut TextFlow, text: &str, style: RStyle) {
             image: None,
             warning: None,
             shaped: None,
+            navigation: Vec::new(),
         });
     }
 }

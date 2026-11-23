@@ -1,6 +1,6 @@
 //! Cluster-boundary emergency wrapping, including contextual boundary repair.
 
-use super::{Poster, RStyle, ShapedText, Shaper, SvgWarning, TextFlow, Word};
+use super::{Poster, RStyle, ShapedText, Shaper, SvgWarning, TextFlow, Word, navigation};
 use std::ops::Range;
 
 impl Poster {
@@ -58,7 +58,7 @@ impl Poster {
 
 pub(super) fn place_shaped(
     flow: &mut TextFlow,
-    run: Word,
+    mut run: Word,
     shaped: &ShapedText,
     shaper: &Shaper<'_>,
     size: f64,
@@ -71,7 +71,7 @@ pub(super) fn place_shaped(
     let mut start = 0;
     let mut end = 0;
     let mut used = 0.0;
-    let mut warning = run.warning;
+    let mut warning = run.warning.take();
     while end < shaped.clusters.len() {
         let next = shaped.extend_width(start, end, used);
         if flow.line_width + next > width && (end > start || !flow.line.is_empty()) {
@@ -79,8 +79,8 @@ pub(super) fn place_shaped(
                 let bytes = source_range(shaped, start..end);
                 push_prepared(
                     flow,
-                    run.text[bytes].to_owned(),
-                    run.style,
+                    &run,
+                    bytes,
                     warning.take(),
                     shaped.slice(start..end),
                 );
@@ -98,8 +98,8 @@ pub(super) fn place_shaped(
         let bytes = source_range(shaped, start..end);
         push_prepared(
             flow,
-            run.text[bytes].to_owned(),
-            run.style,
+            &run,
+            bytes,
             warning.take(),
             shaped.slice(start..end),
         );
@@ -116,7 +116,7 @@ fn source_range(shaped: &ShapedText, range: Range<usize>) -> Range<usize> {
 /// as one explicitly diagnosed overwide run, never as incomplete text.
 fn place_contextual(
     flow: &mut TextFlow,
-    run: Word,
+    mut run: Word,
     shaped: &ShapedText,
     shaper: &Shaper<'_>,
     size: f64,
@@ -125,7 +125,7 @@ fn place_contextual(
     const MAX_REPAIRS: usize = 64;
     let mut repairs = 0;
     let mut start = 0;
-    let mut warning = run.warning;
+    let mut warning = run.warning.take();
     while start < shaped.clusters.len() {
         let mut end = start;
         let mut used = 0.0;
@@ -149,8 +149,8 @@ fn place_contextual(
                 }
                 push_prepared(
                     flow,
-                    run.text[bytes].to_owned(),
-                    run.style,
+                    &run,
+                    bytes,
                     warning.take(),
                     prepared,
                 );
@@ -171,8 +171,8 @@ fn place_contextual(
                 prepared.add_wrap_warning();
                 push_prepared(
                     flow,
-                    run.text[bytes].to_owned(),
-                    run.style,
+                    &run,
+                    bytes,
                     warning.take(),
                     prepared,
                 );
@@ -199,17 +199,24 @@ fn text_word(
         image: None,
         warning,
         shaped: Some(prepared),
+        navigation: Vec::new(),
     }
 }
 
 fn push_prepared(
     flow: &mut TextFlow,
-    text: String,
-    style: RStyle,
+    source: &Word,
+    bytes: Range<usize>,
     warning: Option<SvgWarning>,
     prepared: ShapedText,
 ) {
-    let word = text_word(text, style, warning, prepared);
+    let mut word = text_word(
+        source.text[bytes.clone()].to_owned(),
+        source.style,
+        warning,
+        prepared,
+    );
+    navigation::slice(source, &mut word, bytes);
     flow.line_width += word.w;
     flow.line.push(word);
 }

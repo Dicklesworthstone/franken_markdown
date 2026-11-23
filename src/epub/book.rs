@@ -340,7 +340,7 @@ fn has_scheme(value: &str) -> bool {
 
 /// Normalize logical book paths, never native filesystem paths.
 fn normalize_path(path: &str) -> Option<String> {
-    if path.contains(['\\', '\0']) || path.ends_with('/') {
+    if path.contains('\\') || path.chars().any(char::is_control) || path.ends_with('/') {
         return None;
     }
     let mut parts = Vec::new();
@@ -356,48 +356,11 @@ fn normalize_path(path: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
-fn decode_path(path: &str) -> Option<String> {
-    fn hex(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            out.push((hex(*bytes.get(i + 1)?)? << 4) | hex(*bytes.get(i + 2)?)?);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 fn destination(source: &str, dest: &str) -> Option<(String, String)> {
-    let dest = dest.trim();
-    if dest.starts_with(['#', '?']) || dest.starts_with("//") || has_scheme(dest) {
-        return None;
-    }
-    let end = dest.find(['#', '?']).unwrap_or(dest.len());
-    let path = decode_path(&dest[..end])?;
-    if path.is_empty() || has_scheme(&path) {
-        return None;
-    }
-    let joined = if path.starts_with('/') {
-        path
-    } else if let Some((parent, _)) = source.rsplit_once('/') {
-        format!("{parent}/{path}")
-    } else {
-        path
-    };
-    Some((normalize_path(&joined)?, dest[end..].to_string()))
+    // Preserve the shared book resolver's ownership decisions. In particular,
+    // encoded network URLs and control characters must not become chapter or
+    // image aliases merely because an EPUB contains a matching logical path.
+    franken_markdown::book::resolve_book_destination(source, dest)
 }
 
 fn rewrite_blocks(

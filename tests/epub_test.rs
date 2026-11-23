@@ -3,6 +3,8 @@
 //! tests may unwrap/panic for clarity.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "epub/book_paths.rs"]
+mod epub_book_paths;
 #[path = "epub/class_generics.rs"]
 mod epub_class_generics;
 #[path = "epub/data_images.rs"]

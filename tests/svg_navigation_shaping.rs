@@ -188,7 +188,7 @@ fn emergency_wrapping_preserves_cross_owner_clusters_and_each_destination() {
     assert_eq!(actual.1.glyphs_drawn, 60);
     let regions = anchors(&actual.0);
     assert_eq!(regions.len(), 120);
-    for pair in regions.chunks_exact(2) {
+    for pair in regions.as_chunks::<2>().0 {
         assert_eq!(attr(pair[0], "href"), "https://f.example");
         assert_eq!(attr(pair[1], "href"), "https://i.example");
         assert_eq!(attr(pair[0], "y"), attr(pair[1], "y"));

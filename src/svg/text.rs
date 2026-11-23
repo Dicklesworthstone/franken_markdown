@@ -287,3 +287,7 @@ mod positioning_tests;
 #[cfg(test)]
 #[path = "text_shaping_tests.rs"]
 mod shaping_tests;
+
+#[cfg(test)]
+#[path = "text_navigation_tests.rs"]
+mod navigation_tests;

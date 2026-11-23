@@ -1794,9 +1794,12 @@ function parseMarkdownClient(source, imageAssets) {
   // their label, destination and title can continue onto subsequent lines. A
   // cursor reads only this candidate, never joins the remaining document. All
   // speculative scans debit the same invocation-wide work budget.
-  function referenceDefinition(lines, start) {
+  function referenceDefinition(lines, start, inParagraph = false) {
     let line = start, column = 0;
-    while (lines[line][column] === ' ' && column < 3) column++;
+    // More leading definitions can use hanging paragraph indentation. At a
+    // genuine block boundary, four columns still belong to indented code.
+    if (inParagraph) column = indentation(lines[line]).end;
+    else while (lines[line][column] === ' ' && column < 3) column++;
     if (lines[line][column] !== '[' || lines[line][column + 1] === '^') return null;
     column++;
     let label = '', characters = 0;
@@ -2108,9 +2111,14 @@ function parseMarkdownClient(source, imageAssets) {
       push({kind: 'fallback', text: lines.join('\n')});
       return out;
     }
-    let i = 0, paddingFallback = false;
+    let i = 0, paddingFallback = false, afterDefinition = false;
     while (i < lines.length) {
       const line = lines[i];
+      // Removing a leading reference does not close its paragraph. Preserve
+      // the first visible noninterrupting line's ownership, while still
+      // allowing further definitions and the native table/footnote extensions.
+      const referenceContinuation = afterDefinition && !interruptsParagraph(line);
+      afterDefinition = false;
       const paragraphOnly = paddingFallback; paddingFallback = false;
       if (blankLine(line)) { i++; continue; }
       const fm = fence(line);
@@ -2129,7 +2137,7 @@ function parseMarkdownClient(source, imageAssets) {
         const lang = unescape(fm[2]).match(/[^\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/)?.[0] || '';
         push({kind: 'code', lang, text: code.join('\n') + (code.length ? '\n' : '')}); continue;
       }
-      const math = mathBlockStart(line);
+      const math = !referenceContinuation && mathBlockStart(line);
       if (math) {
         const start = i++;
         if (math === 2) {
@@ -2141,13 +2149,13 @@ function parseMarkdownClient(source, imageAssets) {
         // engine typesets mathematics; fallback never reparses formula source.
         push({kind: 'math', text: lines.slice(start, i).join('\n')}); continue;
       }
-      if (indentation(line).width >= 4) {
+      if (!referenceContinuation && indentation(line).width >= 4) {
         const code = [];
         while (i < lines.length && (indentation(lines[i]).width >= 4 || blankLine(lines[i]))) code.push(stripCodeIndent(lines[i++]));
         while (code.length && blankLine(code.at(-1))) code.pop();
         push({kind: 'code', lang: '', text: code.join('\n') + '\n'}); continue;
       }
-      const htmlKind = htmlBlockKind(line);
+      const htmlKind = !referenceContinuation && htmlBlockKind(line);
       if (htmlKind) {
         const start = i++;
         if (htmlKind >= 6) {
@@ -2158,8 +2166,8 @@ function parseMarkdownClient(source, imageAssets) {
         }
         push({kind: 'html', text: lines.slice(start, i).join('\n')}); continue;
       }
-      // Only block starts can own definitions: these checks are deliberately
-      // absent from paragraph continuation and table/code leaf parsing.
+      // Only block starts and still-leading reference prefixes own definitions:
+      // visible paragraph continuation and table/code leaves cannot define one.
       const foot = footnoteMarker(line);
       if (foot) {
         const content = [foot[2]]; i++;
@@ -2187,11 +2195,11 @@ function parseMarkdownClient(source, imageAssets) {
         }
         continue;
       }
-      const ref = !paragraphOnly && referenceDefinition(lines, i);
+      const ref = !paragraphOnly && referenceDefinition(lines, i, referenceContinuation);
       if (ref) {
         const key = normalizeReference(ref.label);
         if (!definitions.has(key)) { allocate(); definitions.set(key, {url: ref.url, title: ref.title}); }
-        i += ref.consumed; continue;
+        i += ref.consumed; afterDefinition = true; continue;
       }
       let heading = headingMarker(line), title, level;
       if (heading) { level = heading[1].length; title = headingTitle(heading[2] || ''); i++; }
@@ -2217,7 +2225,7 @@ function parseMarkdownClient(source, imageAssets) {
         } else push({kind: 'quote', children: parseBlocks(quote, depth + 1)});
         continue;
       }
-      const marker = listMarker(line);
+      const marker = !referenceContinuation && listMarker(line);
       if (marker) {
         const items = []; let loose = false;
         while (i < lines.length) {

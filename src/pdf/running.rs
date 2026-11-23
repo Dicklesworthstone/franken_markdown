@@ -814,7 +814,7 @@ impl RunningSpec {
             };
             scan(&context);
             if chapter {
-                for (_, title) in self.headings.chapters.iter() {
+                for title in self.headings.chapters.values() {
                     context.chapter = Rc::clone(title);
                     scan(&context);
                 }

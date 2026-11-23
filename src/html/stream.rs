@@ -434,7 +434,7 @@ fn table<W: Write + ?Sized>(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n",
     )?;
     if let Some(rows) = crate::table_format::financial_rows(table) {
-        let widths = financial_tables::suffix_widths(table, &rows, opts);
+        let widths = financial_tables::suffix_widths(table, &rows, opts, state);
         out.text("<table class=\"fmd-financial-table\">\n<thead>\n<tr>")?;
         financial_cells(
             &table.head,

@@ -218,3 +218,144 @@ fn custom_stylesheets_remain_unchanged_and_do_not_erase_financial_geometry() {
     assert_eq!(track_widths(&html).len(), 6);
     assert!(html.contains("border-bottom:3px double currentColor"));
 }
+
+#[test]
+fn cited_amounts_keep_decimal_tracks_and_source_owned_note_links() {
+    let source = "Lead[^earlier].\n\n\
+        | Item | Amount |\n| --- | ---. |\n\
+        | Revenue | [1,234.5](https://example.com/revenue)[^audit] |\n\
+        | Costs | **(234.50)[^audit]** |\n\
+        | Count | 17[^other][^audit] |\n\
+        | Plain | 7.125 |\n\
+        | | === |\n\n\
+        [^earlier]: Prior context.\n\n[^audit]: Audited statement.\n\n[^other]: Unit count.\n";
+    let html = fragment(source);
+    let widths = track_widths(&html);
+    assert_eq!(widths.len(), 4, "citations must not disable numeric alignment");
+    assert!(widths.iter().all(|width| *width == widths[0]));
+    assert!(html.contains("class=\"fmd-decimal-before\"><a href=\"https://example.com/revenue\">1,234</a>"));
+    assert!(html.contains(".5</a><sup class=\"footnote-ref\" id=\"fnref-2\"><a href=\"#fn-audit\">2</a></sup>"));
+    assert!(html.contains(">17</span><span class=\"fmd-decimal-after\"><sup class=\"footnote-ref\" id=\"fnref-3\">"));
+    assert_eq!(html.matches("id=\"fnref-2\"").count(), 1);
+    assert_eq!(html.matches("href=\"#fn-audit\"").count(), 3);
+    assert_eq!(html.matches("Audited statement.").count(), 1);
+    assert_eq!(html.matches("border-bottom:3px double currentColor").count(), 1);
+    let visible = without_tags(&html);
+    for text in ["Revenue1,234.52", "Costs(234.50)2", "Count1732", "Plain7.125"] {
+        assert!(visible.contains(text), "missing {text}: {visible}");
+    }
+    assert_eq!(fragment(source), html);
+
+    let plain = fragment("| Item | Amount |\n| --- | ---. |\n| A | 17 |\n| B | 7.125 |\n");
+    assert!(widths[0] > track_widths(&plain)[0], "citation glyphs need space in the shared suffix track");
+}
+
+#[test]
+fn citation_measurement_predicts_first_use_without_consuming_reference_anchors() {
+    let prefix = (1..=9).map(|n| format!("Earlier[^n{n}] ")).collect::<String>();
+    let definitions = (1..=10).map(|n| format!("[^n{n}]: Note {n}.\n\n")).collect::<String>();
+    let table = "| Label[^header] | Amount |\n| --- | ---. |\n| A | 12.5[^n10] |\n| B[^label] | 7.2[^next] |\n";
+    let source = format!("{prefix}\n\n{table}\n{definitions}[^header]: Header note.\n\n[^label]: Row note.\n\n[^next]: Next note.\n");
+    let html = fragment(&source);
+    assert_eq!(track_widths(&html).len(), 2);
+    for (number, id) in [(10, "header"), (11, "n10"), (12, "label"), (13, "next")] {
+        assert_eq!(html.matches(&format!("id=\"fnref-{number}\"")).count(), 1);
+        assert!(html.contains(&format!("href=\"#fn-{id}\">{number}</a></sup>")));
+    }
+    let single = fragment("| Item | Amount |\n| --- | ---. |\n| A | 12.5[^one] |\n| B | 7.2 |\n\n[^one]: One.\n");
+    assert!(track_widths(&html)[0] > track_widths(&single)[0], "two-digit citations must reserve their complete width");
+
+    let opts = HtmlOptions::default();
+    let document = parse_markdown(&source);
+    let complete = franken_markdown::render_html_document(&document, &opts).unwrap();
+    let mut streamed = Vec::new();
+    franken_markdown::render_html_document_to_writer(&document, &opts, &mut streamed).unwrap();
+    assert_eq!(streamed, complete.as_bytes());
+}
+
+#[test]
+fn unresolved_interior_and_authored_superscript_marks_remain_nonnumeric() {
+    let html = fragment("| Item | Amount |\n| --- | ---. |\n\
+        | Numeric | 12.5[^yes] |\n| Undefined | 12.5[^missing] |\n\
+        | Middle | 12[^yes].5 |\n| Tail | 12.5[^yes] USD |\n\
+        | Authored | 12.5² |\n| Code | `12.5`[^yes] |\n\n[^yes]: Verified.\n");
+    assert_eq!(track_widths(&html).len(), 1);
+    let visible = without_tags(&html);
+    for text in ["Undefined12.5[^missing]", "Middle121.5", "Tail12.51 USD", "Authored12.5²", "Code12.51"] {
+        assert!(visible.contains(text), "{text}: {visible}");
+    }
+}
+
+#[test]
+fn whole_cell_cited_links_release_link_ownership_for_later_cells_and_prose() {
+    let source = "| Item | Amount |\n| --- | ---. |\n\
+        | Linked | [12.5[^inside]](/amount) |\n\
+        | Later | 7.25[^outside] |\n\
+        | More | [6.75](/next) |\n\n\
+        After [details](/tail) and another citation[^inside].\n\n\
+        [^inside]: First evidence.\n\n[^outside]: Second evidence.\n";
+    let html = fragment(source);
+    assert_eq!(track_widths(&html).len(), 3);
+    for destination in ["/amount", "/next", "/tail"] {
+        assert_eq!(html.matches(&format!("href=\"{destination}\"")).count(), 1);
+    }
+
+    let outer = html.split_once("<a href=\"/amount\">").unwrap().1;
+    let outer = outer.split_once("</a>").unwrap().0;
+    assert!(outer.contains("class=\"fmd-decimal\""));
+    assert!(outer.contains("<sup class=\"footnote-ref\" id=\"fnref-1\">1</sup>"));
+    assert!(!outer.contains("<a "), "the amount link owns its note mark");
+    assert!(html.contains("id=\"fnref-2\"><a href=\"#fn-outside\">2</a></sup>"));
+    assert!(html.contains("another citation<sup class=\"footnote-ref\"><a href=\"#fn-inside\">1</a></sup>"));
+    assert_eq!(html.matches("id=\"fnref-1\"").count(), 1);
+    assert_eq!(html.matches("id=\"fnref-2\"").count(), 1);
+
+    let document = parse_markdown(source);
+    let options = HtmlOptions::default();
+    let complete = franken_markdown::render_html_document(&document, &options).unwrap();
+    let mut streamed = Vec::new();
+    franken_markdown::render_html_document_to_writer(&document, &options, &mut streamed).unwrap();
+    assert_eq!(streamed, complete.as_bytes());
+    assert!(complete.contains("href=\"/tail\""));
+}
+
+#[test]
+fn deeply_styled_header_notes_reserve_the_actual_two_digit_body_citation() {
+    let prefix = (1..=8)
+        .map(|n| format!("Earlier[^n{n}] "))
+        .collect::<String>();
+    let definitions = (1..=8)
+        .map(|n| format!("[^n{n}]: Earlier note {n}.\n\n"))
+        .collect::<String>();
+    let source = format!(
+        "{prefix}\n\n| Label[^header] | Amount |\n| --- | ---. |\n\
+         | A | 12.5[^amount] |\n| B | 7.2 |\n\n\
+         {definitions}[^header]: Header note.\n\n[^amount]: Amount evidence.\n"
+    );
+    let shallow = fragment(&source);
+    let mut document = parse_markdown(&source);
+    let table = document.blocks.iter_mut().find_map(|block| match block {
+        franken_markdown::Block::Table(table) => Some(table),
+        _ => None,
+    }).unwrap();
+    // Construct a deep public AST explicitly, without depending on how a
+    // delimiter run is paired. Header notes do not need numeric admission.
+    let mut header = std::mem::take(&mut table.head[0]);
+    for _ in 0..130 {
+        header = vec![franken_markdown::Inline::Strong(header)];
+    }
+    table.head[0] = header;
+    let deep = franken_markdown::html::render_fragment(
+        &document.blocks,
+        &HtmlOptions::default(),
+    );
+    assert_eq!(track_widths(&deep).len(), 2);
+    assert!(deep.contains("href=\"#fn-header\">9</a></sup>"));
+    assert!(deep.contains("href=\"#fn-amount\">10</a></sup>"));
+    assert_eq!(deep.matches("id=\"fnref-9\"").count(), 1);
+    assert_eq!(deep.matches("id=\"fnref-10\"").count(), 1);
+    assert_eq!(
+        track_widths(&deep), track_widths(&shallow),
+        "header nesting must not change the amount's actual two-digit suffix width"
+    );
+}

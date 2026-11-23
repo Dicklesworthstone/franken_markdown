@@ -6,6 +6,7 @@
 //! Footing markers decorate existing cells; they never become accessible rows.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use super::{
     Font, FontStyle, HtmlOptions, Inline, RenderState, body_font_face, render_inlines,
@@ -13,7 +14,7 @@ use super::{
 };
 use crate::ast::{Align, Table};
 use crate::table_format::{
-    FinancialRow, FootingRule, decimal_anchor, decimal_cell_text, split_decimal_cell,
+    FinancialRow, FootingRule, decimal_anchor, decimal_cell_text_with_footnotes, split_decimal_cell,
 };
 use crate::text::Kerning;
 
@@ -24,7 +25,7 @@ pub(super) fn render(
     opts: &HtmlOptions,
     state: &mut RenderState<'_>,
 ) {
-    let widths = suffix_widths(table, rows, opts);
+    let widths = suffix_widths(table, rows, opts, state);
     out.push_str(
         "<div class=\"table-wrap\" role=\"region\" aria-label=\"Markdown table\" tabindex=\"0\">\n<table class=\"fmd-financial-table\">\n<thead>\n<tr>",
     );
@@ -90,7 +91,9 @@ pub(super) fn render_cells(
         if !header
             && alignment == Align::Decimal
             && let Some(width) = widths.get(column).copied().flatten()
-            && let Some(text) = decimal_cell_text(cell)
+            && let Some(text) = decimal_cell_text_with_footnotes(cell, |inline| {
+                matches!(inline, Inline::FootnoteRef { id } if state.footnote_defs.contains_key(id.as_str()))
+            })
             && let Some(anchor) = decimal_anchor(&text)
         {
             render_decimal(cell, anchor, width, out, opts, state);
@@ -135,6 +138,7 @@ fn render_decimal(
             render_decimal(content, anchor, width, out, opts, state);
             if linked {
                 out.push_str("</a>");
+                state.in_link = false;
             }
             return;
         }
@@ -156,7 +160,11 @@ pub(super) fn suffix_widths(
     table: &Table,
     rows: &[FinancialRow<'_>],
     opts: &HtmlOptions,
+    state: &mut RenderState<'_>,
 ) -> Vec<Option<f32>> {
+    // Predict labels in actual header/cell order, including nonnumeric cells.
+    // Measurement must not consume first-reference anchors or reorder notes.
+    let notes = table_note_numbers(table, rows, state);
     let mut widths: Vec<_> = table
         .align
         .iter()
@@ -167,15 +175,70 @@ pub(super) fn suffix_widths(
     for row in rows {
         for (cell, width) in row.cells.iter().zip(&mut widths) {
             if let Some(current) = *width
-                && let Some(text) = decimal_cell_text(cell)
+                && let Some(text) = decimal_cell_text_with_footnotes(cell, |inline| {
+                    matches!(inline, Inline::FootnoteRef { id } if notes.contains_key(id))
+                })
                 && let Some(anchor) = decimal_anchor(&text)
             {
                 let (_, after) = split_decimal_cell(cell, anchor);
-                *width = metrics.width(&after, false).map(|value| current.max(value));
+                *width = metrics.width(&after, false, &notes).map(|value| current.max(value));
             }
         }
     }
     widths
+}
+
+fn table_note_numbers(
+    table: &Table,
+    rows: &[FinancialRow<'_>],
+    state: &mut RenderState<'_>,
+) -> BTreeMap<String, usize> {
+    fn collect(
+        cell: &[Inline],
+        state: &mut RenderState<'_>,
+        notes: &mut BTreeMap<String, usize>,
+        next: &mut usize,
+    ) {
+        // Header and nonnumeric cells still assign note numbers. Walk their
+        // complete inline trees in source order, independently of the numeric
+        // admission depth bound, without growing the Rust call stack.
+        let mut pending = vec![cell];
+        while let Some(nodes) = pending.pop() {
+            let Some((inline, rest)) = nodes.split_first() else {
+                continue;
+            };
+            if !rest.is_empty() {
+                pending.push(rest);
+            }
+            match inline {
+                Inline::FootnoteRef { id } => {
+                    state.ensure_footnote_defs();
+                    if !state.footnote_defs.contains_key(id.as_str()) || notes.contains_key(id) {
+                        continue;
+                    }
+                    let number = if let Some(&number) = state.footnote_numbers.get(id) {
+                        number
+                    } else {
+                        let number = *next;
+                        *next += 1;
+                        number
+                    };
+                    notes.insert(id.clone(), number);
+                }
+                Inline::Strong(content)
+                | Inline::Emphasis(content)
+                | Inline::Strikethrough(content)
+                | Inline::Link { content, .. } => pending.push(content),
+                _ => {}
+            }
+        }
+    }
+    let mut notes = BTreeMap::new();
+    let mut next = state.footnote_numbers.len() + 1;
+    for cell in table.head.iter().chain(rows.iter().flat_map(|row| row.cells)) {
+        collect(cell, state, &mut notes, &mut next);
+    }
+    notes
 }
 
 struct Face {
@@ -213,11 +276,11 @@ impl<'a> Metrics<'a> {
         self.faces[index].as_ref()
     }
 
-    fn width(&mut self, cell: &[Inline], header: bool) -> Option<f32> {
+    fn width(&mut self, cell: &[Inline], header: bool, notes: &BTreeMap<String, usize>) -> Option<f32> {
         let mut runs = Vec::new();
-        styled_runs(cell, header, false, &mut runs);
+        styled_runs(cell, header, false, notes, &mut runs);
         let mut width = 0.0f32;
-        for (style, text) in runs {
+        for (style, text, _) in runs {
             let face = self.face(style)?;
             let mut units = 0.0;
             let mut previous = None;
@@ -244,25 +307,39 @@ fn style_index(style: FontStyle) -> usize {
     }
 }
 
-fn styled_runs(cell: &[Inline], bold: bool, italic: bool, runs: &mut Vec<(FontStyle, String)>) {
+fn styled_runs(
+    cell: &[Inline],
+    bold: bool,
+    italic: bool,
+    notes: &BTreeMap<String, usize>,
+    runs: &mut Vec<(FontStyle, String, bool)>,
+) {
     for inline in cell {
         match inline {
             Inline::Text(text) => {
                 let style = FontStyle::new(bold, italic);
-                if let Some((last_style, last_text)) = runs.last_mut()
-                    && *last_style == style
+                if let Some((last_style, last_text, note)) = runs.last_mut()
+                    && *last_style == style && !*note
                 {
                     last_text.push_str(text);
                 } else {
-                    runs.push((style, text.clone()));
+                    runs.push((style, text.clone(), false));
                 }
             }
-            Inline::Strong(content) => styled_runs(content, true, italic, runs),
-            Inline::Emphasis(content) => styled_runs(content, bold, true, runs),
+            Inline::Strong(content) => styled_runs(content, true, italic, notes, runs),
+            Inline::Emphasis(content) => styled_runs(content, bold, true, notes, runs),
             Inline::Strikethrough(content) | Inline::Link { content, .. } => {
-                styled_runs(content, bold, italic, runs);
+                styled_runs(content, bold, italic, notes, runs);
             }
-            // Admission already excluded boxes, raw markup, and note marks.
+            Inline::FootnoteRef { id } => {
+                if let Some(number) = notes.get(id) {
+                    // The superscript is a separate browser shaping run.
+                    // Reserve its full-size glyph width conservatively: the
+                    // default browser/print styles reduce its actual size.
+                    runs.push((FontStyle::new(bold, italic), number.to_string(), true));
+                }
+            }
+            // Admission already excluded boxes, raw markup and undefined notes.
             _ => {}
         }
     }
@@ -283,6 +360,7 @@ mod tests {
             table,
             &crate::table_format::financial_rows(table).unwrap(),
             opts,
+            &mut RenderState { root_blocks: &doc.blocks, ..RenderState::default() },
         )
     }
 
@@ -305,12 +383,12 @@ mod tests {
         };
         let measured = widths(source, &opts);
         let mut metrics = Metrics::new(&opts);
-        let regular = metrics.width(&[Inline::Text(".2".into())], false).unwrap();
+        let regular = metrics.width(&[Inline::Text(".2".into())], false, &BTreeMap::new()).unwrap();
         let bold = metrics
-            .width(&[Inline::Strong(vec![Inline::Text(".3456".into())])], false)
+            .width(&[Inline::Strong(vec![Inline::Text(".3456".into())])], false, &BTreeMap::new())
             .unwrap();
         let rate = metrics
-            .width(&[Inline::Text(".12345%".into())], false)
+            .width(&[Inline::Text(".12345%".into())], false, &BTreeMap::new())
             .unwrap();
         assert!(bold > regular);
         assert_eq!(measured, [None, Some(bold), Some(rate)]);
@@ -391,6 +469,7 @@ mod tests {
                     Inline::Text("o".into()),
                 ],
                 false,
+                &BTreeMap::new(),
             )
             .unwrap();
         let expected = (advances + adjustments as f32) / f32::from(font.units_per_em);

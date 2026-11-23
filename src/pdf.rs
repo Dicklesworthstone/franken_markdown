@@ -18902,7 +18902,17 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                             && row
                                 .cells
                                 .get(source)
-                                .and_then(|cell| crate::table_format::decimal_cell_text(cell))
+                                .and_then(|cell| {
+                                    crate::table_format::decimal_cell_text_with_footnotes(
+                                        cell,
+                                        |inline| {
+                                            matches!(
+                                                spec.links.note_mark(inline),
+                                                Some(note_tags::Mark::Reference { .. })
+                                            )
+                                        },
+                                    )
+                                })
                                 .and_then(|text| crate::table_format::decimal_anchor(&text))
                                 .is_some()
                     })

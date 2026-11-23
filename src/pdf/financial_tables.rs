@@ -4,7 +4,7 @@
 //! are part of their data row's nonshrinkable height, so pagination cannot
 //! strand a subtotal rule or mistake it for a repeated table header.
 
-use super::{CellWrapLine, Faces, Line, TableColumnMetrics, Tok, WidthCache};
+use super::{CellWrapLine, Faces, Line, TableColumnMetrics, Tok, WidthCache, note_tags};
 use crate::table_format::{FootingRule, decimal_anchor};
 use std::cell::RefCell;
 
@@ -22,16 +22,42 @@ pub(super) struct DecimalMeasure {
     pub after: f32,
 }
 
+/// A source-owned citation annotates the value rather than changing its
+/// numeric spelling. Only a trailing citation suffix is eligible: an authored
+/// superscript, a destination-shaped link or a citation inside the number is
+/// still ordinary nonnumeric content. Keep the original byte prefix so the
+/// returned anchor addresses the actual painted run, including font fallback.
+fn numeric_line_text(line: &CellWrapLine) -> Option<String> {
+    let mut text = String::new();
+    let mut cited = false;
+    for run in &line.runs {
+        for (byte, character) in run.text.char_indices() {
+            if matches!(
+                run.note_spans.at(byte),
+                Some(note_tags::Mark::Reference { .. })
+            ) {
+                cited = true;
+            } else if cited && !character.is_whitespace() {
+                return None;
+            } else {
+                text.push(character);
+            }
+        }
+    }
+    Some(text)
+}
+
 /// Measure the anchor in the same merged styled runs the PDF writer emits.
 /// No numeric conversion, decimal padding, or character-count measurement is
-/// involved: currency signs, parentheses and suffixes retain their advances.
+/// involved: currency signs, parentheses and citation suffixes retain their
+/// complete advances. The column reserves that suffix after the shared anchor.
 pub(super) fn line_measure(
     line: &CellWrapLine,
     size: f32,
     faces: &Faces,
     widths: &RefCell<WidthCache>,
 ) -> Option<DecimalMeasure> {
-    let text: String = line.runs.iter().map(|run| run.text.as_str()).collect();
+    let text = numeric_line_text(line)?;
     let anchor = decimal_anchor(&text)?;
     let mut remaining = anchor;
     let mut before = 0.0;

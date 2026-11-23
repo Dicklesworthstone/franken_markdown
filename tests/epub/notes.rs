@@ -256,3 +256,33 @@ fn book_notes_and_namespaces_are_scoped_to_their_own_chapters() {
     assert!(!plain.contains("epub:type="));
     assert!(!plain.contains("Omitted."));
 }
+
+#[test]
+fn financial_citations_retain_decimal_geometry_and_epub_navigation() {
+    let source = "# Statement\n\nContext[^context].\n\n\
+        | Item | Amount |\n| --- | ---. |\n\
+        | Revenue | 1,234.5[^audit] |\n\
+        | Costs | **(234.50)[^audit]** |\n\
+        | Units | 17[^units][^audit] |\n\
+        | | === |\n\n\
+        [^context]: Reporting period.\n\n[^audit]: Audited statement.\n\n[^units]: Unit count.\n";
+    let archives = publications(source, &HtmlOptions::default());
+    assert_eq!(archives, publications(source, &HtmlOptions::default()));
+    for bytes in archives {
+        let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+        assert_notes(&chapter, 3, 5);
+        let widths: Vec<_> = chapter
+            .split("grid-template-columns:max-content ")
+            .skip(1)
+            .map(|tail| tail.split_once("em;").unwrap().0)
+            .collect();
+        assert_eq!(widths.len(), 3, "citations must retain financial alignment");
+        assert!(widths.iter().all(|width| *width == widths[0]));
+        assert!(chapter.contains(".5<sup class=\"footnote-ref\" id=\"fnref-2\">"));
+        assert!(chapter.contains("href=\"#fn-audit\" epub:type=\"noteref\" role=\"doc-noteref\">2</a>"));
+        assert!(chapter.contains("href=\"#fn-units\" epub:type=\"noteref\" role=\"doc-noteref\">3</a>"));
+        assert_eq!(chapter.matches("Audited statement.").count(), 1);
+        assert_eq!(chapter.matches("border-bottom:3px double currentColor").count(), 1);
+        assert_eq!(tags(&chapter, "tr").len(), 4);
+    }
+}

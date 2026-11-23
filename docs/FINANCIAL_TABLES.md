@@ -38,10 +38,20 @@ Decimal columns accept:
 - accounting parentheses and percent or per-mille suffixes;
 - emphasis, bold, strike-through and links around numeric text.
 
-Integers align where their decimal point would be. Decimal commas, scientific
-notation, arbitrary units and other nonnumeric content use right alignment.
-Code, mathematics, images and footnote references also use the ordinary cell
-layout. The original content remains visible in every case.
+Integers align where their decimal point would be. In PDF, HTML and EPUB,
+amounts can end with one or more defined footnote citations, including inside
+bold or linked text. For example, `**1,234.50[^audit]**` aligns at the decimal
+point and keeps its superscript citation, note numbering and links. Citation
+glyphs reserve space to the right of the amount; they do not become digits in
+its numeric value. HTML measurement predicts labels without consuming reference
+anchors, including when note numbers grow to two or more digits.
+
+Decimal commas, scientific notation, arbitrary units and other nonnumeric
+content use right alignment. Code, mathematics, images, unresolved references,
+citations inside a number (`12[^audit].50`) and authored superscript characters
+also use the ordinary cell layout. SVG and Flow currently use ordinary cell
+layout for amounts with citations. The original content remains visible in
+every case.
 
 ## Rendering behavior
 

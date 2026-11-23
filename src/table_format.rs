@@ -72,24 +72,54 @@ fn marker_rules(cells: &[Vec<Inline>], columns: usize) -> Option<Vec<FootingRule
 /// Plain numeric spelling from text and inline styles that do not insert boxes.
 /// Code, images, formulas and note marks keep their ordinary right alignment.
 pub(crate) fn decimal_cell_text(cell: &[Inline]) -> Option<String> {
-    fn append(cell: &[Inline], out: &mut String, depth: usize) -> Option<()> {
+    decimal_cell_text_with_footnotes(cell, |_| false)
+}
+
+/// Admit a numeric spelling followed by renderer-verified citation nodes.
+/// Only a trailing sequence of citations and whitespace is ignored. A note
+/// embedded in a number, an undefined reference, or an authored superscript
+/// must not turn otherwise nonnumeric content into an aligned amount.
+/// The predicate lets paged renderers use their immutable citation provenance
+/// after note preparation, without guessing from link targets or visible text.
+pub(crate) fn decimal_cell_text_with_footnotes(
+    cell: &[Inline],
+    is_note: impl Fn(&Inline) -> bool,
+) -> Option<String> {
+    fn append(
+        cell: &[Inline],
+        out: &mut String,
+        after_note: &mut bool,
+        is_note: &impl Fn(&Inline) -> bool,
+        depth: usize,
+    ) -> Option<()> {
         if depth > 128 {
             return None;
         }
         for inline in cell {
+            if is_note(inline) {
+                *after_note = true;
+                continue;
+            }
             match inline {
-                Inline::Text(text) => out.push_str(text),
+                Inline::Text(text) => {
+                    if *after_note && !text.chars().all(char::is_whitespace) {
+                        return None;
+                    }
+                    out.push_str(text);
+                }
                 Inline::Emphasis(content)
                 | Inline::Strong(content)
                 | Inline::Strikethrough(content)
-                | Inline::Link { content, .. } => append(content, out, depth + 1)?,
+                | Inline::Link { content, .. } => {
+                    append(content, out, after_note, is_note, depth + 1)?;
+                }
                 _ => return None,
             }
         }
         Some(())
     }
     let mut text = String::new();
-    append(cell, &mut text, 0)?;
+    append(cell, &mut text, &mut false, &is_note, 0)?;
     Some(text)
 }
 

@@ -71,6 +71,11 @@ single-label domains and bounded domain labels. Malformed addresses return to
 ordinary inline parsing. The existing allowed-scheme and unsafe-destination
 checks continue to apply before a link is emitted.
 
+Angle-delimited absolute URIs retain non-ASCII whitespace as part of their
+literal target. A valid inner URI keeps ownership of its label even when the
+URL policy refuses to activate it, so an enclosing Markdown link cannot take
+over that text. ASCII spaces and controls still terminate URI recognition.
+
 Inline and reference links with space-bearing destinations, such as
 `[Guide](<docs/my guide.md>)`, retain their clickable targets after editing.
 Spaces are encoded only after exact image-resource lookup, so an imported

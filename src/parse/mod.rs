@@ -6712,12 +6712,15 @@ fn parse_autolink(
     if chars.get(i) != Some(&'<') {
         return None;
     }
-    // Autolink content runs to the closing `>` and may not contain whitespace,
-    // `<`, or ASCII control characters (CommonMark). Find the boundary before
-    // allocating, and account for unsuccessful scans as well as accepted links.
+    // CommonMark's absolute-URI grammar excludes ASCII controls, U+0020 and
+    // angle brackets, not Unicode whitespace or non-ASCII controls. Those
+    // source characters belong to the complete URI; rejecting them can also
+    // let an enclosing Markdown link steal an otherwise valid autolink.
+    // Find the boundary before allocating, and account for unsuccessful scans
+    // as well as accepted links. Renderer URL policies still apply separately.
     let mut j = i + 1;
     while let Some(&ch) = chars.get(j) {
-        if ch == '>' || ch == '<' || ch.is_whitespace() || ch.is_control() {
+        if matches!(ch, '>' | '<' | ' ') || ch.is_ascii_control() {
             break;
         }
         j += 1;
@@ -6740,7 +6743,7 @@ fn parse_autolink(
 
 /// A CommonMark absolute-URI autolink scheme: an ASCII letter followed by 1..=31
 /// of `[A-Za-z0-9+.-]`, then a `:`. The body after the colon is validated by the
-/// caller (no whitespace / `<` / control characters).
+/// caller (no ASCII controls, U+0020, or angle brackets).
 fn is_uri_autolink(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.first().is_none_or(|b| !b.is_ascii_alphabetic()) {

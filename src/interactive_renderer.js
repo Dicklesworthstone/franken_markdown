@@ -1087,7 +1087,10 @@ function parseMarkdownClient(source, imageAssets) {
     if (close < 0) return null;
     const label = text.slice(start + 1, close);
     charge(label.length + 1);
-    if (/[\p{White_Space}<\u0000-\u001f\u007f-\u009f]/u.test(label)) return null;
+    // Absolute URIs exclude ASCII space and controls, not Unicode whitespace.
+    // Recognize the complete target before applying safeUrl's separate policy
+    // so an enclosing link cannot take over a valid but refused inner URI.
+    if (/[ <\u0000-\u001f\u007f]/.test(label)) return null;
     // URI recognition precedes email recognition: a mailto URI or an HTTP URL
     // containing '@' must never acquire another mailto prefix. Syntax ownership
     // is independent from safeUrl's unchanged scheme and backslash admission.

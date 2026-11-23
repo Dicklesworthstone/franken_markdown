@@ -9,14 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-23
+
+A maintenance and reliability release (21 commits since 0.8.0) shipping
+`franken_markdown` 0.8.1 (`fmd` CLI + Rust library) and the qualified
+browser/WASM package `@franken-suite/franken-markdown` 0.8.1 alongside
+unchanged `fmd-font` 0.5.0 and `fmd-math` 0.4.0. GitHub release binaries are
+built via DSR for x86_64 and aarch64 Linux (`gnu`, glibc 2.28 floor), x86_64
+and aarch64 macOS, and x86_64 Windows (`msvc`), alongside the qualified
+browser/WASM package tarball (`franken-suite-franken-markdown-0.8.1.tgz`).
+
+### Added
+
+- **MCP PDF fidelity & document intelligence**: Expose actual render PDF
+  fidelity and pagination warnings (including PDF/A and book publications)
+  through MCP tools, plus document intelligence and semantic revision review
+  endpoints.
+- **Authoring profile support across CLI & WASM**: Honor selected authoring
+  dialects (`--profile` / `authoringProfile`) in CLI `stats` and `diff`
+  commands, WASM search and revision reviews, document workers, and Flow
+  publications with verified profile acknowledgments.
+
 ### Fixed
 
-- SVG links and footnote citations preserve kerning, ligatures and combining
+- **SVG link & footnote boundary shaping ([#21](https://github.com/Dicklesworthstone/franken_markdown/issues/21))**:
+  SVG links and footnote citations preserve kerning, ligatures, and combining
   marks across navigation boundaries. Each destination retains its own hit
   regions through wrapping and discretionary breaks, and metadata-only changes
   preserve enclosing link bounds.
-- PDF task checkboxes reserve their painted ink in baseline-grid layout and
-  under tight theme leading, including continued footnotes and small type.
+- **Link & image label delimiter context**: Preserve surrounding bracket
+  context when classifying emphasis at link and image label boundaries,
+  restoring CommonMark rule-of-three behavior and preventing unmatched markers
+  from disappearing from link text and image descriptions.
+- **Cited financial table alignment**: Align cited numeric financial amounts in
+  PDF, HTML, and EPUB while reserving full citation suffix widths and
+  preserving note navigation and link ownership.
+- **PDF task checkbox ink clearance**: Reserve painted vector checkbox ink in
+  baseline-grid layout and under tight theme leading, including continued
+  footnotes and small type.
+- **Semantic diff accuracy & scaling**: Preserve literal code/HTML/math/URL
+  content and structural identity in semantic keys, and use a bounded exact
+  Myers path with per-kind indexes so large lightly edited revisions retain
+  unchanged content.
+- **Transclusion logical line preservation**: Preserve exact logical line
+  boundaries and mixed line endings across included sources.
+- **Embedded CJK font fallbacks in `<fmd-view>`**: Rewrite every owned family
+  in body and code font stacks after per-view font registration while retaining
+  unrelated fallbacks and quoted CSS syntax.
+- **Native editor first-save ownership**: Retain first-save file ownership when
+  editing continues in `ios/` source loaders.
 
 ## [0.8.0] - 2026-11-21
 

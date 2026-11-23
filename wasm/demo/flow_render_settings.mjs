@@ -183,7 +183,7 @@ export function normalizeRenderSettings(input = {}) {
     validationToken,
   );
   const [, epub] = normalizeFlowExport(
-    "epub", { ...selected(common), darkMode: values.darkMode }, validationToken,
+    "epub", { ...selected([...common, "author"]), darkMode: values.darkMode }, validationToken,
   );
   const [, svg] = normalizeFlowExport(
     "svg",
@@ -229,7 +229,7 @@ const FIELDS = [
   ["toc", "Export table of contents", "boolean", booleanChoices],
   ["tocDepth", "Contents depth (empty uses renderer default)", "number", 1, 6, true],
   ["svgWidthPt", "SVG poster width in points (optional, default 612)", "number", 144, 14400],
-  ["author", "PDF author (empty uses renderer default)", "text", 4096],
+  ["author", "PDF/EPUB author (empty uses source metadata)", "text", 4096],
   ["pageNumbers", "PDF page numbers", "boolean", booleanChoices],
   ["codeLineNumbers", "PDF code line numbers", "boolean", booleanChoices],
   ["baseFontSize", "PDF body size in points (optional)", "number", 6, 24],

@@ -662,11 +662,11 @@ test("four-format settings preserve defaults and route only supported publicatio
   assert.deepEqual(defaults.svg, { maxOutputBytes: 64 * 1024 * 1024, maxWidthPt: 612 });
   const settings = normalizeRenderSettings({
     title: "Collected essays", lang: "de-DE", toc: true, tocDepth: 3,
-    darkMode: "disabled", svgWidthPt: 960.5, author: "PDF author", pageSize: "a5",
+    darkMode: "disabled", svgWidthPt: 960.5, author: "Publication author", pageSize: "a5",
   });
   assert.deepEqual(settings.epub, {
     maxOutputBytes: 64 * 1024 * 1024, title: "Collected essays", lang: "de-DE",
-    toc: true, tocDepth: 3, darkMode: "disabled",
+    toc: true, tocDepth: 3, darkMode: "disabled", author: "Publication author",
   });
   assert.deepEqual(settings.svg, {
     maxOutputBytes: 64 * 1024 * 1024, maxWidthPt: 960.5, toc: true, tocDepth: 3,
@@ -674,7 +674,7 @@ test("four-format settings preserve defaults and route only supported publicatio
   assert.equal(settings.html.maxWidthPt, undefined);
   assert.equal(settings.pdf.maxWidthPt, undefined);
   assert.equal(settings.pdf.darkMode, undefined);
-  assert.equal(settings.epub.author, undefined);
+  assert.equal(settings.epub.author, "Publication author");
   assert.equal(settings.epub.page, undefined);
   assert.equal(Object.isFrozen(settings.epub), true);
   assert.equal(Object.isFrozen(settings.svg), true);

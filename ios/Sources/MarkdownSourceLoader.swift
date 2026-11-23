@@ -263,6 +263,28 @@ final class MarkdownDocumentSession: ObservableObject {
         recordRecent(document)
     }
 
+    /// A first Save writes an immutable snapshot while the editor may keep
+    /// changing. Attach that verified snapshot as the disk baseline, without
+    /// requiring the live editor to rewind to it. The caller retains its live
+    /// source and can autosave any newer edits against this exact fingerprint.
+    func adoptInitialSave(
+        _ document: MarkdownSourceDocument,
+        request: UUID,
+        generation: UUID,
+        expectedSourceDigest: Data,
+        expectedByteCount: Int
+    ) throws -> UUID? {
+        guard isCurrentDocumentRequest(request), documentGeneration == generation,
+              currentDocument == nil else { return nil }
+        guard document.sourceDigest == expectedSourceDigest,
+              document.diskFingerprint.byteCount == expectedByteCount else {
+            throw MarkdownSourceLoader.DocumentError.savedCopyMismatch
+        }
+        let identity = UUID()
+        adopt(document, documentIdentity: identity)
+        return identity
+    }
+
     func adoptRecoveredEdits(
         from document: MarkdownSourceDocument,
         documentIdentity: UUID,

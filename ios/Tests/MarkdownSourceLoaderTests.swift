@@ -359,6 +359,147 @@ final class MarkdownSourceLoaderTests: XCTestCase {
     }
 
     @MainActor
+    func testInitialSaveAttachesSnapshotAndSavesEditsMadeWhileExporting() async throws {
+        for (snapshot, liveSource) in [
+            ("# Draft\r\n", "# Draft\r\n\r\nTyped while choosing a destination. 🧪\n"),
+            ("# \u{00E9}e\u{0301}\r\n", "# e\u{0301}\u{00E9}\r\n"),
+        ] {
+            let defaults = try makeDefaults()
+            let session = MarkdownDocumentSession(initialSource: snapshot, defaults: defaults)
+            let request = session.beginDocumentRequest()
+            let generation = session.documentGeneration
+            let encoded = try MarkdownSourceLoader.encode(snapshot, includingByteOrderMark: true)
+            let url = try temporarySourceURL(contents: encoded)
+            addTeardownBlock { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            let opened = try await session.open(from: url, request: request)
+            let saved = try XCTUnwrap(opened)
+
+            let identity = try XCTUnwrap(session.adoptInitialSave(
+                saved, request: request, generation: generation,
+                expectedSourceDigest: Data(SHA256.hash(data: Data(snapshot.utf8))),
+                expectedByteCount: encoded.count
+            ))
+
+            XCTAssertEqual(session.currentDocument?.url, url)
+            XCTAssertEqual(session.currentDocumentIdentity, identity)
+            XCTAssertEqual(session.currentDocument?.diskFingerprint, saved.diskFingerprint)
+            XCTAssertFalse(session.isDirty(source: snapshot))
+            XCTAssertTrue(session.needsAutosave(source: liveSource))
+            XCTAssertTrue(session.isDirty(source: liveSource), "Even canonically equivalent edits must remain dirty")
+            XCTAssertEqual(try Data(contentsOf: url), encoded, "Adoption must not itself rewrite the saved file")
+
+            try await session.save(source: liveSource)
+
+            XCTAssertEqual(try Data(contentsOf: url), try MarkdownSourceLoader.encode(liveSource, includingByteOrderMark: true))
+            XCTAssertFalse(session.needsAutosave(source: liveSource))
+            let restoredSession = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+            let restoration = try await restoredSession.restoreActiveDocument(
+                recoveredSource: nil, recoveredDocumentIdentity: nil
+            )
+            guard case .fileVersion(let restored) = restoration else {
+                return XCTFail("The first saved file must remain associated across launch")
+            }
+            XCTAssertEqual(restored.documentIdentity, identity)
+            XCTAssertEqual(Data(restored.document.source.utf8), Data(liveSource.utf8))
+        }
+    }
+
+    @MainActor
+    func testInitialSaveWithoutNewEditsAttachesCleanlyAndCannotBeReplayed() async throws {
+        let source = "# Saved once\n"
+        let session = MarkdownDocumentSession(initialSource: source, defaults: try makeDefaults())
+        let request = session.beginDocumentRequest()
+        let generation = session.documentGeneration
+        let saved = try await testDocument(source)
+        addTeardownBlock { try? FileManager.default.removeItem(at: saved.url.deletingLastPathComponent()) }
+        let identity = try XCTUnwrap(session.adoptInitialSave(
+            saved, request: request, generation: generation,
+            expectedSourceDigest: saved.sourceDigest,
+            expectedByteCount: saved.diskFingerprint.byteCount
+        ))
+        XCTAssertFalse(session.needsAutosave(source: source))
+        XCTAssertEqual(session.recentDocuments.count, 1)
+        XCTAssertNil(try session.adoptInitialSave(
+            saved, request: request, generation: generation,
+            expectedSourceDigest: saved.sourceDigest,
+            expectedByteCount: saved.diskFingerprint.byteCount
+        ))
+        XCTAssertEqual(session.currentDocumentIdentity, identity)
+        XCTAssertEqual(session.recentDocuments.count, 1)
+    }
+
+    @MainActor
+    func testInitialSaveCannotAttachAfterAnotherDocumentRequestOrSelection() async throws {
+        let session = MarkdownDocumentSession(initialSource: "draft", defaults: try makeDefaults())
+        let request = session.beginDocumentRequest()
+        let generation = session.documentGeneration
+        let saved = try await testDocument("draft", name: "exported.md")
+        let other = try await testDocument("other", name: "selected.md")
+        addTeardownBlock { try? FileManager.default.removeItem(at: saved.url.deletingLastPathComponent()) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: other.url.deletingLastPathComponent()) }
+        let newerRequest = session.beginDocumentRequest()
+        XCTAssertNil(try session.adoptInitialSave(
+            saved, request: request, generation: generation,
+            expectedSourceDigest: saved.sourceDigest,
+            expectedByteCount: saved.diskFingerprint.byteCount
+        ))
+        XCTAssertTrue(session.isCurrentDocumentRequest(newerRequest))
+        XCTAssertFalse(session.hasCurrentDocument)
+        XCTAssertTrue(session.recentDocuments.isEmpty)
+
+        session.adopt(other)
+        let otherIdentity = session.currentDocumentIdentity
+        XCTAssertNil(try session.adoptInitialSave(
+            saved, request: request, generation: generation,
+            expectedSourceDigest: saved.sourceDigest,
+            expectedByteCount: saved.diskFingerprint.byteCount
+        ))
+        XCTAssertEqual(session.currentDocument, other)
+        XCTAssertEqual(session.currentDocumentIdentity, otherIdentity)
+        XCTAssertEqual(session.recentDocuments.map(\.displayName), ["selected.md"])
+    }
+
+    @MainActor
+    func testInitialSaveRejectsAnUnverifiedSnapshotAndRetainsConflictChecks() async throws {
+        let source = "# Saved draft\n"
+        let session = MarkdownDocumentSession(initialSource: source, defaults: try makeDefaults())
+        let request = session.beginDocumentRequest()
+        let generation = session.documentGeneration
+        let saved = try await testDocument(source)
+        addTeardownBlock { try? FileManager.default.removeItem(at: saved.url.deletingLastPathComponent()) }
+        for (digest, count) in [
+            (Data(SHA256.hash(data: Data("different snapshot".utf8))), saved.diskFingerprint.byteCount),
+            (saved.sourceDigest, saved.diskFingerprint.byteCount + 3),
+        ] {
+            XCTAssertThrowsError(try session.adoptInitialSave(
+                saved, request: request, generation: generation,
+                expectedSourceDigest: digest, expectedByteCount: count
+            )) { error in
+                XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .savedCopyMismatch)
+            }
+            XCTAssertFalse(session.hasCurrentDocument)
+            XCTAssertTrue(session.recentDocuments.isEmpty)
+            XCTAssertTrue(session.isCurrentDocumentRequest(request))
+        }
+
+        _ = try XCTUnwrap(session.adoptInitialSave(
+            saved, request: request, generation: generation,
+            expectedSourceDigest: saved.sourceDigest,
+            expectedByteCount: saved.diskFingerprint.byteCount
+        ))
+        let external = Data("# Another app changed this file\n".utf8)
+        try external.write(to: saved.url, options: .atomic)
+        do {
+            try await session.save(source: source + "Later typing\n")
+            XCTFail("Adopting the initial save must preserve external-change protection")
+        } catch {
+            XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .changedOnDisk)
+        }
+        XCTAssertEqual(try Data(contentsOf: saved.url), external)
+        XCTAssertEqual(session.attention, .changedOnDisk)
+    }
+
+    @MainActor
     func testDirtyStateAndSavePreserveCanonicallyEquivalentByteEdits() async throws {
         let original = "# \u{00E9}e\u{0301}\n"
         let edited = "# e\u{0301}\u{00E9}\n"

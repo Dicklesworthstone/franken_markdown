@@ -31,6 +31,7 @@ private struct PreparedSourceExport {
     let purpose: SourceExportPurpose
     let request: UUID
     let documentGeneration: UUID
+    let draftWasRecovered: Bool
 }
 
 struct ForgeView: View {
@@ -1151,8 +1152,16 @@ struct ForgeView: View {
     ) {
         clearDocumentPresentations()
         documentSession.adopt(document, documentIdentity: documentIdentity)
+        presentAdoptedDocument(document, documentIdentity: documentIdentity, replacingSource: true)
+    }
+
+    private func presentAdoptedDocument(
+        _ document: MarkdownSourceDocument,
+        documentIdentity: UUID,
+        replacingSource: Bool
+    ) {
         renderer.documentIdentity = documentIdentity
-        renderer.source = document.source
+        if replacingSource { renderer.source = document.source }
         renderer.documentTitle = document.suggestedTitle
         renderer.allowRawHtml = false
         lane = .write
@@ -1283,6 +1292,7 @@ struct ForgeView: View {
         let source = renderer.source
         let filename = documentSession.suggestedFilename()
         let hasBOM = documentSession.currentDocument?.diskFingerprint.hasByteOrderMark ?? false
+        let draftWasRecovered = renderer.draftWasRecovered
         sourceExportPreparationRequest = request
         pendingSourceExport = Task { @MainActor in
             do {
@@ -1301,7 +1311,8 @@ struct ForgeView: View {
                 }
                 sourceExport = PreparedSourceExport(
                     file: file, filename: filename, purpose: purpose,
-                    request: request, documentGeneration: generation
+                    request: request, documentGeneration: generation,
+                    draftWasRecovered: draftWasRecovered
                 )
                 pendingSourceExport = nil
                 sourceExportPreparationRequest = nil
@@ -1348,14 +1359,19 @@ struct ForgeView: View {
                 do {
                     guard documentSession.documentGeneration == generation,
                           let document = try await documentSession.open(from: url, request: request) else { return }
-                    guard document.sourceDigest == expectedDigest,
-                          document.diskFingerprint.byteCount == expectedBytes else {
-                        throw MarkdownSourceLoader.DocumentError.savedCopyMismatch
-                    }
-                    // Only adopt if the live text still equals the exported
-                    // snapshot. Later typing stays in the current editor.
-                    guard renderer.source.utf8.elementsEqual(document.source.utf8) else { return }
-                    adopt(document)
+                    // Startup draft recovery is a separate source adoption,
+                    // not typing into the document that began this Save.
+                    guard renderer.draftWasRecovered == completed.draftWasRecovered,
+                          let identity = try documentSession.adoptInitialSave(
+                        document, request: request, generation: generation,
+                        expectedSourceDigest: expectedDigest, expectedByteCount: expectedBytes
+                    ) else { return }
+                    // Typing during the Files dialog or the coordinated read
+                    // belongs to this same document. Keep it in the editor and
+                    // save it against the newly verified on-disk snapshot.
+                    clearDocumentPresentations()
+                    presentAdoptedDocument(document, documentIdentity: identity, replacingSource: false)
+                    scheduleDocumentAutosave(renderer.source)
                 } catch {
                     guard documentSession.isCurrentDocumentRequest(request),
                           generation == documentSession.documentGeneration else { return }

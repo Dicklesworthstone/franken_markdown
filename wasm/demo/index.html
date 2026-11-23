@@ -429,6 +429,56 @@
                 </label>
               </div>
             </div>
+            <details id="publishing-controls" class="image-controls">
+              <summary>EPUB, SVG and PDF page setup</summary>
+              <p>Prepare an ebook or a single SVG document from the current Markdown, dialect, font and authorized images. Custom CSS applies to HTML and EPUB; PDF and SVG use the renderer's layout. EPUB and SVG require Allow raw HTML to be off.</p>
+              <div class="actions">
+                <button id="prepare-epub" class="button secondary" type="button" aria-describedby="publication-status">Prepare EPUB</button>
+                <button id="prepare-svg" class="button secondary" type="button" aria-describedby="publication-status">Prepare SVG</button>
+                <button id="cancel-publication" class="button secondary" type="button" disabled>Cancel publication</button>
+                <a id="download-publication" class="button secondary" hidden>Download publication</a>
+              </div>
+              <p id="publication-status" class="status" role="status" aria-live="polite">Choose a format, then download the completed publication. Editing retires prepared downloads.</p>
+              <p id="pdf-page-help">Paper and margins apply to Download PDF and are retained in editable workspaces. Blank fields keep renderer defaults: Letter paper with 72-point margins. Dimensions use points (72 per inch). Margins must leave at least 72 points of content on each axis.</p>
+              <div class="controls" aria-describedby="pdf-page-help">
+                <label class="field">PDF paper
+                  <select id="pdf-page-size">
+                    <option value="">Renderer default</option>
+                    <option value="letter">Letter</option>
+                    <option value="a4">A4</option>
+                    <option value="a5">A5</option>
+                    <option value="legal">Legal</option>
+                    <option value="tabloid">Tabloid</option>
+                    <option value="custom">Custom dimensions</option>
+                  </select>
+                </label>
+                <label class="field">PDF orientation
+                  <select id="pdf-orientation">
+                    <option value="">Paper's original orientation</option>
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                  </select>
+                </label>
+                <label class="field">Custom width (points)
+                  <input id="pdf-width" type="number" min="144" max="14400" step="any" disabled />
+                </label>
+                <label class="field">Custom height (points)
+                  <input id="pdf-height" type="number" min="144" max="14400" step="any" disabled />
+                </label>
+                <label class="field">Top margin (points)
+                  <input id="pdf-margin-top" type="number" min="0" max="14400" step="any" placeholder="72" />
+                </label>
+                <label class="field">Right margin (points)
+                  <input id="pdf-margin-right" type="number" min="0" max="14400" step="any" placeholder="72" />
+                </label>
+                <label class="field">Bottom margin (points)
+                  <input id="pdf-margin-bottom" type="number" min="0" max="14400" step="any" placeholder="72" />
+                </label>
+                <label class="field">Left margin (points)
+                  <input id="pdf-margin-left" type="number" min="0" max="14400" step="any" placeholder="72" />
+                </label>
+              </div>
+            </details>
             <details class="image-controls">
               <summary>Open and save a Markdown file directly</summary>
               <p id="direct-file-help">Connect a file you choose, then save edits back to it. Saving checks for external changes and verifies the written bytes. Open and Reload replace source after confirmation, turn off raw HTML and revoke local image access. Save keeps the current settings and images. No automatic disk saves occur.</p>

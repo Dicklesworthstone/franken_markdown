@@ -40,6 +40,49 @@ until a fresh preview completes; page suspension and disposal release its Blob
 URL. The preview stays sandboxed; source HTML uses the safe-markup sanitizer
 unless raw HTML is explicitly enabled for trusted input.
 
+### Publish EPUB, SVG and configured PDFs
+
+Expand **EPUB, SVG and PDF page setup** to prepare an EPUB ebook or a single SVG
+document using the same source, Markdown dialect, selected font and authorized
+local images as the preview. EPUB also carries the title, author, color mode and
+custom stylesheet. SVG uses the renderer's typography; custom CSS applies to HTML
+and EPUB. These two export paths require **Allow raw HTML** to be off, and report
+that unsupported setting before starting a worker.
+
+Preparation exposes a download link without automatically downloading the file.
+Repeated clicks reuse the exact completed bytes. **Cancel publication** stops
+pending work. Source, settings and image-access changes, a new file-open request,
+text composition, page suspension and disposal retire pending work and prepared
+links. An older result cannot replace a newer publication. The additional export
+worker is released after preparation; ordinary HTML/PDF downloads remain usable
+when preparing or cancelling an EPUB/SVG of the unchanged document.
+
+PDF paper choices are Letter, A4, A5, Legal, Tabloid and custom dimensions, with
+optional portrait/landscape orientation and four independent margins. Values use
+points (72 per inch); paper dimensions are 144 through 14400 points, and margins
+must leave at least 72 points of content on each axis. Orientation rotates the
+paper dimensions while retaining the named margin sides. Blank fields preserve
+renderer defaults, including the original PDF binding when every setting is
+omitted. Invalid or unfinished numeric input fails before rendering. Custom
+dimensions are retained but inactive while a named paper is selected.
+
+The selected geometry reaches **Download PDF** and is preserved by **Prepare
+editable workspace** for subsequent offline PDF exports. It does not change the
+flowing HTML preview or EPUB/SVG geometry. Packages without the required PDF
+binding report their capability error instead of silently using another paper
+size. Source-only draft recovery continues to save Markdown and its filename,
+not publishing settings.
+
+Focused controller, physical-worker and workspace handoff checks run with:
+
+```bash
+node --test wasm/tests/demo_publication.test.mjs wasm/tests/demo_workspace_worker.test.mjs
+```
+
+These checks exercise the production controller and worker transports with
+explicit DOM/download adapters and native-renderer receipt doubles. They do not
+qualify generated WASM rendering, browser appearance or ebook-reader behavior.
+
 ### Open and save a Markdown file directly
 
 Expand **Open and save a Markdown file directly** to connect a file selected with
@@ -78,7 +121,8 @@ Expand **Editable workspace to keep offline**, then choose **Prepare editable
 workspace**. Once preparation completes, **Download editable workspace** saves
 one `.workspace.html` file with the exact source, the native rendering engine,
 font choice, document color mode, title, author, PDF code line numbers and all
-currently authorized local images. Untouched imported Markdown keeps its UTF-8
+currently authorized local images, plus the selected PDF paper and margins.
+Untouched imported Markdown keeps its UTF-8
 BOM and original line endings. Open the downloaded file to continue editing,
 change document settings, save source/projects and export HTML or PDF offline.
 Preparing the file does not automatically download it or replace the normal

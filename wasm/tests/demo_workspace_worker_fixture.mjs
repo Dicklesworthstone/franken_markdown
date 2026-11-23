@@ -41,6 +41,10 @@ Object.defineProperty(renderHtmlConfiguredProfiled, 'length', {value: 22});
 export function renderPdfConfiguredProfiled(...args) { return renderPdfConfiguredMulti(...args); }
 Object.defineProperty(renderPdfConfiguredProfiled, 'length', {value: 40});
 `;
+const pageBinding = String.raw`
+export function renderPdfConfiguredPage(...args) { return renderPdfConfiguredMulti(...args); }
+Object.defineProperty(renderPdfConfiguredPage, 'length', {value: 29});
+`;
 
 globalThis.fetch = async (url, options) => {
   if (options.redirect !== "error" || options.mode !== "same-origin") throw new Error("Unrestricted fixture request");
@@ -49,7 +53,8 @@ globalThis.fetch = async (url, options) => {
   if (url.pathname.endsWith("/pkg/franken_markdown_bg.wasm"))
     return new Response(Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]));
   if (url.pathname.endsWith("/pkg/franken_markdown.js"))
-    return new Response(workerData?.oldPackage ? "export default async function init() {}" : binding + (workerData?.unprofiled ? "" : profiledBinding));
+    return new Response(workerData?.oldPackage ? "export default async function init() {}"
+      : binding + (workerData?.unprofiled ? "" : profiledBinding) + (workerData?.unpaged ? "" : pageBinding));
   throw new Error(`Unexpected runtime fetch: ${url}`);
 };
 await import("../demo/demo_workspace_worker_entry.js");

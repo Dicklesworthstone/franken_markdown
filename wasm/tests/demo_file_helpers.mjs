@@ -29,7 +29,7 @@ export function draftStorage(document = null) {
   return db;
 }
 export function fixture(t, { supported = true, openSupported = supported, saveSupported = supported,
-  observeAccess = false, db = draftStorage(), renderFailure = null } = {}) {
+  observeAccess = false, db = draftStorage(), renderFailure = null, rendererFactory = null } = {}) {
   const downloads = [], urls = [], revoked = [], renders = [], workspaces = [], prompts = [], pickers = [], timers = new Map();
   class Element extends EventTarget {
     _value = ""; checked = false; disabled = false; readOnly = false; textContent = ""; srcdoc = ""; children = [];
@@ -48,7 +48,7 @@ export function fixture(t, { supported = true, openSupported = supported, saveSu
     }
   }
   const els = Object.fromEntries(ids.map(id => [id, new Element(
-    id === "markdown" || id === "custom-css" ? "textarea" : ["download-html", "download-workspace"].includes(id) ? "a" : "div",
+    id === "markdown" || id === "custom-css" ? "textarea" : ["download-html", "download-workspace", "download-publication"].includes(id) ? "a" : "div",
   )]));
   els.markdown.value = "# Original"; els.font.value = "sans"; els["dark-mode"].value = "auto";
   els.title.value = "Original title"; els.author.value = "Author"; els["line-numbers"].checked = true;
@@ -64,9 +64,11 @@ export function fixture(t, { supported = true, openSupported = supported, saveSu
   win.setTimeout = fn => { const id = ++sequence; timers.set(id, fn); return id; };
   win.clearTimeout = id => timers.delete(id);
   win.URL = { createObjectURL(blob) { const url = `blob:file-${urls.length}`; urls.push({ url, blob }); return url; }, revokeObjectURL(url) { revoked.push(url); } };
-  const factory = () => { if (renderFailure) throw renderFailure; return { disposed: false, dispose() { this.disposed = true; }, render(kind, source, options, controls) {
-    const pending = deferred(); renders.push({ kind, source, options, controls, ...pending }); return pending.promise;
-  } }; };
+  const factory = rendererFactory ?? (() => { if (renderFailure) throw renderFailure;
+    const client = { disposed: false, dispose() { this.disposed = true; }, render(kind, source, options, controls) {
+      const pending = deferred(); renders.push({ kind, source, options, controls, client, ...pending }); return pending.promise;
+    } }; return client;
+  });
   const workspaceFactory = () => ({ disposed: false, dispose() { this.disposed = true; }, prepare(source, options, controls) {
     const pending = deferred(); workspaces.push({ source, options, controls, ...pending }); return pending.promise;
   } });

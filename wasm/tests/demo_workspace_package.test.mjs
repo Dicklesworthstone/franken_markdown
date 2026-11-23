@@ -46,8 +46,10 @@ for (const name of ["check-wasm-package.sh", "dsr-wasm-package.sh"]) {
       assert.equal(manifest.files.filter(path => path === `demo/${file}`).length, 1);
       assert.deepEqual(await readFile(join(stage, "demo", file)), await readFile(join(wasm, "demo", file)));
     }
-    assert.match(script, /\bworker_transport\.mjs\b/);
-    await copyFile(join(wasm, "worker_transport.mjs"), join(stage, "worker_transport.mjs"));
+    for (const dependency of ["worker_transport.mjs", "pdf_page.mjs"]) {
+      assert(script.includes(dependency), `${name} must ship ${dependency}`);
+      await copyFile(join(wasm, dependency), join(stage, dependency));
+    }
     const module = await import(pathToFileURL(join(stage, "demo/demo_workspace_worker.mjs")));
     const client = module.createDemoWorkspaceWorker({ workerFactory() { throw new Error("Admission must precede worker startup"); } });
     await assert.rejects(client.prepare("Source", { customCss: "p{}" }), { code: "UNSUPPORTED_WORKSPACE_SETTINGS" });

@@ -1,6 +1,7 @@
 // Scoped transport for the primary demo's complete native workspace download.
 // This does not change document-worker's lightweight interactive-html format.
 import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker } from "../worker_transport.mjs";
+import { normalizePdfPage } from "../pdf_page.mjs";
 
 export const DEMO_WORKSPACE_LIMITS = Object.freeze({
   sourceBytes: 4 * 1024 * 1024, imageBytes: 8 * 1024 * 1024,
@@ -45,7 +46,8 @@ function byteView(value, maximum) {
 }
 function input(source, options) {
   const sourceLength = text(source, DEMO_WORKSPACE_LIMITS.sourceBytes, "Markdown");
-  const captured = record(options, ["font", "darkMode", "profile", "title", "author", "codeLineNumbers", "metadataEpochSeconds", "pdfImages", "allowRawHtml", "customCss"], "workspace option");
+  const captured = record(options, ["font", "darkMode", "profile", "title", "author", "codeLineNumbers", "metadataEpochSeconds", "pdfImages", "allowRawHtml", "customCss", "page"], "workspace option");
+  if (captured.page !== undefined) captured.page = normalizePdfPage(captured.page);
   if (captured.customCss !== undefined) {
     text(captured.customCss, 1024 * 1024, "Custom CSS");
     if (captured.customCss.trim()) fail("UNSUPPORTED_WORKSPACE_SETTINGS", "Editable workspaces cannot preserve custom CSS. Clear Custom CSS before preparing the workspace.");

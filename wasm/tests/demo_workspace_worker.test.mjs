@@ -64,15 +64,19 @@ test("physical worker uses production entry and exporter to preserve exact sourc
   const backing = Uint8Array.of(9, 1, 2, 3, 8);
   const options = { font: "serif", darkMode: "disabled", title: "Offline", author: "Author", codeLineNumbers: true,
     metadataEpochSeconds: 1700000000, allowRawHtml: false,
+    page: { size: { widthPt: 600.25, heightPt: 850.5 }, orientation: "landscape",
+      margins: { topPt: 0, rightPt: 24.25, bottomPt: 36.5, leftPt: 48.75 } },
     pdfImages: [{ destination: "chart.svg", bytes: new DataView(backing.buffer, 1, 3) }, { destination: "unused.png", bytes: backing.subarray(2, 4) }] };
   const pending = f.client.prepare(source, options);
   backing.fill(0); options.title = "Later edit"; options.pdfImages[0].destination = "later.svg";
+  options.page.size.widthPt = 999; options.page.margins.leftPt = 99;
   const result = await pending, html = result.text(), payload = jsonBlock(html, "fmd-native-runtime");
   assert.equal(jsonBlock(html, "fmd-raw-source"), source);
   assert.equal(result.sourceLength, encode(source).length);
   assert.equal(payload.options.title, "Offline"); assert.equal(payload.options.author, "Author");
   assert.equal(payload.options.font, "serif"); assert.equal(payload.options.darkMode, "disabled");
   assert.equal(payload.options.codeLineNumbers, true); assert.equal(payload.options.metadataEpochSeconds, 1700000000);
+  assert.deepEqual(payload.options.pageGeometry, [850.5, 600.25, 0, 24.25, 36.5, 48.75]);
   assert.deepEqual(payload.images, [{ destination: "chart.svg", bytes: "AQID" }, { destination: "unused.png", bytes: "AgM=" }]);
   assert.equal(payload.wasm, "AGFzbQEAAAA="); assert.match(payload.bindings, /renderInteractiveHtmlConfigured/);
   assert.match(html, /id="fmd-native-bootstrap"/); assert.match(html, /sandbox="allow-same-origin"/);
@@ -98,6 +102,7 @@ test("active cancellation terminates a physical worker waiting for runtime and c
 for (const [name, source, options, code] of [
   ["custom CSS", "Source", { customCss: "body{color:red}" }, "UNSUPPORTED_WORKSPACE_SETTINGS"],
   ["raw HTML trust", "Source", { allowRawHtml: true }, "UNSUPPORTED_WORKSPACE_SETTINGS"],
+  ["invalid paper geometry", "Source", { page: { size: "a4", margins: 300 } }, "INVALID_OPTIONS"],
   ["unknown native settings", "Source", { arbitraryRuntime: "https://example.invalid/" }, "UNSUPPORTED_WORKSPACE_SETTINGS"],
   ["oversized source", "x".repeat(limits.sourceBytes + 1), {}, "WORKSPACE_INPUT_LIMIT"],
   ["malformed Unicode", "\ud800", {}, "INVALID_UNICODE"],
@@ -114,6 +119,13 @@ test("image metadata is admitted without invoking accessors, before copying any 
   const f = fixture(t); let reads = 0;
   const options = { pdfImages: [{ destination: "a", get bytes() { reads++; return Uint8Array.of(1); } }] };
   await assert.rejects(f.client.prepare("Source", options), { code: "UNSUPPORTED_WORKSPACE_SETTINGS" });
+  assert.equal(reads, 0); assert.equal(f.starts, 0);
+});
+
+test("workspace page metadata rejects accessors before reading them or starting a worker", async t => {
+  const f = fixture(t); let reads = 0;
+  await assert.rejects(f.client.prepare("Source", { page: { get size() { reads++; return "a4"; } } }),
+    { code: "INVALID_OPTIONS" });
   assert.equal(reads, 0); assert.equal(f.starts, 0);
 });
 
@@ -144,11 +156,13 @@ test("server validates request methods and data before loading executable runtim
   let loaded = 0; const messages = [], endpoint = new EventTarget();
   endpoint.postMessage = message => messages.push(message);
   const close = installDemoWorkspaceWorker(endpoint, () => { loaded++; });
-  for (const [id, method, args] of [[1, "fetch", ["https://example.invalid/"]], [2, "prepare-workspace", ["Source", { customCss: "p{}" }, 1000]]]) {
+  for (const [id, method, args] of [[1, "fetch", ["https://example.invalid/"]],
+    [2, "prepare-workspace", ["Source", { customCss: "p{}" }, 1000]],
+    [3, "prepare-workspace", ["Source", { page: { margins: 400 } }, 1000]]]) {
     const event = new Event("message"); Object.defineProperty(event, "data", { value: { protocol: WORKER_PROTOCOL, id, method, args } });
     endpoint.dispatchEvent(event); await new Promise(resolve => setImmediate(resolve));
   }
-  assert.equal(loaded, 0); assert.equal(messages.length, 2); assert(messages.every(message => message.ok === false)); close();
+  assert.equal(loaded, 0); assert.equal(messages.length, 3); assert(messages.every(message => message.ok === false)); close();
 });
 
 test("incorrect result identity closes the client without exposing helpers", async t => {
@@ -175,6 +189,13 @@ test("an older workspace engine cannot silently publish an explicitly selected g
   const f = threaded(t, { unprofiled: true });
   await assert.rejects(f.client.prepare("Term\n: definition\n", { profile: "commonmark-gfm" }),
     error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /authoring profiles/.test(error.message));
+  assert.equal(f.client.disposed, true);
+});
+
+test("an older workspace engine cannot silently discard selected paper and margins", async t => {
+  const f = threaded(t, { unpaged: true });
+  await assert.rejects(f.client.prepare("Source", { page: { size: "a4", margins: 24 } }),
+    { code: "UNSUPPORTED_WASM_PACKAGE" });
   assert.equal(f.client.disposed, true);
 });
 

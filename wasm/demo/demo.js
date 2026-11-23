@@ -5,6 +5,47 @@ import { createDraftControls } from "./flow_draft_controls.mjs";
 import { openDraftStore } from "./flow_draft_store.mjs";
 import { createDemoWorkspaceWorker } from "./demo_workspace_worker.mjs";
 import { createDemoFileControls } from "./demo_file_controls.mjs";
+import { normalizePdfPage } from "../pdf_page.mjs";
+
+const pageFields = {
+  pdfPageSize: "#pdf-page-size", pdfOrientation: "#pdf-orientation",
+  pdfWidth: "#pdf-width", pdfHeight: "#pdf-height",
+  pdfMarginTop: "#pdf-margin-top", pdfMarginRight: "#pdf-margin-right",
+  pdfMarginBottom: "#pdf-margin-bottom", pdfMarginLeft: "#pdf-margin-left",
+};
+function invalidPublishing(message) {
+  return Object.assign(new TypeError(message), { code: "INVALID_OPTIONS" });
+}
+function selectedPage(snapshot) {
+  const page = {}, size = snapshot.pdfPageSize ?? "", orientation = snapshot.pdfOrientation ?? "";
+  const number = key => {
+    const value = (snapshot[key] ?? "").trim();
+    if (!value) return undefined;
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value))
+      throw invalidPublishing("Paper dimensions and margins must be numbers in points (72 per inch).");
+    return Number(value);
+  };
+  if (size === "custom") {
+    const widthPt = number("pdfWidth"), heightPt = number("pdfHeight");
+    if (widthPt === undefined || heightPt === undefined)
+      throw invalidPublishing("Enter both custom paper dimensions in points.");
+    page.size = { widthPt, heightPt };
+  } else if (size) {
+    page.size = size;
+  }
+  // Disabled custom dimensions remain available when switching back to Custom,
+  // but named paper owns its dimensions while selected.
+  if (orientation) page.orientation = orientation;
+  const margins = {};
+  for (const [field, side] of [["pdfMarginTop", "topPt"], ["pdfMarginRight", "rightPt"],
+    ["pdfMarginBottom", "bottomPt"], ["pdfMarginLeft", "leftPt"]]) {
+    const value = number(field);
+    if (value !== undefined) margins[side] = value;
+  }
+  if (Object.keys(margins).length) page.margins = margins;
+  // Preserve omitted settings and the original bindings for untouched defaults.
+  return normalizePdfPage(Object.keys(page).length ? page : undefined);
+}
 
 const sampleMarkdown = `# franken_markdown demo
 
@@ -55,6 +96,18 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     els[key] = doc.querySelector(selector);
     if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
   }
+  // Hosts using the older demo template can keep its HTML/PDF-only controls.
+  // Once the publishing panel is present, require its complete control group.
+  const publishing = doc.querySelector("#publishing-controls");
+  if (publishing) {
+    for (const [key, selector] of Object.entries({ ...pageFields,
+      prepareEpub: "#prepare-epub", prepareSvg: "#prepare-svg", cancelPublication: "#cancel-publication",
+      downloadPublication: "#download-publication", publicationStatus: "#publication-status",
+    })) {
+      els[key] = doc.querySelector(selector);
+      if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
+    }
+  }
   let alive = true, suspended = false, composing = false, generation = 0;
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
@@ -62,6 +115,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   let sourceDownload = null, sourceDownloadId = 0;
   let imageAssets = [], imageJob = null;
   let workspaceJob = null, workspaceOutput = null, workspaceSequence = 0;
+  let publicationJob = null, publicationOutput = null, publicationSequence = 0;
   let drafts = null;
   // Source intent has a separate channel: starting a file read or composition
   // fences recovery without pretending that the textarea has already changed.
@@ -69,9 +123,13 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   const sourceAccess = trackSourceAccess([els.markdown], refreshSourceControls);
   const directorySupported = "webkitdirectory" in els.imageFolder;
   const clients = { html: null, pdf: null }, jobs = { html: null, pdf: null }, listeners = [];
-  const fields = ["markdown", "font", "darkMode", "profile", "title", "author", "customCss", "allowHtml", "lineNumbers"];
+  const fields = ["markdown", "font", "darkMode", "profile", "title", "author", "customCss", "allowHtml", "lineNumbers",
+    ...(publishing ? Object.keys(pageFields) : [])];
   const raw = () => Object.fromEntries(fields.map(key =>
-    [key, key === "allowHtml" || key === "lineNumbers" ? els[key].checked : els[key].value]));
+    [key, key === "allowHtml" || key === "lineNumbers" ? els[key].checked
+      // Number inputs can display an unfinished value while value is empty.
+      // Keep that distinct from an intentionally blank renderer default.
+      : Object.hasOwn(pageFields, key) && els[key].validity?.badInput ? "\0invalid-number" : els[key].value]));
   const unchanged = expected => {
     const current = raw();
     return fields.every(key => current[key] === expected[key]);
@@ -97,7 +155,104 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       : jobs.html ? "rendering HTML in worker" : jobs.pdf ? "rendering PDF in worker" : message;
     refreshImageControls();
     refreshWorkspaceControls();
+    refreshPublicationControls();
     directFiles?.refresh();
+  }
+  function refreshPublicationControls() {
+    if (!publishing) return;
+    const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null || directSourcePending;
+    els.prepareEpub.disabled = els.prepareSvg.disabled = blocked || publicationJob !== null;
+    els.cancelPublication.disabled = blocked || publicationJob === null;
+    els.pdfWidth.disabled = els.pdfHeight.disabled = els.pdfPageSize.value !== "custom";
+  }
+  function publicationFresh(captured) {
+    return alive && !suspended && !composing && !imageJob && !fileJob && !directSourcePending
+      && captured.sequence === publicationSequence && captured.generation === generation
+      && captured.images === imageAssets && unchanged(captured.raw);
+  }
+  function releasePublication(output) {
+    if (publicationOutput === output) {
+      publicationOutput = null;
+      if (publishing) {
+        els.downloadPublication.hidden = true;
+        els.downloadPublication.removeAttribute("href");
+        els.downloadPublication.removeAttribute("download");
+      }
+    }
+    if (output && !output.revoked) { output.revoked = true; win.URL.revokeObjectURL(output.url); }
+  }
+  function retirePublication(message = "The source, settings or image access changed. Prepare a fresh EPUB or SVG.") {
+    const sequence = ++publicationSequence, previous = publicationJob, output = publicationOutput;
+    publicationJob = null;
+    releasePublication(output);
+    previous?.abort.abort();
+    previous?.client?.dispose();
+    if (sequence === publicationSequence) {
+      if (publishing && (previous || output) && message) els.publicationStatus.textContent = message;
+      refreshPublicationControls();
+    }
+    return sequence;
+  }
+  function cancelPublication() {
+    if (!publicationJob) return false;
+    retirePublication("Publication cancelled. Prepare it again when you are ready.");
+    return true;
+  }
+  async function preparePublication(format) {
+    if (!publishing || !alive || suspended || composing || imageJob || fileJob || directSourcePending) return false;
+    const sequence = retirePublication();
+    if (sequence !== publicationSequence || !alive || suspended || composing || imageJob || fileJob || directSourcePending) return false;
+    const captured = { sequence, raw: raw(), generation, images: imageAssets };
+    const job = { ...captured, abort: new AbortController(), client: null };
+    publicationJob = job;
+    const fresh = () => publicationJob === job && publicationFresh(job);
+    let candidate = null, published = null;
+    els.publicationStatus.textContent = `Preparing ${format.toUpperCase()} in a worker. Editing remains available.`;
+    refreshPublicationControls();
+    try {
+      const requested = options(format, captured.raw, captured.images);
+      const client = factory({ maxPendingOperations: 1, maxPendingBytes: 64 * 1024 * 1024 });
+      if (!fresh()) { client.dispose(); return false; }
+      job.client = client;
+      const output = await client.render(format, captured.raw.markdown, requested, { signal: job.abort.signal });
+      if (!fresh()) return false;
+      const blob = output.blob();
+      const base = captured.raw.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "franken-markdown";
+      const filename = output.filename(base);
+      if (!fresh()) return false;
+      candidate = { captured, url: win.URL.createObjectURL(blob), revoked: false };
+      if (!fresh()) { releasePublication(candidate); return false; }
+      publicationOutput = candidate;
+      els.downloadPublication.href = candidate.url;
+      els.downloadPublication.download = filename;
+      els.downloadPublication.textContent = `Download ${format.toUpperCase()} (${output.bytes.byteLength.toLocaleString()} bytes)`;
+      els.downloadPublication.hidden = false;
+      if (!fresh() || publicationOutput !== candidate) { releasePublication(candidate); return false; }
+      const first = output.diagnostics[0];
+      els.publicationStatus.textContent = `${format.toUpperCase()} ready. ${output.diagnostics.length} renderer diagnostics.`
+        + (first ? ` First ${first.severity}: ${first.message}` : " Click Download to save the publication.");
+      published = candidate;
+    } catch (error) {
+      if (candidate) releasePublication(candidate);
+      if (fresh()) els.publicationStatus.textContent = `${error?.code ?? "PUBLICATION_FAILED"}: ${error instanceof Error ? error.message : "Publication failed."}`;
+    } finally {
+      if (publicationJob === job) {
+        publicationJob = null;
+        if (!publicationFresh(job)) {
+          releasePublication(publicationOutput?.captured === captured ? publicationOutput : null);
+          els.publicationStatus.textContent = "The source, settings or image access changed during publication. Prepare it again.";
+        }
+        refreshPublicationControls();
+      }
+      job.client?.dispose(); // A completed publication does not retain another WASM heap.
+    }
+    if (published && publicationOutput === published && publicationFresh(captured)) return true;
+    if (published) {
+      releasePublication(published);
+      if (captured.sequence === publicationSequence && alive)
+        els.publicationStatus.textContent = "The source, settings or image access changed during publication. Prepare it again.";
+    }
+    return false;
   }
   function refreshWorkspaceControls() {
     const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null || directSourcePending;
@@ -255,7 +410,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       els.imageFiles.value = els.imageFolder.value = "";
       els.imageStatus.textContent = `${selected.count} local image${selected.count === 1 ? "" : "s"} authorized (${selected.totalBytes.toLocaleString()} bytes).`
         + (folder ? ` Paths are relative to ${documentPath || "the selected folder root"}.` : " Paths use the selected filenames.")
-        + " Preview and HTML/PDF exports use these same bytes. Check the render diagnostics for unsupported or invalid images.";
+        + " Preview and HTML/PDF/EPUB/SVG exports use these same bytes. Check the render diagnostics for unsupported or invalid images.";
       return true;
     } catch (error) {
       if (owns()) els.imageStatus.textContent = `${error?.code ?? "IMAGE_READ_ERROR"}: ${error instanceof Error ? error.message : "Images could not be read."} The previous image selection is retained.`;
@@ -331,6 +486,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     clearTimer();
     cancel("html");
     cancel("pdf");
+    retirePublication();
     retireWorkspace();
     revokeHtml();
     revokePdf();
@@ -341,12 +497,20 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   function options(kind, snapshot, images) {
     const common = { font: snapshot.font, darkMode: snapshot.darkMode,
       ...(snapshot.profile === "" ? {} : { profile: snapshot.profile }),
-      title: snapshot.title.trim() || undefined, allowRawHtml: snapshot.allowHtml,
       ...(images.length ? { pdfImages: images } : {}) };
-    return kind === "html" ? { ...common,
-      customCss: snapshot.customCss.trim() ? snapshot.customCss : undefined }
-      : { ...common, author: snapshot.author.trim() || undefined,
-        codeLineNumbers: snapshot.lineNumbers, metadataEpochSeconds: 1700000000 };
+    const title = snapshot.title.trim() || undefined;
+    const customCss = snapshot.customCss.trim() ? snapshot.customCss : undefined;
+    if (kind === "epub" || kind === "svg") {
+      if (snapshot.allowHtml)
+        throw invalidPublishing(`${kind.toUpperCase()} exports do not support Allow raw HTML. Turn it off before preparing this publication.`);
+      return kind === "svg" ? common
+        : { ...common, title, author: snapshot.author.trim() || undefined, customCss };
+    }
+    if (kind === "html") return { ...common, title, allowRawHtml: snapshot.allowHtml, customCss };
+    const page = selectedPage(snapshot);
+    return { ...common, title, allowRawHtml: snapshot.allowHtml,
+      author: snapshot.author.trim() || undefined, codeLineNumbers: snapshot.lineNumbers,
+      metadataEpochSeconds: 1700000000, ...(page === undefined ? {} : { page }) };
   }
   async function run(kind) {
     if (!alive || suspended || composing || imageJob) return false;
@@ -371,9 +535,10 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     status("");
     let completion = "render failed";
     try {
+      const requested = options(kind, captured, job.images);
       if (!clients[kind] || clients[kind].disposed)
         clients[kind] = factory({ maxPendingOperations: 1, maxPendingBytes: 64 * 1024 * 1024 });
-      const output = await clients[kind].render(kind, captured.markdown, options(kind, captured, job.images), { signal: job.abort.signal });
+      const output = await clients[kind].render(kind, captured.markdown, requested, { signal: job.abort.signal });
       if (!current(kind, job)) {
         if (jobs[kind] === job) {
           els.preview.srcdoc = "";
@@ -500,11 +665,13 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
           requireReplacement();
           sourceChanged(); // Retire a pending browser-draft restore before the picker.
           cancelImages();
+          retirePublication("File opening started. Prepare a fresh publication after the source is ready.");
           retireWorkspace("File opening started. Prepare the editable workspace after the source is ready.");
         },
         onState(state) {
           directSourcePending = state?.busy === "Open" || state?.busy === "Reload";
           refreshWorkspaceControls();
+          refreshPublicationControls();
         },
       });
     } catch {
@@ -580,10 +747,12 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     // The later source selection owns replacement. Retire an earlier image
     // read before capturing fileJob, so its cleanup cannot cancel this open.
     cancelImages();
+    retirePublication("File opening started. Prepare a fresh publication after the source is ready.");
     retireWorkspace("File opening started. Prepare the editable workspace again after the source is ready.");
     const job = { raw: raw(), generation, accessRevision };
     fileJob = job; // A newer selection owns publication, even if an old read settles last.
     refreshWorkspaceControls();
+    refreshPublicationControls();
     directFiles?.refresh();
     const owns = () => alive && !suspended && fileJob === job;
     const fresh = () => owns() && !composing && sourceAccess.synchronize() === job.accessRevision
@@ -609,6 +778,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
         if (owns() && !fresh()) els.fileStatus.textContent = "The draft changed during file loading; choose the file again.";
         fileJob = null;
         refreshWorkspaceControls();
+        refreshPublicationControls();
         directFiles?.refresh();
       }
     }
@@ -670,6 +840,17 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       revokeHtml();
     }
   });
+  if (publishing) {
+    listen(els.prepareEpub, "click", () => { void preparePublication("epub"); });
+    listen(els.prepareSvg, "click", () => { void preparePublication("svg"); });
+    listen(els.cancelPublication, "click", cancelPublication);
+    listen(els.downloadPublication, "click", event => {
+      if (!publicationOutput || !publicationFresh(publicationOutput.captured)) {
+        event.preventDefault();
+        retirePublication();
+      }
+    });
+  }
   listen(els.prepareWorkspace, "click", () => { void prepareWorkspace(); });
   listen(els.cancelWorkspace, "click", cancelWorkspace);
   listen(els.downloadWorkspace, "click", event => {
@@ -703,6 +884,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
     importImages, clearImages, cancelImages,
     prepareWorkspace, cancelWorkspace,
+    prepareEpub: () => preparePublication("epub"), prepareSvg: () => preparePublication("svg"), cancelPublication,
     get fileAccess() { return directFiles; },
     dispose() {
       if (!alive) return;

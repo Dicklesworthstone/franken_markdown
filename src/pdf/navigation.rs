@@ -26,9 +26,10 @@ pub(super) struct OutlineTree {
 impl OutlineTree {
     pub(super) fn new(levels: impl IntoIterator<Item = u8>) -> Self {
         let mut tree = Self::default();
-        let mut ancestors: Vec<(u8, usize)> = Vec::with_capacity(6);
+        let mut ancestors: Vec<(u8, usize)> = Vec::with_capacity(7);
         for level in levels {
-            let level = level.clamp(1, 6);
+            // Books add one metadata root above the six unchanged source levels.
+            let level = level.clamp(1, 7);
             while ancestors.last().is_some_and(|&(open, _)| open >= level) {
                 ancestors.pop();
             }
@@ -50,7 +51,7 @@ impl OutlineTree {
                 tree.first.get_or_insert(index);
                 tree.last = Some(index);
             }
-            // At most six source heading levels can be open. Counting here
+            // At most six source heading levels plus one chapter can be open. Counting here
             // avoids an unbounded recursive walk or a quadratic subtree scan.
             for &(_, ancestor) in &ancestors {
                 tree.nodes[ancestor].descendants += 1;

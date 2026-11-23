@@ -30,6 +30,9 @@ impl Destination {
 
 #[derive(Default)]
 pub(crate) struct SourceNavigation {
+    /// Book chapter metadata bound to the first actual body line. These never
+    /// consume a source heading ordinal or borrow an author's fragment name.
+    pub chapters: BTreeMap<u32, Destination>,
     /// Depth-first heading ordinals in the supplied prepared document, including
     /// note bodies. Empty/unpainted headings have no emitted destination.
     pub headings: BTreeMap<usize, Destination>,
@@ -147,6 +150,11 @@ pub(super) fn collect(doc: &Document, outlines: &[OutlineEntry]) -> SourceNaviga
             page_index: outline.page_index,
             y: outline.y,
         };
+        if outline.chapter_root {
+            navigation
+                .chapters
+                .insert(outline.chapter_scope, destination);
+        }
         if let Some(ordinal) = outline.source_identity.and_then(|id| identities.get(&id)) {
             navigation.headings.insert(*ordinal, destination);
         }

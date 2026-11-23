@@ -82,7 +82,7 @@ pub(crate) fn render(
                     .get(&id)
                     .and_then(|prepared| rendered.navigation.note_references.get(prepared))
                     .copied(),
-                Some(Target::Heading(_)) | None => None,
+                Some(Target::Heading(_) | Target::Chapter(_)) | None => None,
             };
             (token, destination)
         })
@@ -112,7 +112,7 @@ pub(crate) fn audit(
                 .and_then(|id| id.strip_prefix(crate::footnotes::PAGE_NOTE_PREFIX))
                 .and_then(|number| number.parse::<u32>().ok())
                 .is_some_and(|number| references.contains(&number)),
-            Some(Some(Target::Heading(_))) | Some(None) => false,
+            Some(Some(Target::Heading(_) | Target::Chapter(_))) | Some(None) => false,
             None => {
                 // Namespace-shaped headings still work, but only direct
                 // fragments use the ordinary PDF heading resolver. A query

@@ -44,6 +44,7 @@ use std::fmt::Write as _;
 
 mod baseline_grid;
 mod cell_fit;
+pub(crate) mod chapters;
 mod data_uri;
 mod discretionary;
 mod fenced_code;
@@ -316,6 +317,8 @@ enum Fill {
 enum LinkTarget {
     Uri(String),
     Fragment(String),
+    /// Renderer-owned book navigation; source URLs cannot manufacture this target.
+    Chapter(u32),
 }
 
 /// Per-render intern table for link targets. [`tokenize`] maps each inline
@@ -1674,6 +1677,8 @@ struct FlowMark {
     /// Chapter identity; 0 is generated/document content, UNASSIGNED awaits
     /// its source block. Language strings are shared once per render.
     language_scope: u32,
+    /// Book source ownership, independent of per-chapter language overrides.
+    chapter_scope: u32,
     /// Generated TOC content uses the document language without breaking
     /// the chapter ownership of its enclosing source list or quote.
     document_language: bool,
@@ -1694,6 +1699,7 @@ impl Default for FlowMark {
             split_note: false,
             note_definition_keep_next: None,
             language_scope: language::UNASSIGNED,
+            chapter_scope: chapters::UNASSIGNED,
             document_language: false,
         }
     }
@@ -2862,6 +2868,16 @@ fn source_render_warnings(
     opts: &PdfOptions,
     faces: Option<&Faces>,
 ) -> (Vec<RenderWarning>, bool) {
+    source_render_warnings_with_chapters(doc, opts, faces, &language::EMPTY)
+}
+
+fn source_render_warnings_with_chapters(
+    source: &Document,
+    opts: &PdfOptions,
+    faces: Option<&Faces>,
+    context: &language::Context,
+) -> (Vec<RenderWarning>, bool) {
+    let doc = source;
     let lowered = crate::safe_html::lower(doc);
     let doc = &*lowered;
     let mut warnings = Vec::new();
@@ -2926,6 +2942,13 @@ fn source_render_warnings(
         for (slot, source) in &image_text {
             scan(source, *slot);
         }
+        if opts.toc || crate::toc::markers(&doc.blocks).any() {
+            for (_, title) in context.chapters.iter() {
+                for (slot, source) in fallback_slot_runs(faces, F_BODY, title) {
+                    scan(&source, slot);
+                }
+            }
+        }
         if missing > 0 {
             warnings.push(RenderWarning::MissingGlyphs {
                 count: missing,
@@ -2935,9 +2958,20 @@ fn source_render_warnings(
         // Running templates and decorative SVG logos are separate painting
         // surfaces. Their positioned text needs the same source-level shaping
         // findings even when no corresponding text occurs in the body.
-        if let Ok(Some(running)) =
-            running::resolve(doc, opts, faces, PageGeom::from_theme(&opts.theme))
-        {
+        // Book ownership is bound to the immutable prepared roots. Ordinary
+        // source auditing retains its existing HTML-lowered heading view.
+        let running_doc = if context.chapters.is_empty() {
+            doc
+        } else {
+            source
+        };
+        if let Ok(Some(running)) = running::resolve_with_chapters(
+            running_doc,
+            opts,
+            faces,
+            PageGeom::from_theme(&opts.theme),
+            context,
+        ) {
             running.visit_positioning_sources(faces, |slot, source| {
                 text_positioning::prepare(faces.face(slot), source).warnings(&mut warnings);
             });
@@ -3302,7 +3336,7 @@ fn render_inner_with_languages(
         effective_pdf_options_with_languages(doc, opts, &faces, languages, &notes);
     // Running chrome is validated against the final page geometry before
     // layout, so a band that cannot fit its margin fails fast.
-    let running = running::resolve(doc, &effective_opts, &faces, page)?;
+    let running = running::resolve_with_chapters(doc, &effective_opts, &faces, page, languages)?;
     let (lines, paragraph_variants) = profiler.measure(
         "layout",
         doc.blocks.len(),
@@ -3331,6 +3365,7 @@ fn render_inner_with_languages(
         emit,
         &mut profiler,
         &languages.scopes,
+        &languages.chapters,
     )?;
     faces.cjk_load_error()?;
     profiler.record_since(
@@ -3350,7 +3385,8 @@ fn render_inner_with_languages(
         paragraph_variants,
     };
     let warnings = if collect_warnings {
-        let (mut warnings, _) = source_render_warnings(doc, &effective_opts, Some(&faces));
+        let (mut warnings, _) =
+            source_render_warnings_with_chapters(doc, &effective_opts, Some(&faces), languages);
         inline_math_fit::append_warnings(&lines, &mut warnings);
         pagination.append_warnings(&mut warnings);
         warnings
@@ -3638,7 +3674,18 @@ struct PdfTocEntry {
     level: u8,
     title: String,
     id: String,
+    chapter: Option<u32>,
+    indent_level: u8,
     page_label_widths: toc_convergence::PageLabelWidths,
+}
+
+impl PdfTocEntry {
+    fn target(&self) -> LinkTarget {
+        self.chapter.map_or_else(
+            || LinkTarget::Fragment(self.id.clone()),
+            LinkTarget::Chapter,
+        )
+    }
 }
 
 fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
@@ -3671,34 +3718,106 @@ fn push_inlines_to_plain_text(inlines: &[Inline], out: &mut String) {
     }
 }
 
+#[cfg(test)]
 fn collect_pdf_toc_entries(blocks: &[Block]) -> Vec<PdfTocEntry> {
+    collect_pdf_toc_entries_with_chapters(blocks, &language::EMPTY)
+}
+
+fn collect_pdf_toc_entries_with_chapters(
+    blocks: &[Block],
+    context: &language::Context,
+) -> Vec<PdfTocEntry> {
     let mut state = HeadingIdState::default();
     let mut entries = Vec::new();
-    fn walk(blocks: &[Block], state: &mut HeadingIdState, entries: &mut Vec<PdfTocEntry>) {
+    fn walk(
+        blocks: &[Block],
+        scope: u32,
+        context: &language::Context,
+        state: &mut HeadingIdState,
+        entries: &mut Vec<(u32, PdfTocEntry)>,
+    ) {
         for block in blocks {
+            let scope = context.chapter_scope(block).unwrap_or(scope);
             match block {
                 Block::Heading { level, inlines } => {
                     let source = HeadingSource::from_inlines(inlines);
                     let id = state.heading_id_from_slug(source.slug);
-                    entries.push(PdfTocEntry {
-                        level: *level,
-                        title: source.title,
-                        id,
-                        page_label_widths: toc_convergence::PageLabelWidths::default(),
-                    });
+                    entries.push((
+                        scope,
+                        PdfTocEntry {
+                            level: *level,
+                            title: source.title,
+                            id,
+                            chapter: None,
+                            indent_level: level.saturating_sub(1),
+                            page_label_widths: toc_convergence::PageLabelWidths::default(),
+                        },
+                    ));
                 }
-                Block::BlockQuote(inner) => walk(inner, state, entries),
+                Block::BlockQuote(inner) => walk(inner, scope, context, state, entries),
                 Block::List(list) => {
                     for item in &list.items {
-                        walk(&item.blocks, state, entries);
+                        walk(&item.blocks, scope, context, state, entries);
                     }
                 }
                 _ => {}
             }
         }
     }
-    walk(blocks, &mut state, &mut entries);
-    entries
+    walk(blocks, 0, context, &mut state, &mut entries);
+    if context.chapters.is_empty() {
+        return entries.into_iter().map(|(_, entry)| entry).collect();
+    }
+    let mut grouped = BTreeMap::<u32, Vec<PdfTocEntry>>::new();
+    for (scope, entry) in entries {
+        grouped.entry(scope).or_default().push(entry);
+    }
+    // A leading source title need not be printed a second time beneath its
+    // chapter entry. Source IDs were allocated before this presentation-only
+    // choice, so duplicate titles and explicit fragments retain their identity.
+    let mut first_blocks = BTreeMap::new();
+    for block in blocks {
+        if !matches!(block, Block::PageBreak | Block::FootnoteDefinition { .. })
+            && let Some(scope) = context.chapter_scope(block)
+        {
+            first_blocks.entry(scope).or_insert(block);
+        }
+    }
+    let mut result = Vec::new();
+    for (scope, title) in context.chapters.iter() {
+        result.push(PdfTocEntry {
+            level: 0,
+            title: title.to_string(),
+            id: chapters::target_key(scope),
+            chapter: Some(scope),
+            indent_level: 0,
+            page_label_widths: toc_convergence::PageLabelWidths::default(),
+        });
+        if let Some(headings) = grouped.remove(&scope) {
+            let omit_first = matches!(first_blocks.get(&scope), Some(Block::Heading { inlines, .. })
+                if HeadingSource::from_inlines(inlines).title == title.as_ref());
+            let mut ancestors = Vec::with_capacity(6);
+            for (index, mut entry) in headings.into_iter().enumerate() {
+                if index == 0 && omit_first {
+                    // This source heading is represented by the chapter row.
+                    // Retain its nesting level while computing later indents.
+                    ancestors.push((entry.level, 0));
+                    continue;
+                }
+                while ancestors
+                    .last()
+                    .is_some_and(|&(level, _)| level >= entry.level)
+                {
+                    ancestors.pop();
+                }
+                entry.indent_level = ancestors.last().map_or(1, |&(_, depth)| depth + 1);
+                ancestors.push((entry.level, entry.indent_level));
+                result.push(entry);
+            }
+        }
+    }
+    result.extend(grouped.remove(&0).unwrap_or_default());
+    result
 }
 
 fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
@@ -3723,8 +3842,9 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
     gap(out, 6.0);
     for entry_index in filtered {
         let entry = &cx.toc_entries[entry_index];
-        let level_indent = ((entry.level.saturating_sub(1)) as f32) * 14.0;
+        let level_indent = f32::from(entry.indent_level) * 14.0;
         let id = entry.id.clone();
+        let target = entry.target();
         let title = entry.title.clone();
         let page_num = cx.toc_page_map.get(&id).copied().unwrap_or(1);
         let page_str = format!("{page_num}");
@@ -3755,7 +3875,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                     slot: run.slot,
                     text_hash: seg_text_hash(&run.text),
                     text: run.text,
-                    link: Some(LinkTarget::Fragment(id.clone())),
+                    link: Some(target.clone()),
                     fill: Fill::Black,
                     strike: false,
                     task: None,
@@ -3767,7 +3887,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 x += run.width;
             }
             if last {
-                append_pdf_toc_page(&mut segs, &id, x, right_x, &page_str, font_size, cx);
+                append_pdf_toc_page(&mut segs, &target, x, right_x, &page_str, font_size, cx);
             }
             out.push(Line {
                 size: font_size,
@@ -3780,6 +3900,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 flow: FlowMark {
                     document_language: true,
                     language_scope: 0,
+                    chapter_scope: 0,
                     group,
                     index,
                     count,
@@ -3818,7 +3939,7 @@ mod toc_tests;
 /// Every component points at the same heading, including continuation lines.
 fn append_pdf_toc_page(
     segs: &mut Vec<Seg>,
-    id: &str,
+    target: &LinkTarget,
     title_end: f32,
     right_x: f32,
     page_str: &str,
@@ -3848,7 +3969,7 @@ fn append_pdf_toc_page(
             slot: F_BODY,
             text_hash: seg_text_hash(&dots_str),
             text: dots_str,
-            link: Some(LinkTarget::Fragment(id.to_string())),
+            link: Some(target.clone()),
             fill: Fill::Muted,
             strike: false,
             task: None,
@@ -3865,7 +3986,7 @@ fn append_pdf_toc_page(
         slot: F_BODY,
         text_hash: seg_text_hash(page_str),
         text: page_str.to_string(),
-        link: Some(LinkTarget::Fragment(id.to_string())),
+        link: Some(target.clone()),
         fill: Fill::Black,
         strike: false,
         task: None,
@@ -3924,6 +4045,7 @@ fn layout_with_languages(
             opts,
             languages,
             language_scope: 0,
+            chapter_scope: 0,
             pending_page_break: false,
             type_scale,
             faces,
@@ -3963,7 +4085,7 @@ fn layout_with_languages(
         return Ok((out, report));
     }
 
-    let toc_entries = collect_pdf_toc_entries(blocks);
+    let toc_entries = collect_pdf_toc_entries_with_chapters(blocks, languages);
     let mut page_map = BTreeMap::new();
     for entry in &toc_entries {
         page_map.insert(entry.id.clone(), 1);
@@ -3999,6 +4121,7 @@ fn layout_with_languages(
         opts,
         languages,
         language_scope: 0,
+        chapter_scope: 0,
         pending_page_break: false,
         type_scale,
         faces,
@@ -4047,6 +4170,12 @@ fn layout_with_languages(
         cx.toc_page_map = page_map.clone();
         let mut out = Vec::with_capacity(blocks.len().checked_mul(3).unwrap_or(blocks.len()));
         layout_blocks(blocks, 0.0, &mut out, &mut cx);
+        if cx.automatic_toc && !languages.chapters.is_empty() {
+            // A book made entirely of empty chapters still has publication
+            // metadata to navigate. It has no body block to consume the TOC.
+            cx.automatic_toc = false;
+            layout_pdf_toc(opts.toc_depth, 0.0, &mut out, &mut cx);
+        }
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
         layout_pdf_notes(blocks, &mut out, &mut cx);
         baseline_grid::apply(&mut out, opts.theme.page.baseline_grid, faces);
@@ -4060,6 +4189,11 @@ fn layout_with_languages(
         for (page_idx, placed_page) in pages.iter().enumerate() {
             let page_num = page_idx + 1;
             for p in placed_page {
+                if let Some(scope) = chapters::body_scope(p.line) {
+                    new_page_map
+                        .entry(chapters::target_key(scope))
+                        .or_insert(page_num);
+                }
                 if p.line.flow.kind == FlowKind::Heading
                     && p.line.flow.group != 0
                     && let Some(meta) = heading_metas.get(&p.line.flow.group)
@@ -4068,6 +4202,7 @@ fn layout_with_languages(
                 }
             }
         }
+        chapters::complete_page_numbers(&mut new_page_map, &languages.chapters, pages.len());
 
         if new_page_map == page_map {
             return Ok((out, report));
@@ -5043,6 +5178,7 @@ struct LayoutCx<'a> {
     opts: &'a PdfOptions,
     languages: &'a language::Context,
     language_scope: u32,
+    chapter_scope: u32,
     /// Set by Block::PageBreak (book chapters, j0o4): the NEXT line produced
     /// gets page_break_before, forcing a page boundary in choose_page_break.
     pending_page_break: bool,
@@ -5173,13 +5309,21 @@ fn apply_incoming_page_break(incoming: bool, start: usize, out: &mut [Line], pen
 
 fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
     let previous_scope = cx.language_scope;
+    let previous_chapter = cx.chapter_scope;
     cx.language_scope = cx.languages.scope(block).unwrap_or(previous_scope);
+    cx.chapter_scope = cx
+        .languages
+        .chapter_scope(block)
+        .unwrap_or(previous_chapter);
     let incoming = std::mem::take(&mut cx.pending_page_break);
     let start = out.len();
     layout_block_content(block, indent, out, cx);
     apply_incoming_page_break(incoming, start, out, &mut cx.pending_page_break);
     spacing::apply(&mut out[start..], cx.opts);
     for line in &mut out[start..] {
+        if line.flow.chapter_scope == chapters::UNASSIGNED {
+            line.flow.chapter_scope = cx.chapter_scope;
+        }
         if cx.links.note_sources_known {
             for seg in &mut line.segs {
                 seg.note_spans.make_known();
@@ -5194,9 +5338,17 @@ fn layout_block(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut Layout
         }
     }
     cx.language_scope = previous_scope;
+    cx.chapter_scope = previous_chapter;
 }
 
 fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mut LayoutCx<'_>) {
+    if cx.automatic_toc
+        && cx.chapter_scope != 0
+        && !matches!(block, Block::FootnoteDefinition { .. } | Block::PageBreak)
+    {
+        cx.automatic_toc = false;
+        layout_pdf_toc(cx.opts.toc_depth, indent, out, cx);
+    }
     let indent = list_geometry::block_indent(block, indent, cx);
     let indent = quote_geometry::block_indent(block, indent, cx);
     match block {
@@ -5453,6 +5605,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 flow: FlowMark {
                     document_language: false,
                     language_scope: crate::pdf::language::UNASSIGNED,
+                    chapter_scope: crate::pdf::chapters::UNASSIGNED,
                     group,
                     index: 0,
                     count: 1,
@@ -5674,6 +5827,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         flow: FlowMark {
             document_language: false,
             language_scope: crate::pdf::language::UNASSIGNED,
+            chapter_scope: crate::pdf::chapters::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -5795,6 +5949,7 @@ fn push_figure_line(
         flow: FlowMark {
             document_language: false,
             language_scope: crate::pdf::language::UNASSIGNED,
+            chapter_scope: crate::pdf::chapters::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -17678,6 +17833,7 @@ fn mark_flow(out: &mut [Line], start: usize, group: u32, kind: FlowKind) {
         line.flow = FlowMark {
             document_language: false,
             language_scope: crate::pdf::language::UNASSIGNED,
+            chapter_scope: crate::pdf::chapters::UNASSIGNED,
             group,
             index,
             count,
@@ -18664,6 +18820,10 @@ fn wrap_perf_tok_hash(toks: &[Tok], links: &[LinkTarget]) -> u64 {
                 fnv1a64_update_byte(&mut hash, 2);
                 fnv1a64_update(&mut hash, s.as_bytes());
             }
+            Some(LinkTarget::Chapter(scope)) => {
+                fnv1a64_update_byte(&mut hash, 3);
+                fnv1a64_update_u64(&mut hash, u64::from(*scope));
+            }
         }
         fnv1a64_update(&mut hash, t.text.as_bytes());
         fnv1a64_update_byte(&mut hash, 0xFF);
@@ -19247,6 +19407,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 flow: FlowMark {
                     document_language: false,
                     language_scope: crate::pdf::language::UNASSIGNED,
+                    chapter_scope: crate::pdf::chapters::UNASSIGNED,
                     group,
                     index: row_idx,
                     count: depth,
@@ -19299,6 +19460,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         flow: FlowMark {
             document_language: false,
             language_scope: crate::pdf::language::UNASSIGNED,
+            chapter_scope: crate::pdf::chapters::UNASSIGNED,
             group,
             index: 0,
             count: 1,
@@ -23262,6 +23424,7 @@ fn serialize(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
     languages: &language::Scopes,
+    chapter_titles: &chapters::Titles,
 ) -> Result<(Vec<u8>, PdfPageBreakReport, Vec<OutlineEntry>)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
@@ -23631,7 +23794,7 @@ fn serialize(
         ));
     }
 
-    let serialized = serialize_pages(
+    let mut serialized = serialize_pages(
         lines,
         faces,
         page,
@@ -23646,7 +23809,15 @@ fn serialize(
         &images,
         emit,
         profiler,
+        chapter_titles,
     )?;
+
+    chapters::complete_outlines(
+        &mut serialized.outlines,
+        chapter_titles,
+        serialized.pages.len(),
+        page,
+    );
 
     let bytes = build_pdf(
         &serialized.pages,
@@ -23668,6 +23839,8 @@ struct RenderScratch {
     pages: Vec<PageContent>,
     outlines: Vec<OutlineEntry>,
     seen_heading_groups: BTreeSet<u32>,
+    chapter_titles: chapters::Titles,
+    seen_chapters: BTreeSet<u32>,
     seen_table_header_lines: BTreeSet<(u32, usize)>,
     inline_link_runs: BTreeMap<u32, LinkRun>,
     table_link_runs: BTreeMap<(u32, u32, u32), LinkRun>,
@@ -23676,11 +23849,18 @@ struct RenderScratch {
 }
 
 impl RenderScratch {
-    fn with_capacity(page_count: usize, heading_count: usize, lines: &[Line]) -> Self {
+    fn with_capacity(
+        page_count: usize,
+        heading_count: usize,
+        lines: &[Line],
+        chapter_titles: &chapters::Titles,
+    ) -> Self {
         Self {
             pages: Vec::with_capacity(page_count.max(1)),
             outlines: Vec::with_capacity(heading_count),
             seen_heading_groups: BTreeSet::new(),
+            chapter_titles: chapter_titles.clone(),
+            seen_chapters: BTreeSet::new(),
             seen_table_header_lines: BTreeSet::new(),
             inline_link_runs: BTreeMap::new(),
             table_link_runs: BTreeMap::new(),
@@ -24140,6 +24320,7 @@ fn serialize_pages(
     images: &[PdfImageData],
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
+    chapter_titles: &chapters::Titles,
 ) -> Result<SerializedPages> {
     match emit.emission {
         PdfPageEmission::Monolithic => serialize_pages_monolithic(
@@ -24157,6 +24338,7 @@ fn serialize_pages(
             images,
             emit,
             profiler,
+            chapter_titles,
         ),
         PdfPageEmission::Chunked => serialize_pages_chunked(
             lines,
@@ -24173,6 +24355,7 @@ fn serialize_pages(
             images,
             emit,
             profiler,
+            chapter_titles,
         ),
     }
 }
@@ -24193,6 +24376,7 @@ fn serialize_pages_monolithic(
     images: &[PdfImageData],
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
+    chapter_titles: &chapters::Titles,
 ) -> Result<SerializedPages> {
     let pages_placed = profiler.measure(
         "pagination",
@@ -24208,7 +24392,12 @@ fn serialize_pages_monolithic(
         "mode=monolithic",
     );
     let stream_generation_started = profiler.checkpoint();
-    let mut scratch = RenderScratch::with_capacity(pages_placed.len(), heading_meta.len(), lines);
+    let mut scratch = RenderScratch::with_capacity(
+        pages_placed.len(),
+        heading_meta.len(),
+        lines,
+        chapter_titles,
+    );
     let mut page_buffer_reserved_bytes = 0usize;
     for (page_idx, placed) in pages_placed.iter().enumerate() {
         let (content, reserved) = generate_page_content(
@@ -24256,9 +24445,10 @@ fn serialize_pages_chunked(
     images: &[PdfImageData],
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
+    chapter_titles: &chapters::Titles,
 ) -> Result<SerializedPages> {
     let stream_generation_started = profiler.checkpoint();
-    let mut scratch = RenderScratch::with_capacity(1, heading_meta.len(), lines);
+    let mut scratch = RenderScratch::with_capacity(1, heading_meta.len(), lines, chapter_titles);
     let mut compressed = Vec::new();
     let mut start = 0usize;
     let mut emitted_any = false;
@@ -24578,6 +24768,21 @@ fn generate_page_content(
     for p in placed {
         let line = p.line;
         let y = p.y;
+        if let Some(scope) = chapters::body_scope(line)
+            && let Some(title) = scratch.chapter_titles.get(scope)
+            && scratch.seen_chapters.insert(scope)
+        {
+            let top = line
+                .image
+                .as_ref()
+                .map_or(line.size * 0.9, |image| image.height_pt);
+            scratch.outlines.push(chapters::outline(
+                scope,
+                title,
+                page_idx,
+                (y + top).min(page.top_y()),
+            ));
+        }
         if line.flow.kind == FlowKind::Heading
             && line.flow.group != 0
             && scratch.seen_heading_groups.insert(line.flow.group)
@@ -24588,6 +24793,8 @@ fn generate_page_content(
                 id: meta.id.clone(),
                 title: meta.title.clone(),
                 level: meta.level,
+                chapter_scope: line.flow.chapter_scope,
+                chapter_root: false,
                 page_index: page_idx,
                 y: (y + line.size * 0.9).min(page.top_y()),
             });
@@ -24612,6 +24819,8 @@ fn generate_page_content(
                     id,
                     title: String::new(),
                     level: 0,
+                    chapter_scope: 0,
+                    chapter_root: false,
                     page_index: page_idx,
                     y: (y + line.size * 0.9).min(page.top_y()),
                 });
@@ -24627,6 +24836,8 @@ fn generate_page_content(
                     id: format!("{}{number}", crate::footnotes::PAGE_NOTE_REFERENCE_PREFIX),
                     title: String::new(),
                     level: 0,
+                    chapter_scope: 0,
+                    chapter_root: false,
                     page_index: page_idx,
                     y: (y + line.size * 0.9).min(page.top_y()),
                 });
@@ -25910,6 +26121,8 @@ struct OutlineEntry {
     title: String,
     /// Actual heading level, or zero for a non-bookmark note destination.
     level: u8,
+    chapter_scope: u32,
+    chapter_root: bool,
     page_index: usize,
     y: f32,
 }
@@ -32436,6 +32649,7 @@ mod keep_with_next_tests {
             flow: FlowMark {
                 document_language: false,
                 language_scope: crate::pdf::language::UNASSIGNED,
+                chapter_scope: crate::pdf::chapters::UNASSIGNED,
                 group,
                 index,
                 count,
@@ -32712,6 +32926,7 @@ mod void_budget_tests {
             flow: FlowMark {
                 document_language: false,
                 language_scope: crate::pdf::language::UNASSIGNED,
+                chapter_scope: crate::pdf::chapters::UNASSIGNED,
                 group,
                 index,
                 count,
@@ -33356,6 +33571,7 @@ fn estimated_pdf_buffer_capacity(
         .flat_map(|page| page.annots.iter())
         .map(|annot| match &annot.target {
             LinkTarget::Uri(uri) | LinkTarget::Fragment(uri) => uri.len(),
+            LinkTarget::Chapter(_) => 0,
         })
         .sum::<usize>();
     let font_program_bytes = faces.iter().map(|face| face.bytes.len()).sum::<usize>();
@@ -34500,12 +34716,11 @@ fn build_pdf(
     // Page-note destinations resolve links but are not bookmarks. Classify by
     // structural role, not their spelling: a real heading may legitimately
     // have a slug such as "fmd-fn-1".
-    let bookmarks: Vec<&OutlineEntry> = outlines
-        .iter()
-        .filter(|outline| outline.level != 0)
-        .collect();
+    let chapter_bookmarks = chapters::bookmarks(outlines);
+    let bookmarks: Vec<_> = chapter_bookmarks.iter().map(|&(entry, _)| entry).collect();
     let outline_count = bookmarks.len();
-    let outline_tree = navigation::OutlineTree::new(bookmarks.iter().map(|entry| entry.level));
+    let outline_tree =
+        navigation::OutlineTree::new(chapter_bookmarks.iter().map(|&(_, level)| level));
     let dest_ids: BTreeSet<&str> = outlines.iter().map(|o| o.id.as_str()).collect();
     let mut dest_by_id: BTreeMap<&str, &OutlineEntry> =
         outlines.iter().map(|o| (o.id.as_str(), o)).collect();
@@ -35299,6 +35514,7 @@ fn annotation_is_resolved(annot: &LinkAnnotation, dest_ids: &BTreeSet<&str>) -> 
     match &annot.target {
         LinkTarget::Uri(uri) => !uri.is_empty(),
         LinkTarget::Fragment(id) => dest_ids.contains(id.as_str()),
+        LinkTarget::Chapter(scope) => dest_ids.contains(chapters::target_key(*scope).as_str()),
     }
 }
 
@@ -35401,6 +35617,15 @@ fn append_pdf_link_annotation_object(
         }
         LinkTarget::Fragment(id) => {
             if let Some(dest) = dest_by_id.get(id.as_str()) {
+                out.extend_from_slice(b" /Dest [");
+                append_pdf_object_ref_bytes(out, page_obj(dest.page_index));
+                out.extend_from_slice(b" /XYZ null ");
+                append_pdf_num_bytes(out, dest.y);
+                out.extend_from_slice(b" null]");
+            }
+        }
+        LinkTarget::Chapter(scope) => {
+            if let Some(dest) = dest_by_id.get(chapters::target_key(*scope).as_str()) {
                 out.extend_from_slice(b" /Dest [");
                 append_pdf_object_ref_bytes(out, page_obj(dest.page_index));
                 out.extend_from_slice(b" /XYZ null ");
@@ -36352,6 +36577,7 @@ mod pdf_writer_tests {
         LayoutCx {
             languages: &crate::pdf::language::EMPTY,
             language_scope: 0,
+            chapter_scope: 0,
             opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -38670,6 +38896,7 @@ mod pdf_writer_tests {
                 flow: FlowMark {
                     document_language: false,
                     language_scope: crate::pdf::language::UNASSIGNED,
+                    chapter_scope: crate::pdf::chapters::UNASSIGNED,
                     group: 42,
                     index: 0,
                     count: 1,
@@ -43202,6 +43429,7 @@ mod table_wrap_tests {
         let mut cx = LayoutCx {
             languages: &crate::pdf::language::EMPTY,
             language_scope: 0,
+            chapter_scope: 0,
             opts: &opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -45226,6 +45454,7 @@ mod coverage_gap_tests {
         LayoutCx {
             languages: &crate::pdf::language::EMPTY,
             language_scope: 0,
+            chapter_scope: 0,
             opts,
             pending_page_break: false,
             type_scale: opts.type_scale(),
@@ -45999,6 +46228,7 @@ mod plass_pagination_tests {
             flow: FlowMark {
                 document_language: false,
                 language_scope: crate::pdf::language::UNASSIGNED,
+                chapter_scope: crate::pdf::chapters::UNASSIGNED,
                 group,
                 index,
                 count,

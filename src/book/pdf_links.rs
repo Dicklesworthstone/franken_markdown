@@ -9,9 +9,7 @@ use std::ops::Range;
 
 use crate::book::{Book, BookPdfRenderReport, BookRenderer, paths};
 use crate::search_index::{EntryKind, build_search_index};
-use crate::{
-    Block, Document, Inline, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result,
-};
+use crate::{Block, Document, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result};
 
 #[path = "document_pdf_links.rs"]
 pub(crate) mod document;
@@ -56,7 +54,7 @@ pub(super) fn render_reported(
 impl BookRenderer {
     /// Render the retained book with its current options and explicit PDF/A settings.
     ///
-    /// Uses the same chapter-local images, citations, landing headings and bound
+    /// Uses the same chapter-local images, citations, chapter landings and bound
     /// PDF destinations as [`BookRenderer::render_pdf`]. `PdfASettings::OFF`
     /// preserves ordinary output. PDF/A adds the existing writer's identification
     /// and output intent; it is not an independent conformance certification.
@@ -238,6 +236,7 @@ fn render_plan_complete(
         .map(|(uri, source)| {
             let destination = match source {
                 Some(Target::Heading(ordinal)) => emitted.get(ordinal).copied(),
+                Some(Target::Chapter(scope)) => navigation.chapters.get(scope).copied(),
                 Some(Target::Footnote(id)) => note_ids
                     .get(id)
                     .and_then(|prepared| navigation.notes.get(prepared))
@@ -265,6 +264,8 @@ struct Plan {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Target {
     Heading(usize),
+    /// First painted body line of a chapter, independent of its source headings.
+    Chapter(u32),
     /// Original definition ID after chapter isolation, before note numbering.
     Footnote(String),
     /// The first linked citation of the same chapter-isolated definition.
@@ -442,7 +443,6 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
     }
     let original_ranges = chapter_ranges(book, &document)?;
     let (mut document, ranges) = normalize_chapters(document, &original_ranges, options.profile)?;
-    let mut starts = BTreeSet::new();
     let mut note_chapters = BTreeSet::new();
     let mut reserved = BTreeSet::new();
     let mut candidates = 0usize;
@@ -452,9 +452,6 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             if let Some(target) = local_target(index, &sources[index], dest, &known) {
                 candidates += 1;
                 match target {
-                    LocalTarget::Start(chapter) => {
-                        starts.insert(chapter);
-                    }
                     LocalTarget::Fragment(chapter, fragment)
                         if fragment.starts_with("fn-") || fragment.starts_with("fnref-") =>
                     {
@@ -490,55 +487,9 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         .ok_or_else(|| invalid("temporary link namespace exhausted"))?;
     let prefix = format!("{PREFIX}{nonce}/");
 
-    // A bare chapter link must include leading prose and empty chapters, not
-    // jump to some later heading. Add a chapter-title heading only when such
-    // a chapter is actually targeted and has no heading at its start.
-    let insert_heading: Vec<bool> = ranges
-        .iter()
-        .enumerate()
-        .map(|(index, range)| {
-            starts.contains(&index) && leading_heading(&document.blocks[range.clone()]).is_none()
-        })
-        .collect();
-    let mut original = document.blocks.into_iter();
-    let mut blocks = Vec::with_capacity(original.len().saturating_add(starts.len()));
-    let mut assembled_ranges = Vec::with_capacity(book.chapters.len());
-    for (index, chapter) in book.chapters.iter().enumerate() {
-        if index > 0 {
-            blocks.push(
-                original
-                    .next()
-                    .ok_or_else(|| invalid("missing chapter break"))?,
-            );
-        }
-        let start = blocks.len();
-        if insert_heading[index] {
-            let title = if chapter.title.trim().is_empty() {
-                &sources[index]
-            } else {
-                &chapter.title
-            };
-            blocks.push(Block::Heading {
-                level: 1,
-                inlines: vec![Inline::Text(title.clone())],
-            });
-        }
-        for _ in 0..ranges[index].len() {
-            blocks.push(
-                original
-                    .next()
-                    .ok_or_else(|| invalid("missing chapter block"))?,
-            );
-        }
-        assembled_ranges.push(start..blocks.len());
-    }
-    if original.next().is_some() {
-        return Err(invalid("extra chapter block"));
-    }
-    document = Document { blocks };
-
+    // Chapter landings come from the final writer. They never add visible
+    // headings or shift source ordinals merely because a link targets a file.
     let mut aliases = Vec::with_capacity(book.chapters.len());
-    let mut landings = Vec::with_capacity(book.chapters.len());
     let mut base = 0usize;
     for (index, chapter) in book.chapters.iter().enumerate() {
         let (positions, normalized_count) = normalized_heading_positions(&chapter.doc.blocks);
@@ -568,13 +519,12 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         if entries.len() != source_order.len() {
             return Err(invalid("heading index drift"));
         }
-        let shift = usize::from(insert_heading[index]);
         let mut map = BTreeMap::new();
         for (entry, ordinal) in entries.into_iter().zip(source_order) {
             let normalized = positions
                 .get(ordinal)
                 .ok_or_else(|| invalid("normalized heading ordinal is invalid"))?;
-            map.insert(entry.anchor, Target::Heading(base + shift + *normalized));
+            map.insert(entry.anchor, Target::Heading(base + *normalized));
         }
         if note_chapters.contains(&index) {
             for anchor in crate::book::validation::footnote_anchors(&chapter.doc) {
@@ -600,37 +550,25 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             }
         }
         aliases.push(map);
-        let chapter_blocks = &document.blocks[assembled_ranges[index].clone()];
+        let chapter_blocks = &document.blocks[ranges[index].clone()];
         let mut assembled = Vec::new();
         collect_headings(chapter_blocks, &mut assembled);
-        if assembled.len() != normalized_count + shift {
+        if assembled.len() != normalized_count {
             return Err(invalid("HTML lowering and heading provenance disagree"));
         }
-        let landing = leading_heading(chapter_blocks)
-            .and_then(|first| {
-                assembled
-                    .iter()
-                    .position(|heading| std::ptr::eq(*heading, first))
-            })
-            .map(|ordinal| base + ordinal);
-        landings.push(landing);
         base = base
             .checked_add(assembled.len())
             .ok_or_else(|| invalid("heading count overflow"))?;
     }
 
     let mut tokens: BTreeMap<Option<Target>, String> = BTreeMap::new();
-    for (index, range) in assembled_ranges.iter().cloned().enumerate() {
+    for (index, range) in ranges.iter().cloned().enumerate() {
         walk_links(&mut document.blocks[range], &mut |dest| {
             let Some(target) = local_target(index, &sources[index], dest, &known) else {
                 return;
             };
             let target = match target {
-                LocalTarget::Start(chapter) => landings
-                    .get(chapter)
-                    .copied()
-                    .flatten()
-                    .map(Target::Heading),
+                LocalTarget::Start(chapter) => Some(Target::Chapter(chapter as u32 + 1)),
                 LocalTarget::Fragment(chapter, fragment) => aliases
                     .get(chapter)
                     .and_then(|map| map.get(&fragment))
@@ -652,7 +590,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         .into_iter()
         .map(|(target, token)| (token, target))
         .collect();
-    let languages = languages::Plan::new(book, &assembled_ranges, &document, options)?;
+    let languages = languages::Plan::new(book, &ranges, &document, options)?;
     Ok(Plan {
         document,
         languages,
@@ -682,37 +620,6 @@ fn reserve_nonce(bytes: &[u8], reserved: &mut BTreeSet<usize>) {
     {
         reserved.insert(nonce);
     }
-}
-
-fn leading_heading(blocks: &[Block]) -> Option<&Block> {
-    let first = blocks
-        .iter()
-        .find(|block| !matches!(block, Block::FootnoteDefinition { .. } | Block::PageBreak))?;
-    match first {
-        Block::Heading { inlines, .. } if has_text(inlines) => Some(first),
-        _ => None,
-    }
-}
-
-fn has_text(inlines: &[Inline]) -> bool {
-    inlines.iter().any(|inline| match inline {
-        Inline::Text(text)
-        | Inline::Code(text)
-        | Inline::Html(text)
-        | Inline::Math(text)
-        | Inline::DisplayMath(text) => text
-            .chars()
-            .any(|ch| !crate::layout::is_breakable_whitespace(ch)),
-        Inline::Image { alt, .. } => alt
-            .chars()
-            .any(|ch| !crate::layout::is_breakable_whitespace(ch)),
-        Inline::FootnoteRef { .. } => true,
-        Inline::Emphasis(content)
-        | Inline::Strong(content)
-        | Inline::Strikethrough(content)
-        | Inline::Link { content, .. } => has_text(content),
-        Inline::SoftBreak | Inline::HardBreak => false,
-    })
 }
 
 fn collect_headings<'a>(blocks: &'a [Block], out: &mut Vec<&'a Block>) {
@@ -765,7 +672,9 @@ mod tests {
             if let Some(target) = plan.targets.get(dest) {
                 out.push(match target {
                     Some(Target::Heading(ordinal)) => Some(*ordinal),
-                    Some(Target::Footnote(_) | Target::FootnoteReference(_)) => {
+                    Some(
+                        Target::Chapter(_) | Target::Footnote(_) | Target::FootnoteReference(_),
+                    ) => {
                         panic!("expected a heading target")
                     }
                     None => None,
@@ -1003,14 +912,27 @@ mod tests {
             ),
         ]);
         let mut plan = prepare(&book, book_pdf_document(&book), &PdfOptions::default()).unwrap();
-        assert_eq!(resolved(&mut plan), vec![Some(1), Some(2), Some(2)]);
+        let mut targets = Vec::new();
+        walk_links(&mut plan.document.blocks, &mut |dest| {
+            if let Some(target) = plan.targets.get(dest) {
+                targets.push(target.clone());
+            }
+        });
+        assert_eq!(
+            targets,
+            vec![
+                Some(Target::Chapter(2)),
+                Some(Target::Heading(1)),
+                Some(Target::Heading(1))
+            ]
+        );
         assert_eq!(
             plan.document
                 .blocks
                 .iter()
                 .filter(|block| matches!(block, Block::Heading { .. }))
                 .count(),
-            3
+            2
         );
     }
 

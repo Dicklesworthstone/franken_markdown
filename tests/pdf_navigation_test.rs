@@ -13,6 +13,9 @@ use franken_markdown::{
 #[path = "support/pdf_content.rs"]
 mod pdf_content;
 
+#[path = "support/book_chapters.rs"]
+mod book_chapters;
+
 struct Objects<'a> {
     bytes: &'a [u8],
     offsets: Vec<usize>,
@@ -977,18 +980,22 @@ fn book_links_bind_across_alerts_duplicate_titles_and_nested_bookmarks() {
         let objects = Objects::new(&pdf);
         let headings = assert_tree(
             &objects,
-            &["Same", "Detail", "Same", "Leaf"],
-            &[None, Some(0), None, Some(2)],
-            &[1, 0, 1, 0],
+            &["Same", "Detail", "Same", "Same", "Leaf"],
+            &[None, Some(0), None, Some(2), Some(3)],
+            &[1, 0, 2, 1, 0],
         );
         assert_eq!(
             annotation_destinations(&objects),
             [
-                headings[2].destination,
-                headings[1].destination,
                 headings[3].destination,
+                headings[1].destination,
+                headings[4].destination,
                 headings[0].destination
             ]
+        );
+        assert!(
+            headings[2].destination.y > headings[3].destination.y,
+            "the chapter bookmark includes its leading alert, while #same targets the source heading"
         );
         assert_ne!(headings[0].destination.page, headings[2].destination.page);
         assert!(
@@ -1550,7 +1557,7 @@ fn book_tall_note_fallback_keeps_heading_links_and_small_page_notes() {
 }
 
 #[test]
-fn books_without_local_links_preserve_ordinary_document_bytes_and_note_policy() {
+fn books_without_local_links_preserve_ordinary_body_paint_and_note_policy() {
     let book = BookRenderer::new(&[
         BookInput {
             path: "one.md".into(),
@@ -1570,10 +1577,25 @@ fn books_without_local_links_preserve_ordinary_document_bytes_and_note_policy() 
         let bytes = book
             .render_pdf_with_options(&options, PdfASettings::OFF)
             .unwrap();
-        assert_eq!(bytes, render_pdf_document(&document, &options).unwrap());
+        let standalone = render_pdf_document(&document, &options).unwrap();
+        assert_eq!(
+            pdf_content::page_content_streams(&bytes),
+            pdf_content::page_content_streams(&standalone)
+        );
+        assert_tree(
+            &Objects::new(&bytes),
+            &["First", "Nested", "Evidence", "Second"],
+            &[None, Some(0), Some(0), None],
+            &[2, 0, 0, 0],
+        );
+        assert_eq!(
+            standalone,
+            render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap()
+        );
         assert_eq!(
             bytes,
-            render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()).unwrap()
+            book.render_pdf_with_options(&options, PdfASettings::OFF)
+                .unwrap()
         );
     }
 }
@@ -1620,11 +1642,21 @@ fn book_chapter_break_precedes_the_whole_leading_list_or_alert() {
                     "the complete chapter opening must follow its boundary: {label}, optimal={optimal_pagination}, strict={strict_pagination}"
                 );
             }
+            let book_pdf = book
+                .render_pdf_with_options(&options, PdfASettings::OFF)
+                .unwrap();
             assert_eq!(
-                pdf,
-                book.render_pdf_with_options(&options, PdfASettings::OFF)
-                    .unwrap(),
+                pdf_content::page_content_streams(&pdf),
+                pdf_content::page_content_streams(&book_pdf)
             );
+            let chapter_bookmarks = assert_tree(
+                &Objects::new(&book_pdf),
+                &["one", "two"],
+                &[None, None],
+                &[0, 0],
+            );
+            assert_eq!(chapter_bookmarks[0].destination.page, pages[0]);
+            assert_eq!(chapter_bookmarks[1].destination.page, pages[1]);
             assert_eq!(
                 pdf,
                 render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic())

@@ -520,6 +520,7 @@ pub(super) fn layout_block(
         flow: FlowMark {
             document_language: false,
             language_scope: crate::pdf::language::UNASSIGNED,
+            chapter_scope: crate::pdf::chapters::UNASSIGNED,
             group: cx.alloc_flow(),
             index: 0,
             count: 1,

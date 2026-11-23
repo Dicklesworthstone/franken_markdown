@@ -33,6 +33,7 @@ fn unselected(
     let mut cx = LayoutCx {
         languages: &crate::pdf::language::EMPTY,
         language_scope: 0,
+        chapter_scope: 0,
         opts,
         pending_page_break: false,
         type_scale: opts.type_scale(),
@@ -75,6 +76,7 @@ fn baseline_pdf(lines: &[Line], opts: &PdfOptions, faces: &Faces, page: PageGeom
         PdfEmitOptions::default(),
         &mut PdfProfiler::disabled(),
         &crate::pdf::language::EMPTY.scopes,
+        &crate::pdf::language::EMPTY.chapters,
     )
     .unwrap()
     .0
@@ -851,6 +853,7 @@ fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
             PdfEmitOptions::monolithic(),
             &mut PdfProfiler::disabled(),
             &crate::pdf::language::EMPTY.scopes,
+            &crate::pdf::language::EMPTY.chapters,
         )
         .unwrap()
         .0

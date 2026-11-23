@@ -607,13 +607,19 @@ fn normalized_blocks_navigation_landings_and_rich_notes_retain_defining_language
         assert!(!french.contains(text));
     }
     assert!(
-        pdf.tagged("H1")
+        pdf.tagged("P")
             .iter()
-            .any(|node| pdf.text(node) == "second"
+            .any(|node| pdf.text(node).contains("GERMANBODY")
                 && pdf
                     .section(node)
                     .is_some_and(|owner| owner.id == sections[1].id)),
-        "landing heading inherits chapter language"
+        "the actual chapter landing retains its source language"
+    );
+    assert!(
+        pdf.tagged("H1")
+            .iter()
+            .all(|node| pdf.text(node) != "second"),
+        "bare chapter links must not manufacture a visible landing heading"
     );
     assert!(
         pdf.tagged("P")

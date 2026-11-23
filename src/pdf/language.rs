@@ -98,6 +98,7 @@ impl Scopes {
 
 pub(crate) struct Context {
     pub(super) scopes: Scopes,
+    pub(super) chapters: super::chapters::Titles,
     blocks: BTreeMap<usize, u32>,
 }
 
@@ -106,16 +107,23 @@ pub(super) static EMPTY: Context = Context {
         languages: Vec::new(),
         document_language: None,
     },
+    chapters: super::chapters::Titles::empty(),
     blocks: BTreeMap::new(),
 };
 
 impl Context {
-    pub(crate) fn bind(scopes: Scopes, document: &Document, roots: &[u32]) -> Result<Self> {
+    pub(crate) fn bind(
+        scopes: Scopes,
+        chapters: super::chapters::Titles,
+        document: &Document,
+        roots: &[u32],
+    ) -> Result<Self> {
         let mut context = Self {
             scopes,
+            chapters,
             blocks: BTreeMap::new(),
         };
-        if context.scopes.is_empty() {
+        if context.scopes.is_empty() && context.chapters.is_empty() {
             return Ok(context);
         }
         if roots.len() != document.blocks.len() {
@@ -124,7 +132,10 @@ impl Context {
             ));
         }
         for (block, &scope) in document.blocks.iter().zip(roots) {
-            if scope != 0 && context.scopes.language(scope).is_none() {
+            if scope != 0
+                && ((!context.scopes.is_empty() && context.scopes.language(scope).is_none())
+                    || (!context.chapters.is_empty() && context.chapters.get(scope).is_none()))
+            {
                 return Err(RenderError::InvalidInput(
                     "book_pdf_language: invalid prepared chapter scope".to_string(),
                 ));
@@ -150,6 +161,18 @@ impl Context {
     }
 
     pub(super) fn scope(&self, block: &Block) -> Option<u32> {
+        (!self.scopes.is_empty())
+            .then(|| self.block_scope(block))
+            .flatten()
+    }
+
+    pub(super) fn chapter_scope(&self, block: &Block) -> Option<u32> {
+        (!self.chapters.is_empty())
+            .then(|| self.block_scope(block))
+            .flatten()
+    }
+
+    fn block_scope(&self, block: &Block) -> Option<u32> {
         self.blocks
             .get(&(std::ptr::from_ref(block) as usize))
             .copied()

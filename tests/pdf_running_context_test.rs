@@ -259,6 +259,93 @@ fn contexts(pages: &[Page]) -> Vec<(&str, &str)> {
 }
 
 #[test]
+fn book_metadata_sets_chapters_and_resets_sections_without_inserting_headings() {
+    for linked in [false, true] {
+        let mut book = BookRenderer::new(&[
+            BookInput {
+                path: "one.md".into(),
+                source: format!("---\ntitle: Alpha metadata\n---\n# Visible Alpha\n\nFirst body.\n\n{}", if linked { "[NEXT](two.md)" } else { "" }),
+            },
+            BookInput {
+                path: "two.md".into(),
+                source: "---\ntitle: Beta metadata\n---\nSecond body.\n\n<!-- pagebreak -->\n\n## Beta detail\n\nMore body.\n\n<!-- pagebreak -->\n\nContinuation.".into(),
+            },
+            BookInput {
+                path: "three.md".into(),
+                source: "---\ntitle: Gamma metadata\n---\nThird body.".into(),
+            },
+        ]).unwrap();
+        book.options_mut().running = options().running;
+        let pdf = book.render_pdf().unwrap();
+        let pages = pages(&pdf);
+        assert_eq!(
+            contexts(&pages),
+            [
+                ("Alpha metadata", "Visible Alpha"),
+                ("Beta metadata", ""),
+                ("Beta metadata", "Beta detail"),
+                ("Beta metadata", "Beta detail"),
+                ("Gamma metadata", ""),
+            ]
+        );
+        let body: String = pages.iter().map(|page| page.body.as_str()).collect();
+        assert!(
+            !body.contains("metadata"),
+            "metadata must stay out of the body text"
+        );
+    }
+}
+
+#[test]
+fn book_note_headings_do_not_replace_metadata_chapters_or_invent_sections() {
+    let mut book = BookRenderer::new(&[
+        BookInput { path: "a.md".into(), source: "---\ntitle: Alpha metadata\n---\nFirst body.[^n]\n\n[^n]: # False chapter\n\n    Note body.".into() },
+        BookInput { path: "b.md".into(), source: "---\ntitle: Beta metadata\n---\nSecond body.".into() },
+    ]).unwrap();
+    book.options_mut().running = options().running;
+    let pages = pages(&book.render_pdf().unwrap());
+    assert_eq!(
+        contexts(&pages),
+        [("Alpha metadata", ""), ("Beta metadata", "")]
+    );
+    assert!(pages[0].body.contains("False chapter"));
+}
+
+#[test]
+fn identical_leading_tables_keep_distinct_book_chapters_across_toc_cache_passes() {
+    let table = "| SAME_HEADER | VALUE |\n| --- | --- |\n| SAME_CELL | DATA |\n";
+    let book = BookRenderer::new(&[
+        BookInput {
+            path: "a.md".into(),
+            source: format!("---\ntitle: Alpha metadata\n---\n{table}"),
+        },
+        BookInput {
+            path: "b.md".into(),
+            source: format!("---\ntitle: Beta metadata\n---\n{table}"),
+        },
+    ])
+    .unwrap();
+    for toc in [false, true] {
+        let options = PdfOptions { toc, ..options() };
+        let bytes = book
+            .render_pdf_with_options(&options, franken_markdown::PdfASettings::OFF)
+            .unwrap();
+        let pages = pages(&bytes);
+        assert_eq!(
+            contexts(&pages),
+            [("Alpha metadata", ""), ("Beta metadata", "")]
+        );
+        for page in &pages {
+            assert!(page.body.contains("SAME_HEADER") && page.body.contains("SAME_CELL"));
+        }
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("/S /Sect "),
+            "chapter navigation must not manufacture language sections"
+        );
+    }
+}
+
+#[test]
 fn first_heading_selects_a_coherent_pair_and_last_heading_carries_forward() {
     let source = concat!(
         "# North\n\n## Introduction\n\nBody one.\n\n<!-- pagebreak -->\n\n",

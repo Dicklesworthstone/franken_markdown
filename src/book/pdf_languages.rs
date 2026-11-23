@@ -1,13 +1,16 @@
-//! Language scopes follow canonical transformations of an assembled PDF book.
+//! Chapter ownership follows canonical transformations of an assembled PDF book.
+//! Languages and navigation share that proof, without changing Markdown nodes.
 
 use std::ops::Range;
 
 use crate::book::Book;
+use crate::pdf::chapters::Titles;
 use crate::pdf::language::{Context, Scopes};
 use crate::{Document, PdfOptions, RenderError, Result};
 
 pub(super) struct Plan {
     scopes: Scopes,
+    chapters: Titles,
     roots: Vec<u32>,
 }
 
@@ -27,20 +30,28 @@ impl Plan {
             }),
             options,
         )?;
-        let mut roots = Vec::new();
-        if !scopes.is_empty() {
-            if ranges.len() != book.chapters.len() {
-                return Err(invalid("chapter ranges disagree"));
+        let chapters = Titles::new(book.chapters.iter().map(|chapter| {
+            if chapter.title.trim().is_empty() {
+                chapter.path.as_str()
+            } else {
+                chapter.title.as_str()
             }
-            roots.resize(document.blocks.len(), 0);
-            for (chapter, range) in ranges.iter().enumerate() {
-                let slice = roots
-                    .get_mut(range.clone())
-                    .ok_or_else(|| invalid("invalid chapter range"))?;
-                slice.fill(chapter as u32 + 1);
-            }
+        }))?;
+        if ranges.len() != book.chapters.len() {
+            return Err(invalid("chapter ranges disagree"));
         }
-        Ok(Self { scopes, roots })
+        let mut roots = vec![0; document.blocks.len()];
+        for (chapter, range) in ranges.iter().enumerate() {
+            let slice = roots
+                .get_mut(range.clone())
+                .ok_or_else(|| invalid("invalid chapter range"))?;
+            slice.fill(chapter as u32 + 1);
+        }
+        Ok(Self {
+            scopes,
+            chapters,
+            roots,
+        })
     }
 
     pub(super) fn prepared(
@@ -50,9 +61,6 @@ impl Plan {
         prepared: &Document,
         options: &PdfOptions,
     ) -> Result<Context> {
-        if self.scopes.is_empty() {
-            return Context::bind(self.scopes.clone(), prepared, &[]);
-        }
         if self.roots.len() != source.blocks.len() {
             return Err(invalid("source block ownership changed"));
         }
@@ -78,7 +86,7 @@ impl Plan {
                     .ok_or_else(|| invalid("invalid note origin"))
             })
             .collect::<Result<Vec<_>>>()?;
-        Context::bind(self.scopes.clone(), prepared, &roots)
+        Context::bind(self.scopes.clone(), self.chapters.clone(), prepared, &roots)
     }
 }
 

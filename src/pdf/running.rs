@@ -61,6 +61,8 @@ struct PageContext {
 struct SourceHeading {
     title: Rc<str>,
     level: u8,
+    chapter_scope: u32,
+    chapter_title: Option<Rc<str>>,
 }
 
 /// Only headings in ordinary source flow may change running text. Prepared
@@ -70,12 +72,24 @@ struct SourceHeading {
 struct SourceHeadings {
     indices: BTreeMap<usize, usize>,
     ordered: Vec<SourceHeading>,
+    chapters: BTreeMap<u32, Rc<str>>,
 }
 
 impl SourceHeadings {
+    #[cfg(test)]
     fn from_document(doc: &Document) -> Self {
-        fn visit(blocks: &[Block], headings: &mut SourceHeadings) {
+        Self::from_document_with_chapters(doc, &super::language::EMPTY)
+    }
+
+    fn from_document_with_chapters(doc: &Document, context: &super::language::Context) -> Self {
+        fn visit(
+            blocks: &[Block],
+            scope: u32,
+            context: &super::language::Context,
+            headings: &mut SourceHeadings,
+        ) {
             for block in blocks {
+                let scope = context.chapter_scope(block).unwrap_or(scope);
                 match block {
                     Block::Heading { level, inlines } => {
                         let title = HeadingSource::from_inlines(inlines).title;
@@ -89,12 +103,14 @@ impl SourceHeadings {
                         headings.ordered.push(SourceHeading {
                             title: Rc::from(title),
                             level: (*level).clamp(1, 6),
+                            chapter_scope: scope,
+                            chapter_title: headings.chapters.get(&scope).map(Rc::clone),
                         });
                     }
-                    Block::BlockQuote(inner) => visit(inner, headings),
+                    Block::BlockQuote(inner) => visit(inner, scope, context, headings),
                     Block::List(list) => {
                         for item in &list.items {
-                            visit(&item.blocks, headings);
+                            visit(&item.blocks, scope, context, headings);
                         }
                     }
                     // Do not visit a note's children, even when a note is
@@ -103,8 +119,15 @@ impl SourceHeadings {
                 }
             }
         }
-        let mut headings = Self::default();
-        visit(&doc.blocks, &mut headings);
+        let mut headings = Self {
+            chapters: context
+                .chapters
+                .iter()
+                .map(|(scope, title)| (scope, Rc::from(title.as_ref())))
+                .collect(),
+            ..Self::default()
+        };
+        visit(&doc.blocks, 0, context, &mut headings);
         headings
     }
 
@@ -122,7 +145,9 @@ impl SourceHeadings {
 impl PageContext {
     fn enter(&mut self, heading: &SourceHeading) {
         self.section = Rc::clone(&heading.title);
-        if heading.level == 1 {
+        if let Some(title) = &heading.chapter_title {
+            self.chapter = Rc::clone(title);
+        } else if heading.level == 1 {
             self.chapter = Rc::clone(&heading.title);
         }
     }
@@ -414,6 +439,16 @@ pub(super) fn resolve(
     faces: &Faces,
     page: PageGeom,
 ) -> crate::Result<Option<RunningSpec>> {
+    resolve_with_chapters(doc, opts, faces, page, &super::language::EMPTY)
+}
+
+pub(super) fn resolve_with_chapters(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: &Faces,
+    page: PageGeom,
+    context: &super::language::Context,
+) -> crate::Result<Option<RunningSpec>> {
     let running = &opts.running;
     let sugar = opts.page_numbers && nonempty(running.footer.center.as_ref()).is_none();
     if running.is_empty() && !sugar {
@@ -451,7 +486,7 @@ pub(super) fn resolve(
             .any(|piece| matches!(piece, Piece::Section | Piece::Chapter))
     });
     let headings = if uses_headings {
-        SourceHeadings::from_document(doc)
+        SourceHeadings::from_document_with_chapters(doc, context)
     } else {
         SourceHeadings::default()
     };
@@ -573,7 +608,8 @@ fn band_spec(
     rule_y: Option<f32>,
 ) -> BandSpec {
     let has_section = !headings.ordered.is_empty();
-    let has_chapter = headings.ordered.iter().any(|heading| heading.level == 1);
+    let has_chapter =
+        !headings.chapters.is_empty() || headings.ordered.iter().any(|heading| heading.level == 1);
     let slot = |template: Option<&str>| {
         let mut pieces = template.map_or_else(Vec::new, |t| parse_template(t, values));
         let original_len = pieces.len();
@@ -777,12 +813,19 @@ impl RunningSpec {
                 }
             };
             scan(&context);
+            if chapter {
+                for (_, title) in self.headings.chapters.iter() {
+                    context.chapter = Rc::clone(title);
+                    scan(&context);
+                }
+                context = PageContext::default();
+            }
             if section || chapter {
                 for heading in &self.headings.ordered {
                     // A static slot is checked once; a chapter-only slot
                     // changes only at H1. Validate one source at a time so a
                     // long carried title is never retained per section.
-                    if section || heading.level == 1 {
+                    if section || (self.headings.chapters.is_empty() && heading.level == 1) {
                         context.enter(heading);
                         scan(&context);
                     }
@@ -809,11 +852,12 @@ impl RunningSpec {
         lines: &[Line],
         plan: Option<&PageBreakPlan>,
     ) -> ChromePages {
-        if self.headings.ordered.is_empty() {
+        if self.headings.ordered.is_empty() && self.headings.chapters.is_empty() {
             return self.layout_pages(faces, page, super::count_pages_with(lines, page, plan));
         }
         let mut contexts = Vec::new();
         let mut context = PageContext::default();
+        let mut chapter_scope = 0;
         let mut start = 0;
         let mut emitted_any = false;
         let notes = PageNotes::scan(lines);
@@ -826,10 +870,28 @@ impl RunningSpec {
             notes.as_ref(),
         ) {
             let mut first = None;
+            let mut first_scope = None;
+            let mut first_heading = false;
             for positioned in placed {
+                if let Some(scope) = super::chapters::body_scope(positioned.line)
+                    && let Some(title) = self.headings.chapters.get(&scope)
+                {
+                    if scope != chapter_scope {
+                        context.section = Rc::from("");
+                        context.chapter = Rc::clone(title);
+                        chapter_scope = scope;
+                    }
+                    first_scope.get_or_insert(scope);
+                    first.get_or_insert_with(|| context.clone());
+                }
                 if let Some(heading) = self.headings.for_line(positioned.line) {
                     context.enter(heading);
-                    first.get_or_insert_with(|| context.clone());
+                    if !first_heading
+                        && first_scope.is_none_or(|scope| scope == heading.chapter_scope)
+                    {
+                        first = Some(context.clone());
+                        first_heading = true;
+                    }
                 }
             }
             contexts.push(first.unwrap_or_else(|| context.clone()));

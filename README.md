@@ -272,6 +272,14 @@ at the same level. Alert labels retain their visual styling without consuming
 heading anchors or adding bookmarks, so local links, the table of contents, and
 book links resolve to the actual source headings.
 
+Book PDFs also have a root bookmark for every chapter, using its publication
+title even when the chapter starts with prose, a list, or a table. Its source
+headings nest beneath that root. Bare chapter links land on the first actual
+body content; adding a link never inserts a visible title heading. Requested
+contents include these chapter titles and their final page numbers. Empty
+chapters share the next chapter's destination, or the final page, without
+creating blank body pages. Explicit heading fragments retain their source IDs.
+
 ---
 
 ## Design Philosophy
@@ -731,12 +739,15 @@ fmd manual.md --to pdf --out manual.pdf \
   --pdf-footer-center '{page} / {pages}' --pdf-header-rule
 ```
 
-The first body heading beginning on a page selects that page's `{section}` and
-its owning H1 `{chapter}`. Later headings update the context carried to the
-next page. Continuation pages retain the complete title, including wrapped and
-styled headings. Before the first body heading or H1, the corresponding token
-is empty. Generated contents/Notes headings and headings in footnotes do not
-replace the body context. Titles remain literal text and use the existing
+In a single document, the first body heading beginning on a page selects that
+page's `{section}` and its owning H1 `{chapter}`. Before the first body heading
+or H1, the corresponding token is empty. Book PDFs use each chapter's
+publication title for `{chapter}`, including chapters with no H1. Entering a
+chapter resets `{section}` until its first body heading; an explicit page break
+inside a chapter does not reset it. Later headings update the context carried
+to the next page. Continuation pages retain the complete title, including
+wrapped and styled headings. Generated contents/Notes headings and headings in
+footnotes do not replace the body context. Titles remain literal text and use the existing
 ellipsis, font-subset and margin-fit rules. These tokens work through the
 shared Rust, native render/watch/batch/book, MCP and browser PDF options;
 browser packages must be rebuilt to include the renderer change.
@@ -1003,7 +1014,8 @@ build and verify it.
 
 In the [main demo](wasm/demo/index.html), choose **Open Markdown…** to load a
 local UTF-8 `.md`, `.markdown`, or `.txt` file up to 4 MiB, edit it, then download
-HTML or PDF. **Download Markdown** saves the current source even if rendering
+HTML, PDF, EPUB, or SVG. PDF page setup offers named or custom paper dimensions,
+portrait or landscape orientation, and independent margins. **Download Markdown** saves the current source even if rendering
 fails. An unchanged imported document keeps its original UTF-8 BOM and line
 endings; edited text uses the editor’s line endings. Opening a file updates the
 export title and resets raw HTML to its safe default; replacing an edited draft asks for confirmation. Invalid files

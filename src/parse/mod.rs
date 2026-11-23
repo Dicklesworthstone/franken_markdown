@@ -5612,6 +5612,17 @@ fn parse_inlines_chars_with_refs_profiled(
                         before.is_some_and(|ch| !ch.is_whitespace()),
                     )
                 } else {
+                    // A link/image label is a slice of the surrounding inline
+                    // source, not a new paragraph. Its brackets still flank
+                    // edge delimiters: treating either edge as whitespace can
+                    // hide a both-opening-and-closing run from the rule of
+                    // three, inventing emphasis and removing literal markers
+                    // from image descriptions. Interior whitespace retains its
+                    // own boundary, and prose keeps its paragraph edges.
+                    let before =
+                        before.or_else(|| (context == InlineContext::LinkLabel).then_some('['));
+                    let after =
+                        after.or_else(|| (context == InlineContext::LinkLabel).then_some(']'));
                     emphasis_flanking(before, after, c)
                 };
                 // This renderer supports double-tilde strikethrough. A longer

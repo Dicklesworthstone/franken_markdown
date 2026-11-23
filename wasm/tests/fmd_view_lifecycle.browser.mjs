@@ -475,6 +475,47 @@ await test("current font decode failure retains previous HTML and fonts and perm
   assert(!document.fonts.has(faces[0])); equal(document.fonts.size, 1);
 });
 
+await test("body and code retain their embedded CJK fallback instead of ambient fonts", async () => {
+  const f = view("日本語漢字"), call = await nextRender(() => f.connect());
+  const html = `<style>
+    @font-face{font-family:"FMD Body";src:url("${globalThis.fmdViewTestFont}")}
+    @font-face{font-family:"FMD Mono";src:url("${globalThis.fmdViewTestFont}")}
+    @font-face{font-family:"FMD CJK";src:url("${globalThis.fmdViewTestCjkFont}")}
+    :root{--fmd-font-body:"FMD Body", "FMD CJK", serif;--fmd-font-mono:"FMD Mono", "FMD CJK", monospace}
+    body{font-family:var(--fmd-font-body)}code{font-family:var(--fmd-font-mono)}
+    </style><p>日本語漢字</p><code>日本語漢字</code>`;
+  call.resolve({ ...output(call), bytes: new TextEncoder().encode(html), text: () => html });
+  await until(() => f.rendered.length === 1);
+  const reference = await new FontFace("fmd-cjk-reference", `url("${globalThis.fmdViewTestCjkFont}")`).load();
+  document.fonts.add(reference);
+  try {
+    const fonts = [...document.fonts].filter(face => face !== reference);
+    equal(fonts.length, 3);
+    assert(fonts.every(face => face.status === "loaded"));
+    const fallback = fonts.find(face => face.family.endsWith("-2"));
+    assert(fallback, "CJK fallback must have its own registered alias");
+    const pixels = family => {
+      const canvas = document.createElement("canvas"); canvas.width = 240; canvas.height = 64;
+      const context = canvas.getContext("2d");
+      context.font = `32px ${family}`;
+      context.fillText("日本語漢字", 2, 42);
+      return Array.from(context.getImageData(0, 0, canvas.width, canvas.height).data);
+    };
+    const expected = pixels('"fmd-cjk-reference"');
+    assert(expected.some((value, index) => index % 4 === 3 && value), "reference has actual CJK ink");
+    for (const selector of ["p", "code"]) {
+      const family = getComputedStyle(f.element.shadowRoot.querySelector(selector)).fontFamily;
+      assert(family.includes(fallback.family), `${selector} must reference its decoded CJK face`);
+      assert(!family.includes("FMD CJK"), `${selector} must not retain the unregistered global family`);
+      equal(pixels(family), expected);
+    }
+    equal(f.errors, []);
+    f.element.remove();
+    assert(fonts.every(face => !document.fonts.has(face)));
+    assert(document.fonts.has(reference), "disconnect preserves unrelated font ownership");
+  } finally { document.fonts.delete(reference); }
+});
+
 await test("partial font registration failure rolls back new faces and preserves the old view", async () => {
   const f = view("original registration"), first = await nextRender(() => f.connect());
   first.resolve(fontOutput(first)); await until(() => f.rendered.length === 1);

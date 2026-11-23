@@ -16,6 +16,7 @@ if (args.length && (args.length !== 2 || args[0] !== "--chromium")) {
 const component = await readFile(new URL("../fmd-view.js", import.meta.url), "utf8");
 const suite = await readFile(new URL("./fmd_view_lifecycle.browser.mjs", import.meta.url), "utf8");
 const font = (await readFile(new URL("../../fmd-font/fonts/computer-modern/cmunrm.ttf", import.meta.url))).toString("base64");
+const cjkFont = (await readFile(new URL("../../fmd-font/fonts/noto-sans-cjk/NotoSansSC-CJK.ttf", import.meta.url))).toString("base64");
 const browser = await chromium.launch({
   executablePath: args[1] ?? process.env.FMD_CHROMIUM, headless: true,
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -27,8 +28,9 @@ try {
   page.on("pageerror", error => errors.push(String(error)));
   await page.route("**/*", route => route.abort());
   await page.setContent('<pre id="result">Running</pre>');
-  await page.evaluate(async ({ component, suite, font }) => {
+  await page.evaluate(async ({ component, suite, font, cjkFont }) => {
     globalThis.fmdViewTestFont = `data:font/ttf;base64,${font}`;
+    globalThis.fmdViewTestCjkFont = `data:font/ttf;base64,${cjkFont}`;
     const urls = [];
     const moduleUrl = source => {
       const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
@@ -42,7 +44,7 @@ try {
     } finally {
       for (const url of urls) URL.revokeObjectURL(url);
     }
-  }, { component, suite, font });
+  }, { component, suite, font, cjkFont });
   result = JSON.parse(await page.locator("#result").innerText());
   result.browserErrors = errors;
   console.log(JSON.stringify(result, null, 2));

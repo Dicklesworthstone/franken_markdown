@@ -64,6 +64,40 @@ function rebaseResources(fragment, base) {
   }
 }
 
+// Rewrite every owned family, including fallback faces later in the stack.
+// Commas in quoted/escaped family names or comments are not list separators;
+// unowned fallbacks and whitespace retain their exact spelling and order.
+function shadowFontStack(value, families) {
+  const parts = [];
+  let start = 0, quote = null, escaped = false, comment = false;
+  for (let i = 0; i < value.length; i++) {
+    const character = value[i];
+    if (comment) {
+      if (character === "*" && value[i + 1] === "/") { comment = false; i++; }
+      continue;
+    }
+    if (escaped) { escaped = false; continue; }
+    if (character === "\\") { escaped = true; continue; }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") { quote = character; continue; }
+    if (character === "/" && value[i + 1] === "*") { comment = true; i++; continue; }
+    if (character === ",") { parts.push(value.slice(start, i)); start = i + 1; }
+  }
+  // Custom properties may retain invalid font syntax. Do not partially rewrite
+  // an unterminated name/comment into a different declaration.
+  if (quote || escaped || comment) return value;
+  parts.push(value.slice(start));
+  return parts.map(part => {
+    const family = part.trim(), alias = families.get(family);
+    if (alias === undefined) return part;
+    const at = part.indexOf(family);
+    return part.slice(0, at) + alias + part.slice(at + family.length);
+  }).join(",");
+}
+
 // Complete-document selectors do not match inside a shadow tree, and browsers
 // do not register its @font-face rules. Let the browser parse our renderer CSS;
 // adapt only document selectors and the renderer's two font-family variables.
@@ -104,10 +138,8 @@ async function shadowDocument(html, doc, sourceUrl) {
       if (!rule.style) return;
       for (const property of ["--fmd-font-body", "--fmd-font-mono"]) {
         const value = rule.style.getPropertyValue(property);
-        for (const [family, alias] of families) {
-          if (value === family || value.startsWith(`${family},`))
-            rule.style.setProperty(property, alias + value.slice(family.length));
-        }
+        const scoped = shadowFontStack(value, families);
+        if (scoped !== value) rule.style.setProperty(property, scoped);
       }
     });
     node.textContent = [...sheet.cssRules].map(rule => rule.cssText).join("\n");

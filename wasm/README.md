@@ -245,7 +245,9 @@ recovery does not store document settings.
 The `./web-component` entry registers `<fmd-view>` for fetched or inline
 Markdown. Its shadow view applies the renderer's palette, body typography and
 embedded body/mono fonts; `font="sans"` and `font="serif"` can coexist on the
-same page. The optional `profile="commonmark-gfm"` or `profile="gfm-plus"`
+same page. When the renderer supplies an embedded CJK fallback, both prose and
+code retain that face in their own font stacks; its registration stays isolated
+from sibling views and host fonts. The optional `profile="commonmark-gfm"` or `profile="gfm-plus"`
 attribute selects the Markdown grammar for fetched and inline sources. Attribute
 changes start a fresh render and fence late results from the previous choice.
 Remove `profile` to restore the renderer default; blank/unknown values and

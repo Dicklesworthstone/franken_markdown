@@ -1538,12 +1538,17 @@ fn task_checkboxes_fit_small_type_grid_without_clipping_or_row_overlap() {
     let opts = small_task_options();
     let pdf = render_pdf(&source, &opts).unwrap();
     let pages = painted_pages(&pdf);
-    assert!(pages.len() >= 3, "fixture must exercise repeated page edges");
+    assert!(
+        pages.len() >= 3,
+        "fixture must exercise repeated page edges"
+    );
     check_grid(&pages, &opts, 1.0).unwrap();
     assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 48);
     assert_eq!(
         body_text(&pages),
-        (0..48).map(|row| format!("TASK{row:03}")).collect::<String>()
+        (0..48)
+            .map(|row| format!("TASK{row:03}"))
+            .collect::<String>()
     );
     assert!(
         pages
@@ -1561,7 +1566,10 @@ fn task_checkboxes_fit_small_type_grid_without_clipping_or_row_overlap() {
         PdfEmitOptions::monolithic(),
     )
     .unwrap();
-    assert_eq!(pdf, monolithic, "both PDF writers use the same measured rows");
+    assert_eq!(
+        pdf, monolithic,
+        "both PDF writers use the same measured rows"
+    );
 }
 
 #[test]
@@ -1588,8 +1596,13 @@ fn continued_task_notes_keep_vector_ink_inside_the_shared_grid() {
         .filter(|run| run.text.starts_with("TASK"))
         .collect();
     assert_eq!(
-        labels.iter().map(|run| run.text.as_str()).collect::<String>(),
-        (0..36).map(|row| format!("TASK{row:03}")).collect::<String>()
+        labels
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<String>(),
+        (0..36)
+            .map(|row| format!("TASK{row:03}"))
+            .collect::<String>()
     );
     assert!(labels.iter().all(|run| run.size < 6.0));
     assert_eq!(pdf, render_pdf(&source, &opts).unwrap());
@@ -1677,7 +1690,9 @@ fn tight_theme_leading_contains_task_ink_without_a_grid() {
     assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 48);
     assert_eq!(
         body_text(&pages),
-        (0..48).map(|row| format!("TASK{row:03}")).collect::<String>()
+        (0..48)
+            .map(|row| format!("TASK{row:03}"))
+            .collect::<String>()
     );
     assert_eq!(pdf, render_pdf(&source, &opts).unwrap());
 }

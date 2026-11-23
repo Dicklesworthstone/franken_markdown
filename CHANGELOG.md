@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- SVG links and footnote citations preserve kerning, ligatures and combining
+  marks across navigation boundaries. Each destination retains its own hit
+  regions through wrapping and discretionary breaks, and metadata-only changes
+  preserve enclosing link bounds.
+- PDF task checkboxes reserve their painted ink in baseline-grid layout and
+  under tight theme leading, including continued footnotes and small type.
+
 ## [0.8.0] - 2026-11-21
 
 A feature and reliability release (240+ commits since 0.7.0) shipping

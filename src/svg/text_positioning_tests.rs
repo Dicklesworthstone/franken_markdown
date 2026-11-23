@@ -439,7 +439,10 @@ fn citation_metadata_keeps_enclosing_link_rectangles_exact_at_fractional_baselin
             // its complete-run bottom is 74.11, but the shorter b owner's
             // arithmetic gives 74.11000000000001. Outward rounding must not
             // expand the enclosing link by 0.01pt solely due to metadata.
-            close(rows[0][0].shaped.as_ref().unwrap().ink_ascent(), size * 1.05);
+            close(
+                rows[0][0].shaped.as_ref().unwrap().ink_ascent(),
+                size * 1.05,
+            );
             let mut expected = poster();
             let reference_style = linked(&expected);
             let reference = expected.wrap(

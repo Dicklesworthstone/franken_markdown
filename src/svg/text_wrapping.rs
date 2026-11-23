@@ -77,13 +77,7 @@ pub(super) fn place_shaped(
         if flow.line_width + next > width && (end > start || !flow.line.is_empty()) {
             if start < end {
                 let bytes = source_range(shaped, start..end);
-                push_prepared(
-                    flow,
-                    &run,
-                    bytes,
-                    warning.take(),
-                    shaped.slice(start..end),
-                );
+                push_prepared(flow, &run, bytes, warning.take(), shaped.slice(start..end));
             }
             flow.new_line();
             start = end;
@@ -96,13 +90,7 @@ pub(super) fn place_shaped(
     }
     if start < end {
         let bytes = source_range(shaped, start..end);
-        push_prepared(
-            flow,
-            &run,
-            bytes,
-            warning.take(),
-            shaped.slice(start..end),
-        );
+        push_prepared(flow, &run, bytes, warning.take(), shaped.slice(start..end));
     }
 }
 
@@ -147,13 +135,7 @@ fn place_contextual(
                     // again, rather than strand a single glyph on that line.
                     break;
                 }
-                push_prepared(
-                    flow,
-                    &run,
-                    bytes,
-                    warning.take(),
-                    prepared,
-                );
+                push_prepared(flow, &run, bytes, warning.take(), prepared);
                 start = end;
                 if start < shaped.clusters.len() {
                     flow.new_line();
@@ -169,13 +151,7 @@ fn place_contextual(
                 // Keep a prior resource warning as well as the wrapping warning.
                 let mut prepared = prepared;
                 prepared.add_wrap_warning();
-                push_prepared(
-                    flow,
-                    &run,
-                    bytes,
-                    warning.take(),
-                    prepared,
-                );
+                push_prepared(flow, &run, bytes, warning.take(), prepared);
                 return;
             }
             repairs += 1;

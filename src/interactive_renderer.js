@@ -1625,14 +1625,16 @@ function parseMarkdownClient(source, imageAssets) {
     return kind !== 0 && kind !== 7;
   }
   const fence = line => {
-    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/s);
     return match && !(match[1][0] === '`' && match[2].includes('`')) ? match : null;
   };
   const fenceEnd = marker => new RegExp('^ {0,3}' + marker[0] + '{' + marker.length + ',}[ \\t]*$');
   const rule = line => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line);
-  const headingMarker = line => line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/);
+  // These are already LF-delimited Markdown lines. Unicode line/paragraph
+  // separators belong to the payload, so dot captures must retain them.
+  const headingMarker = line => line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/s);
   const setextLevel = line => /^ {0,3}=+[ \t]*$/.test(line) ? 1 : /^ {0,3}-+[ \t]*$/.test(line) ? 2 : 0;
-  const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/);
+  const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/s);
   function indentation(line, startColumn = 0) {
     let end = 0, column = startColumn;
     while (line[end] === ' ' || line[end] === '\t') {
@@ -1685,13 +1687,15 @@ function parseMarkdownClient(source, imageAssets) {
     return end >= 2 && line[end - 1] === '$' && line[end - 2] === '$';
   }
   const listMarker = line => {
-    const m = line.match(/^( {0,3})([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/);
+    const m = line.match(/^( {0,3})([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/s);
     if (!m) return null;
     const column = m[1].length + m[2].length;
     const gap = indentation(m[3] || ' ', column).width;
+    // An empty first item line uses marker width plus one column. Its trailing
+    // padding cannot push an immediately following block outside the item.
     return {indent: m[1].length, marker: m[2], ordered: /^\d/.test(m[2]),
-      start: parseInt(m[2], 10), width: column + (gap > 4 ? 1 : gap),
-      text: gap > 4 ? stripIndent(m[3] + (m[4] || ''), 1, column) : m[4] || ''};
+      start: parseInt(m[2], 10), width: column + (!m[4] || gap > 4 ? 1 : gap),
+      text: !m[4] ? '' : gap > 4 ? stripIndent(m[3] + m[4], 1, column) : m[4]};
   };
   const markerInterrupts = marker => marker && !blankLine(marker.text) && (!marker.ordered || marker.start === 1);
   const startsBlock = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line) || htmlBlockKind(line);
@@ -2203,7 +2207,7 @@ function parseMarkdownClient(source, imageAssets) {
           }
           tail.observe(inner); pushSourceLine(quote, inner, lines, i, lazy); i++;
         }
-        const callout = quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$/i);
+        const callout = quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$/is);
         if (callout) {
           const name = callout[1].toLowerCase(); quote.shift();
           const padded = lazyPadding.get(quote);
@@ -2264,7 +2268,7 @@ function parseMarkdownClient(source, imageAssets) {
             const lazy = tail.lazyLine(lines[i]);
             tail.observe(lazy); pushSourceLine(item, lazy, lines, i, true); i++;
           }
-          const task = item[0].match(/^\[([ xX])\](?:\s+|$)(.*)$/);
+          const task = item[0].match(/^\[([ xX])\](?:\s+|$)(.*)$/s);
           if (task) item[0] = task[2];
           allocate();
           items.push({task: task ? task[1] !== ' ' : null, children: parseBlocks(item, depth + 1)});

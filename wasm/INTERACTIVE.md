@@ -83,6 +83,12 @@ Spaces are encoded only after exact image-resource lookup, so an imported
 destinations containing an unescaped `<` stay visible as source and cannot
 shadow a later valid definition.
 
+Block text also retains U+2028 and U+2029 inside headings, list and task items,
+footnote bodies, fence information, and callout titles. These characters do
+not end a Markdown source line. Empty list markers use one column of content
+padding regardless of trailing spaces or tabs, so an immediately following
+indented block stays inside its item. A blank line still ends an empty item.
+
 ## Example: Node host with a matching local build
 
 ```js

@@ -307,6 +307,7 @@ test('heading and footnote IDs cannot collide', () => {
 import './interactive_definitions.test.mjs';
 import './interactive_reference_targets.test.mjs';
 import './interactive_autolink_unicode.test.mjs';
+import './interactive_block_payloads.test.mjs';
 
 // Source editing runs through the same self-contained workspace asset bundle.
 import './interactive_search.test.mjs';

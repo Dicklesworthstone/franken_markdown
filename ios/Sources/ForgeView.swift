@@ -220,6 +220,7 @@ struct ForgeView: View {
         .onChange(of: renderer.pdfBaseFontSize) { _, _ in renderer.scheduleDraftSave() }
         .onChange(of: renderer.pdfHeadingScale) { _, _ in renderer.scheduleDraftSave() }
         .onChange(of: renderer.pdfTableFontSize) { _, _ in renderer.scheduleDraftSave() }
+        .onChange(of: renderer.pdfPageSetup) { _, _ in renderer.scheduleDraftSave() }
     }
 
     private var forgeModelObservers: some View {

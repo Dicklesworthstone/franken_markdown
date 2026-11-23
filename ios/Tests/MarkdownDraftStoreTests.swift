@@ -105,11 +105,39 @@ final class MarkdownDraftStoreTests: XCTestCase {
         XCTAssertEqual(restored.source, "# Existing draft")
         XCTAssertNil(restored.customizePDFTypography)
         XCTAssertNil(restored.pdfBaseFontSize)
+        XCTAssertNil(restored.pdfPageSetup)
+        XCTAssertEqual(restored.pdfPageSetup ?? .standard, .standard)
         try await store.save(restored)
         let manifest = try readManifest(store)
         XCTAssertEqual(manifest["storageSchema"] as? Int, 2)
         let migrated = await store.load()
         XCTAssertEqual(migrated, restored)
+    }
+
+    func testPageSetupRoundTripsThroughTheRecoveryManifest() async throws {
+        let store = makeStore()
+        let page = MarkdownPageSetup(
+            paper: .custom, orientation: .landscape, customWidthPt: 450, customHeightPt: 620,
+            margins: .init(topPt: 24, rightPt: 36, bottomPt: 48, leftPt: 60)
+        )
+        let draft = makeDraft(source: "# Custom publication", pdfPageSetup: page)
+        try await store.save(draft)
+        let restored = await store.load()
+        XCTAssertEqual(restored, draft)
+        XCTAssertEqual(restored?.pdfPageSetup, page)
+        let settings = try XCTUnwrap(readManifest(store)["draft"] as? [String: Any])
+        XCTAssertNotNil(settings["pdfPageSetup"])
+    }
+
+    func testInvalidPersistedPageCannotReplaceThePreviousRecoverableSource() async throws {
+        let store = makeStore()
+        let original = makeDraft(source: "# Recoverable", pdfPageSetup: .init(paper: .a5))
+        try await store.save(original)
+        var invalid = MarkdownPageSetup.standard
+        invalid.margins.leftPt = 600
+        await assertInvalidDraft(makeDraft(source: "# Rejected", pdfPageSetup: invalid), store: store)
+        let restored = await store.load()
+        XCTAssertEqual(restored, original)
     }
 
     func testLegacyJSONRetainsItsOriginalSourceLimit() async throws {
@@ -874,6 +902,7 @@ final class MarkdownDraftStoreTests: XCTestCase {
         documentIdentity: UUID? = nil,
         fontFamily: String = "serif",
         title: String = "Recovered",
+        pdfPageSetup: MarkdownPageSetup? = nil,
         customCSS: String? = "body { color: #123456; }"
     ) -> MarkdownActiveDraft {
         MarkdownActiveDraft(
@@ -896,6 +925,7 @@ final class MarkdownDraftStoreTests: XCTestCase {
             pdfBaseFontSize: 12,
             pdfHeadingScale: 1.25,
             pdfTableFontSize: 9.5,
+            pdfPageSetup: pdfPageSetup,
             customCSS: customCSS
         )
     }

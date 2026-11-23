@@ -210,6 +210,14 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     @Published var pdfBaseFontSize = 11.0
     @Published var pdfHeadingScale = 1.25
     @Published var pdfTableFontSize = 10.0
+    @Published var pdfPageSetup = MarkdownPageSetup.standard {
+        didSet {
+            // Partially edited geometry must not prevent source recovery.
+            // Export validates the live values; drafts keep the last valid page.
+            if let page = pdfPageSetup.recoverySnapshot { recoverablePDFPageSetup = page }
+        }
+    }
+    private var recoverablePDFPageSetup = MarkdownPageSetup.standard
     @Published var customCSS = "" {
         didSet { if customCSS != oldValue { invalidatePreview() } }
     }
@@ -353,7 +361,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         return options
     }
 
-    private func pdfOptions(includePageNumbers: Bool = true) -> [String: Any] {
+    private func pdfOptions(includePageNumbers: Bool = true) throws -> [String: Any] {
         var options = sharedOptions
         if includePageNumbers { options["pageNumbers"] = pageNumbers }
         options["codeLineNumbers"] = codeLineNumbers
@@ -364,6 +372,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             options["headingScale"] = pdfHeadingScale
             options["tableFontSize"] = min(pdfTableFontSize, pdfBaseFontSize)
         }
+        if let page = try pdfPageSetup.bridgePage() { options["page"] = page }
         return options
     }
 
@@ -440,6 +449,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             pdfBaseFontSize: pdfBaseFontSize,
             pdfHeadingScale: pdfHeadingScale,
             pdfTableFontSize: pdfTableFontSize,
+            pdfPageSetup: recoverablePDFPageSetup == .standard ? nil : recoverablePDFPageSetup,
             customCSS: customCSS.isEmpty ? nil : customCSS
         )
     }
@@ -479,6 +489,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             self.pdfBaseFontSize = draft.pdfBaseFontSize ?? 11
             self.pdfHeadingScale = draft.pdfHeadingScale ?? 1.25
             self.pdfTableFontSize = draft.pdfTableFontSize ?? 10
+            self.pdfPageSetup = draft.pdfPageSetup ?? .standard
             self.customCSS = draft.customCSS ?? ""
             self.draftStatus = "Recovered local draft"
             self.draftRecoveryIsComplete = true
@@ -503,6 +514,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             draft.pdfBaseFontSize == pdfBaseFontSize &&
             draft.pdfHeadingScale == pdfHeadingScale &&
             draft.pdfTableFontSize == pdfTableFontSize &&
+            (draft.pdfPageSetup ?? .standard) == recoverablePDFPageSetup &&
             (draft.customCSS ?? "") == customCSS
     }
 
@@ -752,7 +764,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     func exportPdf() async throws -> RenderedArtifact {
         try await exportFile(
             function: "return await window.frankenExportPdf(command)",
-            command: ["options": pdfOptions()],
+            command: ["options": try pdfOptions()],
             sourceSnapshot: sourceSnapshot(),
             status: "Forging PDF..."
         )
@@ -965,6 +977,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         let filePayload = files.map { ["path": $0.path, "source": $0.source] }
         var options = sharedOptions
         options["pageNumbers"] = pageNumbers
+        if format == .pdf, let page = try pdfPageSetup.bridgePage() { options["page"] = page }
         return try await exportFile(
             function: "return await window.frankenBook(command)",
             command: ["format": format.rawValue, "files": filePayload, "options": options],

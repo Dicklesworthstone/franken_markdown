@@ -790,6 +790,7 @@ struct DocumentLabView: View {
                 .font(.system(size: Lab.size(13), weight: .medium))
                 .foregroundStyle(Lab.text)
             }
+            pdfPageSetupPanel
             LabPanel {
                 VStack(alignment: .leading, spacing: 12) {
                     LabLabel(text: "Web stylesheet")
@@ -884,6 +885,78 @@ struct DocumentLabView: View {
         }
     }
 
+    private var pdfPageSetupPanel: some View {
+        LabPanel {
+            VStack(alignment: .leading, spacing: 15) {
+                HStack {
+                    LabLabel(text: "PDF page setup")
+                    Spacer()
+                    Button("Reset") { renderer.pdfPageSetup = .standard }
+                        .disabled(renderer.pdfPageSetup == .standard)
+                        .accessibilityIdentifier("pdf-page-reset")
+                }
+                Picker("Paper", selection: $renderer.pdfPageSetup.paper) {
+                    ForEach(MarkdownPageSetup.Paper.allCases) { paper in
+                        Text(paper.title).tag(paper)
+                    }
+                }
+                .accessibilityIdentifier("pdf-page-paper")
+                Picker("Orientation", selection: $renderer.pdfPageSetup.orientation) {
+                    ForEach(MarkdownPageSetup.Orientation.allCases) { orientation in
+                        Text(orientation.title).tag(orientation)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("pdf-page-orientation")
+                if renderer.pdfPageSetup.paper == .custom {
+                    pagePointField("Sheet width", value: $renderer.pdfPageSetup.customWidthPt, id: "pdf-page-width")
+                    pagePointField("Sheet height", value: $renderer.pdfPageSetup.customHeightPt, id: "pdf-page-height")
+                }
+                Divider()
+                Text("Margins")
+                    .font(.system(size: Lab.size(11), weight: .bold))
+                pagePointField("Top", value: $renderer.pdfPageSetup.margins.topPt, id: "pdf-page-margin-top")
+                pagePointField("Right", value: $renderer.pdfPageSetup.margins.rightPt, id: "pdf-page-margin-right")
+                pagePointField("Bottom", value: $renderer.pdfPageSetup.margins.bottomPt, id: "pdf-page-margin-bottom")
+                pagePointField("Left", value: $renderer.pdfPageSetup.margins.leftPt, id: "pdf-page-margin-left")
+                if let message = renderer.pdfPageSetup.validationMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Lab.danger)
+                        .accessibilityIdentifier("pdf-page-validation")
+                    Text("Correct the page setup to export a PDF. Local recovery keeps your source and the last valid page setup.")
+                        .foregroundStyle(Lab.secondary)
+                } else if let geometry = try? renderer.pdfPageSetup.geometry() {
+                    Text("Sheet \(pagePoints(geometry.widthPt)) × \(pagePoints(geometry.heightPt)) pt · Content \(pagePoints(geometry.contentWidthPt)) × \(pagePoints(geometry.contentHeightPt)) pt")
+                        .foregroundStyle(Lab.emerald)
+                        .accessibilityIdentifier("pdf-page-geometry")
+                }
+                Text("Applies to document and collection PDF exports. 72 pt = 1 inch. Sheets allow 144–14,400 pt per side; margins must leave at least 72 pt of content in each direction.")
+                    .font(.system(size: Lab.size(10), weight: .medium))
+                    .foregroundStyle(Lab.secondary)
+            }
+            .font(.system(size: Lab.size(13), weight: .medium))
+            .foregroundStyle(Lab.text)
+        }
+    }
+
+    private func pagePointField(_ title: String, value: Binding<Double>, id: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField(title, value: value, format: .number.precision(.fractionLength(0...3)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 120)
+                .accessibilityLabel("\(title) in points")
+                .accessibilityIdentifier(id)
+            Text("pt").foregroundStyle(Lab.secondary)
+        }
+    }
+
+    private func pagePoints(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...2)))
+    }
+
     private func typographySlider(
         title: String,
         value: Binding<Double>,
@@ -934,6 +1007,9 @@ struct DocumentLabView: View {
         if renderer.toc { parts.append("contents") }
         if renderer.pageNumbers { parts.append("page numbers") }
         if renderer.microtypeProtrusion { parts.append("microtype") }
+        if renderer.pdfPageSetup != .standard {
+            parts.append("\(renderer.pdfPageSetup.paper.title) \(renderer.pdfPageSetup.orientation.title.lowercased())")
+        }
         return parts.joined(separator: " · ")
     }
 

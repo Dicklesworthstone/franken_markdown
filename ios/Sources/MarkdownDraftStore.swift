@@ -54,6 +54,7 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     let pdfBaseFontSize: Double?
     let pdfHeadingScale: Double?
     let pdfTableFontSize: Double?
+    let pdfPageSetup: MarkdownPageSetup?
     let customCSS: String?
 
     fileprivate func replacingSource(_ source: String) -> Self {
@@ -77,6 +78,7 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
             pdfBaseFontSize: pdfBaseFontSize,
             pdfHeadingScale: pdfHeadingScale,
             pdfTableFontSize: pdfTableFontSize,
+            pdfPageSetup: pdfPageSetup,
             customCSS: customCSS
         )
     }
@@ -645,6 +647,7 @@ actor MarkdownDraftStore {
             (draft.pdfBaseFontSize.map { (6...24).contains($0) } ?? true) &&
             (draft.pdfHeadingScale.map { (1.05...2).contains($0) } ?? true) &&
             (draft.pdfTableFontSize.map { (5...24).contains($0) } ?? true) &&
+            (draft.pdfPageSetup?.validationMessage == nil) &&
             (draft.customCSS?.utf8.count ?? 0) <= MarkdownActiveDraft.maximumCustomCSSBytes &&
             !draft.language.isEmpty && draft.language.utf8.count <= 64
     }

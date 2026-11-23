@@ -224,6 +224,21 @@ not iPhone UI measurements or a universal throughput claim.
 
 `MarkdownDocument` stores UTF-8 Markdown plus lightweight per-document presentation settings. The source file remains plain Markdown; app-only settings are stored in scene/document state, not injected into the user’s text.
 
+The editorial inspector provides PDF page setup for both ordinary documents and
+collection books: Letter, A4, A5, Legal, Tabloid, custom point dimensions,
+portrait/landscape orientation, and independent top/right/bottom/left margins.
+`MarkdownPageSetup` resolves presets into explicit dimensions supported by the
+bundled package, validates the 144–14,400 pt sheet range and 72 pt minimum content
+area in both host and renderer precision, and leaves margin sides unchanged when
+orientation rotates the sheet. Untouched Letter settings omit the page option.
+Valid page settings survive local recovery; older drafts retain the original
+Letter/one-inch defaults. Temporary invalid edits show an actionable error and
+block PDF export while source recovery continues with the last valid page setup.
+The source Markdown remains unmodified. `wasm/tests/ios_page_setup.test.mjs`
+checks actual bundled-WASM PDF MediaBoxes, text origins, wrapping/pagination,
+collection pages, and recovery after rejected geometry. Native model and draft
+XCTest cases cover serialization and recovery; their execution requires Xcode.
+
 Supported inputs:
 
 - `.md`, `.markdown`, and UTF-8 plain text from Files;

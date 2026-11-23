@@ -141,12 +141,6 @@ struct SemanticDiffPreview: Decodable, Hashable {
     let metrics: SemanticDiffReport
 }
 
-struct BookSourceFile: Identifiable, Hashable {
-    let path: String
-    let source: String
-    var id: String { path }
-}
-
 enum DocumentArtifactFormat: String, CaseIterable, Identifiable {
     case svg
     case epub

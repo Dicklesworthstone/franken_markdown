@@ -94,7 +94,8 @@ struct DocumentLabView: View {
     @State private var showBaselineImporter = false
     @State private var showBookImporter = false
     @State private var showStylesheetImporter = false
-    @State private var bookFiles: [BookSourceFile] = []
+    @StateObject private var bookImport = MarkdownBookImportSession()
+    @State private var bookSelection: MarkdownBookImportSession.Request?
 
     init(renderer: MarkdownRendererModel, openTemplate: @escaping (DocumentPreset) -> Void) {
         self.renderer = renderer
@@ -129,7 +130,10 @@ struct DocumentLabView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        bookImport.cancelPending()
+                        dismiss()
+                    }
                         .fontWeight(.bold)
                 }
             }
@@ -176,6 +180,17 @@ struct DocumentLabView: View {
         }
         .task {
             if renderer.analysisIsStale { await refreshAnalysis() }
+        }
+        .onChange(of: renderer.resourceDocumentOwner) { _, _ in
+            bookSelection = nil
+            showBookImporter = false
+            bookImport.resetForDocument()
+        }
+        .onDisappear {
+            // Presenting the file picker must retain the selection it owns.
+            // Leaving the lab cancels a suspended read without replacing the
+            // last complete collection or publishing a late error.
+            if bookSelection == nil { bookImport.cancelPending() }
         }
     }
 
@@ -637,21 +652,44 @@ struct DocumentLabView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             LabLabel(text: "Publication manifest")
-                            Text(bookFiles.isEmpty ? "No chapters selected" : "\(bookFiles.count) chapter\(bookFiles.count == 1 ? "" : "s") ready")
+                            Text(bookImport.files.isEmpty ? "No chapters selected" : "\(bookImport.files.count) chapter\(bookImport.files.count == 1 ? "" : "s") ready")
                                 .font(.system(size: Lab.size(20), weight: .black, design: .rounded))
                                 .foregroundStyle(Lab.text)
                         }
                         Spacer()
-                        Button(bookFiles.isEmpty ? "Choose folder" : "Replace") { showBookImporter = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Lab.emerald)
+                        Button(bookImport.files.isEmpty ? "Choose folder" : "Replace") {
+                            bookSelection = bookImport.beginSelection(owner: renderer.resourceDocumentOwner)
+                            showBookImporter = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Lab.emerald)
+                        .disabled(isWorking)
                     }
 
-                    if bookFiles.isEmpty {
+                    if bookImport.isImporting {
+                        HStack {
+                            ProgressView("Reading selected chapters…")
+                            Spacer()
+                            Button("Cancel") { bookImport.cancelPending() }
+                        }
+                        .font(.caption)
+                    }
+                    if let failure = bookImport.errorMessage {
+                        HStack(alignment: .top) {
+                            Label(failure, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(Lab.amber)
+                            Spacer()
+                            Button("Dismiss") { bookImport.clearFailure() }
+                                .font(.caption)
+                        }
+                    }
+
+                    if bookImport.files.isEmpty {
                         collectionEmptyState
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(bookFiles) { file in
+                            ForEach(bookImport.files) { file in
                                 HStack(spacing: 10) {
                                     Image(systemName: "doc.text.fill").foregroundStyle(Lab.emerald)
                                     Text(file.path)
@@ -673,7 +711,7 @@ struct DocumentLabView: View {
                         HStack { collectionButtons }
                         VStack(alignment: .leading) { collectionButtons }
                     }
-                    .disabled(bookFiles.isEmpty || isWorking)
+                    .disabled(bookImport.files.isEmpty || isWorking || bookImport.isImporting || showBookImporter)
                 }
             }
         }
@@ -1302,7 +1340,9 @@ struct DocumentLabView: View {
     }
 
     private func shareBook(_ format: BookArtifactFormat) async {
-        await performArtifactExport { try await renderer.exportBook(files: bookFiles, format: format) }
+        guard !bookImport.isImporting, !showBookImporter else { return }
+        guard let files = bookImport.publicationFiles(owner: renderer.resourceDocumentOwner) else { return }
+        await performArtifactExport { try await renderer.exportBook(files: files, format: format) }
     }
 
     private func shareLegacyPDF() async {
@@ -1334,15 +1374,18 @@ struct DocumentLabView: View {
     }
 
     private func importBookFiles(_ result: Result<[URL], Error>) {
-        do {
-            let urls = try result.get()
-            var imported: [BookSourceFile] = []
-            for url in urls { imported.append(contentsOf: try markdownFiles(at: url)) }
-            let unique = Dictionary(grouping: imported, by: \.path).compactMap { $0.value.first }
-            bookFiles = unique.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-            if bookFiles.isEmpty { throw ImportError.noMarkdownFiles }
-            errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
+        guard let selection = bookSelection else { return }
+        bookSelection = nil
+        switch result {
+        case .success(let urls):
+            bookImport.startImport(from: urls, request: selection) {
+                renderer.resourceDocumentOwner
+            }
+        case .failure(let error):
+            bookImport.selectionFailed(
+                error, request: selection, currentOwner: renderer.resourceDocumentOwner
+            )
+        }
     }
 
     private func importStylesheet(_ result: Result<[URL], Error>) {
@@ -1351,31 +1394,6 @@ struct DocumentLabView: View {
             renderer.customCSS = try readSecurityScopedStyle(url)
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func markdownFiles(at url: URL) throws -> [BookSourceFile] {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        let values = try url.resourceValues(forKeys: [.isDirectoryKey])
-        if values.isDirectory == true {
-            let root = url.standardizedFileURL
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else { throw ImportError.noMarkdownFiles }
-            var files: [BookSourceFile] = []
-            for case let child as URL in enumerator {
-                guard ["md", "markdown"].contains(child.pathExtension.lowercased()) else { continue }
-                let source = try String(contentsOf: child, encoding: .utf8)
-                let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-                let relative = child.standardizedFileURL.path.replacingOccurrences(of: prefix, with: "")
-                files.append(BookSourceFile(path: relative, source: source))
-            }
-            return files
-        }
-        guard ["md", "markdown"].contains(url.pathExtension.lowercased()) else { return [] }
-        return [BookSourceFile(path: url.lastPathComponent, source: try String(contentsOf: url, encoding: .utf8))]
     }
 
     private func readSecurityScopedText(_ url: URL) throws -> String {
@@ -1423,14 +1441,12 @@ struct DocumentLabView: View {
 }
 
 private enum ImportError: LocalizedError {
-    case noMarkdownFiles
     case invalidArtifact
     case stylesheetTooLarge
     case invalidStylesheet
 
     var errorDescription: String? {
         switch self {
-        case .noMarkdownFiles: "No .md or .markdown files were found in that selection."
         case .invalidArtifact: "The document engine returned an invalid artifact."
         case .stylesheetTooLarge: "That stylesheet is larger than the supported 256 KB limit."
         case .invalidStylesheet: "Choose a UTF-8 CSS text file."

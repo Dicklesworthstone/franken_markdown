@@ -43,6 +43,8 @@
 		D98433A731204E3CA1B02003 /* MarkdownResourceUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */; };
 		D98433A731204E3CA1B02005 /* MarkdownResourcePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */; };
 		D98433A731204E3CA1B02007 /* MarkdownResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */; };
+		D98433A731204E3CA1B03001 /* MarkdownBookImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B03002 /* MarkdownBookImport.swift */; };
+		D98433A731204E3CA1B03003 /* MarkdownBookImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B03004 /* MarkdownBookImportTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -103,6 +105,8 @@
 		D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourceUpload.swift; sourceTree = "<group>"; };
 		D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourcePanel.swift; sourceTree = "<group>"; };
 		D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourcesTests.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B03002 /* MarkdownBookImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBookImport.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B03004 /* MarkdownBookImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBookImportTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -120,6 +124,7 @@
 				B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */,
 				D98433A731204E3CA1B01004 /* MarkdownPageSetupTests.swift */,
 				D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */,
+				D98433A731204E3CA1B03004 /* MarkdownBookImportTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -146,6 +151,7 @@
 				D98433A731204E3CA1B02002 /* MarkdownResources.swift */,
 				D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */,
 				D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */,
+				D98433A731204E3CA1B03002 /* MarkdownBookImport.swift */,
 				EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */,
 				B9867A57FB86816F535584A0 /* RendererHost.swift */,
 				9FF0FC9185DD69073DCEFA93 /* Theme.swift */,
@@ -324,6 +330,7 @@
 				B748C2D0C5594DA79EF21003 /* MarkdownSourceUploadTests.swift in Sources */,
 				D98433A731204E3CA1B01003 /* MarkdownPageSetupTests.swift in Sources */,
 				D98433A731204E3CA1B02007 /* MarkdownResourcesTests.swift in Sources */,
+				D98433A731204E3CA1B03003 /* MarkdownBookImportTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -349,6 +356,7 @@
 				D98433A731204E3CA1B02001 /* MarkdownResources.swift in Sources */,
 				D98433A731204E3CA1B02003 /* MarkdownResourceUpload.swift in Sources */,
 				D98433A731204E3CA1B02005 /* MarkdownResourcePanel.swift in Sources */,
+				D98433A731204E3CA1B03001 /* MarkdownBookImport.swift in Sources */,
 				102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */,
 				0BE81F4DB798081463B42E73 /* Theme.swift in Sources */,
 			);

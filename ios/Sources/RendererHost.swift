@@ -178,6 +178,16 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         didSet { invalidatePreview(sourceChanged: true) }
     }
     @Published var documentIdentity: UUID?
+    @Published private(set) var resources = MarkdownResourceCollection.empty
+    @Published private(set) var resourceDocumentOwner = UUID()
+    @Published private(set) var resourcesAreLoading = false
+    @Published private(set) var resourceStatus: String?
+    @Published private(set) var hasUnavailableResources = false
+    private var resourceRevision = UUID()
+    private var resourceMutation = UUID()
+    private var resourceSnapshotID: UUID?
+    private var supersededResourceSnapshots = Set<UUID>()
+    private let resourceStore: MarkdownResourceStore
     @Published var fontFamily = "sans" {
         didSet { if fontFamily != oldValue { invalidatePreview() } }
     }
@@ -253,6 +263,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         let revision: Int
     }
 
+    private struct ResourceSnapshot: Sendable {
+        let resources: MarkdownResourceCollection
+        let revision: UUID
+    }
+
     private enum SourceOwner: Sendable {
         case preview(requestID: Int, sourceRevision: Int)
         case export(requestID: Int)
@@ -265,6 +280,10 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private var residentSource: (sourceID: Int, revision: Int)?
     private var activeSourceUploadID: Int?
     private var sourceUploadTimeoutTask: Task<Void, Never>?
+    private var nextResourceSetID = 0
+    private var residentResources: (resourceSetID: Int, revision: UUID)?
+    private var activeResourceUploadID: Int?
+    private var resourceUploadTimeoutTask: Task<Void, Never>?
     private var activeAuxiliaryRequestID: Int?
     private var auxiliaryTimeoutTask: Task<Void, Never>?
     private var scheduledDraftSave: Task<Void, Never>?
@@ -302,6 +321,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
 
     init(draftStore: MarkdownDraftStore) {
         self.draftStore = draftStore
+        resourceStore = MarkdownResourceStore(directory: draftStore.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("attachments", isDirectory: true))
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(FrankenResourceSchemeHandler(), forURLScheme: "frankenmd")
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -324,6 +345,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         exportTask?.cancel()
         exportTimeoutTask?.cancel()
         sourceUploadTimeoutTask?.cancel()
+        resourceUploadTimeoutTask?.cancel()
         auxiliaryTimeoutTask?.cancel()
         exportContinuation?.resume(throwing: CancellationError())
     }
@@ -418,6 +440,9 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 guard !Task.isCancelled,
                       self.matchesCurrentDraft(draft, sourceRevision: draftSourceRevision) else { return }
                 self.draftStatus = "Saved locally"
+                let superseded = self.supersededResourceSnapshots
+                self.supersededResourceSnapshots.subtract(superseded)
+                await self.resourceStore.discard(superseded, keeping: draft.resourceSnapshotID)
             } catch is CancellationError {
                 return
             } catch {
@@ -450,6 +475,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             pdfHeadingScale: pdfHeadingScale,
             pdfTableFontSize: pdfTableFontSize,
             pdfPageSetup: recoverablePDFPageSetup == .standard ? nil : recoverablePDFPageSetup,
+            resourceSnapshotID: resourceSnapshotID,
             customCSS: customCSS.isEmpty ? nil : customCSS
         )
     }
@@ -457,16 +483,30 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private func restoreDraftIfUnedited() {
         let store = draftStore
         let expectedSourceIdentity = recoverySourceIdentity
+        let expectedResourceOwner = resourceDocumentOwner
         Task(priority: .utility) { [weak self] in
             let draft = await store.load()
             guard let self else { return }
-            guard self.recoverySourceIdentity == expectedSourceIdentity, self.documentTitle.isEmpty else {
+            guard self.recoverySourceIdentity == expectedSourceIdentity,
+                  self.resourceDocumentOwner == expectedResourceOwner, self.documentTitle.isEmpty else {
                 self.draftStatus = "Active draft changed"
                 self.draftRecoveryIsComplete = true
                 return
             }
             guard let draft else {
                 self.draftStatus = "Local recovery ready"
+                self.draftRecoveryIsComplete = true
+                return
+            }
+            var recoveredResources = MarkdownResourceCollection.empty
+            var resourceFailure: String?
+            if let identity = draft.resourceSnapshotID {
+                do { recoveredResources = try await self.resourceStore.load(identity) }
+                catch { resourceFailure = MarkdownResourceCollection.ResourceError.invalidSnapshot.localizedDescription }
+            }
+            guard self.recoverySourceIdentity == expectedSourceIdentity,
+                  self.resourceDocumentOwner == expectedResourceOwner, self.documentTitle.isEmpty else {
+                self.draftStatus = "Active draft changed"
                 self.draftRecoveryIsComplete = true
                 return
             }
@@ -490,6 +530,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             self.pdfHeadingScale = draft.pdfHeadingScale ?? 1.25
             self.pdfTableFontSize = draft.pdfTableFontSize ?? 10
             self.pdfPageSetup = draft.pdfPageSetup ?? .standard
+            self.resources = recoveredResources
+            self.resourceSnapshotID = draft.resourceSnapshotID
+            self.resourceRevision = UUID()
+            self.hasUnavailableResources = resourceFailure != nil
+            self.resourceStatus = resourceFailure ?? (recoveredResources.entries.isEmpty ? nil : "Recovered attached images and fonts")
             self.customCSS = draft.customCSS ?? ""
             self.draftStatus = "Recovered local draft"
             self.draftRecoveryIsComplete = true
@@ -515,6 +560,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             draft.pdfHeadingScale == pdfHeadingScale &&
             draft.pdfTableFontSize == pdfTableFontSize &&
             (draft.pdfPageSetup ?? .standard) == recoverablePDFPageSetup &&
+            draft.resourceSnapshotID == resourceSnapshotID &&
             (draft.customCSS ?? "") == customCSS
     }
 
@@ -522,12 +568,104 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         SourceSnapshot(source: source, revision: sourceRevision)
     }
 
+    /// A new source document never inherits image grants or fonts from the
+    /// previous one. First Save keeps the same owner and its attached bytes.
+    func resetResourcesForNewDocument() {
+        resourceDocumentOwner = UUID()
+        resourceMutation = UUID()
+        resourcesAreLoading = false
+        if let resourceSnapshotID { supersededResourceSnapshots.insert(resourceSnapshotID) }
+        resourceSnapshotID = nil
+        resources = .empty
+        resourceRevision = UUID()
+        resourceStatus = nil
+        hasUnavailableResources = false
+        invalidatePreview()
+    }
+
+    func importResource(from url: URL, kind: MarkdownResourceKind, key: String, owner: UUID) async throws {
+        try checkResourceDocument(owner)
+        guard !resourcesAreLoading else { throw Self.rendererBusyError() }
+        let mutation = UUID()
+        resourceMutation = mutation
+        resourcesAreLoading = true
+        defer { if resourceMutation == mutation { resourcesAreLoading = false } }
+        do {
+            let attachment = try await resourceStore.selectedFile(at: url, kind: kind, key: key)
+            try checkResourceMutation(owner, mutation: mutation)
+            try await publishResources(resources.replacing(attachment), owner: owner, mutation: mutation)
+        } catch {
+            try checkResourceMutation(owner, mutation: mutation)
+            throw error
+        }
+    }
+
+    func removeResource(id: String, owner: UUID) async throws {
+        try await replaceResourceSelection(resources.removing(id: id), owner: owner)
+    }
+
+    func discardUnavailableResources(owner: UUID) async throws {
+        try await replaceResourceSelection(.empty, owner: owner)
+    }
+
+    private func replaceResourceSelection(_ replacement: MarkdownResourceCollection, owner: UUID) async throws {
+        try checkResourceDocument(owner)
+        guard !resourcesAreLoading else { throw Self.rendererBusyError() }
+        let mutation = UUID()
+        resourceMutation = mutation
+        resourcesAreLoading = true
+        defer { if resourceMutation == mutation { resourcesAreLoading = false } }
+        do { try await publishResources(replacement, owner: owner, mutation: mutation) }
+        catch {
+            try checkResourceMutation(owner, mutation: mutation)
+            throw error
+        }
+    }
+
+    private func checkResourceDocument(_ owner: UUID) throws {
+        try Task.checkCancellation()
+        guard resourceDocumentOwner == owner, draftRecoveryIsComplete else { throw CancellationError() }
+    }
+
+    private func checkResourceMutation(_ owner: UUID, mutation: UUID) throws {
+        try checkResourceDocument(owner)
+        guard resourceMutation == mutation else { throw CancellationError() }
+    }
+
+    private func publishResources(
+        _ replacement: MarkdownResourceCollection, owner: UUID, mutation: UUID
+    ) async throws {
+        try checkResourceMutation(owner, mutation: mutation)
+        let identity = replacement.entries.isEmpty ? nil : try await resourceStore.save(replacement)
+        do { try checkResourceMutation(owner, mutation: mutation) }
+        catch {
+            if let identity { await resourceStore.discard([identity], keeping: resourceSnapshotID) }
+            throw error
+        }
+        if let resourceSnapshotID { supersededResourceSnapshots.insert(resourceSnapshotID) }
+        resourceSnapshotID = identity
+        resources = replacement
+        resourceRevision = UUID()
+        hasUnavailableResources = false
+        resourceStatus = replacement.entries.isEmpty ? "No attachments selected" : "Attachments copied into this draft"
+        invalidatePreview()
+        scheduleRender()
+        scheduleDraftSave()
+    }
+
+    private func resourceSnapshot() throws -> ResourceSnapshot {
+        guard !hasUnavailableResources else { throw MarkdownResourceCollection.ResourceError.invalidSnapshot }
+        guard !resourcesAreLoading else { throw MarkdownResourceCollection.ResourceError.importInProgress }
+        return ResourceSnapshot(resources: resources, revision: resourceRevision)
+    }
+
     private func checkSourceOwner(_ owner: SourceOwner) throws {
         try Task.checkCancellation()
         guard bridgeIsReady, !bridgeNeedsReload else { throw Self.bridgeUnavailableError() }
         switch owner {
         case let .preview(request, revision):
-            guard previewInFlightRequestID == request, sourceRevision == revision else {
+            guard previewInFlightRequestID == request, sourceRevision == revision,
+                  previewRevision == latestPreviewRevision else {
                 throw CancellationError()
             }
         case let .export(request):
@@ -548,6 +686,78 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         guard previewInFlightRequestID == request, previewRevision == revision else {
             throw CancellationError()
         }
+    }
+
+    private func prepareResources(_ snapshot: ResourceSnapshot, owner: SourceOwner) async throws -> Int {
+        try checkSourceOwner(owner)
+        if let residentResources, residentResources.revision == snapshot.revision {
+            return residentResources.resourceSetID
+        }
+        guard activeResourceUploadID == nil else { throw Self.rendererBusyError() }
+        nextResourceSetID += 1
+        let resourceSetID = nextResourceSetID
+        let upload = MarkdownResourceUpload(resources: snapshot.resources, resourceSetID: resourceSetID)
+        let manifest = try await upload.manifest()
+        try checkSourceOwner(owner)
+        guard activeResourceUploadID == nil else { throw Self.rendererBusyError() }
+        activeResourceUploadID = resourceSetID
+        // A final acknowledgement can become stale after WebKit replaced its
+        // resident set. Never reuse our older handle after a failed transfer.
+        residentResources = nil
+        resourceUploadTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.exportTimeout) } catch { return }
+            guard let self, self.activeResourceUploadID == resourceSetID else { return }
+            self.invalidateBridge("The attachment transfer did not finish within three minutes. Tap Render to restart the local renderer.")
+        }
+        defer {
+            if activeResourceUploadID == resourceSetID {
+                activeResourceUploadID = nil
+                resourceUploadTimeoutTask?.cancel()
+                resourceUploadTimeoutTask = nil
+            }
+        }
+        do {
+            let acknowledged: MarkdownResourceUploadStart = try await callBridgeJSON(
+                function: "return window.frankenBeginResources(command)",
+                arguments: ["command": manifest.arguments], maximumBytes: 1_024
+            )
+            try checkResourceUploadOwner(resourceSetID, owner: owner)
+            guard acknowledged == manifest.start else { throw MarkdownSourceUpload.TransferError.invalidAcknowledgement }
+            while let chunk = try await upload.nextChunk() {
+                try checkResourceUploadOwner(resourceSetID, owner: owner)
+                let acknowledged: MarkdownResourceUploadAcknowledgement = try await callBridgeJSON(
+                    function: "return window.frankenAppendResourceChunk(command)",
+                    arguments: ["command": chunk.arguments], maximumBytes: 1_024
+                )
+                try checkResourceUploadOwner(resourceSetID, owner: owner)
+                guard acknowledged.resourceSetID == resourceSetID, acknowledged.assetIndex == chunk.assetIndex,
+                      acknowledged.index == chunk.index, acknowledged.receivedBytes == chunk.receivedBytes else {
+                    throw MarkdownSourceUpload.TransferError.invalidAcknowledgement
+                }
+            }
+            let receipt = try await upload.finish()
+            try checkResourceUploadOwner(resourceSetID, owner: owner)
+            let acknowledged: MarkdownResourceUploadReceipt = try await callBridgeJSON(
+                function: "return window.frankenFinishResources(command)",
+                arguments: ["command": receipt.arguments], maximumBytes: 1_024
+            )
+            try checkResourceUploadOwner(resourceSetID, owner: owner)
+            guard acknowledged == receipt else { throw MarkdownSourceUpload.TransferError.invalidAcknowledgement }
+            residentResources = (resourceSetID, snapshot.revision)
+            return resourceSetID
+        } catch {
+            await upload.abort()
+            _ = try? await webView.callAsyncJavaScript(
+                "return window.frankenCancelResources(resourceSetID)",
+                arguments: ["resourceSetID": resourceSetID], in: nil, contentWorld: .page
+            )
+            throw error
+        }
+    }
+
+    private func checkResourceUploadOwner(_ resourceSetID: Int, owner: SourceOwner) throws {
+        try checkSourceOwner(owner)
+        guard activeResourceUploadID == resourceSetID else { throw CancellationError() }
     }
 
     /// Preview, export and inspection serialize their use of the one-document
@@ -663,6 +873,10 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         activeSourceUploadID = nil
         sourceUploadTimeoutTask?.cancel()
         sourceUploadTimeoutTask = nil
+        residentResources = nil
+        activeResourceUploadID = nil
+        resourceUploadTimeoutTask?.cancel()
+        resourceUploadTimeoutTask = nil
         activeAuxiliaryRequestID = nil
         auxiliaryTimeoutTask?.cancel()
         auxiliaryTimeoutTask = nil
@@ -690,6 +904,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             bridgeNeedsReload = false
             bridgeIsReady = false
             residentSource = nil
+            residentResources = nil
             beginPhase(.loading)
             webView.load(URLRequest(url: URL(string: "frankenmd://bundle/bridge.html")!))
             return
@@ -708,6 +923,9 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         let req = requestID
         let revision = previewRevision
         let snapshot = sourceSnapshot()
+        // Preview can still show the recovered source if attachments were
+        // damaged. Publication refuses until the user repairs/discards the set.
+        let resourceSnapshot = ResourceSnapshot(resources: resources, revision: resourceRevision)
         let options = sharedOptions
         let phaseOwner = beginPhase(.rendering)
         activeRenderPhaseGeneration = phaseOwner
@@ -732,7 +950,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                     snapshot, owner: .preview(requestID: req, sourceRevision: snapshot.revision)
                 )
                 try self.checkPreviewOwner(req, revision: revision)
-                let command: [String: Any] = ["requestID": req, "sourceID": sourceID, "options": options]
+                let resourceSetID = try await self.prepareResources(
+                    resourceSnapshot, owner: .preview(requestID: req, sourceRevision: snapshot.revision)
+                )
+                try self.checkPreviewOwner(req, revision: revision)
+                let command: [String: Any] = ["requestID": req, "sourceID": sourceID,
+                    "resourceSetID": resourceSetID, "options": options]
                 let prepared = try await webView.callAsyncJavaScript(
                     "return await window.frankenRender(command)",
                     arguments: ["command": command],
@@ -785,9 +1008,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         function: String,
         command: [String: Any],
         sourceSnapshot: SourceSnapshot? = nil,
+        includeResources: Bool = true,
         status: String
     ) async throws -> RenderedArtifact {
         let title = documentTitle
+        let resourceSnapshot = includeResources ? try self.resourceSnapshot() : nil
         try await waitForBridgeReady()
         try Task.checkCancellation()
         guard exportTask == nil, activeAuxiliaryRequestID == nil else {
@@ -826,6 +1051,12 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                         if let sourceSnapshot {
                             payload["sourceID"] = try await self.prepareSource(
                                 sourceSnapshot, owner: .export(requestID: req)
+                            )
+                        }
+                        try self.checkExportOwner(req)
+                        if let resourceSnapshot {
+                            payload["resourceSetID"] = try await self.prepareResources(
+                                resourceSnapshot, owner: .export(requestID: req)
                             )
                         }
                         try self.checkExportOwner(req)
@@ -943,6 +1174,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             function: "return await window.frankenExportArtifact(command)",
             command: ["format": format.rawValue, "options": sharedOptions],
             sourceSnapshot: sourceSnapshot(),
+            includeResources: format != .searchIndex,
             status: "Forging \(format.title)..."
         )
     }

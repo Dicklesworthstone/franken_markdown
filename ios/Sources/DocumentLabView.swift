@@ -790,6 +790,10 @@ struct DocumentLabView: View {
                 .font(.system(size: Lab.size(13), weight: .medium))
                 .foregroundStyle(Lab.text)
             }
+            LabPanel {
+                MarkdownResourcePanel(renderer: renderer)
+                    .foregroundStyle(Lab.text)
+            }
             pdfPageSetupPanel
             LabPanel {
                 VStack(alignment: .leading, spacing: 12) {

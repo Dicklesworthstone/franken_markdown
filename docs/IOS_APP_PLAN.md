@@ -239,6 +239,39 @@ checks actual bundled-WASM PDF MediaBoxes, text origins, wrapping/pagination,
 collection pages, and recovery after rejected geometry. Native model and draft
 XCTest cases cover serialization and recovery; their execution requires Xcode.
 
+The inspector now provides explicit **Images & fonts** attachment controls.
+Files selections accept PNG, JPEG, GIF and SVG images, and TrueType/OpenType
+fonts in the five renderer slots. An image key is the exact UTF-8 destination
+used by Markdown (including distinct composed/decomposed spellings); an empty
+entry uses the selected filename. Collections use their resolved chapter-relative
+destination. Selecting an existing key replaces its bytes, and individual
+attachments can be removed. The current Files workflow is implemented; direct
+Photos-library selection remains a separate planned input.
+
+Each attachment is limited to 16 MiB; one document admits 128 images and 32 MiB
+total attached bytes. Security-scoped, coordinated file reads copy immutable
+snapshots off the main actor. Protected per-scene snapshot files retain bytes
+and SHA-256 digests outside the small draft JSON; the draft publishes only a
+completed snapshot's UUID. Recovery checks lengths and hashes before adoption.
+If attachments cannot be recovered, source editing and analysis remain available,
+while visual publication asks the user to reattach or discard the unavailable
+set. Cleanup removes only explicitly superseded snapshots after the new draft
+manifest has been saved. Opening another source retires its previous attachment
+authority; first Save of an untitled document preserves the same attachment set.
+Saving Markdown still writes plain source, while rendered exports include their
+supported resources. This is active-draft recovery, not a portable project bundle.
+
+Native resource transport sends acknowledged 64 KiB binary/base64 chunks with
+per-chunk CRC32 and fixed set/asset limits. A complete set receives an explicit
+handle used by preview, HTML/PDF/SVG/EPUB, living-workspace and collection exports.
+Source and presentation changes reuse those bytes; failed, cancelled or stale
+uploads cannot substitute another document's assets. The renderer gains no
+filesystem or network authority. Protocol tests cover admission, exact keys,
+chunk integrity, cancellation and ownership; bundled-package tests inspect
+actual embedded images/fonts and compare transported artifacts with direct
+renderer bytes. Native file/persistence/ownership XCTest execution and UI/device
+qualification still require an Apple runtime.
+
 Supported inputs:
 
 - `.md`, `.markdown`, and UTF-8 plain text from Files;

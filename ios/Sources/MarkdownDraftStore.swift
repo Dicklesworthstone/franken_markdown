@@ -55,6 +55,7 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     let pdfHeadingScale: Double?
     let pdfTableFontSize: Double?
     let pdfPageSetup: MarkdownPageSetup?
+    let resourceSnapshotID: UUID?
     let customCSS: String?
 
     fileprivate func replacingSource(_ source: String) -> Self {
@@ -79,6 +80,7 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
             pdfHeadingScale: pdfHeadingScale,
             pdfTableFontSize: pdfTableFontSize,
             pdfPageSetup: pdfPageSetup,
+            resourceSnapshotID: resourceSnapshotID,
             customCSS: customCSS
         )
     }

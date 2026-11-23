@@ -926,6 +926,7 @@ final class MarkdownDraftStoreTests: XCTestCase {
             pdfHeadingScale: 1.25,
             pdfTableFontSize: 9.5,
             pdfPageSetup: pdfPageSetup,
+            resourceSnapshotID: nil,
             customCSS: customCSS
         )
     }

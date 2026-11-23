@@ -1064,6 +1064,7 @@ struct ForgeView: View {
         guard documentSession.beginUntitled(request) else { return }
         clearDocumentPresentations()
         documentAutosaveTask.cancel()
+        renderer.resetResourcesForNewDocument()
         renderer.documentIdentity = nil
         renderer.source = request.source
         renderer.documentTitle = request.title
@@ -1161,6 +1162,9 @@ struct ForgeView: View {
         documentIdentity: UUID,
         replacingSource: Bool
     ) {
+        if replacingSource && renderer.documentIdentity != documentIdentity {
+            renderer.resetResourcesForNewDocument()
+        }
         renderer.documentIdentity = documentIdentity
         if replacingSource { renderer.source = document.source }
         renderer.documentTitle = document.suggestedTitle

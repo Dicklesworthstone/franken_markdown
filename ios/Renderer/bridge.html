@@ -36,7 +36,7 @@
         stagedPreview = null;
         const started = performance.now();
         try {
-          const output = await renderer.renderHtml(markdownSource(command), command.options || {});
+          const output = await renderer.renderHtml(markdownSource(command), resourceOptions(command));
           if (requestID !== latestRequest) return false;
           stagedPreview = {
             requestID, html: output.text(),
@@ -201,6 +201,121 @@
         if (residentSource?.sourceID === sourceID) { residentSource = null; released = true; }
         return released;
       };
+
+      // Attachments are explicit, immutable native snapshots. Stage a bounded
+      // set separately from source/settings and publish it only after all bytes
+      // have been acknowledged. Commands must name the exact completed set;
+      // a missing/stale handle never borrows another document's resources.
+      const resourceAssetLimit = 16 * 1024 * 1024;
+      const resourceSetLimit = 32 * 1024 * 1024;
+      const fontSlots = new Set(['body-regular', 'body-bold', 'body-italic',
+        'body-bold-italic', 'mono-regular']);
+      let latestResourceSetID = 0;
+      let resourceUpload = null;
+      let residentResources = null;
+      const resourceOptions = command => {
+        const options = command.options || {};
+        if (!Object.hasOwn(command, 'resourceSetID')) return options;
+        if (!validRequest(command.resourceSetID) || residentResources?.resourceSetID !== command.resourceSetID) {
+          throw new Error('The attachment handle is no longer available.');
+        }
+        if (Object.hasOwn(options, 'pdfImages') || Object.hasOwn(options, 'fontAssets')) {
+          throw new Error('Attachment handles cannot be mixed with inline resource bytes.');
+        }
+        const merged = {...options};
+        if (residentResources.images.length) merged.pdfImages = residentResources.images;
+        if (residentResources.fonts.length) merged.fontAssets = residentResources.fonts;
+        return merged;
+      };
+      window.frankenBeginResources = command => {
+        const {resourceSetID, byteLength, chunkSize, entries} = command;
+        if (!validRequest(resourceSetID) || resourceSetID <= latestResourceSetID) {
+          throw new Error('Attachment identifiers must increase.');
+        }
+        if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > resourceSetLimit ||
+            chunkSize !== exportChunkSize || !Array.isArray(entries) || entries.length > 133) {
+          throw new Error('The attachment set exceeds its 32 MiB limit or has an invalid manifest.');
+        }
+        const keys = new Set();
+        let total = 0, images = 0;
+        const admitted = entries.map(entry => {
+          if (!entry || (entry.kind !== 'image' && entry.kind !== 'font') ||
+              typeof entry.key !== 'string' || !entry.key.trim() || entry.key.length > 4096 ||
+              /[\0\r\n]/.test(entry.key) || /[\uD800-\uDFFF]/u.test(entry.key) ||
+              new TextEncoder().encode(entry.key).length > 4096 ||
+              (entry.kind === 'font' && !fontSlots.has(entry.key)) ||
+              !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 1 || entry.byteLength > resourceAssetLimit) {
+            throw new Error('An attachment has an invalid destination, font slot or byte length.');
+          }
+          const key = `${entry.kind}:${entry.key}`;
+          if (keys.has(key)) throw new Error('Attachment destinations and font slots must be unique.');
+          keys.add(key);
+          total += entry.byteLength;
+          if (entry.kind === 'image') images++;
+          if (total > resourceSetLimit || images > 128) throw new Error('The attachment set exceeds its resource budget.');
+          return {kind: entry.kind, key: entry.key, byteLength: entry.byteLength, bytes: null};
+        });
+        if (total !== byteLength) throw new Error('The attachment manifest byte count does not match.');
+        if (resourceUpload) throw new Error('Another attachment upload is still in progress.');
+        latestResourceSetID = resourceSetID;
+        resourceUpload = {resourceSetID, byteLength, entries: admitted,
+          assetIndex: 0, assetOffset: 0, receivedBytes: 0, nextIndex: 0};
+        return JSON.stringify({resourceSetID, byteLength, chunkSize, entryCount: admitted.length});
+      };
+      const requireResourceUpload = resourceSetID => {
+        if (!validRequest(resourceSetID) || resourceUpload?.resourceSetID !== resourceSetID) {
+          throw new Error('The attachment upload is no longer available.');
+        }
+        return resourceUpload;
+      };
+      window.frankenAppendResourceChunk = command => {
+        const transfer = requireResourceUpload(command.resourceSetID);
+        const entry = transfer.entries[transfer.assetIndex];
+        const expectedBytes = entry ? Math.min(exportChunkSize, entry.byteLength - transfer.assetOffset) : 0;
+        if (!Number.isSafeInteger(command.index) || command.index !== transfer.nextIndex ||
+            command.assetIndex !== transfer.assetIndex || expectedBytes <= 0 || command.byteLength !== expectedBytes ||
+            typeof command.base64 !== 'string' || command.base64.length !== Math.ceil(expectedBytes / 3) * 4 ||
+            typeof command.checksum !== 'string' || !/^[0-9a-f]{8}$/.test(command.checksum)) {
+          throw new Error('The attachment chunk has an invalid order or size.');
+        }
+        const binary = atob(command.base64);
+        if (binary.length !== expectedBytes) throw new Error('The attachment chunk has an invalid size.');
+        const bytes = new Uint8Array(expectedBytes);
+        for (let index = 0; index < expectedBytes; index++) bytes[index] = binary.charCodeAt(index);
+        if (checksum(bytes) !== command.checksum) throw new Error('The attachment chunk failed its integrity check.');
+        entry.bytes ??= new Uint8Array(entry.byteLength);
+        entry.bytes.set(bytes, transfer.assetOffset);
+        transfer.assetOffset += expectedBytes;
+        transfer.receivedBytes += expectedBytes;
+        transfer.nextIndex++;
+        if (transfer.assetOffset === entry.byteLength) { transfer.assetIndex++; transfer.assetOffset = 0; }
+        return JSON.stringify({resourceSetID: transfer.resourceSetID, assetIndex: command.assetIndex,
+          index: command.index, receivedBytes: transfer.receivedBytes});
+      };
+      window.frankenFinishResources = command => {
+        const transfer = requireResourceUpload(command.resourceSetID);
+        if (command.byteLength !== transfer.byteLength || command.chunkCount !== transfer.nextIndex ||
+            command.entryCount !== transfer.entries.length || transfer.assetIndex !== transfer.entries.length ||
+            transfer.receivedBytes !== transfer.byteLength) {
+          throw new Error('The attachment upload is incomplete.');
+        }
+        const images = [], fonts = [];
+        for (const entry of transfer.entries) {
+          if (entry.kind === 'image') images.push({destination: entry.key, bytes: entry.bytes});
+          else fonts.push({slot: entry.key, bytes: entry.bytes});
+        }
+        residentResources = {resourceSetID: transfer.resourceSetID, images, fonts};
+        resourceUpload = null;
+        return JSON.stringify({resourceSetID: transfer.resourceSetID, byteLength: transfer.byteLength,
+          chunkCount: transfer.nextIndex, entryCount: transfer.entries.length});
+      };
+      window.frankenCancelResources = resourceSetID => {
+        if (!validRequest(resourceSetID)) return false;
+        let released = false;
+        if (resourceUpload?.resourceSetID === resourceSetID) { resourceUpload = null; released = true; }
+        if (residentResources?.resourceSetID === resourceSetID) { residentResources = null; released = true; }
+        return released;
+      };
       const requireExport = requestID => {
         if (!validRequest(requestID) || activeExport?.requestID !== requestID || !activeExport.bytes) {
           throw new Error('The export transfer is no longer available.');
@@ -274,9 +389,9 @@
         return true;
       };
       window.frankenExportPdf = command => stageExport(command, () =>
-        renderer.renderPdf(markdownSource(command), command.options || {}));
+        renderer.renderPdf(markdownSource(command), resourceOptions(command)));
       window.frankenExportHtml = command => stageExport(command, () =>
-        renderer.renderHtml(markdownSource(command), command.options || {}));
+        renderer.renderHtml(markdownSource(command), resourceOptions(command)));
 
       window.frankenAnalyze = async (command) => {
         const markdown = markdownSource(command);
@@ -290,7 +405,7 @@
 
       window.frankenExportArtifact = command => stageExport(command, async () => {
         const markdown = markdownSource(command);
-        const options = command.options || {};
+        const options = resourceOptions(command);
         switch (String(command.format)) {
           case 'svg': return await renderer.renderSvg(markdown, options);
           case 'epub': return await renderer.renderEpub(markdown, options);
@@ -318,7 +433,7 @@
 
       window.frankenBook = command => stageExport(command, async () => {
         const files = Array.isArray(command.files) ? command.files : [];
-        const options = {...(command.options || {})};
+        const options = {...resourceOptions(command)};
         if (command.format !== 'pdf') {
           // Book sites have always been safe-only. The current renderer checks
           // its site contract strictly; PDF metadata must stay in the PDF lane.

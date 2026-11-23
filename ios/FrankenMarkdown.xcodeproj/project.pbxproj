@@ -39,6 +39,10 @@
 		B748C2D0C5594DA79EF21003 /* MarkdownSourceUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */; };
 		D98433A731204E3CA1B01001 /* MarkdownPageSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B01002 /* MarkdownPageSetup.swift */; };
 		D98433A731204E3CA1B01003 /* MarkdownPageSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B01004 /* MarkdownPageSetupTests.swift */; };
+		D98433A731204E3CA1B02001 /* MarkdownResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02002 /* MarkdownResources.swift */; };
+		D98433A731204E3CA1B02003 /* MarkdownResourceUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */; };
+		D98433A731204E3CA1B02005 /* MarkdownResourcePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */; };
+		D98433A731204E3CA1B02007 /* MarkdownResourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,6 +99,10 @@
 		B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceUploadTests.swift; sourceTree = "<group>"; };
 		D98433A731204E3CA1B01002 /* MarkdownPageSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPageSetup.swift; sourceTree = "<group>"; };
 		D98433A731204E3CA1B01004 /* MarkdownPageSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPageSetupTests.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B02002 /* MarkdownResources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResources.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourceUpload.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourcePanel.swift; sourceTree = "<group>"; };
+		D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownResourcesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -111,6 +119,7 @@
 				A7E6A3E010444F75B4CD5014 /* MarkdownSourceExportTests.swift */,
 				B748C2D0C5594DA79EF21004 /* MarkdownSourceUploadTests.swift */,
 				D98433A731204E3CA1B01004 /* MarkdownPageSetupTests.swift */,
+				D98433A731204E3CA1B02008 /* MarkdownResourcesTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -134,6 +143,9 @@
 				A7E6A3E010444F75B4CD5012 /* MarkdownSourceExport.swift */,
 				B748C2D0C5594DA79EF21002 /* MarkdownSourceUpload.swift */,
 				D98433A731204E3CA1B01002 /* MarkdownPageSetup.swift */,
+				D98433A731204E3CA1B02002 /* MarkdownResources.swift */,
+				D98433A731204E3CA1B02004 /* MarkdownResourceUpload.swift */,
+				D98433A731204E3CA1B02006 /* MarkdownResourcePanel.swift */,
 				EAC15DAA437FF69F839FB2CB /* PrivacyInfo.xcprivacy */,
 				B9867A57FB86816F535584A0 /* RendererHost.swift */,
 				9FF0FC9185DD69073DCEFA93 /* Theme.swift */,
@@ -311,6 +323,7 @@
 				A7E6A3E010444F75B4CD5013 /* MarkdownSourceExportTests.swift in Sources */,
 				B748C2D0C5594DA79EF21003 /* MarkdownSourceUploadTests.swift in Sources */,
 				D98433A731204E3CA1B01003 /* MarkdownPageSetupTests.swift in Sources */,
+				D98433A731204E3CA1B02007 /* MarkdownResourcesTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -333,6 +346,9 @@
 				A7E6A3E010444F75B4CD5011 /* MarkdownSourceExport.swift in Sources */,
 				B748C2D0C5594DA79EF21001 /* MarkdownSourceUpload.swift in Sources */,
 				D98433A731204E3CA1B01001 /* MarkdownPageSetup.swift in Sources */,
+				D98433A731204E3CA1B02001 /* MarkdownResources.swift in Sources */,
+				D98433A731204E3CA1B02003 /* MarkdownResourceUpload.swift in Sources */,
+				D98433A731204E3CA1B02005 /* MarkdownResourcePanel.swift in Sources */,
 				102F96E313D2B0318A7B3C84 /* RendererHost.swift in Sources */,
 				0BE81F4DB798081463B42E73 /* Theme.swift in Sources */,
 			);

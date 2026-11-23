@@ -391,3 +391,72 @@ fn mixed_fallback_symbols_keep_their_face_while_latin_marks_stay_with_the_base()
     close(ink[3].3, 23.5);
     assert!(p.warnings.is_empty());
 }
+
+#[test]
+fn citation_metadata_keeps_enclosing_link_rectangles_exact_at_fractional_baselines() {
+    let linked = |p: &Poster| {
+        let id = p.navigation.borrow_mut().intern(
+            "https://example.com/enclosing",
+            None,
+            &[Inline::Text("enclosing".into())],
+        );
+        RStyle {
+            link: Some(id),
+            ..RStyle::BODY
+        }
+    };
+    let navigation_xml = |p: &mut Poster| {
+        let mut xml = String::new();
+        let mut warnings = Vec::new();
+        p.navigation
+            .replace(Default::default())
+            .emit(&mut xml, 1000.0, 1000.0, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        xml
+    };
+    for size in [10.0, 11.0, 14.0] {
+        for baseline in [20.0, 72.01, 100.03] {
+            let mut actual = poster();
+            let style = linked(&actual);
+            let rows = actual.wrap(
+                &[
+                    Piece::Text("a\u{0301}\u{0307}".into(), style),
+                    Piece::Text(
+                        "b".into(),
+                        RStyle {
+                            note_reference: Some(7),
+                            ..style
+                        },
+                    ),
+                ],
+                size,
+                100.0,
+            );
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].len(), 1);
+            // The independently specified fixture has stacked-mark offset 650
+            // and bbox top 400 at 1000 UPM. At size 14 / baseline 72.01,
+            // its complete-run bottom is 74.11, but the shorter b owner's
+            // arithmetic gives 74.11000000000001. Outward rounding must not
+            // expand the enclosing link by 0.01pt solely due to metadata.
+            close(rows[0][0].shaped.as_ref().unwrap().ink_ascent(), size * 1.05);
+            let mut expected = poster();
+            let reference_style = linked(&expected);
+            let reference = expected.wrap(
+                &[Piece::Text("a\u{0301}\u{0307}b".into(), reference_style)],
+                size,
+                100.0,
+            );
+            actual.draw_words(&rows[0], 0.0, baseline, size);
+            expected.draw_words(&reference[0], 0.0, baseline, size);
+            assert_eq!(actual.ops, expected.ops, "size={size}, baseline={baseline}");
+            // Compare the complete serialized anchors, including their heights
+            // and edge quantization; equal glyph paint alone misses this defect.
+            assert_eq!(
+                navigation_xml(&mut actual),
+                navigation_xml(&mut expected),
+                "size={size}, baseline={baseline}"
+            );
+        }
+    }
+}

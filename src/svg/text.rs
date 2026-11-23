@@ -183,19 +183,22 @@ impl Poster {
             }
             if !word.navigation.is_empty() {
                 if let Some(prepared) = &word.shaped {
+                    // Navigation partitions share the complete shaped run's
+                    // vertical envelope. Recomputing it per owner can change an
+                    // enclosing link after outward 0.01pt rounding, even when
+                    // the glyphs and mathematical bounds are identical.
+                    let (ascent, height) =
+                        self.line_metrics(std::slice::from_ref(word), size * 0.85, size);
                     prepared.navigation_regions(
                         &word.text,
                         &word.navigation,
                         start,
                         |span, rect| {
-                            let nominal_above = size * 0.85;
-                            let above = rect.2.max(nominal_above);
-                            let below = rect.3.max((size - nominal_above).max(0.0));
                             let bounds = (
                                 rect.0,
-                                baseline - above,
+                                baseline - ascent,
                                 rect.1,
-                                baseline - above + (above + below),
+                                baseline - ascent + height,
                             );
                             let mut navigation = self.navigation.borrow_mut();
                             if let Some(number) = span.note_reference {

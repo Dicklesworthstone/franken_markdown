@@ -145,6 +145,13 @@ fn measure(line: &Line, faces: &Faces, scratch: &mut ShapeScratch) -> LineGrid {
     let mut above = line.text_ink.0;
     let mut below = line.text_ink.1;
     for seg in &line.segs {
+        if let Some(done) = seg.task {
+            // Accessible marker text is invisible; the painted checkbox has
+            // a minimum physical size and a stroke independent of its font.
+            let ink = TaskCheckboxGeometry::new(size, done).ink();
+            above = above.max(ink.0);
+            below = below.max(ink.1);
+        }
         if is_inline_math(seg.slot) {
             if let Some(formula) =
                 inline_math_fit::placement(&seg.text, size, seg.slot == F_DISPLAY_MATH)

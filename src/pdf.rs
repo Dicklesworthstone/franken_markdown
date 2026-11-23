@@ -31164,6 +31164,34 @@ fn draw_seg_decorations(
     }
 }
 
+struct TaskCheckboxGeometry {
+    side: f32,
+    descent: f32,
+    stroke: f32,
+}
+
+impl TaskCheckboxGeometry {
+    fn new(size: f32, done: bool) -> Self {
+        let side = (size * 0.72).clamp(5.5, 9.0);
+        Self {
+            side,
+            descent: size * 0.07,
+            stroke: if done {
+                (side * 0.16).max(0.9)
+            } else {
+                (side * 0.11).max(0.8)
+            },
+        }
+    }
+
+    fn ink(&self) -> (f32, f32) {
+        // Retain the conservative stroke envelope used by split notes, even
+        // when the checked box's stroke lies inside its filled outline.
+        let border = self.stroke * 0.5;
+        (self.side - self.descent + border, self.descent + border)
+    }
+}
+
 /// Draw the vector checkbox for a task-list marker. Checked boxes fill with
 /// the theme accent (the link color) and carry a white check; open boxes are
 /// a neutral rounded outline. The checkbox border gray is a constant, like
@@ -31176,9 +31204,10 @@ fn append_task_checkbox_marker_operator(
     done: bool,
     palette: &Palette,
 ) {
-    let side = (size * 0.72).clamp(5.5, 9.0);
+    let geometry = TaskCheckboxGeometry::new(size, done);
+    let side = geometry.side;
     let x0 = seg.x + (seg.width - side).max(0.0) * 0.5;
-    let y0 = y - size * 0.07;
+    let y0 = y - geometry.descent;
     let radius = side * 0.28;
     body.push_str("q ");
     if done {
@@ -31186,7 +31215,7 @@ fn append_task_checkbox_marker_operator(
         body.push_str(" rg ");
         append_rounded_rect_path(body, x0, y0, side, radius);
         body.push_str("f 1 1 1 RG ");
-        append_pdf_fixed2(body, (side * 0.16).max(0.9));
+        append_pdf_fixed2(body, geometry.stroke);
         body.push_str(" w 1 J 1 j ");
         append_checkbox_xy(body, x0 + side * 0.26, y0 + side * 0.52, " m ");
         append_checkbox_xy(body, x0 + side * 0.44, y0 + side * 0.30, " l ");
@@ -31194,7 +31223,7 @@ fn append_task_checkbox_marker_operator(
         body.push('S');
     } else {
         body.push_str("0.506 0.549 0.596 RG ");
-        append_pdf_fixed2(body, (side * 0.11).max(0.8));
+        append_pdf_fixed2(body, geometry.stroke);
         body.push_str(" w ");
         append_rounded_rect_path(body, x0, y0, side, radius);
         body.push('S');

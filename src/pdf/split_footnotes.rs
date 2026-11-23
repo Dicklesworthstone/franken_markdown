@@ -186,14 +186,9 @@ pub(super) fn prepare(lines: &mut [Line], faces: &Faces, capacity: f32) -> bool 
             if let Some(done) = seg.task {
                 // The checkbox has a minimum physical size even at small
                 // note type sizes. Its invisible marker text is not its ink.
-                let side = (text_size * 0.72).clamp(5.5, 9.0);
-                let stroke = if done {
-                    (side * 0.16).max(0.9)
-                } else {
-                    (side * 0.11).max(0.8)
-                } * 0.5;
-                line.text_ink.0 = line.text_ink.0.max(side - text_size * 0.07 + stroke);
-                line.text_ink.1 = line.text_ink.1.max(text_size * 0.07 + stroke);
+                let ink = TaskCheckboxGeometry::new(text_size, done).ink();
+                line.text_ink.0 = line.text_ink.0.max(ink.0);
+                line.text_ink.1 = line.text_ink.1.max(ink.1);
             }
         }
     }

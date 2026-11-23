@@ -802,6 +802,97 @@ fn options(pitch: f32) -> PdfOptions {
     options
 }
 
+/// Read the painted checkbox paths, including the border's actual line width.
+/// Their accessible `[ ]`/`[x]` text is invisible and has different ink bounds.
+fn painted_checkboxes(content: &str) -> Vec<(f64, f64)> {
+    content
+        .lines()
+        .filter(|line| {
+            line.starts_with("q ")
+                && (line.contains("0.506 0.549 0.596 RG") || line.contains("f 1 1 1 RG"))
+        })
+        .map(|line| {
+            let mut stroke = 1.0;
+            let mut path = (f64::INFINITY, f64::NEG_INFINITY);
+            let mut ink = path;
+            for operation in pdf_content::operations(line) {
+                match operation.operator {
+                    "w" => stroke = operation.operands[0].parse::<f64>().unwrap(),
+                    "m" | "l" | "c" => {
+                        for xy in operation.operands.as_chunks::<2>().0 {
+                            let y = xy[1].parse::<f64>().unwrap();
+                            path.0 = path.0.min(y);
+                            path.1 = path.1.max(y);
+                        }
+                    }
+                    "f" | "S" => {
+                        let border = if operation.operator == "S" {
+                            stroke / 2.0
+                        } else {
+                            0.0
+                        };
+                        ink.0 = ink.0.min(path.0 - border);
+                        ink.1 = ink.1.max(path.1 + border);
+                        path = (f64::INFINITY, f64::NEG_INFINITY);
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                ink.0.is_finite() && ink.1 > ink.0,
+                "painted checkbox: {line}"
+            );
+            ink
+        })
+        .collect()
+}
+
+#[test]
+fn compact_task_lists_keep_their_painted_checkboxes_inside_grid_rows() {
+    for checked in [false, true] {
+        let mark = if checked { "x" } else { " " };
+        let source = format!("- [{mark}] TASK\n").repeat(48);
+        let mut opts = options(1.01);
+        opts.base_font_size = Some(6.0);
+        opts.use_theme_spacing = true;
+        opts.theme.spacing.line_height = 1.0;
+        let pages = painted_pages(&render_pdf(&source, &opts).unwrap());
+        assert!(pages.len() > 1, "checkboxes exercise physical page breaks");
+        check_grid(&pages, &opts, 1.01).unwrap();
+        let mut count = 0;
+        for page in &pages {
+            let top = page.height - f64::from(opts.theme.page.margins.top_pt);
+            let bottom = f64::from(opts.theme.page.margins.bottom_pt);
+            let mut preceding_bottom = top;
+            for (lower, upper) in painted_checkboxes(&page.content) {
+                assert!(
+                    upper <= top + PRECISION,
+                    "checkbox leaves top: {upper} > {top}"
+                );
+                assert!(
+                    lower >= bottom - PRECISION,
+                    "checkbox leaves bottom: {lower} < {bottom}"
+                );
+                assert!(
+                    upper <= preceding_bottom + PRECISION,
+                    "checkboxes overlap: {upper} > {preceding_bottom}"
+                );
+                preceding_bottom = lower;
+                count += 1;
+            }
+        }
+        assert_eq!(count, 48);
+        assert_eq!(body_text(&pages).matches("TASK").count(), 48);
+        assert!(
+            pages
+                .iter()
+                .flat_map(|page| &page.runs)
+                .filter(|run| run.text.contains("TASK"))
+                .all(|run| run.size == 6.0)
+        );
+    }
+}
+
 #[test]
 fn disabled_grid_preserves_preexisting_pdf_bytes() {
     // Recorded before baseline-grid implementation, from the exact-source PDF

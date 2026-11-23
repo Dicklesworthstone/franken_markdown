@@ -71,6 +71,13 @@ single-label domains and bounded domain labels. Malformed addresses return to
 ordinary inline parsing. The existing allowed-scheme and unsafe-destination
 checks continue to apply before a link is emitted.
 
+Inline and reference links with space-bearing destinations, such as
+`[Guide](<docs/my guide.md>)`, retain their clickable targets after editing.
+Spaces are encoded only after exact image-resource lookup, so an imported
+`my plot.png` binding keeps its own identity. Malformed bare reference
+destinations containing an unescaped `<` stay visible as source and cannot
+shadow a later valid definition.
+
 ## Example: Node host with a matching local build
 
 ```js

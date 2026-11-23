@@ -823,13 +823,26 @@ function parseMarkdownClient(source, imageAssets) {
     if (image && /^data:/i.test(url)) {
       return fmdNormalizeSourceImage(url, charge, exhausted, limits.outputUnits);
     }
-    if (/[\u0000-\u0020\u007f-\u009f]/.test(url)) return null;
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(url)) return null;
     const scheme = url.match(/^([a-z][a-z0-9+.-]*):/i);
+    // A space is valid inside an angle-delimited path, but cannot split a
+    // scheme name. Match native admission before encoding the destination;
+    // encoding must never turn an obfuscated protocol into a usable link.
+    if (!scheme && /^[^/?#()]*:/.test(url)) return null;
     if (scheme && !(image ? /^(https?)$/i : /^(https?|mailto|tel)$/i).test(scheme[1])) return null;
     // A backslash is a slash in browser URL parsing; do not accept its
     // protocol-relative spellings as an apparently local destination.
     if (url.includes('\\')) return null;
-    return url;
+    // Match exact author-supplied image keys above, then make path/query spaces
+    // safe for an HTML URL attribute. Existing percent escapes stay untouched.
+    charge(url.length);
+    let encodedLength = url.length;
+    return url.replace(/ /g, () => {
+      encodedLength += 2;
+      if (encodedLength > limits.outputUnits) exhausted('output');
+      charge(3);
+      return '%20';
+    });
   }
   const escapable = ch => /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(ch || '');
   // Parse the complete suffix in its own grammar. Parentheses in angle URLs
@@ -1832,7 +1845,7 @@ function parseMarkdownClient(source, imageAssets) {
       while (column < text.length && text[column] !== ' ' && text[column] !== '\t') {
         charge();
         const ch = text[column];
-        if (ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return null;
+        if (ch === '<' || ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return null;
         if (ch === '\\' && column + 1 < text.length && /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(text[column + 1])) {
           column += 2; continue;
         }

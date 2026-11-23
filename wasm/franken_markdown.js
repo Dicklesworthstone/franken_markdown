@@ -956,31 +956,50 @@ export async function documentStats(markdown, options = {}) {
   return analyzeDocument(markdown, options, wasmDocumentStats, "documentStatsProfiled", "document stats JSON");
 }
 
-export async function searchIndex(markdown) {
-  const source = String(markdown);
-  await init();
-  return parseJson(wasmSearchIndex(source), "search index JSON");
+export async function searchIndex(markdown, options = {}) {
+  return analyzeDocument(markdown, options, wasmSearchIndex, "searchIndexProfiled", "search index JSON");
 }
 
 export async function accessibilityAudit(markdown, options = {}) {
   return analyzeDocument(markdown, options, wasmAccessibilityAudit, "accessibilityAuditProfiled", "accessibility audit JSON");
 }
 
-export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {
+function semanticDiffRequest(oldMarkdown, newMarkdown, options, ordinary, name) {
+  const field = Object.getOwnPropertyDescriptor(options, "profile");
+  if ((field && !Object.hasOwn(field, "value")) || (!field && "profile" in Object(options))) {
+    throw Object.assign(new TypeError("profile must be a data-valued authoring profile"), { code: "INVALID_OPTIONS" });
+  }
+  const profile = normalizeAuthoringProfile(field?.value);
+  const render = profile === undefined ? ordinary
+    : requireBrowserBinding(name, "profile-aware revision comparison");
+  if (profile !== undefined) requireBindingArguments(render, 5, "Profile-aware revision comparison");
+  // Preserve the existing label coercion and four-argument legacy ABI, while
+  // capturing both source strings, names and grammar before even warm init.
   const args = [String(oldMarkdown), String(newMarkdown),
-    verbatimOption(options.oldName), verbatimOption(options.newName)];
+    verbatimOption(options.oldName), verbatimOption(options.newName),
+    ...(profile === undefined ? [] : [profile])];
+  return { render, args, profile };
+}
+
+export async function semanticDiff(oldMarkdown, newMarkdown, options = {}) {
+  const { render, args, profile } = semanticDiffRequest(oldMarkdown, newMarkdown, options,
+    wasmSemanticDiff, "semanticDiffProfiled");
   await init();
-  return parseJson(
-    wasmSemanticDiff(...args),
-    "semantic diff JSON",
-  );
+  const report = parseJson(render(...args), "semantic diff JSON");
+  if (profile === undefined) return report;
+  if (!report || typeof report !== "object" || Array.isArray(report)
+      || (report.profile !== undefined && report.profile !== profile)) {
+    throw Object.assign(new Error("Invalid profiled native comparison report"), { code: "INVALID_WASM_RESPONSE" });
+  }
+  return { ...report, profile };
 }
 
 export async function renderSemanticDiff(oldMarkdown, newMarkdown, options = {}) {
-  const args = [String(oldMarkdown), String(newMarkdown),
-    verbatimOption(options.oldName), verbatimOption(options.newName)];
+  const { render, args, profile } = semanticDiffRequest(oldMarkdown, newMarkdown, options,
+    wasmRenderSemanticDiffHtml, "renderSemanticDiffHtmlProfiled");
   await init();
-  return normalizeResult(wasmRenderSemanticDiffHtml(...args));
+  const output = normalizeResult(render(...args));
+  return profile === undefined ? output : Object.freeze({ ...output, profile });
 }
 
 export async function renderBookSite(files, options = {}) {

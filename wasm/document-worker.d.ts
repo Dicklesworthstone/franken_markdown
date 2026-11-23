@@ -1,4 +1,4 @@
-import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff } from "./franken_markdown.js";
+import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff, FmdAuthoringProfile } from "./franken_markdown.js";
 
 export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html";
 type Shared = Pick<FmdRenderOptions, "profile" | "font" | "darkMode" | "fontScale" | "typeSize">;
@@ -39,10 +39,12 @@ export interface DocumentPublication<K extends DocumentFormat = DocumentFormat> 
  * Two existing native passes run in the worker; no new JavaScript differ is used.
  */
 export interface RevisionComparison {
+  /** Both native passes acknowledged this explicitly selected grammar. */
+  readonly profile?: FmdAuthoringProfile;
   readonly oldSourceLength: number;
   readonly newSourceLength: number;
   readonly report: FmdSemanticDiff;
-  readonly html: Omit<DocumentOutput<"html">, "format"> & { readonly format: "diff-html" };
+  readonly html: Omit<DocumentOutput<"html">, "format"> & { readonly format: "diff-html"; readonly profile?: FmdAuthoringProfile };
   readonly json: Pick<DocumentOutput<"html">, "bytes" | "text" | "blob" | "filename"> & {
     readonly mimeType: "application/json";
     readonly extension: "json";
@@ -69,7 +71,7 @@ export interface DocumentWorkerRenderer {
   readonly disposed: boolean;
   readonly pendingOperations: number;
   readonly pendingBytes: number;
-  /** Each source is bounded to 4 MiB UTF-8; only oldName/newName are supported.
+  /** Each source is bounded to 4 MiB UTF-8; oldName/newName and a shared authoring profile are supported.
    * Uses the same queue, cancellation and deadline as document renders.
    */
   compare(oldMarkdown: string, newMarkdown: string, options?: FmdDiffOptions, controls?: DocumentControl): Promise<RevisionComparison>;

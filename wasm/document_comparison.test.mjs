@@ -11,6 +11,7 @@ function renderer(mode = '') {
   const retained = [];
   const utf8 = value => new TextEncoder().encode(value);
   const report = (old, next, options) => ({schema: 'fmd-diff-v1',
+    ...(options.profile === undefined ? {} : {profile: options.profile}),
     old_name: options.oldName ?? 'Before', new_name: options.newName ?? 'Current',
     stats: {unchanged_blocks: 1, inserted_blocks: 2, deleted_blocks: 3, modified_blocks: 4,
       words_inserted: 5, words_deleted: 6, similarity_ratio: 0.1},
@@ -29,6 +30,8 @@ function renderer(mode = '') {
       }
       if (mode === 'wait') await new Promise(resolve => setTimeout(resolve, 80));
       const value = report(old, next, options);
+      if (mode === 'missing-report-profile') delete value.profile;
+      if (mode === 'wrong-report-profile') value.profile = 'gfm-plus';
       if (mode === 'schema') value.schema = 'wrong';
       if (mode === 'count') value.stats.inserted_blocks = -1;
       if (mode === 'infinite') value.stats.similarity_ratio = Infinity;
@@ -41,6 +44,9 @@ function renderer(mode = '') {
       htmlCalls++;
       const value = output('diff-html', old + next, '<!doctype html><html><head></head><body>'
         + JSON.stringify({old, next, options}).replaceAll('<', '&lt;') + '</body></html>');
+      if (options.profile !== undefined) value.profile = options.profile;
+      if (mode === 'missing-html-profile') delete value.profile;
+      if (mode === 'wrong-html-profile') value.profile = 'gfm-plus';
       if (mode === 'length') value.sourceLength--;
       if (mode === 'mime') value.mimeType = 'application/javascript';
       if (mode === 'diagnostic') value.diagnostics[0].start = 1;
@@ -134,6 +140,71 @@ if (!isMainThread) {
     await assert.rejects(api.compare('', '', {}, {signal: stop.signal}), {code: 'ABORTED'});
     await assert.rejects(api.render('compare', 'not two sources'), {code: 'INVALID_OPTIONS'});
     assert.equal(endpoints.length, 0);
+  });
+
+  for (const profile of ['commonmark-gfm', 'gfm-plus']) test(`worker comparison captures ${profile} for JSON and visual review`, async t => {
+    const {api} = client(t, 'wait');
+    const options = {oldName: '  Avant Ω  ', newName: 'Current', profile};
+    const pending = api.compare('\ufeff[Term\r\n: café](/old)\r\n', '[Term\n: café](/new)\n', options);
+    options.profile = profile === 'gfm-plus' ? 'commonmark-gfm' : 'gfm-plus';
+    options.oldName = 'Changed';
+    const value = await pending;
+    assert.equal(value.profile, profile);
+    assert.equal(value.report.profile, profile);
+    assert.equal(value.html.profile, profile);
+    assert.equal(JSON.parse(value.json.text()).profile, profile);
+    assert.equal(value.report.old_name, '  Avant Ω  ');
+    assert.equal(value.report.fixture.old, '\ufeff[Term\r\n: café](/old)\r\n');
+    assert.match(value.html.text(), new RegExp('"profile":"' + profile + '"'));
+    assert.equal(api.pendingBytes, 0);
+    const legacy = await api.compare('legacy', 'still legacy');
+    for (const result of [legacy, legacy.report, legacy.html]) assert.equal(Object.hasOwn(result, 'profile'), false);
+  });
+
+  test('invalid comparison profiles reject before allocating workers or invoking getters', async t => {
+    const {api, endpoints} = client(t);
+    for (const options of [{profile: 'gfm'}, {profile: null}, {profile: true},
+      {profile: {toString() {assert.fail('profile coercion');}}},
+      {get profile() {assert.fail('profile accessor');}}, Object.create({profile: 'gfm-plus'})])
+      await assert.rejects(api.compare('before', 'after', options), {code: 'INVALID_OPTIONS'});
+    assert.equal(endpoints.length, 0); assert.equal(api.pendingBytes, 0);
+  });
+
+  for (const mode of ['missing-report-profile', 'wrong-report-profile', 'missing-html-profile', 'wrong-html-profile'])
+    test(`worker refuses ${mode} instead of publishing a mixed-dialect comparison`, async t => {
+      const {api} = client(t, mode);
+      await assert.rejects(api.compare('before', 'after', {profile: 'commonmark-gfm'}), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+      assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
+    });
+
+  test('host checks captured comparison dialect across the envelope, JSON and HTML', async t => {
+    const base = await client(t).api.compare('a', 'b', {profile: 'commonmark-gfm'});
+    const make = () => ({format: 'revision-comparison', oldSourceLength: 1, newSourceLength: 1,
+      profile: 'commonmark-gfm', json: base.json.bytes.slice(),
+      html: {...base.html, bytes: base.html.bytes.slice(), text: undefined, blob: undefined, filename: undefined}});
+    for (const corrupt of [
+      value => {delete value.profile;},
+      value => {value.profile = 'gfm-plus'; value.html.profile = 'gfm-plus';},
+      value => {delete value.html.profile;},
+      value => {value.html.profile = 'gfm-plus';},
+      value => {const report = JSON.parse(new TextDecoder().decode(value.json)); delete report.profile;
+        value.json = new TextEncoder().encode(JSON.stringify(report));},
+      value => {const report = JSON.parse(new TextDecoder().decode(value.json)); report.profile = 'gfm-plus';
+        value.json = new TextEncoder().encode(JSON.stringify(report));},
+    ]) {
+      const endpoint = new class extends EventTarget {
+        postMessage(request) {
+          const value = make(); corrupt(value);
+          queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', {data: {
+            protocol: WORKER_PROTOCOL, id: request.id, ok: true, state: null, value,
+          }})));
+        }
+        terminate() {this.stopped = true;}
+      }();
+      const {api} = client(t, '', {workerFactory: () => endpoint});
+      await assert.rejects(api.compare('a', 'b', {profile: 'commonmark-gfm'}), {code: 'WORKER_PROTOCOL_ERROR'});
+      assert.equal(api.disposed, true); assert.equal(endpoint.stopped, true);
+    }
   });
 
   test('combined ingress includes both retained source strings', async t => {

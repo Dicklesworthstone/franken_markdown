@@ -245,6 +245,13 @@ export interface FmdRenderOutput {
   filename(baseName?: string): string;
 }
 
+/** Visual revision review, using one grammar for both source revisions. */
+export interface FmdDiffRenderOutput extends FmdRenderOutput {
+  readonly format: "diff-html";
+  /** Present only when the explicitly selected native grammar ran. */
+  readonly profile?: FmdAuthoringProfile;
+}
+
 /** Single-page SVG options. Assets are snapshotted before asynchronous init;
  * a matching resource-capable WASM binary is required when assets are supplied.
  * TOC options require the navigation-capable binding; explicit markers also
@@ -344,9 +351,9 @@ export interface FmdRenderer {
     oldMarkdown: string,
     newMarkdown: string,
     options?: FmdDiffOptions,
-  ): Promise<FmdRenderOutput>;
+  ): Promise<FmdDiffRenderOutput>;
   renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
-  searchIndex(markdown: string): Promise<FmdSearchIndex>;
+  searchIndex(markdown: string, options?: FmdAnalysisOptions): Promise<FmdSearchIndex>;
   semanticDiff(
     oldMarkdown: string,
     newMarkdown: string,
@@ -358,7 +365,7 @@ export interface FmdBookFile {
   path: string;
   source: string;
 }
-export interface FmdDiffOptions {
+export interface FmdDiffOptions extends FmdAnalysisOptions {
   oldName?: string;
   newName?: string;
 }
@@ -400,10 +407,12 @@ export interface FmdAccessibilityReport {
 }
 export interface FmdSearchIndex {
   schema: "fmd-search-index-v1";
+  readonly profile?: FmdAuthoringProfile;
   entries: Array<{ kind: "heading" | "paragraph"; level?: number; anchor: string; text: string }>;
 }
 export interface FmdSemanticDiff {
   schema: "fmd-diff-v1";
+  readonly profile?: FmdAuthoringProfile;
   old_name: string;
   new_name: string;
   stats: {
@@ -465,9 +474,9 @@ export function renderSemanticDiff(
   oldMarkdown: string,
   newMarkdown: string,
   options?: FmdDiffOptions,
-): Promise<FmdRenderOutput>;
+): Promise<FmdDiffRenderOutput>;
 export function renderSvg(markdown: string, options?: FmdSvgRenderOptions): Promise<FmdSvgRenderOutput>;
-export function searchIndex(markdown: string): Promise<FmdSearchIndex>;
+export function searchIndex(markdown: string, options?: FmdAnalysisOptions): Promise<FmdSearchIndex>;
 export function semanticDiff(
   oldMarkdown: string,
   newMarkdown: string,

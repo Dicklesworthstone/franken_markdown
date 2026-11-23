@@ -70,3 +70,17 @@ await renderer.renderInteractiveHtml("Term\n: Definition", { profile: "gfm-plus"
 await renderer.renderPdf("# PDF", { fontEmbedding: "full" });
 // @ts-expect-error Font policies are explicit.
 await renderer.renderEpub("# Full", { fontEmbedding: "guess" });
+
+const comparison = await renderer.compare("before", "after", {
+  oldName: "Original", newName: "Current", profile: "commonmark-gfm",
+}, control);
+const comparisonProfile: "commonmark-gfm" | "gfm-plus" | undefined = comparison.profile;
+const htmlProfile: typeof comparisonProfile = comparison.html.profile;
+const reportProfile: typeof comparisonProfile = comparison.report.profile;
+void [comparisonProfile, htmlProfile, reportProfile];
+// @ts-expect-error Comparison uses the same canonical profile names as rendering.
+await renderer.compare("before", "after", { profile: "gfm" });
+// @ts-expect-error Comparison does not acquire image resources.
+await renderer.compare("before", "after", { pdfImages: [] });
+// @ts-expect-error Receipt metadata is read-only.
+comparison.profile = "gfm-plus";

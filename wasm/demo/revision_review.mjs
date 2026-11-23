@@ -10,6 +10,7 @@ export function installRevisionReview(document, { rendererFactory = createWorker
     return node;
   };
   const compareButton = get('compare'), cancelButton = get('cancel-review'), swapButton = get('swap-revisions');
+  const profileControl = get('review-profile');
   const status = get('review-status'), results = get('review-results'), summary = get('review-summary');
   const preview = get('review-preview'), findings = get('review-findings');
   const htmlButton = get('download-review-html'), jsonButton = get('download-review-json');
@@ -21,8 +22,9 @@ export function installRevisionReview(document, { rendererFactory = createWorker
   const on = (node, kind, handler) => { node.addEventListener(kind, handler); listeners.push([node, kind, handler]); };
   const source = side => side.editor.value === side.anchor.view ? side.anchor.source : side.editor.value;
   const snapshot = () => ({revision, sources: sides.map(source), names: sides.map(side => side.name.value),
-    anchors: sides.map(side => side.anchor)});
+    anchors: sides.map(side => side.anchor), profile: profileControl.value});
   const current = saved => !disposed && !suspended && saved && saved.revision === revision
+    && profileControl.value === saved.profile
     && sides.every((side, index) => !side.composing && source(side) === saved.sources[index]
       && side.name.value === saved.names[index] && side.anchor === saved.anchors[index]);
   function textSize(value, maximum, label) {
@@ -39,6 +41,7 @@ export function installRevisionReview(document, { rendererFactory = createWorker
   function refresh() {
     const paused = disposed || suspended || sides.some(side => side.composing);
     compareButton.disabled = paused || pending !== null || reading !== null;
+    profileControl.disabled = paused;
     swapButton.disabled = paused || reading !== null;
     cancelButton.hidden = !pending && !reading;
     htmlButton.disabled = jsonButton.disabled = paused || !!pending || !!reading || !current(latest);
@@ -106,6 +109,8 @@ export function installRevisionReview(document, { rendererFactory = createWorker
     let operation;
     try {
       const saved = snapshot();
+      if (!["", "commonmark-gfm", "gfm-plus"].includes(saved.profile))
+        throw Error('Choose a supported Markdown dialect.');
       for (let index = 0; index < 2; index++) {
         textSize(saved.sources[index], DOCUMENT_SOURCE_LIMIT, 'Markdown');
         textSize(saved.names[index], 4096, 'Revision label');
@@ -116,8 +121,12 @@ export function installRevisionReview(document, { rendererFactory = createWorker
       status.textContent = 'Comparing revisions in the native worker…'; refresh();
       const value = await renderer.compare(saved.sources[0], saved.sources[1], {
         oldName: saved.names[0], newName: saved.names[1],
+        ...(saved.profile === "" ? {} : {profile: saved.profile}),
       });
       if (pending !== operation || !current(operation)) return;
+      const profile = saved.profile === "" ? undefined : saved.profile;
+      if ([value, value.report, value.html].some(output => output?.profile !== profile))
+        throw Error('The renderer did not confirm the requested Markdown dialect; load matching renderer and worker packages.');
       const html = safeHtml(value.html.bytes), report = value.report;
       const content = document.createDocumentFragment();
       for (const [label, number] of [
@@ -217,6 +226,8 @@ export function installRevisionReview(document, { rendererFactory = createWorker
     } catch (error) { operation?.cancel(); status.textContent = 'File not opened: ' + message(error); refresh(); }
   }
   on(compareButton, 'click', compare);
+  for (const event of ['input', 'change']) on(profileControl, event,
+    () => invalidate('Markdown dialect changed — compare again.'));
   on(cancelButton, 'click', () => invalidate('Operation cancelled — both source revisions are unchanged.'));
   on(swapButton, 'click', () => {
     if (disposed || suspended || reading || sides.some(side => side.composing)) return;

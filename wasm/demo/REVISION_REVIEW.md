@@ -49,7 +49,7 @@ import { createWorkerRenderer } from '@franken-suite/franken-markdown/document-w
 const renderer = createWorkerRenderer();
 try {
   const comparison = await renderer.compare(before, after, {
-    oldName: 'Before editing', newName: 'Current draft'
+    oldName: 'Before editing', newName: 'Current draft', profile: 'commonmark-gfm'
   }, { signal: abortController.signal, timeoutMs: 30000 });
   console.log(comparison.report.stats);
   // The host decides how to display/save comparison.html or comparison.json.
@@ -57,6 +57,19 @@ try {
   renderer.dispose();
 }
 ```
+
+Choose the same Markdown dialect as the documents you publish. The page's
+**Markdown dialect** control and the API's optional `profile` both accept
+`commonmark-gfm` and `gfm-plus`; omission preserves the legacy renderer default.
+Both revisions use that one captured grammar and its publication transforms.
+Changing the control invalidates the previous comparison and downloads.
+
+Explicit profiles require matching generated native bindings. The worker checks
+that both the semantic report and visual HTML acknowledge the requested profile,
+then checks it again on the receiving side. `comparison.profile`,
+`comparison.report.profile` and `comparison.html.profile` identify the same
+explicit choice. A missing or mismatched acknowledgment fails without a legacy
+grammar fallback. The omitted-profile output retains its previous shape.
 
 Each source is limited to 4 MiB UTF-8 and each label to 4 KiB. Both sources count
 against the shared ingress budget (default 16 MiB). Report JSON is limited to
@@ -88,3 +101,9 @@ Both package builders also run the generated-WASM smoke test, which compares the
 worker's JSON/HTML to the actual direct native API for changed, identical, empty,
 Unicode and rich Markdown revisions. Passing renderer-double tests does not prove
 that native gate; a matching rebuilt WASM package is required to execute it.
+
+`node wasm/analysis_profile_smoke.mjs <packageDir> <generated.wasm>` exercises
+current generated native bindings through the production facade and real worker
+entry. It checks both source grammars, indexed publication anchors, JSON/HTML
+parity, deterministic bytes and the legacy calls. This is separate from the
+transport fixtures and does not imply browser DOM or lifecycle qualification.

@@ -386,15 +386,29 @@ substitute for rendering/parity checks against a generated WASM artifact.
 
 ### Grammar-aware document analysis
 
-`documentStats(source, { profile: "commonmark-gfm" })` and
-`accessibilityAudit(source, { profile: "gfm-plus" })` select the same source
-grammar as publication. Renderer instances expose both signatures. Analysis
-options accept only the canonical optional profile; they grant no image, font,
-layout or raw-HTML authority. The source and grammar are captured before
-initialization yields.
+`documentStats`, `accessibilityAudit` and `searchIndex` accept an optional
+`{ profile: "commonmark-gfm" | "gfm-plus" }` and select the same source grammar
+as publication. Renderer instances expose the same signatures. Analysis options
+accept only the canonical optional profile; they grant no image, font, layout
+or raw-HTML authority. The source and grammar are captured before initialization
+yields. Search retains its heading/body-paragraph scope, with headings and
+visible paragraph text parsed using the selected dialect.
 
-Explicit profiles require the matching `documentStatsProfiled` and
-`accessibilityAuditProfiled` generated bindings. Older packages report
+Revision comparison accepts one profile for both sources, including the visual
+HTML comparison. For example:
+
+```js
+const profile = "commonmark-gfm";
+const index = await renderer.searchIndex(source, { profile });
+const report = await renderer.semanticDiff(before, after, {
+  profile, oldName: "Before", newName: "Current"
+});
+const review = await renderer.renderSemanticDiff(before, after, { profile });
+```
+
+Explicit profiles require the matching `documentStatsProfiled`,
+`accessibilityAuditProfiled`, `searchIndexProfiled`, `semanticDiffProfiled` or
+`renderSemanticDiffHtmlProfiled` generated binding. Older packages report
 `UNSUPPORTED_WASM_PACKAGE` without retrying with a different grammar. Successful
 explicit reports include a `profile` receipt after the selected native binding
 runs. Omitted profiles preserve legacy calls and report shapes.

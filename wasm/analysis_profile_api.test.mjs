@@ -6,7 +6,7 @@ import test from "node:test";
 import { SourceTextModule, SyntheticModule } from "node:vm";
 import { normalizeAnalysisOptions } from "./render_typography.mjs";
 
-const methods = ["documentStats", "accessibilityAudit"];
+const methods = ["documentStats", "accessibilityAudit", "searchIndex"];
 const source = "\ufeffTerm\r\n: **Definition β**\r\n";
 function gate() {
   let resolve;

@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { analysisAuthoringProfileReceipt, isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -236,7 +236,11 @@ function helpers(value) {
 function comparisonInput(oldMarkdown, newMarkdown, options) {
   const oldSourceLength = text(oldMarkdown, DOCUMENT_SOURCE_LIMIT, "old Markdown");
   const newSourceLength = text(newMarkdown, DOCUMENT_SOURCE_LIMIT, "new Markdown");
-  const owned = record(options, ["oldName", "newName"], "comparison option");
+  const owned = record(options, ["oldName", "newName", "profile"], "comparison option");
+  if (owned.profile !== undefined) {
+    try { owned.profile = normalizeAuthoringProfile(owned.profile); }
+    catch (error) { fail(error.code, error.message); }
+  }
   for (const [key, value] of Object.entries(owned)) text(value, 4096, key);
   const charge = 768 + 2 * (oldMarkdown.length + newMarkdown.length)
     + Object.values(owned).reduce((total, value) => total + 64 + 2 * value.length, 0);
@@ -257,9 +261,16 @@ function comparisonReport(report) {
     fail("WORKER_PROTOCOL_ERROR", "invalid semantic comparison similarity");
   return report;
 }
+function comparisonProfile(value, expected, code = "UNSUPPORTED_WASM_PACKAGE") {
+  try { return analysisAuthoringProfileReceipt(value, expected, code); }
+  catch (error) { fail(error.code, error.message); }
+}
 function comparisonEnvelope(value, max, expected) {
   if (!value || value.format !== "revision-comparison")
     fail("WORKER_PROTOCOL_ERROR", "invalid comparison envelope");
+  const profile = expected === undefined ? value.profile : expected.profile;
+  comparisonProfile(value, profile, "WORKER_PROTOCOL_ERROR");
+  comparisonProfile(value.html, profile, "WORKER_PROTOCOL_ERROR");
   for (const key of ["oldSourceLength", "newSourceLength"]) {
     if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > DOCUMENT_SOURCE_LIMIT
         || (expected !== undefined && value[key] !== expected[key]))
@@ -285,7 +296,9 @@ function comparisonHelpers(value, max, expected) {
   let report;
   try { report = comparisonReport(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value.json))); }
   catch { fail("WORKER_PROTOCOL_ERROR", "invalid comparison JSON"); }
+  const receipt = comparisonProfile(report, expected.profile, "WORKER_PROTOCOL_ERROR");
   return Object.freeze({
+    ...receipt,
     oldSourceLength: value.oldSourceLength, newSourceLength: value.newSourceLength,
     report, html: helpers(value.html),
     json: helpers({ bytes: value.json, mimeType: "application/json", extension: "json" }),
@@ -429,14 +442,16 @@ async function compareInWorker(engine, input, max) {
   // These are two existing native passes, not a new JS diff algorithm or a
   // promise of shared AST caching. Admit the report before rendering HTML.
   const report = comparisonReport(await engine.semanticDiff(input.oldMarkdown, input.newMarkdown, input.options));
+  const receipt = comparisonProfile(report, input.options.profile);
   const jsonText = JSON.stringify(report);
   text(jsonText, Math.min(COMPARISON_REPORT_LIMIT, max), "comparison report");
   const json = new TextEncoder().encode(jsonText);
   const output = await engine.renderSemanticDiff(input.oldMarkdown, input.newMarkdown, input.options);
+  comparisonProfile(output, input.options.profile);
   result(output, "diff-html", max - json.byteLength, input.oldSourceLength + input.newSourceLength);
-  const value = { format: "revision-comparison", oldSourceLength: input.oldSourceLength,
-    newSourceLength: input.newSourceLength, json, html: ownedOutput(output) };
-  comparisonEnvelope(value, max, input);
+  const value = { format: "revision-comparison", ...receipt, oldSourceLength: input.oldSourceLength,
+    newSourceLength: input.newSourceLength, json, html: { ...ownedOutput(output), ...receipt } };
+  comparisonEnvelope(value, max, { ...input, profile: input.options.profile });
   return { state: null, value, transfer: [value.json.buffer, value.html.bytes.buffer] };
 }
 
@@ -484,7 +499,7 @@ export function createWorkerRenderer(options = {}) {
         }
       }
       const expected = format === "compare"
-        ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength }
+        ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength, profile: input.options.profile }
         : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format),
           policies: input.targets.map(target => normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict)) }
         : input.sourceLength;

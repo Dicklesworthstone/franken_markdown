@@ -16,7 +16,8 @@
     .sources { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
     .source { min-width: 0; display: grid; gap: 10px; border: 1px solid GrayText; border-radius: 8px; padding: 16px; }
     label { display: grid; gap: 4px; }
-    input, button, textarea { font: inherit; }
+    input, button, textarea, select { font: inherit; }
+    select { max-width: 100%; min-height: 42px; padding: 8px; }
     input[type=text], textarea { width: 100%; padding: 8px; border: 1px solid GrayText; border-radius: 4px; }
     textarea { min-height: 260px; resize: vertical; font: 14px/1.6 ui-monospace, monospace; tab-size: 2; }
     button, .download { min-height: 42px; padding: 8px 14px; }
@@ -58,6 +59,14 @@
     <button id="save-after" type="button">Download after source</button>
   </section>
 </section>
+<label for="review-profile">Markdown dialect (both revisions)
+  <select id="review-profile" aria-describedby="review-profile-help">
+    <option value="">Renderer default</option>
+    <option value="commonmark-gfm">CommonMark + GFM</option>
+    <option value="gfm-plus">GFM plus</option>
+  </select>
+</label>
+<p id="review-profile-help">Choose the same dialect as your published documents. Changing it clears the previous comparison; the source text stays unchanged.</p>
 <div class="actions">
   <button id="compare" class="primary" type="button">Compare revisions</button>
   <button id="cancel-review" type="button" hidden>Cancel</button>

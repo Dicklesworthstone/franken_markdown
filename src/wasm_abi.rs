@@ -40,6 +40,11 @@ mod font_embedding_tests;
 #[cfg(test)]
 mod authoring_profile_tests;
 
+mod analysis_profiles;
+pub use analysis_profiles::{
+    render_semantic_diff_html_profiled, search_index_profiled, semantic_diff_profiled,
+};
+
 mod svg;
 pub use svg::{
     render_svg_configured_navigation, render_svg_configured_profiled,

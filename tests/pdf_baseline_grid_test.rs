@@ -1453,3 +1453,231 @@ fn emitted_coordinate_checks_reject_off_grid_and_overlapping_negative_controls()
         "independent font-bound check must detect colliding rows"
     );
 }
+
+#[derive(Clone, Copy, Debug)]
+struct CheckboxInk {
+    bottom: f64,
+    top: f64,
+}
+
+/// Reuse the emitted-path/stroke reader above, keeping vector bounds separate
+/// from the font-only text oracle.
+fn emitted_checkbox_ink(content: &str) -> Vec<CheckboxInk> {
+    painted_checkboxes(content)
+        .into_iter()
+        .map(|(bottom, top)| CheckboxInk { bottom, top })
+        .collect()
+}
+
+fn check_task_checkbox_ink(pages: &[PaintedPage], opts: &PdfOptions) -> Result<usize, String> {
+    let mut count = 0;
+    for (page_index, page) in pages.iter().enumerate() {
+        let boxes = emitted_checkbox_ink(&page.content);
+        let labels: Vec<_> = page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && run.text.starts_with("TASK"))
+            .collect();
+        if boxes.len() != labels.len() {
+            return Err(format!(
+                "page {page_index}: {} boxes but {} task labels",
+                boxes.len(),
+                labels.len()
+            ));
+        }
+        let mut rows: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+        for run in page.runs.iter().filter(|run| is_body_baseline(run)) {
+            let row = rows
+                .entry((run.y * 100.0).round() as i64)
+                .or_insert((f64::INFINITY, f64::NEG_INFINITY));
+            row.0 = row.0.min(run.y + run.descent * run.size);
+            row.1 = row.1.max(run.y + run.cap_height * run.size);
+        }
+        for (ink, label) in boxes.iter().zip(labels) {
+            let top = page.height - f64::from(opts.theme.page.margins.top_pt);
+            let bottom = f64::from(opts.theme.page.margins.bottom_pt);
+            if ink.top > top + PRECISION || ink.bottom < bottom - PRECISION {
+                return Err(format!(
+                    "page {page_index}: checkbox {ink:?} leaves body {bottom}..{top}"
+                ));
+            }
+            let row = rows.get_mut(&((label.y * 100.0).round() as i64)).unwrap();
+            row.0 = row.0.min(ink.bottom);
+            row.1 = row.1.max(ink.top);
+        }
+        let rows: Vec<_> = rows.values().collect();
+        for pair in rows.windows(2) {
+            if pair[0].1 > pair[1].0 + PRECISION {
+                return Err(format!(
+                    "page {page_index}: checkbox/text rows overlap: {pair:?}"
+                ));
+            }
+        }
+        count += boxes.len();
+    }
+    Ok(count)
+}
+
+fn small_task_options() -> PdfOptions {
+    let mut opts = options(1.0);
+    opts.base_font_size = Some(6.0);
+    opts.use_theme_spacing = true;
+    opts.theme.spacing.line_height = 1.0;
+    opts.theme.page.size.height_pt = 144.0;
+    opts
+}
+
+#[test]
+fn task_checkboxes_fit_small_type_grid_without_clipping_or_row_overlap() {
+    let source: String = (0..48)
+        .map(|row| {
+            let state = if row % 2 == 0 { " " } else { "x" };
+            format!("- [{state}] TASK{row:03}\n")
+        })
+        .collect();
+    let opts = small_task_options();
+    let pdf = render_pdf(&source, &opts).unwrap();
+    let pages = painted_pages(&pdf);
+    assert!(pages.len() >= 3, "fixture must exercise repeated page edges");
+    check_grid(&pages, &opts, 1.0).unwrap();
+    assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 48);
+    assert_eq!(
+        body_text(&pages),
+        (0..48).map(|row| format!("TASK{row:03}")).collect::<String>()
+    );
+    assert!(
+        pages
+            .iter()
+            .flat_map(|page| &page.runs)
+            .filter(|run| is_body_baseline(run))
+            .all(|run| (run.size - 6.0).abs() < PRECISION),
+        "checkbox clearance must not change requested type size"
+    );
+    assert_eq!(pdf, render_pdf(&source, &opts).unwrap());
+
+    let monolithic = render_pdf_document_emitted(
+        &parse_markdown(&source),
+        &opts,
+        PdfEmitOptions::monolithic(),
+    )
+    .unwrap();
+    assert_eq!(pdf, monolithic, "both PDF writers use the same measured rows");
+}
+
+#[test]
+fn continued_task_notes_keep_vector_ink_inside_the_shared_grid() {
+    let mut source = String::from("CLAIM[^tasks]\n\n[^tasks]:\n");
+    for row in 0..36 {
+        let state = if row % 2 == 0 { " " } else { "x" };
+        source.push_str(&format!("    - [{state}] TASK{row:03}\n"));
+    }
+    let mut opts = small_task_options();
+    opts.split_footnotes = true;
+    let pdf = render_pdf(&source, &opts).unwrap();
+    let pages = painted_pages(&pdf);
+    assert!(pages.len() >= 3, "long note must actually continue");
+    assert!(
+        !body_text(&pages).contains("Notes"),
+        "fixture must exercise page notes rather than endnote fallback"
+    );
+    check_grid(&pages, &opts, 1.0).unwrap();
+    assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 36);
+    let labels: Vec<_> = pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .filter(|run| run.text.starts_with("TASK"))
+        .collect();
+    assert_eq!(
+        labels.iter().map(|run| run.text.as_str()).collect::<String>(),
+        (0..36).map(|row| format!("TASK{row:03}")).collect::<String>()
+    );
+    assert!(labels.iter().all(|run| run.size < 6.0));
+    assert_eq!(pdf, render_pdf(&source, &opts).unwrap());
+}
+
+#[test]
+fn checkbox_ink_oracle_rejects_paths_outside_the_body() {
+    let opts = small_task_options();
+    let pdf = render_pdf("- [ ] TASK000\n- [x] TASK001\n", &opts).unwrap();
+    let mut pages = painted_pages(&pdf);
+    assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 2);
+    // Move only the actual checkbox path coordinates. Text matrices, font
+    // metrics and the source remain untouched, so a text-only oracle misses it.
+    let page = &mut pages[0];
+    let original = page
+        .content
+        .lines()
+        .find(|line| !emitted_checkbox_ink(line).is_empty())
+        .unwrap()
+        .to_owned();
+    let mut shifted = String::new();
+    for operation in pdf_content::operations(&original) {
+        for (index, operand) in operation.operands.iter().enumerate() {
+            if matches!(operation.operator, "m" | "l" | "c") && index % 2 == 1 {
+                shifted.push_str(&format!("{} ", operand.parse::<f64>().unwrap() + 100.0));
+            } else {
+                shifted.push_str(operand);
+                shifted.push(' ');
+            }
+        }
+        shifted.push_str(operation.operator);
+        shifted.push(' ');
+    }
+    page.content = page.content.replacen(&original, shifted.trim_end(), 1);
+    assert!(
+        check_task_checkbox_ink(&pages, &opts).is_err(),
+        "the emitted-path oracle must reject a checkbox above the top margin"
+    );
+}
+
+#[test]
+fn task_figure_labels_keep_their_own_measured_checkbox_size() {
+    let mut opts = small_task_options();
+    opts.image_assets.push(PdfImageAsset::new(
+        "tiny.svg",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#aa3344"/></svg>"##.to_vec(),
+    ));
+    let source = "- [ ] ![TINY](tiny.svg)\n- [x] ![TINY](tiny.svg)\n".repeat(20);
+    let pages = painted_pages(&render_pdf(&source, &opts).unwrap());
+    assert!(pages.len() >= 3);
+    let mut count = 0;
+    for page in &pages {
+        let boxes = emitted_checkbox_ink(&page.content);
+        let mut previous_bottom = page.height - f64::from(opts.theme.page.margins.top_pt);
+        for ink in &boxes {
+            assert!(
+                ink.top <= previous_bottom + PRECISION,
+                "figure marker leaves the body or overlaps its preceding row: {ink:?}"
+            );
+            assert!(ink.bottom >= f64::from(opts.theme.page.margins.bottom_pt) - PRECISION);
+            assert!(
+                ink.top - ink.bottom >= 5.5 - PRECISION,
+                "a tiny figure must not shrink the checkbox"
+            );
+            previous_bottom = ink.bottom;
+        }
+        count += boxes.len();
+    }
+    assert_eq!(count, 40, "each figure owns one visible task marker");
+}
+
+#[test]
+fn tight_theme_leading_contains_task_ink_without_a_grid() {
+    let source: String = (0..48)
+        .map(|row| {
+            let state = if row % 2 == 0 { " " } else { "x" };
+            format!("- [{state}] TASK{row:03}\n")
+        })
+        .collect();
+    let mut opts = small_task_options();
+    opts.theme.page.baseline_grid = None;
+    let pdf = render_pdf(&source, &opts).unwrap();
+    let pages = painted_pages(&pdf);
+    assert!(pages.len() >= 3);
+    assert_eq!(check_task_checkbox_ink(&pages, &opts).unwrap(), 48);
+    assert_eq!(
+        body_text(&pages),
+        (0..48).map(|row| format!("TASK{row:03}")).collect::<String>()
+    );
+    assert_eq!(pdf, render_pdf(&source, &opts).unwrap());
+}

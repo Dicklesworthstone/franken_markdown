@@ -19706,6 +19706,15 @@ fn inline_math_extents(line: &Line) -> (f32, f32) {
     let mut above = (line.text_ink.0 - ascent_room).max(0.0);
     let mut below = (line.text_ink.1 - descent_room).max(0.0);
     for seg in &line.segs {
+        if let Some(done) = seg.task
+            && line.spacing.leading.is_some()
+        {
+            // Tight theme leading must contain the vector marker too. Its
+            // selectable [x]/[ ] glyphs are invisible and can be much shorter.
+            let ink = TaskCheckboxGeometry::new(line.size, done).ink();
+            above = above.max(ink.0 - ascent_room);
+            below = below.max(ink.1 - descent_room);
+        }
         if line.spacing.leading.is_some()
             && line.bg == 0
             && !line.rule

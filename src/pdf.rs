@@ -3197,26 +3197,38 @@ fn fit_to_target_pages(
     let mut best_opts = opts.clone();
     let mut best_page = base_page;
     let mut min_achieved_pages = initial_pages;
+    // Fit from the typography and geometry that ordinary rendering actually
+    // uses. Raw library overrides may be non-finite or outside their admitted
+    // ranges; scaling those can grow the rendered type or make clamp panic.
+    let type_scale = opts.type_scale();
 
-    for _ in 0..14 {
-        let mid = (low + high) / 2.0;
+    for probe in 0..14 {
+        // Bisection alone never reaches its lower endpoint. Keep the existing
+        // work bound, but spend the last unsuccessful probe on that reachable
+        // limit so an exact-fit document is not needlessly left over budget.
+        let mid = if probe == 13 && min_achieved_pages.is_none_or(|pages| pages > target_pages) {
+            low
+        } else {
+            (low + high) / 2.0
+        };
         let mut candidate_opts = opts.clone();
 
-        let base_pt = opts.base_font_size.unwrap_or(11.0);
-        let new_base = (base_pt * mid).clamp(6.0, 24.0);
+        let new_base = (type_scale.body * mid).clamp(6.0, 24.0);
         candidate_opts.base_font_size = Some(new_base);
 
-        if let Some(tbl_pt) = opts.table_font_size {
-            candidate_opts.table_font_size = Some((tbl_pt * mid).clamp(5.0, new_base));
+        if opts.table_font_size.is_some() {
+            candidate_opts.table_font_size = Some((type_scale.table * mid).clamp(5.0, new_base));
         }
 
         let margin_scale = mid.max(0.80);
-        let orig_margins = opts.theme.page.margins;
+        // The usual 36pt floor must never enlarge an already smaller authored
+        // margin. That would reduce the page's available body while fitting it.
+        let fit_margin = |margin: f32| (margin * margin_scale).max(margin.min(36.0));
         candidate_opts.theme.page.margins = crate::theme::PageMargins {
-            top_pt: (orig_margins.top_pt * margin_scale).max(36.0),
-            bottom_pt: (orig_margins.bottom_pt * margin_scale).max(36.0),
-            left_pt: (orig_margins.left_pt * margin_scale).max(36.0),
-            right_pt: (orig_margins.right_pt * margin_scale).max(36.0),
+            top_pt: fit_margin(base_page.top),
+            bottom_pt: fit_margin(base_page.bottom),
+            left_pt: fit_margin(base_page.left),
+            right_pt: fit_margin(base_page.right),
         };
 
         let candidate_page = PageGeom::from_theme(&candidate_opts.theme);

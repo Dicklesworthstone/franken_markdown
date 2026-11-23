@@ -783,6 +783,71 @@ pub fn render_html_configured_profiled(
     font_embedding: Option<String>,
     authoring_profile: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
+    render_html_configured_metadata(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        custom_css,
+        allow_raw_html,
+        font_scale,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        lang,
+        toc,
+        toc_depth,
+        html_font_format,
+        font_embedding,
+        authoring_profile,
+        None,
+    )
+}
+
+/// Render HTML with resolved publication metadata, resources and an optional
+/// authoring profile. Hosts resolve frontmatter defaults below explicit options
+/// before calling this binding, as they do for PDF and EPUB publication.
+///
+/// This additive binding preserves every existing HTML binding's signature and
+/// output when no author is supplied. Author text is escaped by the shared HTML
+/// renderer; an empty string omits the metadata element.
+///
+/// # Errors
+/// Rejects an unknown authoring profile and the same invalid options, resources
+/// and rendering failures as the existing configured binding.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = renderHtmlConfiguredMetadata)]
+pub fn render_html_configured_metadata(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    custom_css: Option<String>,
+    allow_raw_html: bool,
+    font_scale: Option<f64>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    html_font_format: Option<String>,
+    font_embedding: Option<String>,
+    authoring_profile: Option<String>,
+    author: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
     let authoring_profile =
         parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
@@ -796,6 +861,7 @@ pub fn render_html_configured_profiled(
         .transpose()?
         .unwrap_or_default();
     options.title = nonempty_verbatim(title);
+    options.author = nonempty_verbatim(author);
     options.custom_css = custom_css;
     options.allow_raw_html = allow_raw_html;
     options.font_scale = positive_f32(font_scale, "fontScale")?;

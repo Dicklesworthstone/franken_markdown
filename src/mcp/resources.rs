@@ -288,29 +288,48 @@ pub(super) fn schema(name: &str) -> JsonValue {
 }
 
 pub(crate) fn with_svg_warnings(
-    mut response: JsonValue,
+    response: JsonValue,
     warnings: Vec<crate::svg::SvgWarning>,
 ) -> JsonValue {
+    with_warnings(
+        response,
+        warnings
+            .into_iter()
+            .map(|warning| (warning.code, warning.message)),
+    )
+}
+
+/// Attach findings from the completed PDF render, never a separate preflight
+/// that could disagree with fitted pages, notes or generated contents.
+pub(crate) fn with_pdf_warnings(
+    response: JsonValue,
+    warnings: &[crate::RenderWarning],
+) -> JsonValue {
+    with_warnings(
+        response,
+        warnings
+            .iter()
+            .map(|warning| (warning.code(), warning.message())),
+    )
+}
+
+fn with_warnings(
+    mut response: JsonValue,
+    warnings: impl IntoIterator<Item = (&'static str, String)>,
+) -> JsonValue {
+    let warnings: Vec<_> = warnings
+        .into_iter()
+        .map(|(code, message)| {
+            JsonValue::Object(BTreeMap::from([
+                ("code".to_owned(), JsonValue::String(code.to_owned())),
+                ("message".to_owned(), JsonValue::String(message)),
+            ]))
+        })
+        .collect();
     if !warnings.is_empty()
         && let JsonValue::Object(result) = &mut response
     {
-        result.insert(
-            "warnings".to_owned(),
-            JsonValue::Array(
-                warnings
-                    .into_iter()
-                    .map(|warning| {
-                        JsonValue::Object(BTreeMap::from([
-                            (
-                                "code".to_owned(),
-                                JsonValue::String(warning.code.to_owned()),
-                            ),
-                            ("message".to_owned(), JsonValue::String(warning.message)),
-                        ]))
-                    })
-                    .collect(),
-            ),
-        );
+        result.insert("warnings".to_owned(), JsonValue::Array(warnings));
     }
     response
 }

@@ -79,8 +79,17 @@ visible fallback, and now returns those recoverable diagnostics in an additive
 `warnings` array beside `content` and `isError`. Each entry has `code` and
 `message`; warnings are returned for saved and inline file SVG exports and
 `fmd.render_svg` source publications. A warning
-is not a claim that the export failed. HTML/PDF/EPUB keep their pre-existing
-backend fallback behavior; this change does not add their warning APIs to MCP.
+is not a claim that the export failed.
+
+PDF source, file, paired HTML/PDF and book exports also return this `warnings`
+channel. It describes the exact emitted PDF, including missing or unsupported
+images, unavailable glyphs, unsupported mathematics/shaping, and pagination
+fallbacks. Supply missing images through `images` and replacement fonts through
+`fonts`; destinations still grant no file or network access. Book receipts also
+attach PDF warnings to the PDF member of `outputs`, so they cannot be mistaken
+for findings about EPUB or site output. Empty warning collections are omitted,
+and artifact bytes, existing content items and successful `isError: false`
+semantics remain unchanged. HTML and EPUB retain their existing fallback policy.
 
 ## Verification scope
 

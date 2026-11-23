@@ -285,7 +285,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.render_book",
-        "Publish explicitly supplied chapters and include sources as a PDF book, EPUB, or HTML-site ZIP. to=all parses once and returns all three. Artifact data is base64 inside a JSON receipt; no file or network access.",
+        "Publish explicitly supplied chapters and include sources as a PDF book, EPUB, or HTML-site ZIP. to=all parses once and returns all three. Artifact data is base64 inside a JSON receipt; PDF fidelity diagnostics accompany its output and the response in warnings. No file or network access.",
         book_tools::SOURCE_FIELDS,
         &["chapters"],
     ),
@@ -297,7 +297,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.render_pdf",
-        "Render Markdown to deterministic PDF with embedded subsets, returned as base64.",
+        "Render Markdown to deterministic PDF with embedded subsets, returned as base64. Recoverable fidelity and pagination diagnostics accompany the PDF in warnings.",
         PDF_FIELDS,
         &["markdown"],
     ),
@@ -898,13 +898,17 @@ fn execute(name: &str, args: &JsonValue, limit: u64) -> Result<JsonValue, ToolEr
             options.font_assets = assets.fonts;
             options.image_assets = assets.images;
             let doc = crate::parse_markdown_with_profile(source, options.profile);
-            let pdf = if settings.mode == PdfAMode::Off {
-                crate::render_pdf_document(&doc, &options)
-            } else {
-                crate::render_pdf_document_pdfa(&doc, &options, settings)
-            }
+            let rendered = crate::render_pdf_document_with_diagnostics(
+                &doc,
+                &options,
+                settings,
+                crate::PdfEmitOptions::default(),
+            )
             .map_err(render_error)?;
-            Ok(wrap_text_content(&base64_encode(&pdf)))
+            Ok(resources::with_pdf_warnings(
+                wrap_text_content(&base64_encode(&rendered.bytes)),
+                &rendered.warnings,
+            ))
         }
         "fmd.verify" => {
             let source = markdown(args, limit)?;

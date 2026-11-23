@@ -409,6 +409,7 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
     publication.pdf.image_assets = assets.images;
     let mut outputs = Vec::new();
     let mut bytes_written = 0usize;
+    let mut pdf_warnings = Vec::new();
     for &format in publication.formats {
         if format != Format::Pdf
             && publication.html.image_assets.is_empty()
@@ -418,7 +419,12 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
             publication.html.font_assets = std::mem::take(&mut publication.pdf.font_assets);
         }
         let bytes = match format {
-            Format::Pdf => renderer.render_pdf_with_options(&publication.pdf, publication.pdf_a),
+            Format::Pdf => renderer
+                .render_pdf_with_options_reported(&publication.pdf, publication.pdf_a)
+                .map(|rendered| {
+                    pdf_warnings = rendered.warnings;
+                    rendered.bytes
+                }),
             Format::Epub => crate::epub::render_book_epub(renderer.book(), &publication.html),
             Format::Site => render_book_site(renderer.book(), &publication.html),
         }
@@ -456,6 +462,9 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
             }
             _ => {}
         }
+        if format == Format::Pdf {
+            output = resources::with_pdf_warnings(output, &pdf_warnings);
+        }
         outputs.push(output);
     }
     let mut result = object([
@@ -468,5 +477,8 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
     if let (Some(report), Json::Object(fields)) = (source_diagnostics, &mut result) {
         fields.insert("sourceDiagnostics".into(), report);
     }
-    Ok(wrap_text_content(&result.to_json_string()))
+    Ok(resources::with_pdf_warnings(
+        wrap_text_content(&result.to_json_string()),
+        &pdf_warnings,
+    ))
 }

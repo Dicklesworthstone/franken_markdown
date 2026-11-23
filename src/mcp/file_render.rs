@@ -10,7 +10,6 @@ use super::tools::resources::{self, with_svg_warnings};
 use super::tools::{ToolError, engine_failure, wrap_text_content};
 use super::{ERROR_INPUT_ERROR, ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, ERROR_RENDER_FAILED};
 use super::{JsonValue, base64_encode};
-use crate::PdfAMode;
 use crate::cli::protected_paths::ProtectedInputs;
 use crate::file_write::{OutputFile, write_outputs_staged};
 
@@ -265,6 +264,7 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         |error: crate::RenderError| engine_failure(error, "Render failed", "render_failed");
     let mut artifacts = Vec::new();
     let mut svg_warnings = Vec::new();
+    let mut pdf_warnings = Vec::new();
     if matches!(target, "html" | "both") {
         let html = if prepared.interactive {
             crate::interactive::render_interactive_html_checked(&document, &markdown, &html_options)
@@ -280,16 +280,18 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
         });
     }
     if matches!(target, "pdf" | "both") {
-        let pdf = if prepared.pdf_a.mode == PdfAMode::Off {
-            crate::render_pdf_document(&document, &pdf_options)
-        } else {
-            crate::render_pdf_document_pdfa(&document, &pdf_options, prepared.pdf_a)
-        }
+        let rendered = crate::render_pdf_document_with_diagnostics(
+            &document,
+            &pdf_options,
+            prepared.pdf_a,
+            crate::PdfEmitOptions::default(),
+        )
         .map_err(render_error)?;
+        pdf_warnings = rendered.warnings;
         artifacts.push(Artifact {
             format: "pdf",
             mime: "application/pdf",
-            bytes: pdf,
+            bytes: rendered.bytes,
             binary: true,
         });
     }
@@ -348,15 +350,15 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
                 )
             })
             .collect();
-        return Ok(with_svg_warnings(
-            wrap_text_content(&written.join("\n")),
-            svg_warnings,
+        return Ok(resources::with_pdf_warnings(
+            with_svg_warnings(wrap_text_content(&written.join("\n")), svg_warnings),
+            &pdf_warnings,
         ));
     }
     if let [artifact] = artifacts.as_slice() {
-        return Ok(with_svg_warnings(
-            wrap_text_content(&artifact.text()?),
-            svg_warnings,
+        return Ok(resources::with_pdf_warnings(
+            with_svg_warnings(wrap_text_content(&artifact.text()?), svg_warnings),
+            &pdf_warnings,
         ));
     }
     // Existing single-format responses stay unchanged. The new paired response
@@ -381,12 +383,15 @@ pub(super) fn render_file(args: &JsonValue, limit: u64) -> Result<JsonValue, Too
             ])))
         })
         .collect::<Result<Vec<_>, ToolError>>()?;
-    Ok(wrap_text_content(
-        &JsonValue::Object(BTreeMap::from([(
-            "outputs".to_string(),
-            JsonValue::Array(outputs),
-        )]))
-        .to_json_string(),
+    Ok(resources::with_pdf_warnings(
+        wrap_text_content(
+            &JsonValue::Object(BTreeMap::from([(
+                "outputs".to_string(),
+                JsonValue::Array(outputs),
+            )]))
+            .to_json_string(),
+        ),
+        &pdf_warnings,
     ))
 }
 

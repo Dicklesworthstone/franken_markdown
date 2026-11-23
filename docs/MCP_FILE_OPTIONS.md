@@ -62,6 +62,10 @@ through the shared theme before wrapping text and laying out code, tables and
 mathematics. Paper width and intrinsic image dimensions do not scale with text.
 SVG warnings retain the existing per-occurrence response channel, including
 `svg_layout_adjusted` when the core normalizes an out-of-range theme value.
+PDF and paired HTML/PDF exports return the PDF renderer's fidelity warnings in
+the same top-level `warnings` array, for both inline payloads and saved files.
+Warnings come from the completed render, including its final fitted pagination;
+they do not require a second render or change the staged-publication policy.
 
 `tools/list` derives the file-option union and each field's target description
 from the same definitions used by execution. Unknown fields, wrong types, invalid

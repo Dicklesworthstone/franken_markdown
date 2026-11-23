@@ -96,6 +96,15 @@ A strict refusal is a JSON-RPC render error (`-32003`) whose
 These codes propagate through direct PDF, file, book, archival, and verification
 requests. A failed paired-file render leaves both existing output files intact.
 
+With `optimalPagination: true` and strict mode disabled, a successful fallback
+returns the same PDF plus an additive top-level `warnings` array of `code` and
+`message` records. The relevant `pagination_*` code identifies why exact planning
+failed; `paragraph_pagination_limited` reports restricted paragraph alternatives.
+Missing images, unavailable glyphs and other fidelity degradations use this
+channel too. These findings come from the final emitted layout, after fitting,
+footnote preparation and generated contents pages. PDF/A uses the same channel.
+Clean renders omit `warnings` and preserve the existing response shape.
+
 HTML, EPUB, SVG, and site-only requests reject these PDF-only fields, including
 an explicit `false` or `0`. In `both` and `all` exports, HTML, EPUB, and
 site artifacts keep their own layout settings.

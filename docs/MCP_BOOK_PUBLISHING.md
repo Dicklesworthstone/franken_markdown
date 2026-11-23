@@ -96,6 +96,15 @@ its output entry. These describe emission settings, not a conformance result.
 Omitted/OFF preserves the original receipt; EPUB/site entries never acquire
 PDF-specific metadata.
 
+Recoverable PDF fidelity findings appear in a `warnings` array on the PDF output
+entry and alongside the outer MCP `content`/`isError` fields. Each warning has a
+stable `code` and human-readable `message`. Missing images, unavailable glyphs,
+math/shaping fallbacks and nonstrict pagination fallbacks describe the exact
+chapter-aware PDF emission. EPUB/site members never inherit these PDF warnings.
+Parser findings retain their separate `sourceDiagnostics` report and chapter
+coordinates. Empty warning arrays are omitted; artifact bytes and existing
+receipt fields retain their meaning.
+
 At most 4096 total chapter/include sources and 4096 UTF-8 bytes per path are
 admitted. Source text plus logical path bytes share the lower of the server's
 input limit and 64 MiB. These checks run before copying source strings. The

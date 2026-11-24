@@ -296,3 +296,18 @@ test('noncolliding repeated citations retain their existing complete output', ()
     + ' <a href="#fnref-1-2" class="footnote-backref" role="doc-backlink" aria-label="Back to reference 1-2">↩</a>'
     + '</li>\n</ol></section>\n');
 });
+
+test('many malformed note names sharing a DOM base keep bounded collision allocation', () => {
+  const names = Array.from({length: 900}, (_, index) =>
+    'long-note-name-'.repeat(6) + String.fromCharCode(0xd800 + index));
+  const source = names.map(name => `Claim[^${name}].`).join(' ') + '\n\n'
+    + names.map((name, index) => `[^${name}]: Evidence ${index}.`).join('\n');
+  const bounded = vm.createContext({source});
+  vm.runInContext(code, bounded);
+  const html = vm.runInContext('parseMarkdownClient(source)', bounded, {timeout: 4000});
+  assert.equal((html.match(/<li id="fn-/g) || []).length, names.length);
+  assert.equal((html.match(/class="footnote-ref"/g) || []).length, names.length);
+  assert.equal((html.match(/class="footnote-backref"/g) || []).length, names.length);
+  assertNoNestedAnchors(html);
+  assertFragmentTargets(html);
+});

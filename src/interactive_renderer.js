@@ -704,6 +704,7 @@ function parseMarkdownClient(source, imageAssets) {
   if (!imageAssets) imageAssets = new Map();
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
   const reservedNoteIds = new Set(), assignedNoteIds = new Set();
+  const nextNoteSuffix = new Map();
   let planningNotes = false;
   const MAX_DEPTH = 64;
   // A lazy continuation may need protective indentation while containers are
@@ -972,12 +973,17 @@ function parseMarkdownClient(source, imageAssets) {
     if (!reservedNoteIds.has(id)) { allocate(); reservedNoteIds.add(id); }
   }
   function noteId(base) {
-    let id = base, suffix = 2;
+    let id = base;
     // Every note owns its legacy source destination unless a heading already
     // owns it. Fallbacks must skip even the destinations of later citations.
     if (headings.has(id) || assignedNoteIds.has(id)) {
+      // Distinct ill-formed source names can normalize to the same DOM base.
+      // Keep suffix progress so that cohort cannot restart a quadratic scan.
+      let suffix = nextNoteSuffix.get(base) || 2;
       do { charge(base.length + 1); id = base + '-' + suffix++; }
       while (reservedNoteIds.has(id));
+      if (!nextNoteSuffix.has(base)) allocate();
+      nextNoteSuffix.set(base, suffix);
     }
     reserveNoteId(id);
     allocate(); assignedNoteIds.add(id);

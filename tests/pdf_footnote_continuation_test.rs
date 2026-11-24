@@ -9,9 +9,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use franken_markdown::ast::{DefinitionItem, List, ListItem};
 use franken_markdown::book::{BookInput, BookRenderer};
+use franken_markdown::pagination::height::HeightPaginationError;
 use franken_markdown::{
-    BaselineGrid, Block, Document, Inline, PageMargins, PdfEmitOptions, PdfOptions, Profile,
-    parse_markdown, parse_markdown_with_profile, render_pdf, render_pdf_document_emitted,
+    BaselineGrid, Block, Document, Inline, PageMargins, PdfEmitOptions, PdfOptions,
+    PdfPaginationFailure, PdfPaginationStrategy, Profile, RenderError, parse_markdown,
+    parse_markdown_with_profile, render_pdf, render_pdf_document_emitted,
+    render_pdf_document_reported, render_pdf_reported,
 };
 
 const PRECISION: f64 = 0.015;
@@ -969,8 +972,9 @@ fn book_local_note_ids_and_backlinks_survive_continuation_pages() {
 }
 
 #[test]
-fn incompatible_pagination_modes_fail_explicitly_without_weakened_constraints() {
+fn optimal_and_strict_pagination_continue_notes_on_exact_physical_pages() {
     let source = format!("CITATION.[^long]\n\n{}", numbered_note("long", "NOTE", 40));
+    let mut ordinary = BTreeMap::new();
     for (name, mut options) in [
         ("optimal", options()),
         ("strict", options()),
@@ -987,12 +991,311 @@ fn incompatible_pagination_modes_fail_explicitly_without_weakened_constraints() 
             }
             _ => unreachable!(),
         }
-        let error = render_pdf(&source, &options).unwrap_err().to_string();
+        options.footnote_backlinks = true;
+        let rendered = render_pdf_reported(&source, &options).unwrap();
+        assert!(rendered.pagination.page_breaks.requested_optimal, "{name}");
+        assert!(rendered.pagination.page_breaks.is_exact(), "{name}");
+        let pages = painted_pages(&rendered.bytes);
+        assert!(pages.len() >= 3, "{name}: exercise note-only tail pages");
+        assert_markers(&pages, "NOTE", 40);
+        assert_eq!(locate(&pages, "CITATION").0, locate(&pages, "NOTE000").0);
+        assert!(locate(&pages, "NOTE039").0 > locate(&pages, "CITATION").0);
         assert!(
-            error.contains("pdf_split_footnotes_incompatible"),
-            "{name}: {error}",
+            !text(&pages).contains("Notes"),
+            "{name}: accepted notes continue at page feet"
+        );
+        assert_geometry(&pages, &options);
+        assert_destinations(&rendered.bytes, &pages, &["CITATION", "NOTE000"]);
+        if options.theme.page.baseline_grid.is_some() {
+            assert_grid_rows(&pages, &options);
+        }
+        let grid = options.theme.page.baseline_grid.is_some();
+        if options.strict_pagination {
+            assert_eq!(
+                ordinary.get(&grid),
+                Some(&rendered),
+                "strict alone must use the same successful plan as optimal: {name}",
+            );
+        } else {
+            ordinary.insert(grid, rendered);
+        }
+    }
+}
+
+#[test]
+fn exact_continuations_keep_repeated_citations_pending_notes_and_verifier_pages_together() {
+    let mut source = String::from("FIRSTCLAIM.[^alpha][^beta]\n\n");
+    for index in 0..10 {
+        source.push_str(&format!("BODY{index:03} ordinary continuation.\n\n"));
+    }
+    source.push_str("REPEATCLAIM.[^alpha]\n\nLATERCLAIM.[^short]\n\n");
+    source.push_str(&numbered_note("alpha", "ALPHA", 47));
+    source.push('\n');
+    source.push_str(&numbered_note("beta", "BETA", 39));
+    source.push_str("\n[^short]: SHORTNOTE retains its later citation.\n");
+    let document = parse_markdown(&source);
+
+    for grid in [None, Some(13.333)] {
+        let mut options = options();
+        options.strict_pagination = true;
+        options.footnote_backlinks = true;
+        options.theme.page.baseline_grid =
+            grid.map(|pitch| BaselineGrid::from_points(pitch).unwrap());
+        let rendered =
+            render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+        assert!(rendered.pagination.page_breaks.is_exact());
+        let pages = painted_pages(&rendered.bytes);
+        assert_markers(&pages, "ALPHA", 47);
+        assert_markers(&pages, "BETA", 39);
+        assert_markers(&pages, "BODY", 10);
+        let first = locate(&pages, "FIRSTCLAIM").0;
+        assert_eq!(locate(&pages, "ALPHA000").0, first);
+        assert_eq!(locate(&pages, "BETA000").0, first);
+        assert_eq!(
+            locate(&pages, "SHORTNOTE").0,
+            locate(&pages, "LATERCLAIM").0
+        );
+        assert!(
+            locate(&pages, "ALPHA046")
+                .0
+                .max(locate(&pages, "BETA038").0)
+                > locate(&pages, "LATERCLAIM").0,
+            "remaining note fragments require actual note-only tail pages"
+        );
+        assert_eq!(text(&pages).matches("SHORTNOTE").count(), 1);
+        assert!(!text(&pages).contains("Notes"));
+        assert_eq!(structure_count(&rendered.bytes, "Note"), 3);
+        assert_destinations(
+            &rendered.bytes,
+            &pages,
+            &[
+                "ALPHA000",
+                "BETA000",
+                "ALPHA000",
+                "SHORTNOTE",
+                "FIRSTCLAIM",
+                "FIRSTCLAIM",
+                "LATERCLAIM",
+            ],
+        );
+        assert_geometry(&pages, &options);
+        if grid.is_some() {
+            assert_grid_rows(&pages, &options);
+        }
+
+        let verified = franken_markdown::verify::verify_pdf_result(&document, &options).unwrap();
+        assert_eq!(verified.page_count, pages.len());
+        assert_eq!(verified.pages.len(), pages.len());
+        assert!(
+            verified
+                .findings
+                .iter()
+                .all(|finding| !finding.code.starts_with("pagination_")),
+            "an exact emitted plan must not turn into a verifier fallback: {:?}",
+            verified.findings,
+        );
+        let mut markers: Vec<_> = [("ALPHA", 47), ("BETA", 39), ("BODY", 10)]
+            .into_iter()
+            .flat_map(|(prefix, count)| (0..count).map(move |index| format!("{prefix}{index:03}")))
+            .collect();
+        markers.extend(["FIRSTCLAIM", "REPEATCLAIM", "LATERCLAIM", "SHORTNOTE"].map(str::to_owned));
+        for marker in markers {
+            let (physical_page, painted) = locate(&pages, &marker);
+            let marker_text = marker.as_str();
+            let matches: Vec<_> = verified
+                .pages
+                .iter()
+                .enumerate()
+                .flat_map(|(index, page)| {
+                    page.runs
+                        .iter()
+                        .filter(move |run| run.text.contains(marker_text))
+                        .map(move |run| (index, run))
+                })
+                .collect();
+            assert_eq!(matches.len(), 1, "verified source identity for {marker}");
+            let (verified_page, run) = matches[0];
+            assert_eq!(verified_page, physical_page, "page of {marker}");
+            assert!(
+                (f64::from(run.y) - painted.y).abs() < PRECISION,
+                "baseline of {marker}"
+            );
+            assert!(
+                (f64::from(run.size) - painted.size).abs() < PRECISION,
+                "size of {marker}"
+            );
+        }
+        assert_eq!(
+            rendered,
+            render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic())
+                .unwrap(),
+            "chunked and monolithic emission replay the same physical-page plan",
+        );
+        assert_eq!(rendered.bytes, render_pdf(&source, &options).unwrap());
+        let browser = franken_markdown::wasm::render_pdf(
+            &source,
+            &franken_markdown::wasm::WasmRenderOptions {
+                theme: options.theme.clone(),
+                running: options.running.clone(),
+                split_footnotes: true,
+                strict_pagination: true,
+                footnote_backlinks: true,
+                metadata_epoch_seconds: options.metadata_epoch_seconds,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rendered.bytes, browser.bytes,
+            "the native browser adapter must publish the same continuation plan",
         );
     }
+}
+
+#[test]
+fn strict_book_continuations_keep_chapter_notes_and_printed_toc_page_numbers() {
+    let mut book = BookRenderer::new(&[
+        BookInput {
+            path: "first.md".into(),
+            source: format!(
+                "# FIRSTCHAPTER\n\nFIRSTCITATION.[^n]\n\n{}",
+                numbered_note("n", "FIRSTNOTE", 48),
+            ),
+        },
+        BookInput {
+            path: "second.md".into(),
+            source: format!(
+                "# SECONDCHAPTER\n\nSECONDCITATION.[^n]\n\n{}",
+                numbered_note("n", "SECONDNOTE", 48),
+            ),
+        },
+    ])
+    .unwrap();
+    let options = options();
+    book.options_mut().theme = options.theme.clone();
+    book.options_mut().running = options.running.clone();
+    book.options_mut().metadata_epoch_seconds = options.metadata_epoch_seconds;
+    book.options_mut().split_footnotes = true;
+    book.options_mut().strict_pagination = true;
+    book.options_mut().footnote_backlinks = true;
+    book.options_mut().toc = true;
+    let rendered = book.render_pdf_reported().unwrap();
+    assert!(rendered.pagination.page_breaks.is_exact());
+    let pages = painted_pages(&rendered.bytes);
+    assert_markers(&pages, "FIRSTNOTE", 48);
+    assert_markers(&pages, "SECONDNOTE", 48);
+    assert_geometry(&pages, &options);
+    assert_eq!(structure_count(&rendered.bytes, "Note"), 2);
+    for (first_note, citation) in [
+        ("FIRSTNOTE000", "FIRSTCITATION"),
+        ("SECONDNOTE000", "SECONDCITATION"),
+    ] {
+        assert_eq!(locate(&pages, first_note).0, locate(&pages, citation).0);
+    }
+    let links = destinations(&rendered.bytes, &pages);
+    for marker in [
+        "FIRSTNOTE000",
+        "SECONDNOTE000",
+        "FIRSTCITATION",
+        "SECONDCITATION",
+    ] {
+        let (page, run) = locate(&pages, marker);
+        let expected_y = run.y + run.size * 0.9;
+        assert!(
+            links
+                .iter()
+                .any(|&(target, y)| target == page && (y - expected_y).abs() < 0.025),
+            "book note navigation must reach its own chapter: {marker}",
+        );
+    }
+
+    for heading in ["FIRSTCHAPTER", "SECONDCHAPTER"] {
+        let physical_heading_page = pages
+            .iter()
+            .position(|page| {
+                page.runs
+                    .iter()
+                    .any(|run| !run.artifact && run.size > 12.0 && run.text.contains(heading))
+            })
+            .unwrap()
+            + 1;
+        let (toc_page, label) = pages
+            .iter()
+            .find_map(|page| {
+                page.runs
+                    .iter()
+                    .find(|run| !run.artifact && run.size <= 12.0 && run.text.contains(heading))
+                    .map(|run| (page, run))
+            })
+            .expect("generated TOC contains the chapter heading");
+        let row: String = toc_page
+            .runs
+            .iter()
+            .filter(|run| !run.artifact && (run.y - label.y).abs() < PRECISION)
+            .map(|run| run.text.as_str())
+            .collect();
+        let digits = row
+            .trim_end()
+            .rsplit(|ch: char| !ch.is_ascii_digit())
+            .next()
+            .unwrap();
+        assert_eq!(
+            digits
+                .parse::<usize>()
+                .expect("the TOC row ends with its printed page number"),
+            physical_heading_page,
+            "TOC numbering must include all continuation pages before {heading}: {row}",
+        );
+    }
+    assert_eq!(rendered, book.render_pdf_reported().unwrap());
+}
+
+#[test]
+fn strict_continuations_keep_hard_body_groups_and_best_effort_reports_the_refusal() {
+    let mut source = String::from("CITATION.[^long]\n\n");
+    for index in 0..20 {
+        source.push_str(&format!("TERM{index:03}\n"));
+    }
+    source.push_str(": DESC000.  \n  DESC001.  \n  DESC002.  \n  DESC003.\n\n");
+    source.push_str(&numbered_note("long", "NOTE", 40));
+    let document = parse_markdown(&source);
+    let mut options = options();
+    options.theme.page.size.height_pt = 216.0;
+    options.strict_pagination = true;
+    for result in [
+        render_pdf(&source, &options),
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()),
+        franken_markdown::verify::verify_pdf_result(&document, &options).map(|_| Vec::new()),
+    ] {
+        let error =
+            result.expect_err("an oversized mandatory term group must not be split in strict mode");
+        assert!(matches!(
+            error,
+            RenderError::Pagination(PdfPaginationFailure::Planner(
+                HeightPaginationError::NoFeasibleLayout { .. }
+            ))
+        ));
+        assert_eq!(error.code(), "pagination_infeasible");
+    }
+    options.strict_pagination = false;
+    options.optimal_pagination = true;
+    let rendered = render_pdf_reported(&source, &options).unwrap();
+    assert_eq!(
+        rendered.pagination.page_breaks.strategy,
+        PdfPaginationStrategy::Greedy
+    );
+    assert!(matches!(
+        rendered.pagination.page_breaks.fallback,
+        Some(PdfPaginationFailure::Planner(
+            HeightPaginationError::NoFeasibleLayout { .. }
+        ))
+    ));
+    let pages = painted_pages(&rendered.bytes);
+    assert_markers(&pages, "TERM", 20);
+    assert_markers(&pages, "DESC", 4);
+    assert_markers(&pages, "NOTE", 40);
+    options.optimal_pagination = false;
+    assert_eq!(rendered.bytes, render_pdf(&source, &options).unwrap());
 }
 
 fn assert_grid_rows(pages: &[PaintedPage], options: &PdfOptions) {

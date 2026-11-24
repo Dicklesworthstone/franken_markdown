@@ -52,7 +52,7 @@ pub(super) struct PublishingArgs {
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_footnote_backlinks: Option<bool>,
     /// Continue long text notes across PDF page feet; accepts =false.
-    /// Requires greedy pagination.
+    /// Supports optimal/strict pagination and baseline grids.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,
     #[command(flatten)]

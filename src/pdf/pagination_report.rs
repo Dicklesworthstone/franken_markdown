@@ -1,6 +1,8 @@
 //! Provenance for the page planner actually used by PDF emission.
 //!
 //! Exactness is scoped to measured lines and admitted paragraph variants.
+//! With continued notes it optimizes body boundaries under the declared
+//! first-fragment/FIFO allocation policy, not arbitrary note partitions.
 //! It does not claim that every possible line layout was searched.
 
 use crate::pagination::height::HeightPaginationError;
@@ -115,6 +117,9 @@ pub enum PdfParagraphVariantStatus {
     UnsupportedTypography,
     /// The low-level document contains footnotes not prepared for page layout.
     UnpreparedFootnotes,
+    /// Continued notes retain baseline paragraphs; their page planner searches
+    /// body boundaries with pending fragments under its fixed note policy.
+    ContinuedFootnotes,
     /// No usable alternatives were offered by the bounded candidate generator.
     NoAlternatives,
     /// Exact joint selection completed over the admitted measured variants.
@@ -158,6 +163,7 @@ impl PdfParagraphVariantReport {
                 self.status,
                 PdfParagraphVariantStatus::UnsupportedTypography
                     | PdfParagraphVariantStatus::UnpreparedFootnotes
+                    | PdfParagraphVariantStatus::ContinuedFootnotes
             )
     }
 
@@ -172,6 +178,8 @@ impl PdfParagraphVariantReport {
                 "paragraph alternatives are unavailable with gradual, river, or Pareto line breaking; retained those measured paragraph shapes".to_string(),
             PdfParagraphVariantStatus::UnpreparedFootnotes =>
                 "paragraph alternatives require prepared numbered footnotes; retained the original measured paragraph shapes".to_string(),
+            PdfParagraphVariantStatus::ContinuedFootnotes =>
+                "continued footnotes optimize body page boundaries under the declared note-allocation policy; retained the original measured paragraph shapes".to_string(),
             _ => {
                 let mut limits = Vec::new();
                 if self.paragraph_item_limit { limits.push("paragraph items"); }

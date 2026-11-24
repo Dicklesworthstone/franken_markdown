@@ -572,8 +572,10 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
   /** Link PDF note numbers back to their first citation. Default false. */
   footnoteBacklinks?: boolean;
   /** Continue long text notes across page feet. Default false.
-   * Requires greedy pagination; baseline grids are supported with a matching WASM
-   * package; unsupported policies and older token parsers fail explicitly. */
+   * Supports optimal/strict pagination and baseline grids. Exactness covers body
+   * boundaries under the fixed note-allocation policy; continued notes retain
+   * baseline paragraph shapes. Requires a matching WASM package; older token
+   * parsers fail explicitly. */
   splitFootnotes?: boolean;
 }
 /** PDF publication settings without archival emission. Session font/profile

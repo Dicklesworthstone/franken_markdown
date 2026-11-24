@@ -153,13 +153,21 @@ fmd book ./manual --to pdf --out ./compact.pdf \
   --pdf-heading-scale 1.2 --pdf-table-font-size 10
 ```
 
-`--pdf-split-footnotes` continues long notes containing paragraphs, code, lists
-or quotations across page feet,
+`--pdf-split-footnotes` continues long notes containing paragraphs, code, headings,
+definition lists, tables, lists or quotations across page feet,
 including note-only pages after body text. The default remains indivisible notes
 with a trailing fallback. Use `--pdf-split-footnotes=false` to override a saved
-`pdf_split_footnotes=true` setting. This mode requires greedy pagination and can
-be combined with `--pdf-baseline-grid-pt`. Body and continued note baselines use
-the same page grid. Optimal/strict pagination remain explicit errors. See
+`pdf_split_footnotes=true` setting. This mode supports optimal/strict pagination
+and can be combined with `--pdf-baseline-grid-pt`. Body and continued note
+baselines use the same page grid. Exactness covers body boundaries under the
+fixed 40%-preferred note policy: mandatory first fragments stay with citations,
+pending notes continue in FIFO order, and note-only tails can use the full page.
+The preferred share is capped by body space; mandatory first fragments may
+exceed it when the complete page fits. Strict mode preserves hard body keeps and
+two-line widow/orphan minima, and refuses infeasible or exhausted searches.
+Note fragments retain their semantic-unit rules. Actual continued notes retain
+baseline paragraph shapes and report that limitation. Chapter destinations,
+printed contents and running page totals use the resulting physical pages. See
 [PDF footnotes](PDF_FOOTNOTES.md) for supported blocks, fallback and navigation.
 
 `--microtype` accepts `off`, `protrusion`, and `expansion`, with the same

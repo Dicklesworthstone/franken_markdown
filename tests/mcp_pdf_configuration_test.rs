@@ -906,20 +906,36 @@ fn continuation_reaches_mcp_pdf_and_configured_verification_without_policy_downg
                 "invalid_params"
             );
         }
-        for policy in [
-            "\"optimalPagination\":true",
-            "\"strictPagination\":true",
+    }
+    for (policy, optimal, strict, pitch) in [
+        ("\"optimalPagination\":true", true, false, None),
+        ("\"strictPagination\":true", false, true, None),
+        (
             "\"strictPagination\":true,\"baselineGridPt\":12",
-        ] {
-            let error = call(
-                tool,
-                args(&format!("{{\"splitFootnotes\":true,{policy}}}"), &source),
-            )
-            .unwrap_err();
-            assert!(
-                error.1.contains("pdf_split_footnotes_incompatible"),
-                "{tool}: {error:?}"
-            );
-        }
+            false,
+            true,
+            Some(12.0),
+        ),
+    ] {
+        let mut options = PdfOptions {
+            split_footnotes: true,
+            optimal_pagination: optimal,
+            strict_pagination: strict,
+            ..PdfOptions::default()
+        };
+        options.theme.page.baseline_grid =
+            pitch.map(|value| franken_markdown::BaselineGrid::from_points(value).unwrap());
+        let expected = franken_markdown::render_pdf_reported(&source, &options).unwrap();
+        assert!(expected.pagination.page_breaks.is_exact(), "{policy}");
+        let request = args(&format!("{{\"splitFootnotes\":true,{policy}}}"), &source);
+        let rendered = call("fmd.render_pdf", request.clone()).unwrap();
+        assert_eq!(content(&rendered), base64_encode(&expected.bytes));
+        let verified = call("fmd.verify", request).unwrap();
+        let report = franken_markdown::verify::verify_pdf_result(&doc, &options).unwrap();
+        assert_eq!(
+            content(&verified),
+            franken_markdown::verify::to_json(&report),
+            "configured verification must use the same accepted continuation policy: {policy}",
+        );
     }
 }

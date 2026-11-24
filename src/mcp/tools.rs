@@ -199,7 +199,7 @@ const PDF_FIELDS: &[Field] = &[
     (
         "splitFootnotes",
         "boolean",
-        "Continue long text notes across page feet; requires greedy pagination (default false)",
+        "Continue long notes across page feet; supports optimal/strict pagination and baseline grids (default false)",
     ),
     (
         "strictPagination",

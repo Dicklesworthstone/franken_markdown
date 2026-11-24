@@ -334,21 +334,61 @@ fn long_note_continuation_reaches_render_config_and_explicit_opt_out() {
             vec!["--pdf-strict-pagination", "--pdf-baseline-grid-pt", "12"],
         ),
     ] {
-        let output = workspace
-            .command()
-            .args(["document.md", "--to", "pdf", "--out", name])
-            .args(flags)
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("pdf_split_footnotes_incompatible")
-        );
-        assert!(
-            !workspace.0.join(name).exists(),
-            "failed layout must not publish output"
+        let mut expected = split.clone();
+        expected.optimal_pagination = name == "optimal.pdf";
+        expected.strict_pagination = name != "optimal.pdf";
+        if name == "strict-grid.pdf" {
+            expected.theme.page.baseline_grid =
+                Some(franken_markdown::BaselineGrid::from_points(12.0).unwrap());
+        }
+        let rendered = franken_markdown::render_pdf_reported(&source, &expected).unwrap();
+        assert!(rendered.pagination.page_breaks.is_exact(), "{name}");
+        assert_eq!(
+            workspace.render(name, &flags),
+            rendered.bytes,
+            "configured continuation and explicit pagination must publish the same native plan: {name}",
         );
     }
+}
+
+#[test]
+fn strict_continuation_failure_preserves_paired_outputs_and_source() {
+    let workspace = Workspace::new();
+    let mut source = String::from("CITATION.[^n]\n\n");
+    for index in 0..80 {
+        source.push_str(&format!("TERM{index:03}\n"));
+    }
+    source.push_str(": First description.  \n  Second description.\n\n[^n]: Evidence.\n");
+    for index in 0..80 {
+        source.push_str(&format!("\n    NOTE{index:03} continues at page feet.\n"));
+    }
+    fs::write(workspace.0.join("document.md"), &source).unwrap();
+    fs::write(workspace.0.join("config"), "pdf_split_footnotes=true\n").unwrap();
+    fs::write(workspace.0.join("edition.html"), "previous HTML").unwrap();
+    fs::write(workspace.0.join("edition.pdf"), "previous PDF").unwrap();
+    let output = workspace.run(&[
+        "document.md",
+        "--to",
+        "both",
+        "--out",
+        "edition.html",
+        "--pdf-strict-pagination",
+    ]);
+    assert_eq!(output.status.code(), Some(70));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pagination_infeasible"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        fs::read(workspace.0.join("edition.html")).unwrap(),
+        b"previous HTML"
+    );
+    assert_eq!(
+        fs::read(workspace.0.join("edition.pdf")).unwrap(),
+        b"previous PDF"
+    );
+    assert_eq!(
+        fs::read(workspace.0.join("document.md")).unwrap(),
+        source.as_bytes()
+    );
 }
 
 #[test]

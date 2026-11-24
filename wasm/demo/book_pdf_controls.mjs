@@ -252,7 +252,7 @@ const PUBLICATION_QUALITY_FLAGS = [
 const PUBLICATION_FLAGS = [...PUBLICATION_QUALITY_FLAGS,
   ["theme-spacing", "Use theme line spacing and table padding in PDF"],
   ["footnote-backlinks", "Link PDF footnote numbers back to their first citation"],
-  ["split-footnotes", "Continue long footnotes across pages (greedy pagination; baseline grid supported)"],
+  ["split-footnotes", "Continue long footnotes across pages (supports strict pagination and baseline grids)"],
 ];
 const PUBLICATION_SPACING = [
   ["line-height", "PDF body line height (1–4 × font size)"],

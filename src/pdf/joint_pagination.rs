@@ -530,6 +530,16 @@ fn select_reported(
     report: &mut PdfParagraphVariantReport,
 ) -> std::result::Result<Option<Vec<Line>>, PdfPaginationFailure> {
     let notes = PageNotes::scan(lines);
+    if notes
+        .as_ref()
+        .is_some_and(|notes| notes.continuation.is_some())
+    {
+        // Whole-note reservations cannot select paragraph alternatives for a
+        // continuation-aware physical page plan. Keep their baseline shapes
+        // and report the restriction; exact body-page planning still runs.
+        report.status = PdfParagraphVariantStatus::ContinuedFootnotes;
+        return Ok(None);
+    }
     let body_end = notes.as_ref().map_or(lines.len(), |notes| notes.body_end);
     let body = &lines[..body_end];
     let mut choices = Vec::<Choices>::new();

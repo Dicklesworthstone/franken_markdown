@@ -9,13 +9,24 @@ use std::ops::Range;
 
 use super::*;
 
-pub(super) fn validate_options(options: &PdfOptions) -> Result<()> {
-    if options.split_footnotes && options.requests_optimal_pagination() {
-        return Err(RenderError::InvalidInput(
-            "pdf_split_footnotes_incompatible: continuation requires greedy pagination".to_string(),
-        ));
-    }
-    Ok(())
+mod exact;
+
+pub(super) fn plan(
+    lines: &[Line],
+    notes: &PageNotes,
+    page: PageGeom,
+) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
+    exact::plan(lines, notes, page)
+}
+
+/// Immutable physical allocations; each consumer owns its own replay cursor.
+pub(super) struct Plan {
+    pages: Vec<PlannedPage>,
+}
+
+struct PlannedPage {
+    body: Range<usize>,
+    allocation: Allocation,
 }
 
 /// Source containers retain independently paintable rows and list/quote/code
@@ -515,6 +526,7 @@ pub(super) struct Cursor {
     pending: VecDeque<Range<usize>>,
     headers: TableHeaders,
     initialized: bool,
+    planned_page: usize,
 }
 
 struct Allocation {
@@ -794,6 +806,46 @@ fn place<'a>(
             y -= bottom_guard(last);
         }
     }
+}
+
+pub(super) fn next_planned_page<'a>(
+    lines: &'a [Line],
+    notes: &PageNotes,
+    cursor: &mut Cursor,
+    plan: &Plan,
+    start: &mut usize,
+    page: PageGeom,
+    emitted_any: &mut bool,
+) -> Option<Vec<Placed<'a>>> {
+    let chosen = plan.pages.get(cursor.planned_page)?;
+    debug_assert_eq!(*start, chosen.body.start);
+    if !cursor.initialized {
+        cursor.headers = TableHeaders::scan(lines);
+        cursor.initialized = true;
+    }
+    let mut placed = if chosen.body.is_empty() {
+        Vec::new()
+    } else {
+        place_lines_shrunk(
+            &lines[..notes.body_end],
+            chosen.body.start,
+            chosen.body.end,
+            page.with_foot_reserve(chosen.allocation.reserve),
+            None,
+        )
+    };
+    place(
+        &mut placed,
+        lines,
+        &cursor.headers,
+        notes,
+        &chosen.allocation,
+        page,
+    );
+    cursor.planned_page += 1;
+    *start = chosen.body.end;
+    *emitted_any = true;
+    Some(placed)
 }
 
 pub(super) fn next_page<'a>(

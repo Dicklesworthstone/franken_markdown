@@ -102,7 +102,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | PDF typography | Curated embedded font subsets, real metrics, focused GPOS kerning, GSUB ligatures, Knuth-Plass line breaking, Liang/TeX hyphenation, UAX #14 CJK line breaking, body justification, selectable text, hierarchical heading bookmarks, metadata, links, compressed streams, and hierarchical tagged-PDF structure |
 | PDF tables | Per-column min-content and max-content measurement feeds a constrained wrapping-badness allocator, so dense headers get useful width instead of equal-column squeeze |
 | Financial tables | Opt-in `---.` decimal columns align mixed-precision amounts using measured fonts; plain `---` and `===` marker rows add single/double rules beneath totals across PDF, HTML and SVG. Values, styles and links remain intact; see [financial tables](docs/FINANCIAL_TABLES.md) |
-| PDF footnotes | Page-bottom notes with linked superscript marks; opt-in continuation of long notes containing prose with inline equations/images, code, headings, definition lists, tables with repeated headers, lists and quotations with `--pdf-split-footnotes` (greedy layout without a baseline grid); see [PDF footnotes](docs/PDF_FOOTNOTES.md) |
+| PDF footnotes | Page-bottom notes with linked superscript marks; opt-in continuation of long notes containing prose with inline equations/images, code, headings, definition lists, tables with repeated headers, lists and quotations with `--pdf-split-footnotes` (supports optimal/strict planning and baseline grids); see [PDF footnotes](docs/PDF_FOOTNOTES.md) |
 | PDF display mathematics | The shared math engine draws native vector equations from dollar blocks and math fences, with measured fitting, theme colors, `/Formula` tags, extractable TeX source, and explicit fallback warnings; see [PDF mathematics](docs/PDF_MATHEMATICS.md) |
 | Code blocks | HTML and PDF share the clean-room highlighter for Rust, Python, JS/TS, JSON, shell, PowerShell, Go, C/C++, TOML/INI, YAML, SQL, HTML/XML/SVG, CSS, Markdown, and Mermaid/MMD. PDF code blocks can include muted line numbers, and unknown languages fall back to escaped plain text |
 | Mermaid diagrams | `graph`/`flowchart`, `stateDiagram`/`stateDiagram-v2`, `classDiagram`, `erDiagram`, `sequenceDiagram`, `pie`, and `timeline` fences compile with the clean-room diagram compiler into vector figures in HTML, PDF (tagged `/Figure`), SVG posters and EPUB, plus native paths and bundled-font labels in browser Flow. Flowcharts support nested named/titled subgraphs and cross-group node links. State machines support initial/final markers, choices, forks/joins and labeled transitions. Unsupported syntax retains its complete source. See [diagram syntax](docs/DIAGRAMS.md) |
@@ -1312,8 +1312,14 @@ Honest about what the renderer does not do yet.
   terms stay with the first row of their description, whose remaining lines may
   continue. A note that starts with an object keeps its label and object together
   on the citation's page. An oversized object or mandatory group retains the
-  complete endnote fallback. This mode requires greedy pagination without a
-  baseline grid. Unreferenced notes stay in the Notes section. See
+  complete endnote fallback. Continuation supports optimal/strict pagination and
+  baseline grids. Exact body boundaries use a fixed note policy: prefer a 40%
+  share capped by body space, reserve mandatory first fragments, then extend
+  pending notes in FIFO order; note-only tails can use the full page. Mandatory
+  first fragments may exceed the preferred share when the complete page fits.
+  Strict mode keeps hard body widow/orphan and keep rules; continued notes keep
+  their semantic-unit rules. Actual continued notes retain baseline paragraph
+  shapes and report that limitation. Unreferenced notes stay in the Notes section. See
   [PDF footnotes](docs/PDF_FOOTNOTES.md).
 - **PDF mathematics.** Display and inline equations use real math glyphs and
   geometry. Inline formulas remain whole and scale down only when needed to fit

@@ -3338,7 +3338,6 @@ fn render_inner_with_languages(
     let notes = note_tags::Context::bind(input);
     emit.compression.validate()?;
     baseline_grid::validate_options(opts)?;
-    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     let mut profiler = if profiled {
         PdfProfiler::enabled()
@@ -4088,7 +4087,6 @@ fn layout_with_languages(
     languages: &language::Context,
     notes: &note_tags::Context,
 ) -> Result<(Vec<Line>, PdfParagraphVariantReport)> {
-    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     spacing::validate_tables(blocks, opts, page)?;
     inline_image::prepare(blocks, &opts.image_assets, faces);
@@ -24096,9 +24094,18 @@ fn next_placed_page_with_notes<'a>(
     plan: Option<&PageBreakPlan>,
 ) -> Option<Vec<Placed<'a>>> {
     if let Some(cursor) = &notes.continuation {
-        // Option validation excludes exact pagination before fit/layout. All
-        // final page consumers walk this same source-owned continuation state.
-        debug_assert!(plan.is_none());
+        if let Some(plan) = plan.and_then(|plan| plan.continuation.as_ref()) {
+            return split_footnotes::next_planned_page(
+                lines,
+                notes,
+                &mut cursor.borrow_mut(),
+                plan,
+                start,
+                page,
+                emitted_any,
+            );
+        }
+        // Best-effort fallback retains the historical continuation policy.
         return split_footnotes::next_page(
             lines,
             notes,
@@ -31643,6 +31650,7 @@ fn page_break_plan_and_report(
     let notes = PageNotes::scan(lines);
     let exact = match &notes {
         None => exact_height_page_breaks(lines, page),
+        Some(notes) if notes.continuation.is_some() => split_footnotes::plan(lines, notes, page),
         Some(notes) => exact_height_page_breaks_reserving(
             &lines[..notes.body_end],
             page,
@@ -31844,6 +31852,9 @@ struct PageBreakPlan {
     /// Sorted page end indices (exclusive), starting with the first page's
     /// end; the last entry is always `lines.len()`.
     ends: Vec<usize>,
+    /// Continued notes can add physical pages after the body is exhausted.
+    /// Their immutable allocations are replayed instead of re-solving notes.
+    continuation: Option<split_footnotes::Plan>,
 }
 
 /// Plass per-page count demerit for the optimal-pagination DP: 5x the worst
@@ -31968,7 +31979,10 @@ fn exact_height_page_breaks_reserving(
     };
 
     if lines.is_empty() {
-        return Ok(PageBreakPlan { ends: Vec::new() });
+        return Ok(PageBreakPlan {
+            ends: Vec::new(),
+            continuation: None,
+        });
     }
 
     let mut spans = Vec::<(usize, usize)>::new();
@@ -32035,7 +32049,10 @@ fn exact_height_page_breaks_reserving(
             "plan did not cover every line",
         ));
     }
-    Ok(PageBreakPlan { ends })
+    Ok(PageBreakPlan {
+        ends,
+        continuation: None,
+    })
 }
 
 /// Production optimal pagination now uses the exact fixed-point mixed-height
@@ -32055,7 +32072,10 @@ fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
     let n = lines.len();
     let mut ends = Vec::new();
     if n == 0 {
-        return PageBreakPlan { ends };
+        return PageBreakPlan {
+            ends,
+            continuation: None,
+        };
     }
     let full_capacity = (page.top_y() - page.bottom).max(MIN_CONTENT_DIM);
     // Precompute break penalties once (they depend only on the index).
@@ -32120,7 +32140,10 @@ fn legacy_optimal_page_breaks(lines: &[Line], page: PageGeom) -> PageBreakPlan {
         boundary = p;
     }
     ends.reverse();
-    PageBreakPlan { ends }
+    PageBreakPlan {
+        ends,
+        continuation: None,
+    }
 }
 
 /// 45d2.4: wrapper around [`choose_page_break`] adding global-void budgeting.
@@ -45887,7 +45910,6 @@ pub(crate) fn verification_text_layer_for_layout(
 ) -> Result<VerifyTextLayer> {
     opts.font_assets.validate()?;
     baseline_grid::validate_options(opts)?;
-    split_footnotes::validate_options(opts)?;
     spacing::validate_options(opts)?;
     let notes = note_tags::Context::bind(input);
     let lowered = if input.is_pdf_prepared() {

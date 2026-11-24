@@ -662,10 +662,21 @@ at continuation boundaries. This is available on document, book, worker, Flow,
 and saved offline-workspace PDF paths. Retained books also accept `split-footnotes` in the
 `typography` token string. Omission or `false` preserves existing behavior.
 
-This mode requires greedy pagination and supports a positive `baselineGridPt`:
-body text and continued note text share the physical page grid. The core rejects
-combinations with `optimalPagination` or `strictPagination`. Tables continue at
-complete rows with repeated headers; headings retain their first content row.
+This mode supports `optimalPagination`, `strictPagination` and a positive
+`baselineGridPt`; body text and continued note text share the physical page grid.
+Exactness covers body page boundaries under a fixed note-allocation policy:
+prefer a 40% note share capped by space left after the body, reserve new mandatory
+first fragments, then extend pending notes in FIFO order. Mandatory first
+fragments may exceed the preferred share when the complete page fits. Note-only
+tails can use the full usable page height. Strict mode preserves hard body
+two-line widow/orphan minima and keeps, and refuses infeasible or exhausted
+searches. Note fragments retain their semantic-unit rules without a new
+two-line widow/orphan guarantee for note prose.
+
+Actual continued notes retain baseline paragraph shapes and surface
+`paragraph_pagination_limited` in diagnostic exports even when body boundaries
+are exact. Tables continue at complete rows with repeated headers; headings
+retain their first content row.
 Indivisible objects or mandatory groups that cannot fit keep the complete
 endnote fallback. Unreferenced notes remain in the trailing Notes section. Use a matching
 rebuilt JavaScript/WASM package: older native token parsers reject the request,

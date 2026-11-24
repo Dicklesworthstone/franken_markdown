@@ -866,8 +866,15 @@ pub struct PdfOptions {
     /// Other blocks and unreferenced notes retain existing indivisible-note
     /// and full-fidelity endnote handling.
     /// Default false preserves indivisible page notes and existing output.
-    /// This mode requires greedy pagination and supports an optional baseline
-    /// grid. Exact/optimal pagination is rejected rather than silently weakened.
+    /// Supports greedy, optimal and strict pagination, with an optional baseline
+    /// grid. Exact planning selects body boundaries under a fixed note policy:
+    /// prefer 40% of usable page height, capped by space left after the body;
+    /// reserve new first fragments before extending pending notes in FIFO order.
+    /// Mandatory first fragments may exceed that share if the complete page fits.
+    /// Note-only tails use the full usable page height. Strict pagination retains
+    /// hard body widow/orphan and keep rules; note fragments retain the semantic
+    /// keeps above. Actual continued notes retain baseline paragraph shapes,
+    /// reported as `PdfParagraphVariantStatus::ContinuedFootnotes`.
     pub split_footnotes: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///

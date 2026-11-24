@@ -94,7 +94,8 @@ pub(super) struct VerifyLayoutArgs {
     /// Link numbered notes back to their first citation.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_footnote_backlinks: Option<bool>,
-    /// Continue long notes across page feet; requires greedy pagination.
+    /// Continue long notes across page feet; supports optimal/strict pagination
+    /// and baseline grids.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,
     #[command(flatten)]

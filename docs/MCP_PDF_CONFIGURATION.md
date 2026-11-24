@@ -140,19 +140,40 @@ site artifacts keep their own layout settings.
 
 The PDF routes, including verification and book output, accept
 `splitFootnotes: true` to continue long notes containing paragraphs, code,
-tables, lists or quotations across page feet.
+headings, definition lists, tables, lists or quotations across page feet.
 The first fragment stays with the citation, and the remaining fragments retain
 the note's numbering, links and logical ownership. Omission or `false` retains
 the existing indivisible-note layout. Tables keep complete logical rows together
 and repeat their measured headers; oversized header/row groups retain the
-complete endnote fallback. Notes containing standalone figures, display math
-or headings, and unreferenced notes, retain their lossless endnote fallback.
+complete endnote fallback. Standalone figures and display math remain whole
+within continued notes; oversized objects or mandatory groups keep the complete
+endnote fallback. Unreferenced notes remain endnotes.
 
-Continuation cannot be combined with `optimalPagination: true`,
-`strictPagination: true`, or a positive `baselineGridPt`. The native renderer
-refuses these combinations with `pdf_split_footnotes_incompatible`; it does not
-silently drop continuation or weaken the requested planner. See
-[PDF footnotes](PDF_FOOTNOTES.md) for supported blocks and continuation rules.
+Continuation can be combined with `optimalPagination: true`,
+`strictPagination: true`, and a positive `baselineGridPt`. For example, these
+options request exact continuation on a shared body/note grid:
+
+```json
+{
+  "splitFootnotes": true,
+  "strictPagination": true,
+  "baselineGridPt": 13.333
+}
+```
+
+Exactness covers body page boundaries under a fixed note-allocation policy:
+prefer a 40% note share capped by space left after the body, reserve new first
+fragments before pending continuations in FIFO order, and allow note-only tails
+the full usable page height. Mandatory first fragments may exceed the preferred
+share when the complete page fits. Strict mode preserves hard body widow/orphan
+and keep rules and refuses infeasible or exhausted searches. Notes retain their
+semantic-unit rules, without a new two-line widow/orphan guarantee for note prose.
+
+Actual continued notes retain baseline paragraph shapes, so diagnostic PDF
+exports can return `paragraph_pagination_limited` even when page boundaries are
+exact. Verification and rendering use the same physical pages, including
+note-only tails. See [PDF footnotes](PDF_FOOTNOTES.md) and
+[joint pagination](JOINT_PAGINATION.md) for allocation, fallback and report scope.
 
 ## Running header and footer
 

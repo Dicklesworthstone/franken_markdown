@@ -96,7 +96,8 @@ pub struct WasmRenderOptions {
     /// Link PDF note numbers back to their first citation. Disabled by default.
     pub footnote_backlinks: bool,
     /// Continue long text PDF notes across page feet. Default false.
-    /// Requires greedy pagination; see [`crate::PdfOptions::split_footnotes`].
+    /// Supports optimal/strict pagination and baseline grids; exact body planning
+    /// uses the fixed note policy in [`crate::PdfOptions::split_footnotes`].
     pub split_footnotes: bool,
     /// Opt-in running header/footer chrome for PDF output; see
     /// [`crate::PdfRunningContent`]. Default draws nothing.
@@ -491,7 +492,7 @@ impl WasmRenderOptions {
     /// `homogeneous`, `antiriver`, `pareto`, `optimal-pagination`,
     /// `strict-pagination` (which also enables optimal pagination),
     /// `footnote-backlinks` (return navigation from PDF notes), `split-footnotes`
-    /// (text-note continuation with greedy pagination), `theme-spacing`
+    /// (text-note continuation, including optimal/strict pagination), `theme-spacing`
     /// (literal shared leading and table padding in PDF), and the
     /// microtype modes `protrusion` (with the expansion budget, like the CLI)
     /// or `expansion` (glyph expansion only). Empty or absent is a no-op.

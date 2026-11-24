@@ -97,7 +97,7 @@ box's advance could otherwise overlap its unchanged painted content. Ordinary
 text paragraphs and protrusion-only policies remain eligible; the restriction
 uses the actual paragraph policy, including list-specific behavior.
 
-Prepared numbered page notes participate with
+Prepared numbered indivisible page notes participate with
 their unchanged measured bodies reserved at each alternative's first citation;
 a candidate cannot lose or reorder citations. All first citations assigned to a
 physical page share one separator reservation, matching the emitted page foot.
@@ -121,6 +121,46 @@ An infeasible or exhausted joint search keeps the complete original layout and
 its existing pagination fallback.
 Default PDF rendering, without `optimal_pagination`, does not collect or select
 alternative paragraph shapes.
+
+### Exact body pagination with continued notes
+
+`--pdf-split-footnotes` can be combined with optimal or strict pagination and an
+optional baseline grid. For documents containing actual continued notes, the
+planner retains baseline paragraph shapes and searches body boundaries while
+carrying the remaining note fragments as part of its state. Different pending
+fragments at the same body position can lead to different later pages, so their
+costs and physical-page continuations remain distinct during the search.
+
+The exact claim uses a fixed note-allocation policy. The preferred note-region
+budget is 40% of usable page height, capped by the space left after the candidate
+body fragment. Every new citation first reserves its note's mandatory first
+fragment. Those fragments may exceed the preferred share if the body and complete
+note region fit. Remaining space extends older pending notes in FIFO order,
+then newly cited notes. After the body ends, note-only tail pages can use the full
+usable page height. Their costs and page totals participate in the plan.
+The allocator determines note split positions; the exact search optimizes body
+boundaries under that policy.
+
+Hard body constraints, including two-line widow/orphan minima, heading and
+caption keeps, definition-term keeps, table-row atomicity and explicit breaks,
+remain in force. Note fragments retain their existing semantic-unit keeps,
+including complete table rows and repeated headers. This does not introduce a
+two-line widow/orphan guarantee for note prose. The emitted PDF, verification,
+book contents, running totals and both emission modes replay the same physical
+page plan. An optional baseline grid still shares its phase between body and
+note text.
+
+The search is bounded. An impossible plan or exhausted budget produces the
+existing typed pagination failure: strict mode returns it, while best-effort
+optimal mode reports it and uses note-aware greedy continuation. Default greedy
+continuation retains its existing behavior.
+
+The paragraph report uses `PdfParagraphVariantStatus::ContinuedFootnotes` when
+actual continued notes require baseline shapes. Diagnostic exports surface
+`paragraph_pagination_limited`, even if the body-boundary report is successful
+`ExactHeight`. Enabling the option without actual continued notes does not
+disable otherwise eligible paragraph alternatives. See
+[PDF footnotes](PDF_FOOTNOTES.md) for supported note blocks and fallback rules.
 
 ### Pagination reports and fallback diagnostics
 

@@ -140,8 +140,14 @@ or a required label-and-content group that cannot fit on a note-only page also
 sends its complete note to that fallback. The same complete fallback applies
 when the first group and its citing body line cannot fit together.
 
-Continuation requires **greedy pagination** and supports an optional baseline
-grid, for example `--pdf-split-footnotes --pdf-baseline-grid-pt 13.333`.
+Continuation supports greedy, optimal and strict pagination with an optional
+baseline grid, for example:
+
+```sh
+fmd report.md --to pdf --pdf-split-footnotes --pdf-strict-pagination \
+  --pdf-baseline-grid-pt 13.333 --out report.pdf
+```
+
 Body text, note fragments and repeated table headers share the final document
 grid. Notes are admitted after shared font and object clearance has been
 measured; a required heading, label or complete table row that no longer fits
@@ -149,10 +155,40 @@ keeps the complete endnote fallback. Fractional grid heights and note-only page
 placement use fixed-point arithmetic, retaining the grid phase through long
 continuations. Running margin bands keep their independent geometry.
 
-Combining continuation with `--pdf-optimal-pagination` or
-`--pdf-strict-pagination` still fails with `pdf_split_footnotes_incompatible`,
-with or without a grid. Disable continuation or the incompatible policy; the
-renderer does not silently change the requested pagination contract.
+With `--pdf-optimal-pagination`, the exact planner chooses body page boundaries
+while carrying each pending note's remaining fragments into the next page. Its
+exactness is defined over a fixed note-allocation policy:
+
+- The preferred note-region budget is 40% of usable page height, capped by the
+  space remaining after the candidate body fragment.
+- Every newly cited note receives its mandatory first fragment on that page.
+  These first fragments may exceed the preferred share when the body and complete
+  note region still fit together.
+- Remaining space extends older pending notes in first-in, first-out order,
+  followed by the newly cited notes. Repeated headers and semantic keeps count
+  toward the measured fragment size.
+- After the body ends, pending notes can use the full usable height of note-only
+  pages. Those physical pages contribute to page costs and final page totals.
+
+The search optimizes body boundaries under this policy; it does not explore all
+possible allocations of note lines to pages. Exact planning retains the hard
+body rules, including two-line widow/orphan minima and heading, caption, list,
+definition-term and table keeps. Continued notes retain their semantic-unit
+rules described above; this does not add a two-line widow/orphan guarantee to
+note prose. `--pdf-strict-pagination` requires a successful exact plan and
+returns a typed error for an impossible layout or an exhausted search budget.
+Best-effort optimal mode reports that failure before using its note-aware greedy
+fallback. Default greedy continuation keeps its existing behavior.
+
+Documents with actual continued notes retain their measured baseline paragraph
+shapes. The pagination report records this restriction as
+`PdfParagraphVariantStatus::ContinuedFootnotes`, and diagnostic exports include
+`paragraph_pagination_limited`. A successful `ExactHeight` page report therefore
+certifies the supported body-boundary plan under the policy above, while making
+the paragraph-search limitation visible. Merely enabling continuation on a
+document without continued notes does not introduce that restriction.
+See [joint pagination](JOINT_PAGINATION.md) for the typed report and strict-mode
+contract.
 
 The option is off by default. `fmd config set pdf_split_footnotes true` supplies
 a persistent default, and `--pdf-split-footnotes=false` overrides it for one
@@ -220,13 +256,18 @@ moves to a page foot or to the trailing Notes section.
 
 ## Limits
 
-- Under `--pdf-optimal-pagination` the exact page planner reserves each
-  note's body with its first citing line and one shared separator per page
+- For indivisible page notes, `--pdf-optimal-pagination` reserves each
+  note's complete body with its first citing line and one shared separator per page
   containing notes. Several citing lines on the same page do not reserve extra
   separators. If the exact planner cannot plan a document, it reports that
   outcome and paginates greedily (the legacy fallback planner does not model
   note space). With `--pdf-strict-pagination`, it returns an error instead of
   falling back.
+- With `--pdf-split-footnotes`, exact planning instead carries pending fragments
+  across physical pages under the fixed allocation policy above. Its bounded
+  search can report infeasibility or resource exhaustion; strict mode refuses
+  either outcome. Paragraph alternatives remain at their baseline shapes when
+  continued notes are present.
 - By default, notes placed at a page foot are indivisible. Notes that exceed
   the available space print as endnotes, where ordinary block pagination can span pages.
   Their complete text, block structure, numbering, and link destinations are
@@ -237,7 +278,10 @@ moves to a page foot or to the trailing Notes section.
 `tests/pdf_footnote_continuation_test.rs` independently reads emitted text,
 geometry, links and page objects to check text-note continuation, source-line
 conservation, tail pages, book note scope, running folios, shared browser-core
-output, emitter parity, and incompatible-policy refusals. Its table fixtures
+output, emitter parity, and exact/strict continuation with and without a baseline
+grid. Exact-policy fixtures cover repeated citations, multiple pending notes,
+note-only tails, verification coordinates, final page totals, printed book
+contents and typed strict refusals for impossible body keeps. Its table fixtures
 check wrapped-row atomicity, repeated header artifacts, complete logical cell
 ownership, quoted tables with literal padding, and the unchanged full-note
 fallback for oversized rows and headers. Sectioned-note fixtures inspect

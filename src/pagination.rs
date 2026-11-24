@@ -15,6 +15,7 @@
 //! reserve footnote areas, or emit PDF. The existing PDF renderer is unchanged;
 //! hosts must use the returned variants and fragments together, not just breaks.
 
+pub(crate) mod continuation;
 pub mod height;
 
 use crate::layout::ParagraphCandidates;

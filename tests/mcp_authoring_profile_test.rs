@@ -196,40 +196,83 @@ fn html_exports_select_the_grammar_before_parsing() {
 }
 
 #[test]
-fn explicit_profiles_refuse_interactive_exports_before_source_or_resource_access() {
-    let root = scratch();
-    let output = root.join("published.html");
-    std::fs::write(&output, b"existing HTML").unwrap();
-    std::fs::write(output.with_extension("pdf"), b"existing PDF").unwrap();
+fn explicit_profiles_retain_the_native_preview_and_offline_authoring_grammar() {
     for profile in [Profile::CommonMarkGfm, Profile::GfmPlus] {
         let mut request = args(SOURCE, Some(profile));
         request.insert("interactiveHtml".into(), Json::Bool(true));
-        // If profile admission is delayed, resource decoding fails first.
-        request.insert("images".into(), Json::Array(vec![Json::Null]));
-        let error = call("fmd.render_html", request).unwrap_err();
-        assert_eq!(error.0, ERROR_INVALID_OPTIONS);
-        assert_eq!(error.2, "profile_interactive_unsupported");
+        request.insert("title".into(), text("Profiled"));
+        let document = parse_markdown_with_profile(SOURCE, Some(profile));
+        let expected = franken_markdown::interactive::render_interactive_html_checked(
+            &document,
+            SOURCE,
+            &HtmlOptions {
+                profile: Some(profile),
+                title: Some("Profiled".into()),
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            content(&call("fmd.render_html", request).unwrap()),
+            expected
+        );
+        assert!(expected.contains(&format!(
+            r#"id="fmd-authoring-profile">{{"version":1,"profile":"{}"}}</script>"#,
+            profile.as_str()
+        )));
+    }
+}
+
+#[test]
+fn profiled_interactive_file_exports_publish_html_and_paired_pdf() {
+    let root = scratch();
+    let source = root.join("source.md");
+    std::fs::write(&source, SOURCE).unwrap();
+    for profile in [Profile::CommonMarkGfm, Profile::GfmPlus] {
+        let document = parse_markdown_with_profile(SOURCE, Some(profile));
+        let expected_html = franken_markdown::interactive::render_interactive_html_checked(
+            &document,
+            SOURCE,
+            &HtmlOptions {
+                profile: Some(profile),
+                title: Some("Profiled".into()),
+                ..HtmlOptions::default()
+            },
+        )
+        .unwrap();
+        let expected_pdf = franken_markdown::render_pdf_document(
+            &document,
+            &PdfOptions {
+                profile: Some(profile),
+                title: Some("Profiled".into()),
+                ..PdfOptions::default()
+            },
+        )
+        .unwrap();
         for target in ["html", "both"] {
+            let output = root.join(format!("{}-{target}.html", profile.as_str()));
+            let pdf_output = output.with_extension("pdf");
+            std::fs::write(&output, b"previous HTML").unwrap();
+            std::fs::write(&pdf_output, b"previous PDF").unwrap();
             let request = BTreeMap::from([
-                (
-                    "path".into(),
-                    text(&root.join("missing.md").to_string_lossy()),
-                ),
+                ("path".into(), text(&source.to_string_lossy())),
                 ("out".into(), text(&output.to_string_lossy())),
                 ("to".into(), text(target)),
+                ("title".into(), text("Profiled")),
                 ("profile".into(), text(profile.as_str())),
                 ("interactiveHtml".into(), Json::Bool(true)),
             ]);
-            let error = call("fmd.render_file", request).unwrap_err();
-            assert_eq!(error.0, ERROR_INVALID_OPTIONS);
-            assert_eq!(error.2, "profile_interactive_unsupported");
+            let result = call("fmd.render_file", request).unwrap();
+            assert_eq!(result.get("isError"), Some(&Json::Bool(false)));
+            assert_eq!(std::fs::read_to_string(&output).unwrap(), expected_html);
+            if target == "both" {
+                assert_eq!(std::fs::read(&pdf_output).unwrap(), expected_pdf);
+            } else {
+                assert_eq!(std::fs::read(&pdf_output).unwrap(), b"previous PDF");
+            }
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), SOURCE);
         }
     }
-    assert_eq!(std::fs::read(output).unwrap(), b"existing HTML");
-    assert_eq!(
-        std::fs::read(root.join("published.pdf")).unwrap(),
-        b"existing PDF"
-    );
 }
 
 #[test]
@@ -389,6 +432,7 @@ fn invalid_file_profiles_leave_existing_source_and_outputs_untouched() {
         ("out".into(), text(&output.to_string_lossy())),
         ("to".into(), text("both")),
         ("profile".into(), text("unrecognized")),
+        ("interactiveHtml".into(), Json::Bool(true)),
     ]);
     assert_eq!(
         call("fmd.render_file", request).unwrap_err().2,

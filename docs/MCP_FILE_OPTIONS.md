@@ -12,12 +12,11 @@ SVG. Paired HTML/PDF output shares the same profiled AST.
 Omitting the option retains the existing extended grammar. Unknown names and
 non-string values fail before the source is read or any output is replaced.
 
-Explicit profiles cannot be combined with `interactiveHtml: true`: the
-lightweight saved-HTML editor has its own local parser and cannot retain the
-requested grammar after editing. This returns `profile_interactive_unsupported`
-before source I/O. Omit `interactiveHtml` for a static document, or use the native
-Flow/WASM workspace for profiled editing. Unprofiled interactive output keeps its
-existing behavior.
+Explicit profiles also work with `interactiveHtml: true`. The self-contained
+HTML editor retains the selected definition-list and page-break grammar through
+offline edits, styled printing, and Save HTML/reopen. Omitting the profile uses
+the extended default. See [editable HTML authoring profiles](INTERACTIVE_AUTHORING_PROFILES.md)
+for the supported grammar and the lightweight renderer's scope.
 
 ```json
 {
@@ -94,7 +93,7 @@ source, AST and options as the in-memory interactive tool.
 Set `expandIncludes: true` to expand `{{#include path}}` in the selected file.
 The default is `false`: omission retains the original single-file behavior and
 does not read include destinations. The option works for HTML, PDF, paired
-HTML/PDF, EPUB, SVG, and unprofiled interactive HTML.
+HTML/PDF, EPUB, SVG, and interactive HTML.
 
 ```json
 {

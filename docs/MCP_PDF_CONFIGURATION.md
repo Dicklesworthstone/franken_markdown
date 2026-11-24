@@ -14,10 +14,10 @@ definition list, footnote or authored page break can have different semantics
 between dialects. Omission preserves the existing extended grammar. Unknown
 names return `invalid_profile`; wrong JSON types return `invalid_params`.
 The authoring profile is separate from the archival `pdfA` option.
-An explicit profile with `interactiveHtml: true` is refused with
-`profile_interactive_unsupported`, because the lightweight saved-HTML parser
-cannot retain that choice after edits. Static HTML and native Flow/WASM
-workspaces support explicit profiles.
+Explicit profiles also work with `interactiveHtml: true`: editable HTML retains
+the selected definition-list and page-break grammar after local edits, styled
+printing, and Save HTML/reopen. See [editable HTML authoring profiles](INTERACTIVE_AUTHORING_PROFILES.md)
+for the lightweight renderer's supported scope.
 
 ```json
 {

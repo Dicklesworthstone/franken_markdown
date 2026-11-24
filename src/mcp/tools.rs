@@ -99,7 +99,7 @@ const HTML_FIELDS: &[Field] = &[
     (
         "interactiveHtml",
         "boolean",
-        "Generate lightweight self-hosting interactive HTML; cannot be combined with an explicit profile",
+        "Generate lightweight self-hosting interactive HTML that retains the selected authoring profile after edits and save/reopen",
     ),
     (
         "fontScale",
@@ -858,12 +858,9 @@ pub fn handle_tool_call(
     let args = params.get("arguments").unwrap_or(&default_args);
     let fields = fields_for(name, fields);
     validate_arguments(args, &fields, required)?;
-    if authoring_profile(args)?.is_some() && boolean(args, "interactiveHtml") {
-        return Err(invalid_options(
-            "interactiveHtml cannot retain an explicit authoring profile after local edits; omit interactiveHtml for a static document, or use a native Flow/WASM workspace for profiled editing",
-            "profile_interactive_unsupported",
-        ));
-    }
+    // Validate the dialect before source or resource admission. Interactive
+    // HTML retains it in an owned manifest for subsequent offline edits.
+    let _ = authoring_profile(args)?;
     let started = Instant::now();
     let result = execute(name, args, max_input_bytes);
     eprintln!("fmd mcp tool '{name}' completed in {:?}", started.elapsed());

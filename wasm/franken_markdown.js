@@ -173,6 +173,15 @@ export async function renderHtml(markdown, options = {}) {
   const render = profile === undefined ? renderHtmlConfiguredAdvanced
     : requireBrowserBinding("renderHtmlConfiguredProfiled", "Markdown authoring profiles");
   if (profile !== undefined) requireBindingArguments(render, 22, "Markdown authoring profiles");
+  const author = htmlAuthorOption(options.author);
+  const metadataBinding = () => {
+    const binding = requireBrowserBinding("renderHtmlConfiguredMetadata", "HTML author metadata");
+    requireBindingArguments(binding, 23, "HTML author metadata");
+    return binding;
+  };
+  // Explicit metadata fails before initialization or asset copies on an older
+  // package. Inherited metadata is checked after the native frontmatter parse.
+  if (author !== undefined && author !== "") metadataBinding();
   const requestedEmbedding = options.fontEmbedding;
   const fontEmbedding = requestedEmbedding === undefined ? undefined : normalizeFontEmbedding(requestedEmbedding);
   if (fontEmbedding === "full")
@@ -221,8 +230,20 @@ export async function renderHtml(markdown, options = {}) {
   ];
   // Own source, scalar settings and exact asset ranges before initialization
   // yields, including its already-resolved warm path, as PDF/SVG/EPUB do.
+  const legacyArgumentCount = args.length;
+  args[22] = author;
   await init();
-  applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, toc === undefined);
+  applySourceMetadata(args, { title: 3, author: 22, lang: 16, toc: 17, tocDepth: 18 }, toc === undefined);
+  args[22] = htmlAuthorOption(args[22]);
+  if (args[22] !== undefined && args[22] !== "") {
+    args[19] = htmlFontFormat;
+    args[20] = fontEmbedding;
+    args[21] = profile;
+    return normalizeResult(metadataBinding()(...args), profile);
+  }
+  // Preserve legacy invocation shapes when no author is emitted, including an
+  // explicit empty author that suppresses source-frontmatter inheritance.
+  args.length = legacyArgumentCount;
   return normalizeResult(render(...args), profile);
 }
 
@@ -1468,6 +1489,23 @@ function verbatimOption(value) {
   }
   const text = String(value);
   return text === "" ? undefined : text;
+}
+
+// HTML's explicit empty author suppresses inheritance; every other string is
+// retained verbatim. Bound UTF-8 before initialization, including malformed
+// surrogate rejection, so metadata cannot be silently rewritten by encoding.
+function htmlAuthorOption(value) {
+  if (value === undefined || value === null) return undefined;
+  const author = String(value);
+  if (author.length > 65536) throw new RangeError("HTML author exceeds its 64 KiB UTF-8 limit");
+  let bytes = 0;
+  for (const character of author) {
+    const cp = character.codePointAt(0);
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError("HTML author contains an unpaired surrogate");
+    bytes += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+    if (bytes > 65536) throw new RangeError("HTML author exceeds its 64 KiB UTF-8 limit");
+  }
+  return author;
 }
 
 // Ordinary HTML uses an explicit empty stylesheet to disable default styling.

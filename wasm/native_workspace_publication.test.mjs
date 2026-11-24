@@ -33,6 +33,11 @@ function fixtureBindings() {
   Object.defineProperty(navigation, 'length', {value: 17});
   return {calls, get freed() { return freed; },
     renderHtmlConfiguredAdvanced: (...args) => render('html', args),
+    renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+      return render('html', [...arguments]);
+    },
     renderPdfConfiguredMulti: (...args) => render('pdf', args),
     renderPdfConfiguredPage: (...args) => render('pdf', args),
     renderEpubConfiguredAdvanced: (...args) => render('epub', args),
@@ -41,7 +46,7 @@ function fixtureBindings() {
     renderSvgConfiguredNavigation: navigation};
 }
 const bindingSource = `const adapter = (${fixtureBindings.toString()})();
-export const {renderHtmlConfiguredAdvanced, renderPdfConfiguredMulti,
+export const {renderHtmlConfiguredAdvanced, renderHtmlConfiguredMetadata, renderPdfConfiguredMulti,
 renderPdfConfiguredPage, renderEpubConfiguredAdvanced, renderEpubConfiguredMetadata, renderSvgConfiguredResources, renderSvgConfiguredNavigation} = adapter;
 export default async function init(input) { await WebAssembly.instantiate(input.module_or_path); }`;
 const state = () => ({version: 1, wasm: 'AGFzbQEAAAA=', bindings: bindingSource,
@@ -92,6 +97,8 @@ test('EPUB and SVG use the complete native ABI and committed document settings',
   assert.deepEqual(renderer.exportFormats, ['html', 'pdf', 'epub', 'svg']);
   assert.equal(Object.isFrozen(renderer.exportFormats), true);
   renderer.html('# View', {scale: 2, theme: 'dark'});
+  assert.equal(bindings.calls.at(-1).args.length, 23);
+  assert.equal(bindings.calls.at(-1).args[22], 'PDF author');
   for (const format of ['epub', 'svg']) {
     const output = renderer[format]('\ufeff# Source\r\n中𝄞');
     assert.ok(output instanceof Uint8Array);

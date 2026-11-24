@@ -10,7 +10,7 @@ const utf8 = value => new TextEncoder().encode(value);
 const SOURCE = "---\ntitle: Metadata title\nauthor: Source author\nlang: de\ntoc: true\ntoc_depth: 2\n---\n# Heading\n\n## Child\n";
 const DEFAULTS = Object.freeze({ title: "Metadata title", author: "Source author", lang: "de", toc: true, tocDepth: 2 });
 const routes = [
-  { method: "renderHtml", name: "html", options: {}, slots: { title: 3, lang: 16, toc: 17, tocDepth: 18 } },
+  { method: "renderHtml", name: "html", options: {}, slots: { title: 3, author: 22, lang: 16, toc: 17, tocDepth: 18 } },
   { method: "renderPdf", name: "pdf", options: {}, slots: { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 } },
   { method: "renderPdf", name: "archival", options: { pdfA: "2b", pdfAStrict: true }, slots: { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 } },
   { method: "renderEpub", name: "epub", options: {}, slots: { title: 3, author: 20, lang: 4, toc: 7, tocDepth: 8 } },
@@ -22,9 +22,9 @@ function gate() {
   return { promise, resolve };
 }
 
-async function fixture({ metadata = () => DEFAULTS, advancedEpub = true, advancedInteractive = true, hold } = {}) {
+async function fixture({ metadata = () => DEFAULTS, htmlMetadata = 23, advancedEpub = true, advancedInteractive = true, hold } = {}) {
   const calls = [], sources = [];
-  let frees = 0;
+  let frees = 0, initializations = 0;
   const render = (name, format) => {
     const binding = (...args) => {
       calls.push({ name, args });
@@ -34,12 +34,13 @@ async function fixture({ metadata = () => DEFAULTS, advancedEpub = true, advance
         bytes: utf8(`binding-double:${name}`), diagnosticsJson: () => "[]", free() { frees++; },
       };
     };
-    Object.defineProperty(binding, "length", { value: 39 });
+    Object.defineProperty(binding, "length", { value: 39, configurable: true });
     return binding;
   };
   const bindings = {
-    default: () => hold?.promise ?? Promise.resolve(),
+    default: () => { initializations++; return hold?.promise ?? Promise.resolve(); },
     renderHtmlConfiguredAdvanced: render("html", "html"),
+    renderHtmlConfiguredProfiled: render("html-profiled", "html"),
     renderPdfConfiguredMulti: render("pdf", "pdf"),
     renderPdfConfiguredArchival: render("archival", "pdf"),
     renderEpubConfigured: render("epub-legacy", "epub"),
@@ -47,6 +48,10 @@ async function fixture({ metadata = () => DEFAULTS, advancedEpub = true, advance
     renderSvgConfigured() {}, accessibilityAudit() {}, capabilities() {},
     documentStats() {}, renderSemanticDiffHtml() {}, searchIndex() {}, semanticDiff() {},
   };
+  if (htmlMetadata !== false) {
+    bindings.renderHtmlConfiguredMetadata = render("html", "html");
+    Object.defineProperty(bindings.renderHtmlConfiguredMetadata, "length", { value: htmlMetadata });
+  }
   if (advancedEpub) {
     bindings.renderEpubConfiguredAdvanced = render("epub", "epub");
     bindings.renderEpubConfiguredMetadata = render("epub", "epub");
@@ -66,7 +71,7 @@ async function fixture({ metadata = () => DEFAULTS, advancedEpub = true, advance
   const module = new SourceTextModule(await readFile(new URL("franken_markdown.js", import.meta.url), "utf8"));
   await module.link(name => name === "./pkg/franken_markdown.js" ? native : helpers.get(name));
   await module.evaluate();
-  return { api: module.namespace, calls, sources, get frees() { return frees; } };
+  return { api: module.namespace, calls, sources, get frees() { return frees; }, get initializations() { return initializations; } };
 }
 
 for (const route of routes) {
@@ -154,7 +159,7 @@ test("concurrent source defaults remain scoped to their submitted documents", as
 });
 
 test("legacy generated packages preserve their existing behavior for frontmatter and leading rules", async () => {
-  const f = await fixture({ metadata: null, advancedEpub: false });
+  const f = await fixture({ metadata: null, htmlMetadata: false, advancedEpub: false });
   for (const source of [SOURCE, "---\n\nAn ordinary paragraph."]) {
     for (const route of routes) {
       await f.api[route.method](source, route.options);
@@ -353,4 +358,94 @@ test("interactive metadata inheritance retains data-only option admission", asyn
   assert.equal(reads, 0);
   assert.equal(f.sources.length, 0);
   assert.equal(f.calls.length, 0);
+});
+
+test("HTML metadata keeps its additive ABI positions with profiles and all supplied resources", async () => {
+  const hold = gate(), f = await fixture({ hold });
+  const author = "  É中 & <Research>\r\nCo-author 😀  ";
+  const image = new Uint8Array([99, 1, 2, 3, 88]), font = new Uint8Array([77, 4, 5, 66]);
+  const options = { author, profile: "commonmark-gfm", fontEmbedding: "full", htmlFontFormat: "ttf",
+    title: "  Publication  ", customCss: "", lang: "fr", toc: false, tocDepth: 4,
+    pdfImages: [{ destination: "plot.png", bytes: new DataView(image.buffer, 1, 3) }],
+    fontAssets: [{ slot: "body-regular", bytes: new DataView(font.buffer, 1, 2), weight: 650 }] };
+  const pending = f.api.renderHtml(SOURCE, options);
+  options.author = "Later"; image.fill(0); font.fill(0);
+  options.pdfImages[0].destination = "later.png"; options.fontAssets[0].weight = 100;
+  hold.resolve();
+  const output = await pending, { args } = f.calls[0];
+  assert.equal(args.length, 23);
+  assert.equal(args[0], SOURCE); assert.equal(args[3], "  Publication  ");
+  assert.equal(args[4], ""); assert.deepEqual([...args[7]], [4, 5]);
+  assert.equal(args[12][0], 650); assert.deepEqual(args[13], ["plot.png"]);
+  assert.deepEqual([...args[14]], [1, 2, 3]); assert.deepEqual([...args[15]], [3]);
+  assert.deepEqual(args.slice(16), ["fr", false, 4, "ttf", "full", "commonmark-gfm", author]);
+  assert.equal(output.profile, "commonmark-gfm"); assert.equal(f.frees, 1);
+});
+
+test("HTML distinguishes omitted, null, empty and whitespace-only authors", async () => {
+  for (const [options, expected] of [[{}, DEFAULTS.author], [{ author: undefined }, DEFAULTS.author],
+    [{ author: null }, DEFAULTS.author], [{ author: "" }, undefined], [{ author: "  " }, "  "]]) {
+    const f = await fixture();
+    await f.api.renderHtml(SOURCE, options);
+    const args = f.calls[0].args;
+    assert.equal(args[22], expected);
+    assert.equal(args.length, expected === undefined ? 19 : 23);
+    assert.equal(args[0], SOURCE);
+  }
+});
+
+test("HTML without a rendered author preserves every legacy ABI shape", async () => {
+  for (const [options, count, name] of [
+    [{}, 19, "html"], [{ htmlFontFormat: "ttf" }, 20, "html"],
+    [{ fontEmbedding: "full" }, 21, "html"], [{ profile: "gfm-plus" }, 22, "html-profiled"],
+  ]) {
+    for (const metadata of [{}, { author: "" }]) {
+      const f = await fixture({ metadata: () => metadata, htmlMetadata: false });
+      await f.api.renderHtml(SOURCE, options);
+      assert.equal(f.calls[0].args.length, count); assert.equal(f.calls[0].name, name);
+    }
+    const f = await fixture({ htmlMetadata: false });
+    await f.api.renderHtml(SOURCE, { ...options, author: "" });
+    assert.equal(f.calls[0].args.length, count);
+    assert.equal(f.calls[0].args[3], DEFAULTS.title, "only author inheritance is suppressed");
+  }
+});
+
+test("HTML explicit and inherited authors cannot disappear through old or short bindings", async () => {
+  for (const htmlMetadata of [false, 0, 22]) {
+    const explicit = await fixture({ htmlMetadata });
+    await assert.rejects(explicit.api.renderHtml(SOURCE, { author: "Creator" }), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(explicit.initializations, 0); assert.equal(explicit.calls.length, 0);
+    const inherited = await fixture({ htmlMetadata });
+    await assert.rejects(inherited.api.renderHtml(SOURCE), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    assert.equal(inherited.initializations, 1); assert.equal(inherited.calls.length, 0);
+    await inherited.api.renderHtml(SOURCE, { author: "" });
+    assert.equal(inherited.calls[0].args.length, 19);
+  }
+});
+
+test("HTML bounds explicit and inherited author UTF-8 without replacing malformed Unicode", async () => {
+  const limit = "é".repeat(32768), f = await fixture();
+  await f.api.renderHtml(SOURCE, { author: limit });
+  assert.equal(f.calls[0].args[22], limit);
+  for (const author of ["é".repeat(32769), "x".repeat(65537), "broken\ud800", "broken\udfff"]) {
+    const explicit = await fixture();
+    await assert.rejects(explicit.api.renderHtml(SOURCE, { author }), /HTML author/);
+    assert.equal(explicit.initializations, 0); assert.equal(explicit.calls.length, 0);
+    const inherited = await fixture({ metadata: () => ({ author }) });
+    await assert.rejects(inherited.api.renderHtml(SOURCE), /HTML author/);
+    assert.equal(inherited.calls.length, 0);
+  }
+  const invalid = await fixture({ metadata: () => ({ author: 42 }) });
+  await assert.rejects(invalid.api.renderHtml(SOURCE), /Invalid source metadata/);
+  assert.equal(invalid.calls.length, 0);
+});
+
+test("concurrent HTML authors are resolved from each captured source", async () => {
+  const hold = gate(), second = "---\nauthor: Second creator\n---\n# Second";
+  const f = await fixture({ hold, metadata: text => ({ author: text === SOURCE ? DEFAULTS.author : "Second creator" }) });
+  const one = f.api.renderHtml(SOURCE), two = f.api.renderHtml(second), suppressed = f.api.renderHtml(SOURCE, { author: "" });
+  hold.resolve(); await Promise.all([one, two, suppressed]);
+  assert.deepEqual(f.calls.map(call => call.args[22]), [DEFAULTS.author, "Second creator", undefined]);
+  assert.deepEqual(f.calls.map(call => call.args[0]), [SOURCE, second, SOURCE]);
 });

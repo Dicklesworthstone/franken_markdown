@@ -114,6 +114,8 @@ installFlowWorker(endpoint, async (source, options) => {
     if (settings.title === "reject-render") throw new Error("explicit renderer rejection");
     if (format === "epub" && settings.author !== undefined && workerData?.epubAuthorSupport === false)
       throw Object.assign(new Error("EPUB author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
+    if (format === "html" && settings.author !== undefined && settings.author !== "" && workerData?.htmlAuthorSupport === false)
+      throw Object.assign(new Error("HTML author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (workerData?.fontEmbeddingSupport === false && settings.fontEmbedding === "full")
       throw Object.assign(new Error("Full font embedding requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
     if (workerData?.typographySupport === false && (settings.optimalPagination || settings.strictPagination

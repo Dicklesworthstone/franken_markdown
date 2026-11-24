@@ -116,7 +116,7 @@ test("document EPUB author admission bounds UTF-8 before starting workers", asyn
   assert.equal(workers.length, 0);
   const limit = "é".repeat(32768);
   assert.equal(decode(await renderer.renderEpub("# Book", { author: limit })).options.author, limit);
-  for (const format of ["html", "svg", "interactive-html"])
+  for (const format of ["svg", "interactive-html"])
     await assert.rejects(renderer.render(format, "# Book", { author: "Unsupported here" }), code("INVALID_OPTIONS"));
   assert.equal(renderer.pendingBytes, 0);
 });
@@ -198,7 +198,7 @@ test("Flow EPUB author admission counts UTF-8 and preserves other format boundar
   assert.equal(f.calls.length, 0);
   const limit = "é".repeat(32768);
   assert.equal(decode(await api.exportDocument("epub", { author: limit }, api.token)).options.author, limit);
-  for (const format of ["html", "svg"])
+  for (const format of ["svg"])
     assert.throws(() => normalizeFlowExport(format, { author }, token()), code("INVALID_OPTIONS"));
 });
 
@@ -240,4 +240,147 @@ test("Flow workers report stale native metadata support and remain usable after 
   assert.equal(session.disposed, false);
   assert.equal(session.pendingOperations, 0);
   assert.equal(session.pendingBytes, 0);
+});
+
+test("document HTML authors survive queueing and atomic publication capture", async t => {
+  const { renderer } = documentWorker(t);
+  const first = renderer.renderPdf("first");
+  const source = "---\nauthor: Source creator\n---\n# Owned source";
+  const settings = { author, title: "Before", profile: "gfm-plus" };
+  const html = renderer.renderHtml(source, settings);
+  const targets = [
+    { format: "pdf", options: { author: "PDF creator" } },
+    { format: "html", options: settings },
+    { format: "epub", options: { author: "EPUB creator" } },
+  ];
+  const publication = renderer.publish(source, targets);
+  for (const pending of [first, html, publication]) pending.catch(() => {});
+  settings.author = "Later"; settings.title = "After"; targets[0].options.author = "Later PDF";
+  await first;
+  const single = decode(await html);
+  assert.equal(single.source, source); assert.equal(single.options.author, author);
+  assert.equal(single.options.title, "Before"); assert.equal(single.options.profile, "gfm-plus");
+  const outputs = (await publication).outputs.map(decode);
+  assert.deepEqual(outputs.map(value => value.options.author), ["PDF creator", author, "EPUB creator"]);
+  assert.ok(outputs.every(value => value.source === source));
+  for (const explicit of ["", "  "])
+    assert.equal(decode(await renderer.renderHtml(source, { author: explicit })).options.author, explicit);
+  assert.equal(Object.hasOwn(decode(await renderer.renderHtml(source)).options, "author"), false);
+  assert.equal(renderer.pendingOperations, 0); assert.equal(renderer.pendingBytes, 0);
+});
+
+test("document HTML author admission validates UTF-8 and charges ingress before workers start", async t => {
+  const { renderer, workers } = documentWorker(t);
+  let reads = 0;
+  const accessor = Object.defineProperty({}, "author", { get() { reads++; return "Never"; } });
+  for (const value of [null, 42, {}, "é".repeat(32769), "x".repeat(65537), "broken\ud800"]) {
+    const expected = code(typeof value === "string" && value.startsWith("broken") ? "INVALID_UNICODE" : "BUDGET_EXCEEDED");
+    await assert.rejects(renderer.renderHtml("# Article", { author: value }), expected);
+    await assert.rejects(renderer.publish("# Article", [{ format: "pdf" },
+      { format: "html", options: { author: value } }]), expected);
+  }
+  await assert.rejects(renderer.renderHtml("# Article", accessor), code("INVALID_OPTIONS"));
+  assert.equal(reads, 0); assert.equal(workers.length, 0);
+  const limit = "é".repeat(32768);
+  assert.equal(decode(await renderer.renderHtml("# Article", { author: limit })).options.author, limit);
+  const limited = documentWorker(t, {}, { maxPendingBytes: 2048 });
+  await assert.rejects(limited.renderer.renderHtml("# Article", { author: "x".repeat(800) }), code("WORKER_QUEUE_FULL"));
+  await assert.rejects(limited.renderer.publish("# Article", [
+    { format: "html", options: { author: "x".repeat(800) } },
+  ]), code("WORKER_QUEUE_FULL"));
+  assert.equal(limited.workers.length, 0); assert.equal(limited.renderer.pendingBytes, 0);
+});
+
+test("document publications expose unsupported HTML metadata without returning partial artifacts", async t => {
+  const { renderer } = documentWorker(t, { htmlAuthorSupport: false });
+  await assert.rejects(renderer.publish("# Article", [
+    { format: "pdf" }, { format: "html", options: { author } },
+  ]), code("UNSUPPORTED_WASM_PACKAGE"));
+  assert.equal(renderer.pendingOperations, 0); assert.equal(renderer.pendingBytes, 0);
+  assert.equal(renderer.disposed, true);
+  const fresh = documentWorker(t, { htmlAuthorSupport: false }).renderer;
+  assert.equal((await fresh.renderHtml("# Article")).format, "html");
+  assert.equal(decode(await fresh.renderHtml("---\nauthor: Hidden\n---\n# Article", { author: "" })).options.author, "");
+});
+
+test("mixed document batches preserve each HTML author beside EPUB and PDF metadata", async t => {
+  const factory = workerFactory(t, "./tests/document_publication_worker_fixture.mjs");
+  const single = { format: "html", source: "# First", options: { author } };
+  const edition = { source: "# Second", targets: [
+    { format: "html", options: { author: "HTML creator" } },
+    { format: "epub", options: { author: "EPUB creator" } },
+    { format: "pdf", options: { author: "PDF creator" } },
+  ] };
+  const stream = renderDocumentBatch([single, edition], { concurrency: 2,
+    worker: { workerFactory: factory.create, timeoutMs: 5000 } });
+  t.after(() => stream.return());
+  const pending = stream.next(); single.options.author = "Later"; edition.targets[0].options.author = "Later too";
+  const first = (await pending).value, second = (await stream.next()).value;
+  assert.equal(first.status, "fulfilled"); assert.equal(second.status, "fulfilled");
+  assert.equal(decode(first.value).options.author, author);
+  assert.deepEqual(second.value.outputs.map(value => decode(value).options.author),
+    ["HTML creator", "EPUB creator", "PDF creator"]);
+  assert.ok(second.value.outputs.every(value => decode(value).source === "# Second"));
+  assert.equal((await stream.next()).done, true);
+});
+
+test("direct Flow HTML exports preserve explicit emptiness, whitespace and captured batch authors", async () => {
+  const f = directFlow(); let release;
+  f.renderers.pdf = () => new Promise(resolve => { release = resolve; });
+  const api = f.wrap(), settings = { author, title: "Guide" };
+  const pending = api.exportDocuments([
+    { format: "pdf" }, { format: "html", options: settings },
+    { format: "epub", options: { author: "EPUB creator" } },
+  ], api.token);
+  pending.catch(() => {}); settings.author = "Changed";
+  release(f.output("pdf", api.source, {}));
+  assert.deepEqual((await pending).map(value => decode(value).options.author), [undefined, author, "EPUB creator"]);
+  for (const explicit of ["", "  "])
+    assert.equal(decode(await api.exportDocument("html", { author: explicit }, api.token)).options.author, explicit);
+  assert.equal(Object.hasOwn(decode(await api.exportDocument("html", {}, api.token)).options, "author"), false);
+});
+
+test("Flow HTML author admission preserves the UTF-8 boundary and rejects accessors", async () => {
+  const f = directFlow(), api = f.wrap(); let reads = 0;
+  const accessor = Object.defineProperty({}, "author", { get() { reads++; return "Never"; } });
+  for (const value of [null, 42, {}, "é".repeat(32769), "x".repeat(65537), "broken\ud800"])
+    await assert.rejects(api.exportDocument("html", { author: value }, api.token),
+      code(typeof value === "string" && value.startsWith("broken") ? "INVALID_UNICODE" : "INVALID_OPTIONS"));
+  await assert.rejects(api.exportDocument("html", accessor, api.token), code("INVALID_OPTIONS"));
+  assert.equal(reads, 0); assert.equal(f.calls.length, 0);
+  const limit = "é".repeat(32768);
+  assert.equal(decode(await api.exportDocument("html", { author: limit }, api.token)).options.author, limit);
+});
+
+test("Flow worker HTML authors are captured, charged and retained with publication images", async t => {
+  const session = await flowWorker(t, { delayMs: 20, image: true });
+  const first = session.exportDocument("pdf", {}, session.token); first.catch(() => {});
+  const before = session.pendingBytes, repeated = author.repeat(128), settings = { author: repeated };
+  const pending = session.exportDocument("html", settings, session.token); pending.catch(() => {});
+  assert.ok(session.pendingBytes >= before + 2 * repeated.length); settings.author = "Later";
+  await first;
+  const output = decode(await pending);
+  assert.equal(output.author, repeated); assert.equal(output.markdown, "# Source 😀");
+  assert.deepEqual(output.images, [["local.png", [1, 2, 3]]]);
+  const targets = [{ format: "html", options: { author: "HTML creator" } },
+    { format: "epub", options: { author: "EPUB creator" } }, { format: "pdf", options: { author: "PDF creator" } }];
+  const publication = session.exportDocuments(targets, session.token); targets[0].options.author = "Later";
+  assert.deepEqual((await publication).map(value => decode(value).author), ["HTML creator", "EPUB creator", "PDF creator"]);
+  for (const explicit of ["", "  "])
+    assert.equal(decode(await session.exportDocument("html", { author: explicit }, session.token)).author, explicit);
+  assert.equal(Object.hasOwn(decode(await session.exportDocument("html", {}, session.token)), "author"), false);
+  assert.equal(session.pendingOperations, 0); assert.equal(session.pendingBytes, 0);
+});
+
+test("Flow workers retain their session after unsupported HTML author metadata", async t => {
+  const session = await flowWorker(t, { htmlAuthorSupport: false });
+  const expected = error => error.code === "UNSUPPORTED_WASM_PACKAGE" && /HTML author/.test(error.message);
+  await assert.rejects(session.exportDocument("html", { author }, session.token), expected);
+  await assert.rejects(session.exportDocuments([
+    { format: "epub" }, { format: "html", options: { author } },
+  ], session.token), expected);
+  await assert.rejects(session.exportDocument("html", { author: "é".repeat(32769) }, session.token), code("INVALID_OPTIONS"));
+  assert.equal(decode(await session.exportDocument("html", { author: "" }, session.token)).author, "");
+  assert.equal((await session.exportDocument("html", {}, session.token)).format, "html");
+  assert.equal(session.disposed, false); assert.equal(session.pendingOperations, 0); assert.equal(session.pendingBytes, 0);
 });

@@ -506,7 +506,9 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       return kind === "svg" ? common
         : { ...common, title, author: snapshot.author.trim() || undefined, customCss };
     }
-    if (kind === "html") return { ...common, title, allowRawHtml: snapshot.allowHtml, customCss };
+    if (kind === "html") return { ...common, title,
+      ...(snapshot.author === "" ? {} : { author: snapshot.author }),
+      allowRawHtml: snapshot.allowHtml, customCss };
     const page = selectedPage(snapshot);
     return { ...common, title, allowRawHtml: snapshot.allowHtml,
       author: snapshot.author.trim() || undefined, codeLineNumbers: snapshot.lineNumbers,

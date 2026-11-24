@@ -14,7 +14,7 @@ function fixture({page = true} = {}) {
   const calls = [], freed = [];
   let htmlFailure = null;
   const bindings = {};
-  for (const method of ['renderHtmlConfiguredAdvanced', 'renderPdfConfiguredMulti', ...(page ? ['renderPdfConfiguredPage'] : [])]) {
+  for (const method of ['renderHtmlConfiguredAdvanced', 'renderHtmlConfiguredMetadata', 'renderPdfConfiguredMulti', ...(page ? ['renderPdfConfiguredPage'] : [])]) {
     bindings[method] = (...args) => {
       calls.push({method, args});
       if (method.includes('Html') && htmlFailure) throw htmlFailure;
@@ -23,6 +23,7 @@ function fixture({page = true} = {}) {
         diagnosticsJson: () => JSON.stringify([{message: String(args[3])}]), free() { freed.push(method); }};
     };
   }
+  Object.defineProperty(bindings.renderHtmlConfiguredMetadata, 'length', {value: 23, configurable: true});
   return {payload, bindings, calls, freed, failHtml(error) { htmlFailure = error; },
     renderer: createNativeWorkspaceRenderer(bindings, payload)};
 }
@@ -99,9 +100,10 @@ test('committed typography, metadata, TOC and page settings reach exact HTML/PDF
   const f = fixture(); f.renderer.stageSettings(patch).commit();
   f.renderer.html('latest\r\nsource', {scale: 1.2, theme: 'dark'});
   let a = f.calls.at(-1).args;
-  assert.equal(a.length, 19);
+  assert.equal(f.calls.at(-1).method, 'renderHtmlConfiguredMetadata');
+  assert.equal(a.length, 23);
   assert.deepEqual(a.slice(0, 7), ['latest\r\nsource', 'sans', 'auto', 'Revised', undefined, false, 2.1]);
-  assert.deepEqual(a.slice(16), ['de', true, 5]);
+  assert.deepEqual(a.slice(16), ['de', true, 5, undefined, undefined, undefined, 'New author']);
   f.renderer.pdf('PDF now'); const call = f.calls.at(-1); a = call.args;
   assert.equal(call.method, 'renderPdfConfiguredPage'); assert.equal(a.length, 28);
   assert.deepEqual(a.slice(0, 8), ['PDF now', 'sans', 'disabled', 'Revised', 'New author', 0, false, true]);
@@ -255,8 +257,12 @@ test('preflight rendering failures preserve committed settings and diagnostics',
 test('rendered envelope errors free results without changing committed diagnostics', () => {
   const f = fixture(); f.renderer.html('x'); const previous = f.renderer.diagnostics;
   let frees = 0;
-  f.bindings.renderHtmlConfiguredAdvanced = () => ({bytes: utf8.encode('missing head'), mimeType: 'text/html',
-    diagnosticsJson: () => '[{"message":"candidate"}]', free() { frees++; }});
+  f.bindings.renderHtmlConfiguredMetadata = function(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+    return {bytes: utf8.encode('missing head'), mimeType: 'text/html',
+      diagnosticsJson: () => '[{"message":"candidate"}]', free() { frees++; }};
+  };
   assert.throws(() => f.renderer.stageSettings(patch).html('x'), /head/);
   assert.equal(frees, 1); assert.equal(f.renderer.diagnostics, previous);
 });

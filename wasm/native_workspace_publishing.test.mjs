@@ -25,6 +25,11 @@ function fixture() {
         free() { freed.push(result); result.bytes.fill(0); }};
       outputs.push(result); return result;
     },
+    renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+      return bindings.renderHtmlConfiguredAdvanced(...arguments);
+    },
     renderPdfConfiguredMulti(...args) { calls.push(args); return {mimeType: 'application/pdf', bytes: utf8.encode('%PDF-ADAPTER'), diagnosticsJson: () => '[]', free() {}}; },
   };
   return {payload, bindings, calls, freed, outputs};
@@ -76,12 +81,12 @@ test('publication is a full native document with its offline policy, not a works
 test('publication uses all nineteen advanced HTML ABI arguments and exact resource views', async () => {
   await withBoot(({engine, calls}) => {
     engine.html('![plot](plot.png)'); const a = calls[0];
-    assert.equal(a.length, 19);
+    assert.equal(a.length, 23);
     assert.deepEqual(a.slice(0, 7), ['![plot](plot.png)', 'serif', 'auto', 'Published title', undefined, false, 1.25]);
     assert.deepEqual(a.slice(7, 12).map(bytes => [...bytes]), [[6, 7, 8], [], [], [], [9, 10]]);
     assert.deepEqual([...a[12]], [550, 0, 0, 0, 430]);
     assert.deepEqual(a[13], ['plot.png', 'unused.svg']); assert.deepEqual([...a[14]], [1, 2, 3, 4, 5]);
-    assert.deepEqual([...a[15]], [3, 2]); assert.deepEqual(a.slice(16), ['fr', true, 4]);
+    assert.deepEqual([...a[15]], [3, 2]); assert.deepEqual(a.slice(16), ['fr', true, 4, undefined, undefined, undefined, 'Retained PDF author']);
   });
 });
 

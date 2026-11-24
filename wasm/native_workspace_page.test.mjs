@@ -15,6 +15,11 @@ function adapter() {
   const engine={
     renderInteractiveHtmlConfigured(source){calls.push(['shell']);return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\n  </main>\n</div>\n<script type="application/json" id="fmd-raw-source">'+JSON.stringify(source)+'</script>\n<script>\nwindow.__fmdNativeRuntime; /* fmd-async-preview-v1 */\n</script></body></html>');},
     renderHtmlConfiguredAdvanced(...args){calls.push(['html',args]);return output('<html><head></head><body>Preview</body></html>');},
+    renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+      return engine.renderHtmlConfiguredAdvanced(...arguments);
+    },
     renderPdfConfiguredMulti(...args){calls.push(['default',args]);return output('%PDF-default','application/pdf');},
     renderPdfConfiguredPage(...args){calls.push(['page',args]);return output('%PDF-page','application/pdf');},
   };

@@ -491,6 +491,10 @@ export interface FlowExportOptions {
   maxOutputBytes?: number;
 }
 export interface FlowHtmlExportOptions extends FlowExportOptions {
+  /** Verbatim author metadata, at most 64 KiB UTF-8. Omitted values inherit
+   * source frontmatter; an explicit empty string suppresses inheritance.
+   * Requires a matching renderHtmlConfiguredMetadata binding when nonempty. */
+  author?: string;
   /** Retain complete OpenType fonts for browser shaping; default subset. */
   fontEmbedding?: "subset" | "full";
   darkMode?: "auto" | "disabled";

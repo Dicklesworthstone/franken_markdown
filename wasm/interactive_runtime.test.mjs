@@ -4,14 +4,14 @@ import {createNativeWorkspaceRenderer, bootNativeWorkspace} from './interactive_
 import vm from 'node:vm';
 const utf8 = new TextEncoder();
 const encode = bytes => Buffer.from(bytes).toString('base64');
-function setup() {
+function setup({author = ' A '} = {}) {
   const payload = {version: 1, options: {font:'serif', darkMode:'auto', title:' T ', fontScale:1.25,
-    lang:'fr', toc:true, tocDepth:3, author:' A ', metadataEpochSeconds:0, pageNumbers:true, codeLineNumbers:true},
+    lang:'fr', toc:true, tocDepth:3, author, metadataEpochSeconds:0, pageNumbers:true, codeLineNumbers:true},
     images:[{destination:'pic.png',bytes:encode([1,2,3])},{destination:'other.svg',bytes:encode([4,5])}],
     fonts:[{slot:'mono-regular',weight:430,bytes:encode([6,7])},{slot:'body-regular',weight:580,bytes:encode([8,9])}]};
   const calls = [], freed = [], outputs = [];
   const bindings = {};
-  for (const [method, mimeType] of [['renderHtmlConfiguredAdvanced','text/html; charset=utf-8'], ['renderPdfConfiguredMulti','application/pdf']]) {
+  for (const [method, mimeType] of [['renderHtmlConfiguredAdvanced','text/html; charset=utf-8'], ['renderHtmlConfiguredMetadata','text/html; charset=utf-8'], ['renderPdfConfiguredMulti','application/pdf']]) {
     bindings[method] = (...args) => {
       calls.push({method,args});
       const output = {mimeType, bytes:utf8.encode(method.includes('Html')
@@ -22,20 +22,21 @@ function setup() {
       outputs.push(output); return output;
     };
   }
+  Object.defineProperty(bindings.renderHtmlConfiguredMetadata, 'length', {value: 23, configurable: true});
   return {payload, bindings, calls, freed, outputs, renderer:createNativeWorkspaceRenderer(bindings,payload)};
 }
 
-test('HTML uses the advanced native ABI with exact images, ordered font slots and weight pins', () => {
+test('HTML uses the metadata ABI with exact author, images, ordered font slots and weight pins', () => {
   const s = setup(); const html = s.renderer.html('Current\r\nsource', {scale:1.2,theme:'light'});
   const a = s.calls[0].args;
-  assert.equal(s.calls[0].method,'renderHtmlConfiguredAdvanced');
-  assert.equal(a.length,19);
+  assert.equal(s.calls[0].method,'renderHtmlConfiguredMetadata');
+  assert.equal(a.length,23);
   assert.deepEqual(a.slice(0,7),['Current\r\nsource','serif','disabled',' T ',undefined,false,1.5]);
   assert.deepEqual(a.slice(7,12).map(bytes => Array.from(bytes)),[[8,9],[],[],[],[6,7]]);
   assert.ok(a[12] instanceof Uint32Array);
   assert.deepEqual([...a[12]],[580,0,0,0,430]);
   assert.deepEqual(a[13],['pic.png','other.svg']); assert.deepEqual([...a[14]],[1,2,3,4,5]);
-  assert.deepEqual([...a[15]],[3,2]); assert.deepEqual(a.slice(16),['fr',true,3]);
+  assert.deepEqual([...a[15]],[3,2]); assert.deepEqual(a.slice(16),['fr',true,3,undefined,undefined,undefined,' A ']);
   assert.match(html, /<head><meta http-equiv="Content-Security-Policy"/);
   assert.match(html, /default-src 'none'/); assert.match(html, /img-src data:/);
   assert.equal(s.freed.length,1); assert.equal(s.renderer.diagnostics[0].code,'example');
@@ -59,13 +60,14 @@ test('missing font slots pass empty slices, and absent metadata stays absent', (
   const s = setup(); s.payload.fonts = []; s.payload.images = []; s.payload.options = {fontScale:1};
   const renderer = createNativeWorkspaceRenderer(s.bindings,s.payload); renderer.html('empty assets');
   const a = s.calls[0].args;
+  assert.equal(s.calls[0].method, 'renderHtmlConfiguredAdvanced'); assert.equal(a.length, 19);
   for (let i=7;i<12;i++) assert.deepEqual([...a[i]],[]);
   assert.deepEqual([...a[12]],[0,0,0,0,0]); assert.deepEqual(a[13],[]);
   assert.deepEqual([...a[14]],[]); assert.deepEqual([...a[15]],[]);
 });
 
 test('manual dark transforms generated styles, not literal source text', () => {
-  const s=setup();
+  const s=setup({author: ''});
   s.bindings.renderHtmlConfiguredAdvanced=()=>({mimeType:'text/html',bytes:utf8.encode('<html><head><style>@media (prefers-color-scheme: dark) {}</style></head><body><code>@media (prefers-color-scheme: dark)</code></body></html>'),diagnosticsJson:()=>'',free(){}});
   const html=s.renderer.html('css example',{theme:'dark'});
   assert.match(html, /<style>@media all/); assert.match(html, /<code>@media \(prefers-color-scheme: dark\)/);
@@ -73,7 +75,7 @@ test('manual dark transforms generated styles, not literal source text', () => {
 
 test('generated results are freed on every validation and decoding failure', () => {
   for (const kind of ['mime','type','empty','diagnostics','utf8','head','pdf']) {
-    const s=setup(); let frees=0;
+    const s=setup({author: ''}); let frees=0;
     const result={mimeType:kind==='pdf'?'application/pdf':'text/html',bytes:utf8.encode('<html><head></head></html>'),diagnosticsJson:()=> '[]',free(){frees++;}};
     if(kind==='mime') result.mimeType='bad';
     if(kind==='type') result.bytes=[];
@@ -88,7 +90,7 @@ test('generated results are freed on every validation and decoding failure', () 
 });
 
 test('native exceptions propagate without a reduced JavaScript fallback', () => {
-  const s=setup(); s.bindings.renderHtmlConfiguredAdvanced=()=>{throw 'native failure';};
+  const s=setup({author: ''}); s.bindings.renderHtmlConfiguredAdvanced=()=>{throw 'native failure';};
   assert.throws(()=>s.renderer.html('x'), value=>value==='native failure');
   assert.equal(s.calls.length,0);
 });

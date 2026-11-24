@@ -130,7 +130,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   const allowed = format === "svg" ? ["maxWidthPt", "maxOutputBytes", "toc", "tocDepth"] : [
     ...COMMON,
     ...(format === "pdf" ? PDF : ["darkMode", "fontEmbedding", "customCss"]),
-    ...(format === "epub" ? ["author"] : []),
+    ...(["html", "epub"].includes(format) ? ["author"] : []),
     ...(format === "html" ? ["htmlFontFormat"] : []),
   ];
   options = runningRecord(options, allowed, `${format} export options`);
@@ -159,13 +159,13 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
   for (const key of ["title", ...(format === "pdf" ? ["author"] : [])]) {
     if (options[key] !== undefined) result[key] = text(options[key], key, 4096);
   }
-  if (format === "epub" && options.author !== undefined) {
-    // Match the native EPUB metadata boundary, including exact whitespace.
-    // Empty strings retain the renderer's existing empty-as-unset convention.
+  if (["html", "epub"].includes(format) && options.author !== undefined) {
+    // Match native metadata bounds and preserve exact whitespace. HTML uses an
+    // explicit empty string to suppress inheritance; EPUB keeps empty-as-unset.
     // Capture before export yields; queue admission charges the retained text.
     const author = text(options.author, "author", 65536);
     if (new TextEncoder().encode(author).length > 65536)
-      fail("INVALID_OPTIONS", "EPUB author exceeds its 64 KiB UTF-8 limit");
+      fail("INVALID_OPTIONS", `${format.toUpperCase()} author exceeds its 64 KiB UTF-8 limit`);
     result.author = author;
   }
   if (options.lang !== undefined) {

@@ -19,6 +19,11 @@ function result(source,args,mimeType) {
   return {bytes,mimeType,diagnosticsJson:()=>JSON.stringify([{message:mimeType+':'+source}]),free(){bytes.fill(0);}};
 }
 export function renderHtmlConfiguredAdvanced(...args){return result(args[0],args,'text/html');}
+export function renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+  return result(markdown,[...arguments],'text/html');
+}
 export function renderPdfConfiguredMulti(...args){return result(args[0],args,'application/pdf');}
 export function renderPdfConfiguredPage(...args){return result(args[0],args,'application/pdf');}
 `;
@@ -93,6 +98,8 @@ test('publication emits full script-restricted HTML with document rather than vi
     const html=new TextDecoder().decode(result.bytes);
     assert.match(html,/Content-Security-Policy/);assert.match(html,/default-src 'none'/);
     assert.match(html,/1.25/);assert.doesNotMatch(html,/iframe|fmd-native-runtime|2.5/);assert.deepEqual(calls,[]);
+    const published = JSON.parse(html.match(/<body>(.*?)<\/body>/s)[1]);
+    assert.equal(published.length,23);assert.equal(published[22],'A');
   });
 });
 

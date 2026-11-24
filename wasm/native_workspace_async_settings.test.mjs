@@ -23,6 +23,11 @@ function render(args, mimeType) {
   return {bytes, mimeType, diagnosticsJson: () => JSON.stringify([{message: 'render:' + title}]), free() {bytes.fill(0);}};
 }
 export function renderHtmlConfiguredAdvanced(...args) {return render(args, 'text/html');}
+export function renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+  return render([...arguments], 'text/html');
+}
 export function renderPdfConfiguredMulti(...args) {return render(args, 'application/pdf');}
 export const renderPdfConfiguredPage = renderPdfConfiguredMulti;
 `;
@@ -121,6 +126,7 @@ test('worker preflight atomically commits exact source, settings, resources and 
     assert.deepEqual(args[7], [4, 5, 6]); assert.equal(args[12][0], 555);
     assert.deepEqual(args[13], ['plot.png']); assert.deepEqual(args[14], [1, 2, 3]);
     assert.deepEqual(args.slice(16, 19), ['fr', true, 4]);
+    assert.equal(args.length, 23); assert.equal(args[22], 'Author');
     assert.match(preview.childNodes[0].srcdoc, /Content-Security-Policy/);
     assert.equal(preview.childNodes[0].attributes.sandbox, 'allow-same-origin');
     assert.equal(engine.diagnostics[0].message, 'render:Changed');

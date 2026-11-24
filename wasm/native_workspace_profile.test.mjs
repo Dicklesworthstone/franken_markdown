@@ -17,6 +17,7 @@ const magic = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
 const routes = [
   ['renderHtmlConfiguredAdvanced', 21, 'text/html'],
   ['renderHtmlConfiguredProfiled', 22, 'text/html'],
+  ['renderHtmlConfiguredMetadata', 23, 'text/html'],
   ['renderPdfConfiguredMulti', 28, 'application/pdf'],
   ['renderPdfConfiguredProfiled', 40, 'application/pdf'],
   ['renderEpubConfiguredAdvanced', 19, 'application/epub+zip'],
@@ -74,10 +75,10 @@ function savedPayload(output) {
 for (const profile of profiles) test(`workspace ${profile} reaches every native publication and analysis`, () => {
   const f = fixture(), r = createNativeWorkspaceRenderer(f.bindings, payload({profile, author: 'Author', lang: 'fr'}));
   assert.match(r.html(source), /Content-Security-Policy/);
-  assert.equal(f.calls.at(-1).name, 'renderHtmlConfiguredProfiled');
+  assert.equal(f.calls.at(-1).name, 'renderHtmlConfiguredMetadata');
   let args = f.calls.at(-1).args;
-  assert.equal(args.length, 22); assert.equal(args[0], source);
-  assert.deepEqual(args.slice(19), [undefined, undefined, profile]);
+  assert.equal(args.length, 23); assert.equal(args[0], source);
+  assert.deepEqual(args.slice(19), [undefined, undefined, profile, 'Author']);
   assert.deepEqual([...args[7]], [4, 5, 6]); assert.equal(args[12][0], 555);
   assert.deepEqual(args[13], ['chart.png']); assert.deepEqual([...args[14]], [1, 2, 3]);
   r.pdf(source); args = f.calls.at(-1).args;
@@ -135,6 +136,49 @@ test('profiled EPUB works without metadata ABI only when no author would be disc
   assert.deepEqual(f.calls.at(-1).args.slice(18), [undefined, 'gfm-plus']);
   r.stageSettings({author: 'Retain me'}).commit();
   assert.throws(() => r.epub(source), unsupported); assert.equal(f.calls.length, 1);
+});
+
+test('missing or short HTML author bindings preserve source recovery, settings and PDF access', () => {
+  for (const profile of [undefined, ...profiles]) for (const short of [false, true]) {
+    const f = fixture(), author = '  Café e\u0301 中 👩🏽‍💻  ';
+    if (short) Object.defineProperty(f.bindings.renderHtmlConfiguredMetadata, 'length', {value: 22});
+    else delete f.bindings.renderHtmlConfiguredMetadata;
+    const codec = createNativeSourceProjectCodec();
+    const saved = codec.encode({source, options: {profile, author}, images: [], fonts: []});
+    const restored = codec.decode(saved.bytes);
+    assert.equal(restored.source, source); assert.equal(restored.options.author, author);
+    const p = payload({profile: restored.options.profile, author: restored.options.author});
+    const r = createNativeWorkspaceRenderer(f.bindings, p);
+    const tx = r.stageSettings({title: 'Recovered'}); tx.commit();
+    assert.equal(r.settings.author, author); assert.equal(r.settings.title, 'Recovered');
+    r.pdf(restored.source);
+    assert.equal(f.calls.at(-1).args[0], source); assert.equal(f.calls.at(-1).args[4], author);
+    const calls = f.calls.length;
+    assert.throws(() => r.html(restored.source), unsupported);
+    assert.equal(f.calls.length, calls, 'Author HTML must never retry a binding that drops metadata');
+    const reopened = createNativeWorkspaceRenderer(f.bindings, JSON.parse(JSON.stringify(p)));
+    assert.equal(reopened.settings.author, author);
+    assert.throws(() => reopened.stageSettings({title: 'Preview'}).html(source), unsupported);
+    reopened.stageSettings({author: ''}).commit(); reopened.html(source);
+    assert.equal(f.calls.at(-1).name, profile === undefined ? 'renderHtmlConfiguredAdvanced' : 'renderHtmlConfiguredProfiled');
+    assert.equal(f.calls.at(-1).args.length, profile === undefined ? 19 : 22);
+    assert.equal(reopened.settings.author, '', 'An explicit empty HTML author stays empty on recovery');
+  }
+});
+
+test('workspace HTML author snapshots preserve Unicode and whitespace through preflight and rollback', () => {
+  const f = fixture(), author = '  Café e\u0301 中 👩🏽‍💻  ';
+  const r = createNativeWorkspaceRenderer(f.bindings, payload({profile: 'gfm-plus', author}));
+  r.html(source);
+  assert.equal(f.calls.at(-1).name, 'renderHtmlConfiguredMetadata');
+  assert.deepEqual(f.calls.at(-1).args.slice(19), [undefined, undefined, 'gfm-plus', author]);
+  const patch = {author: ' \t '}, tx = r.stageSettings(patch);
+  patch.author = 'mutated after staging';
+  tx.html(source);
+  assert.equal(f.calls.at(-1).args[22], ' \t ');
+  assert.equal(r.settings.author, author);
+  tx.commit(); r.html(source); assert.equal(f.calls.at(-1).args[22], ' \t ');
+  tx.rollback(); r.html(source); assert.equal(f.calls.at(-1).args[22], author);
 });
 
 test('omitted profiles preserve legacy routes, argument counts and analysis results', () => {
@@ -215,10 +259,11 @@ test('saved projects and native workspace generations preserve dialect and origi
     const saved = exporter.renderProject(first.bytes), data = savedPayload(saved);
     assert.equal(data.options.profile, profile); assert.deepEqual(data.images, [{destination: 'chart.png', bytes: 'AQID'}]);
     const next = createNativeWorkspaceRenderer(f.bindings, data);
-    next.html(source); assert.equal(f.calls.at(-1).name, profile === undefined ? 'renderHtmlConfiguredAdvanced' : 'renderHtmlConfiguredProfiled');
+    next.html(source); assert.equal(f.calls.at(-1).name, 'renderHtmlConfiguredMetadata');
+    assert.deepEqual(f.calls.at(-1).args.slice(21), [profile, 'Author']);
     next.pdf(source); assert.equal(f.calls.at(-1).args[0], source);
     assert.equal(saved.diagnostics.some(item => item.code === 'default_shell_dialect'), profile === undefined);
-    assert.ok(saved.diagnostics.some(item => item.code === (profile === undefined ? 'renderHtmlConfiguredAdvanced' : 'renderHtmlConfiguredProfiled')));
+    assert.ok(saved.diagnostics.some(item => item.code === 'renderHtmlConfiguredMetadata'));
   }
 });
 

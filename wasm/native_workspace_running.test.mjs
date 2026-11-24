@@ -38,6 +38,11 @@ function fixture() {
       calls.push({name: 'html', args});
       return output('<html><head></head><body>Preview</body></html>', 'text/html');
     },
+    renderHtmlConfiguredMetadata(markdown, font, darkMode, title, customCss, minify, fontScale,
+    bodyRegular, bodyBold, bodyItalic, bodyBoldItalic, monoRegular, fontWeights,
+    imageDestinations, imageBytes, imageLengths, lang, toc, tocDepth, includePaths, includeSources, profile, author) {
+      return bindings.renderHtmlConfiguredAdvanced(...arguments);
+    },
     renderInteractiveHtmlConfigured(markdown) {
       calls.push({name: 'shell'});
       return output('<html><head></head><body><div class="fmd-content" id="fmd-content"></div>\n  </main>\n</div>\n'

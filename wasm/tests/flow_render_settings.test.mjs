@@ -165,7 +165,8 @@ test("all publishing options reach only the appropriate export format", () => {
   assert.equal(s.pdf.tableFontSize, 10);
   assert.equal(s.pdf.microtype, "protrusion");
   assert.equal(s.pdf.darkMode, undefined);
-  assert.equal(s.html.author, undefined);
+  assert.equal(s.html.author, "Émilie");
+  assert.equal(s.epub.author, "Émilie");
   assert.equal(s.html.baseFontSize, undefined);
   assert.equal(s.html.darkMode, "disabled");
   for (const options of [s.html, s.pdf]) {
@@ -329,7 +330,8 @@ test("publishing-only apply does not request a typography change", (t) => {
   f.submit();
   assert.equal(f.applied[0].change.previewChanged, false);
   assert.equal(f.controls.exportOptions("pdf").author, "Author");
-  assert.equal(f.controls.exportOptions("html").author, undefined);
+  assert.equal(f.controls.exportOptions("html").author, "Author");
+  assert.equal(f.controls.exportOptions("epub").author, "Author");
 });
 test("invalid form preserves all field text and previous applied settings", (t) => {
   const f = fixture();
@@ -514,7 +516,7 @@ test("applied settings pass through real export and adapter validation without c
     assert.deepEqual(call.options.pdfImages, []);
     assert.equal(call.options.font, "serif");
   }
-  assert.equal(calls[0].options.author, undefined);
+  assert.equal(calls[0].options.author, "Author");
   assert.equal(calls[1].options.author, "Author");
   assert.equal(calls[1].options.baseFontSize, 13);
   assert.equal(calls[0].options.page, undefined);

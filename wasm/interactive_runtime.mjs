@@ -255,11 +255,13 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     }
     return binding;
   }
-  function htmlBinding(settings) {
+  function htmlBinding(settings, metadata = false) {
     const profiled = settings.profile !== undefined;
-    const binding = bindings[profiled ? 'renderHtmlConfiguredProfiled' : 'renderHtmlConfiguredAdvanced'];
-    if (typeof binding !== 'function' || (profiled && binding.length < 22)) {
-      throw Object.assign(new Error('HTML authoring profiles require matching WASM bindings'),
+    const binding = bindings[metadata ? 'renderHtmlConfiguredMetadata'
+      : profiled ? 'renderHtmlConfiguredProfiled' : 'renderHtmlConfiguredAdvanced'];
+    const needed = metadata ? 23 : profiled ? 22 : 0;
+    if (typeof binding !== 'function' || binding.length < needed) {
+      throw Object.assign(new Error('HTML author metadata and authoring profiles require matching WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
     return binding;
@@ -724,11 +726,15 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     const scale = Math.min(3, Math.max(0.5, settings.fontScale * (display.scale ?? 1)));
     const mode = display.theme === 'light' ? 'disabled'
       : display.theme === 'dark' ? 'auto' : settings.darkMode;
-    const bytes = take(htmlBinding(settings)(
+    // Check author support only when rendering HTML: older workspaces must
+    // still initialize, recover their source and export other supported formats.
+    const metadata = settings.author !== undefined && settings.author !== '';
+    const bytes = take(htmlBinding(settings, metadata)(
       source(markdown), settings.font, mode, settings.title, undefined, false, scale,
       ...fontBytes, weights, images.destinations, images.flat, images.lengths,
       settings.lang, settings.toc, settings.tocDepth,
-      ...(settings.profile === undefined ? [] : [undefined, undefined, settings.profile]),
+      ...(metadata ? [undefined, undefined, settings.profile, settings.author]
+        : settings.profile === undefined ? [] : [undefined, undefined, settings.profile]),
     ), 'text/html');
     let html = decoder.decode(bytes);
     // Only generated styles are transformed; Markdown/code remains data.

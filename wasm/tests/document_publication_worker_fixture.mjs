@@ -34,6 +34,8 @@ installDocumentWorker({
       parentPort.postMessage({ testEvent: "render", format, source, options: captured });
       if (format === "epub" && options.author !== undefined && workerData?.epubAuthorSupport === false)
         throw Object.assign(new Error("EPUB author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
+      if (format === "html" && options.author !== undefined && options.author !== "" && workerData?.htmlAuthorSupport === false)
+        throw Object.assign(new Error("HTML author metadata requires matching WASM"), { code: "UNSUPPORTED_WASM_PACKAGE" });
       if (format === workerData?.hang) await new Promise(() => {});
       if (format === workerData?.fail || (source === "fail-pdf" && format === "pdf"))
         throw new Error("fixture renderer failure");
@@ -48,6 +50,7 @@ installDocumentWorker({
         message: "x".repeat(workerData.diagnosticSize ?? 1),
       })) : [];
       return { format, mimeType, extension, sourceLength: encoder.encode(source).length,
+        ...(options.profile === undefined ? {} : { profile: options.profile }),
         bytes, diagnostics, text: () => "helpers must never be cloned" };
     }]));
 });

@@ -348,7 +348,7 @@ const pdf = await fmd.renderPdf("# Report", {
 const url = URL.createObjectURL(pdf.blob());
 ```
 
-`renderHtml` captures source, theme, title, CSS, trust flags and other settings,
+`renderHtml` captures source, theme, title, author, CSS, trust flags and other settings,
 and owns copies of the supplied image/font byte ranges before asynchronous
 initialization yields. Later edits to the options, shared request objects or
 caller buffers do not retarget that render. This applies after initialization
@@ -398,9 +398,9 @@ The smaller JavaScript-only `renderInteractiveHtml` workspace does not accept
 this option.
 
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
-(including PDF/A) and `renderEpub` inherit omitted `title`, `lang`, `toc` and
-`tocDepth` settings from leading document frontmatter; PDF and EPUB also inherit
-`author`. Explicit options take precedence, including `toc: false`. The source
+(including PDF/A) and `renderEpub` inherit omitted `title`, `author`, `lang`, `toc`
+and `tocDepth` settings from leading document frontmatter. Explicit options take
+precedence, including `toc: false`. The source
 key is `toc_depth`. The same Rust parser used by the CLI handles `key=value`,
 YAML-style scalars, block scalars, BOMs and CR/CRLF source. Source bytes and
 diagnostic offsets stay intact. Ordinary rules and malformed frontmatter keep
@@ -409,10 +409,26 @@ facade and retain the same defaults when their options omit these fields.
 
 The additive generated `sourceMetadata` export supplies those defaults; older
 generated artifacts without it retain their previous behavior until rebuilt.
-Existing browser string conventions remain: empty title/author options mean
-unset and language strings are trimmed. The dependency-free Rust
+Empty titles remain unset and language strings are trimmed. PDF and EPUB also
+treat an empty author as unset; HTML accepts `author: ""` to suppress a source
+author explicitly. The dependency-free Rust
 `wasm::source_metadata` helper exposes typed optional defaults for hosts to
 merge; existing Rust render APIs continue to take already-resolved options.
+
+HTML publication preserves the author in an escaped `<meta name="author">`
+element. This applies to direct `renderHtml` calls, document-worker renders and
+publications, and Flow exports. Source, settings and author belong to the same
+captured request. Nonempty authors retain their exact Unicode and surrounding
+whitespace; omitted or `null` authors inherit frontmatter, and `author: ""`
+omits the element even when the source declares an author.
+
+A nonempty HTML author requires the additive `renderHtmlConfiguredMetadata`
+binding with its complete 23-argument contract. Missing or older bindings fail
+with `UNSUPPORTED_WASM_PACKAGE`. Author-free requests retain their existing
+bindings. The editor's Author setting also reaches HTML previews/downloads. In
+native editable workspaces, the configured Author setting reaches HTML preview
+and export; that runtime checks the binding when rendering authored HTML, so
+opening saved source and using its existing PDF path remain available.
 
 EPUB author metadata uses the additive `renderEpubConfiguredMetadata` binding.
 It preserves the submitted author text in the escaped `dc:creator` package

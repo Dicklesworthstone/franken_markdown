@@ -31740,22 +31740,18 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
     // page_break_before must start a new page. When the next forced boundary
     // falls within this page's capacity, end the page there regardless of
     // scoring; a boundary beyond capacity is a later page's concern.
-    let first_forced = (start + 1..lines.len()).find(|&i| lines[i].page_break_before);
     let mut last_fit = start;
 
     for (idx, line) in lines.iter().enumerate().skip(start) {
+        if idx > start && line.page_break_before {
+            return idx;
+        }
         let leading = line_leading(line);
-        if idx > start && (line.page_break_before || used + leading > capacity) {
+        if idx > start && used + leading > capacity {
             break;
         }
         used += leading + line.gap_after;
         last_fit = idx + 1;
-    }
-
-    if let Some(forced) = first_forced
-        && forced <= last_fit
-    {
-        return forced;
     }
 
     if last_fit <= start + 1 || last_fit >= lines.len() {
@@ -32123,7 +32119,7 @@ fn choose_page_break_with_void_control(
     }
     // A forced boundary (chapter break) is never refit: pulling content up
     // past it would merge chapters onto one page.
-    if (start + 1..=baseline_end.min(lines.len() - 1)).any(|i| lines[i].page_break_before) {
+    if lines[baseline_end].page_break_before {
         return (baseline_end, None);
     }
 
@@ -32148,13 +32144,10 @@ fn choose_page_break_with_void_control(
     // Shrunk refit: same walk as the baseline, but inter-block gaps flex.
     // Forced boundaries (chapter breaks) cap the refit — pulling content up
     // past one would merge chapters onto a single page.
-    let forced_cap = (start + 1..lines.len())
-        .find(|&i| lines[i].page_break_before)
-        .unwrap_or(lines.len());
     let mut used_s = 0.0f32;
     let mut last_fit_s = start;
     for (idx, line) in lines.iter().enumerate().skip(start) {
-        if idx >= forced_cap {
+        if idx > start && line.page_break_before {
             break;
         }
         let gap = if is_block_boundary(lines, idx) {
@@ -32176,7 +32169,7 @@ fn choose_page_break_with_void_control(
     let mut best = baseline_end;
     let mut best_score = f32::INFINITY;
     let mut candidate_used = 0.0f32;
-    for candidate in (start + 1)..=last_fit_s.min(forced_cap) {
+    for candidate in (start + 1)..=last_fit_s {
         let line = &lines[candidate - 1];
         let gap = if is_block_boundary(lines, candidate - 1) {
             flexed_gap(line.gap_after)
@@ -32901,6 +32894,23 @@ mod void_budget_tests {
             used <= 134.0,
             "shrunk page must respect capacity (used={used})"
         );
+    }
+
+    #[test]
+    fn forced_boundaries_stop_both_fit_walks_and_allow_progress_from_the_boundary() {
+        let page = page(134.0);
+        for boundary in 1..8 {
+            let mut lines = frontier(50.0);
+            lines[boundary].page_break_before = true;
+            let (end, shrink_from) = choose_page_break_with_void_control(&lines, 0, page);
+            assert!(end <= boundary);
+            if boundary <= 5 {
+                // Includes the first code row, which does not itself fit.
+                assert_eq!((end, shrink_from), (boundary, None));
+            }
+            let (next, _) = choose_page_break_with_void_control(&lines, boundary, page);
+            assert!(next > boundary);
+        }
     }
 
     #[test]

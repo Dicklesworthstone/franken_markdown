@@ -92,6 +92,42 @@ Both extractor functions return typed `CollectionError` values. Ordinary
 `Font::parse` and renderer font slots continue to accept standalone fonts;
 collection extraction is an explicit host preparation step.
 
+## MCP callers
+
+All MCP rendering tools and `fmd.verify` accept the same explicit collection
+selection in a font resource. Supply the collection as canonical padded base64
+and include `faceIndex` on that slot:
+
+```json
+{
+  "markdown": "# Report\n\nBody text.",
+  "fonts": [
+    {
+      "slot": "body-regular",
+      "base64": "<base64-encoded TTC or OTC bytes>",
+      "faceIndex": 0,
+      "weight": 450
+    }
+  ]
+}
+```
+
+`faceIndex` must be an integer from 0 through 1,023 and select an existing
+face. Collections require an explicit selector; standalone TrueType/OpenType
+fonts must omit it. Different slots can select different faces from the same
+collection. Weight pins apply to the selected standalone face under the
+existing variable-font policy.
+
+The shared resource loader extracts and validates the selected face before
+rendering HTML, PDF, SVG, EPUB, files or books, or verifying a PDF layout. It
+never reads font paths or discovers system fonts. The original collection and
+selected face each retain the 32 MiB limit; both original decoded resources
+and retained normalized resources are bounded by the 64 MiB aggregate limit.
+Encoded input limits also remain in effect. Invalid selectors and malformed
+collections return `invalid_resources` with slot/face context; resource-limit
+failures retain `resources_too_large`. A failed selection cannot replace an
+existing output file.
+
 ## Browser and WASM callers
 
 The browser package exposes the same bounded extractor:

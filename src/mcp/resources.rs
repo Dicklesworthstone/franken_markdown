@@ -2,6 +2,7 @@
 //! reads or network requests. Admission is checked before base64 allocation.
 
 use super::{ERROR_INPUT_TOO_LARGE, ERROR_INVALID_OPTIONS, JsonValue, ToolError};
+use crate::text::collection::MAX_COLLECTION_FACES;
 use crate::{FontAssetSlot, FontAssets, PdfImageAsset};
 use std::collections::BTreeMap;
 
@@ -62,6 +63,7 @@ struct Encoded<'a> {
     bytes: &'a str,
     slot: Option<FontAssetSlot>,
     weight: Option<u16>,
+    face_index: Option<u32>,
 }
 
 pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
@@ -76,7 +78,7 @@ pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
             let item = object(
                 item,
                 if font {
-                    &["slot", "base64", "weight"]
+                    &["slot", "base64", "weight", "faceIndex"]
                 } else {
                     &["destination", "base64"]
                 },
@@ -112,6 +114,18 @@ pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
                         .ok_or_else(|| invalid("Font weight must be an integer in 1..=1000"))
                 })
                 .transpose()?;
+            let face_index = item
+                .get("faceIndex")
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .filter(|index| *index < u64::from(MAX_COLLECTION_FACES))
+                        .and_then(|index| u32::try_from(index).ok())
+                        .ok_or_else(|| {
+                            invalid("Font faceIndex must be an integer in 0..=1023")
+                        })
+                })
+                .transpose()?;
             let bytes = string(item, "base64")?;
             let decoded = decoded_length(bytes)?;
             encoded_total = encoded_total
@@ -128,12 +142,25 @@ pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
                 bytes,
                 slot,
                 weight,
+                face_index,
             });
         }
     }
     let mut result = Resources::default();
+    let mut retained_total = 0usize;
     for item in planned {
         let bytes = decode(item.bytes)?;
+        let bytes = if let Some(slot) = item.slot {
+            select_font_face(bytes, slot, item.face_index)?
+        } else {
+            bytes
+        };
+        // A collection can share table ranges. Its standalone face may be
+        // larger than the admitted container, so bound retained resources too.
+        retained_total = retained_total
+            .checked_add(bytes.len())
+            .filter(|total| *total <= MAX_TOTAL_BYTES)
+            .ok_or_else(limit)?;
         if let Some(slot) = item.slot {
             result
                 .fonts
@@ -150,6 +177,38 @@ pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
         }
     }
     Ok(result)
+}
+
+fn select_font_face(
+    bytes: Vec<u8>,
+    slot: FontAssetSlot,
+    face_index: Option<u32>,
+) -> Result<Vec<u8>, ToolError> {
+    if bytes.starts_with(b"ttcf") {
+        let index = face_index.ok_or_else(|| {
+            invalid(&format!(
+                "{} is a TTC/OTC collection; supply its zero-based faceIndex",
+                slot.as_str()
+            ))
+        })?;
+        crate::text::extract_collection_face(&bytes, index).map_err(|error| {
+            if error.kind == crate::text::CollectionErrorKind::LimitExceeded {
+                limit()
+            } else {
+                invalid(&format!(
+                    "Invalid {} collection face {index}: {error}",
+                    slot.as_str()
+                ))
+            }
+        })
+    } else if face_index.is_some() {
+        Err(invalid(&format!(
+            "{} is a standalone font; omit faceIndex",
+            slot.as_str()
+        )))
+    } else {
+        Ok(bytes)
+    }
 }
 
 fn decoded_length(source: &str) -> Result<usize, ToolError> {
@@ -254,6 +313,24 @@ pub(super) fn schema(name: &str) -> JsonValue {
     }
     let mut fields = BTreeMap::from([(key.to_owned(), identifier), ("base64".to_owned(), payload)]);
     if font {
+        fields.insert(
+            "faceIndex".to_owned(),
+            JsonValue::Object(BTreeMap::from([
+                ("type".to_owned(), JsonValue::String("integer".to_owned())),
+                ("minimum".to_owned(), JsonValue::Number(0.0)),
+                (
+                    "maximum".to_owned(),
+                    JsonValue::Number(f64::from(MAX_COLLECTION_FACES - 1)),
+                ),
+                (
+                    "description".to_owned(),
+                    JsonValue::String(
+                        "Zero-based TTC/OTC face; required for collections, omitted for standalone fonts"
+                            .to_owned(),
+                    ),
+                ),
+            ])),
+        );
         fields.insert(
             "weight".to_owned(),
             JsonValue::Object(BTreeMap::from([

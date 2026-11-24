@@ -101,6 +101,42 @@ fn refused(output: Output, code: i32, detail: &str) {
 }
 
 #[test]
+fn numeric_spacing_verifies_the_same_multipage_layout_as_publication() {
+    let workspace = Workspace::new();
+    let mut source = String::from("| Item | Description |\n| --- | --- |\n");
+    for row in 0..60 {
+        source.push_str(&format!("| {row} | Measured table row |\n"));
+    }
+    workspace.write("table.md", &source);
+    let mut options = PdfOptions {
+        use_theme_spacing: true,
+        ..Default::default()
+    };
+    options.theme.spacing.line_height = 3.0;
+    options.theme.spacing.table_cell_padding_x_em = 2.0;
+    options.theme.spacing.table_cell_padding_y_em = 2.5;
+    let baseline = report(
+        workspace.verify(&["table.md"], None),
+        &source,
+        &PdfOptions::default(),
+    );
+    let spaced = report(
+        workspace.verify(
+            &[
+                "table.md",
+                "--pdf-line-height=3",
+                "--pdf-table-cell-padding-x-em=2",
+                "--pdf-table-cell-padding-y-em=2.5",
+            ],
+            None,
+        ),
+        &source,
+        &options,
+    );
+    assert!(spaced.page_count > baseline.page_count);
+}
+
+#[test]
 fn default_layout_ignores_presentation_config_frontmatter_and_local_images() {
     let workspace = Workspace::new();
     let source = "---\nlang: de\ntoc: true\n---\n# Report\n\n![Figure](plot.svg)\n";

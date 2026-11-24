@@ -97,9 +97,8 @@ pub(super) struct VerifyLayoutArgs {
     /// Continue long notes across page feet; requires greedy pagination.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,
-    /// Apply theme leading and table-cell padding in PDF measurement.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    pdf_theme_spacing: Option<bool>,
+    #[command(flatten)]
+    spacing: super::pdf_spacing::PdfSpacingArgs,
     /// Load relative local images under the input file's directory. Opt-in;
     /// remote URLs are never fetched. Stdin requires explicit --pdf-image.
     #[arg(long)]
@@ -184,6 +183,11 @@ impl VerifyLayoutArgs {
             self.fit_to_pages,
         )
         .map_err(|error| fail_json(64, error.code(), &error.to_string(), json))?;
+        let use_theme_spacing = self
+            .spacing
+            .enabled(None)
+            .map_err(|message| fail_json(64, "invalid_theme_spacing", message, json))?;
+        self.spacing.apply(&mut theme.spacing);
         let options = PdfOptions {
             theme,
             profile,
@@ -208,7 +212,7 @@ impl VerifyLayoutArgs {
             strict_pagination: self.pdf_strict_pagination.unwrap_or(false),
             footnote_backlinks: self.pdf_footnote_backlinks.unwrap_or(false),
             split_footnotes: self.pdf_split_footnotes.unwrap_or(false),
-            use_theme_spacing: self.pdf_theme_spacing.unwrap_or(false),
+            use_theme_spacing,
             ..PdfOptions::default()
         };
         Ok(AdmittedLayout { options, fonts })

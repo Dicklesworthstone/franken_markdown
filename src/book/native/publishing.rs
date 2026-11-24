@@ -55,10 +55,8 @@ pub(super) struct PublishingArgs {
     /// Requires greedy pagination.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,
-    /// Apply shared theme body leading and per-side table-cell padding to PDF.
-    /// Default off; accepts =false to override config.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    pdf_theme_spacing: Option<bool>,
+    #[command(flatten)]
+    spacing: crate::cli::pdf_spacing::PdfSpacingArgs,
     /// Fit the assembled PDF, including contents and chapter breaks, to N pages.
     #[arg(long, visible_alias = "target-pages", value_name = "PAGES")]
     pub(super) fit_to_pages: Option<usize>,
@@ -149,6 +147,7 @@ pub(super) struct Publishing {
     pub font_embedding: crate::FontEmbedding,
     pub pdf_a: PdfASettings,
     pub remote_image_timeout_secs: Option<u64>,
+    spacing: crate::cli::pdf_spacing::PdfSpacingArgs,
     explicit_toc: Option<bool>,
     configured_toc: Option<bool>,
     pdf: PdfOptions,
@@ -185,7 +184,7 @@ pub(super) fn prepare(
             || args.pdf_strict_pagination.is_some()
             || args.pdf_footnote_backlinks.is_some()
             || args.pdf_split_footnotes.is_some()
-            || args.pdf_theme_spacing.is_some()
+            || args.spacing.is_explicit()
             || args.fit_to_pages.is_some()
             || args.pdf_base_font_size.is_some()
             || args.pdf_heading_scale.is_some()
@@ -280,9 +279,9 @@ pub(super) fn prepare(
             .or(defaults.pdf_split_footnotes)
             .unwrap_or(false),
         use_theme_spacing: args
-            .pdf_theme_spacing
-            .or(defaults.pdf_theme_spacing)
-            .unwrap_or(false),
+            .spacing
+            .enabled(defaults.pdf_theme_spacing)
+            .map_err(|message| error(64, "invalid_theme_spacing", message))?,
         page_numbers: args
             .pdf_page_numbers
             .or(defaults.pdf_page_numbers)
@@ -357,6 +356,7 @@ pub(super) fn prepare(
             args.remote_image_timeout_secs
                 .unwrap_or(crate::cli::DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS),
         ),
+        spacing: args.spacing,
         explicit_toc: args.toc,
         configured_toc: defaults.toc,
         pdf,
@@ -429,6 +429,7 @@ impl Publishing {
         options.footnote_backlinks = self.pdf.footnote_backlinks;
         options.split_footnotes = self.pdf.split_footnotes;
         options.use_theme_spacing = self.pdf.use_theme_spacing;
+        self.spacing.apply(&mut options.theme.spacing);
         options.page_numbers = self.pdf.page_numbers;
         options.fit_to_pages = self.pdf.fit_to_pages;
         options.base_font_size = self.pdf.base_font_size.or(options.base_font_size);

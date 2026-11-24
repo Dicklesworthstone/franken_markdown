@@ -38,8 +38,20 @@ unless individual tokens are also changed.
 
 Use `--pdf-theme-spacing` to enable shared spacing for native PDF output, or
 set `pdf_theme_spacing = true` in configuration. The explicit CLI value
-`--pdf-theme-spacing=false` disables it. Programmatic Rust callers can set
-individual spacing values as shown above.
+`--pdf-theme-spacing=false` disables it. Render, watch, batch, book, and
+verify accept numeric values for the PDF layout. For example:
+
+```sh
+fmd report.md --to pdf --out report.pdf --pdf-line-height 2 \
+  --pdf-table-cell-padding-x-em 1.25 --pdf-table-cell-padding-y-em 0.75
+fmd verify report.md --json --pdf-line-height 2 \
+  --pdf-table-cell-padding-x-em 1.25 --pdf-table-cell-padding-y-em 0.75
+```
+
+Any numeric flag enables theme spacing, including when the configuration
+disables it. An explicit `--pdf-theme-spacing=false` conflicts with numeric
+flags. Verification uses only the explicit layout options. In combined output,
+the numeric flags apply only to the PDF.
 
 The JavaScript rendering API accepts:
 

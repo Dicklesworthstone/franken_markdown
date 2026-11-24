@@ -70,6 +70,69 @@ fn options(enabled: bool) -> PdfOptions {
     }
 }
 
+const NUMERIC_SPACING: [&str; 3] = [
+    "--pdf-line-height=2.5",
+    "--pdf-table-cell-padding-x-em=1.25",
+    "--pdf-table-cell-padding-y-em=0",
+];
+
+fn numeric_options() -> PdfOptions {
+    let mut options = options(true);
+    options.theme.spacing.line_height = 2.5;
+    options.theme.spacing.table_cell_padding_x_em = 1.25;
+    options.theme.spacing.table_cell_padding_y_em = 0.0;
+    options
+}
+
+#[test]
+fn numeric_controls_match_native_pdf_and_leave_paired_html_alone() {
+    let workspace = Workspace::new();
+    fs::write(workspace.0.join("config"), "pdf_theme_spacing=false\n").unwrap();
+    let expected = render_pdf(SOURCE, &numeric_options()).unwrap();
+    assert!(expected != render_pdf(SOURCE, &options(true)).unwrap());
+    assert!(workspace.pdf(&NUMERIC_SPACING) == expected);
+
+    let output = workspace
+        .command()
+        .args(["document.md", "--to", "both", "--out", "paired.html"])
+        .args(NUMERIC_SPACING)
+        .output()
+        .unwrap();
+    succeeded(&output);
+    assert!(fs::read(workspace.0.join("paired.pdf")).unwrap() == expected);
+    succeeded(&workspace.run(&["document.md", "--out", "plain.html"]));
+    assert!(
+        fs::read(workspace.0.join("paired.html")).unwrap()
+            == fs::read(workspace.0.join("plain.html")).unwrap()
+    );
+}
+
+#[test]
+fn invalid_numeric_or_conflicting_spacing_preserves_output() {
+    let workspace = Workspace::new();
+    let saved = workspace.pdf(&[]);
+    for flags in [
+        vec!["--pdf-line-height=0.9999999999"],
+        vec!["--pdf-line-height=4.0000000001"],
+        vec!["--pdf-line-height=NaN"],
+        vec!["--pdf-table-cell-padding-x-em=-0.000001"],
+        vec!["--pdf-table-cell-padding-y-em=8.0000000001"],
+        vec!["--pdf-line-height=2", "--pdf-theme-spacing=false"],
+    ] {
+        let result = workspace
+            .command()
+            .args(["document.md", "--to", "pdf", "--out", "document.pdf"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(fs::read(workspace.0.join("document.pdf")).unwrap() == saved);
+    }
+    let refused = workspace.run(&["missing.md", "--to", "html", "--pdf-line-height=2"]);
+    assert_eq!(refused.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("require --to pdf"));
+}
+
 #[test]
 fn render_and_combined_output_apply_theme_spacing_only_when_enabled() {
     let workspace = Workspace::new();
@@ -142,7 +205,11 @@ fn book_exports_forward_theme_spacing_and_allow_a_configured_opt_out() {
         source: SOURCE.into(),
     }];
     let book = BookRenderer::new(&inputs).unwrap();
-    for (enabled, flags) in [(true, vec![]), (false, vec!["--pdf-theme-spacing=false"])] {
+    for (mut expected, flags) in [
+        (options(true), vec![]),
+        (options(false), vec!["--pdf-theme-spacing=false"]),
+        (numeric_options(), NUMERIC_SPACING.to_vec()),
+    ] {
         let output = workspace
             .command()
             .args([
@@ -159,7 +226,6 @@ fn book_exports_forward_theme_spacing_and_allow_a_configured_opt_out() {
             .output()
             .unwrap();
         succeeded(&output);
-        let mut expected = options(enabled);
         expected.title = Some("Shared spacing".into());
         assert!(
             fs::read(workspace.0.join("book.pdf")).unwrap()
@@ -179,6 +245,8 @@ fn book_exports_forward_theme_spacing_and_allow_a_configured_opt_out() {
     ]);
     assert_eq!(invalid.status.code(), Some(64));
     assert!(!workspace.0.join("book.epub").exists());
+    let invalid = workspace.run(&["book", "book", "--check-links", "--pdf-line-height=2"]);
+    assert!(!invalid.status.success());
 }
 
 struct Watch(Child);
@@ -240,7 +308,11 @@ fn watch_rebuilds_retain_theme_spacing() {
 fn batch_uses_theme_spacing_config_and_honors_an_explicit_opt_out() {
     let workspace = Workspace::new();
     fs::write(workspace.0.join("config"), "pdf_theme_spacing=true\n").unwrap();
-    for (enabled, flags) in [(true, vec![]), (false, vec!["--pdf-theme-spacing=false"])] {
+    for (expected, flags) in [
+        (options(true), vec![]),
+        (options(false), vec!["--pdf-theme-spacing=false"]),
+        (numeric_options(), NUMERIC_SPACING.to_vec()),
+    ] {
         let output = workspace
             .command()
             .args([
@@ -259,7 +331,7 @@ fn batch_uses_theme_spacing_config_and_honors_an_explicit_opt_out() {
         succeeded(&output);
         assert!(
             fs::read(workspace.0.join("batch/document.pdf")).unwrap()
-                == render_pdf(SOURCE, &options(enabled)).unwrap()
+                == render_pdf(SOURCE, &expected).unwrap()
         );
     }
 }

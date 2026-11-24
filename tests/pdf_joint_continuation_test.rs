@@ -33,9 +33,11 @@ fn options(grid: bool) -> PdfOptions {
     };
     // The ungridded 440pt fixture has a 14-line baseline and a certified
     // 13-line same-measure alternative. A 13.333pt grid advances these body
-    // rows by two pitches; 360pt likewise admits thirteen, but not fourteen.
+    // rows by two pitches and charges another pitch for the final paragraph
+    // gap: thirteen rows require 359.991pt. The 374pt raw content height leaves
+    // that capacity after descender clearance and flooring to complete pitches.
     options.theme.page.size.width_pt = 512.0;
-    options.theme.page.size.height_pt = if grid { 432.0 } else { 268.0 };
+    options.theme.page.size.height_pt = if grid { 446.0 } else { 268.0 };
     options.theme.page.margins = PageMargins {
         top_pt: 36.0,
         right_pt: 36.0,
@@ -698,6 +700,52 @@ fn strict_fractional_grid_selects_the_shape_without_moving_or_duplicating_citati
         strict, optimal,
         "strict admission and emission mode must not alter a successful exact selection"
     );
+}
+
+#[test]
+fn strict_fractional_grid_retains_baseline_when_the_shorter_shape_cannot_fit() {
+    let source = format!(
+        "{}\n\nFIRSTCLAIM.[^long]\n\nREPEATCLAIM.[^long]\n\n{}",
+        prose(),
+        note(40),
+    );
+    let mut document = parse_markdown(&source);
+    document.blocks.insert(1, Block::PageBreak);
+    let mut options = options(true);
+    options.theme.page.size.height_pt = 432.0;
+    options.optimal_pagination = false;
+    options.strict_pagination = true;
+    // Raw 360pt content has only 346.658pt after the descender guard and
+    // complete-grid-pitch admission. The 359.991pt shorter shape still needs
+    // two pages, so its additional paragraph demerits cannot buy a saved page.
+    let result =
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+    assert_eq!(
+        result.pagination.paragraph_variants.status,
+        PdfParagraphVariantStatus::Planned
+    );
+    assert!(result.pagination.paragraph_variants.offered_paragraphs >= 1);
+    assert_eq!(
+        result.pagination.paragraph_variants.selected_alternatives,
+        0
+    );
+    assert!(result.pagination.paragraph_variants.failure.is_none());
+    assert!(result.pagination.page_breaks.is_exact());
+    let pages = painted_pages(&result.bytes);
+    assert_eq!(locate(&pages, "FIRSTCLAIM").0, 2);
+    let first = body_prose(&pages[0]);
+    let second = body_prose(&pages[1]);
+    assert_eq!(first.0 + &second.0, compact(&prose()));
+    assert_eq!(first.1 + second.1, 14);
+    assert!(first.1 >= 2 && second.1 >= 2);
+    assert_eq!(locate(&pages, "NOTE000").0, locate(&pages, "FIRSTCLAIM").0);
+    assert!(locate(&pages, "NOTE039").0 > locate(&pages, "REPEATCLAIM").0);
+    assert_markers(&pages, "NOTE", 40);
+    for marker in ["FIRSTCLAIM", "REPEATCLAIM"] {
+        assert_eq!(text(&pages).matches(marker).count(), 1);
+    }
+    assert_geometry_and_folios(&pages, &options);
+    assert_destinations(&result.bytes, &pages, &["NOTE000", "NOTE000", "FIRSTCLAIM"]);
 }
 
 #[test]

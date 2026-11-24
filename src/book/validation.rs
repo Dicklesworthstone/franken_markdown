@@ -545,23 +545,31 @@ fn navigation_with_sources<'a>(
     for (index, block) in doc.blocks.iter().enumerate() {
         visit_blocks(std::slice::from_ref(block), index, &mut nav);
     }
+    // Use the same collision-safe source IDs as HTML and EPUB. Heading IDs
+    // retain their identity even when an earlier citation uses the same label.
+    let mut note_anchors: BTreeMap<_, _> = if nav.order.is_empty() {
+        BTreeMap::new()
+    } else {
+        crate::html::heading_identifiers(doc)
+            .footnotes
+            .into_iter()
+            .map(|note| (note.source_id, (note.body, note.reference)))
+            .collect()
+    };
     let mut cursor = 0;
     while let Some(&id) = nav.order.get(cursor) {
         let reference_block = nav.order_blocks[cursor];
         cursor += 1;
         if let Some(&(blocks, definition_block)) = nav.definitions.get(id) {
-            nav.anchor(
-                format!("fn-{id}"),
-                definition_block,
-                id.to_string(),
-                AnchorKind::Footnote,
-            );
-            nav.anchor(
-                format!("fnref-{cursor}"),
-                reference_block,
-                id.to_string(),
-                AnchorKind::FootnoteBackreference,
-            );
+            if let Some((body, reference)) = note_anchors.remove(id) {
+                nav.anchor(body, definition_block, id.to_string(), AnchorKind::Footnote);
+                nav.anchor(
+                    reference,
+                    reference_block,
+                    id.to_string(),
+                    AnchorKind::FootnoteBackreference,
+                );
+            }
             visit_blocks(blocks, definition_block, &mut nav);
         }
     }
@@ -581,7 +589,7 @@ fn navigation_with_sources<'a>(
     nav
 }
 
-/// Emitted HTML note and citation IDs, including collisions with headings.
+/// Emitted HTML note and citation IDs after reserving source heading IDs.
 /// PDF book links use this inventory to identify the original note definition;
 /// they must not treat an arbitrary `fn-` prefix as proof that a note exists.
 /// This reuses the publication walk without running link-finding admission or

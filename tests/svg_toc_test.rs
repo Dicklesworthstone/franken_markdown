@@ -118,7 +118,7 @@ fn marker_depth_overrides_the_option_at_each_explicit_location() {
 #[test]
 fn typed_rows_keep_duplicate_raw_html_and_note_collisions_separate() {
     let (svg, warnings) = render(
-        "[TOC]\n\n<h2>Topic</h2>\n\n# Topic\n\n> ## Topic\n\n- ### fn-evidence\n\n[ambiguous](#fn-evidence) cite[^evidence].\n\n[^evidence]: ## Only in notes\n",
+        "[TOC]\n\n<h2>Topic</h2>\n\n# Topic\n\n> ## Topic\n\n- ### fn-evidence\n\n[heading](#fn-evidence) cite[^evidence].\n\n[^evidence]: ## Only in notes\n",
         &SvgOptions::default(),
     );
     assert_eq!(
@@ -128,14 +128,13 @@ fn typed_rows_keep_duplicate_raw_html_and_note_collisions_separate() {
             ("#fmd-heading-1", "Topic"),
             ("#fmd-heading-2", "Topic"),
             ("#fmd-heading-3", "fn-evidence"),
+            ("#fmd-heading-3", "heading"),
         ]
     );
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.code == "svg_link_unresolved")
-    );
-    assert!(!svg.contains("aria-label=\"ambiguous\""));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(svg.lines().any(|line| {
+        line.starts_with("<a href=\"#fmd-heading-3\"") && line.contains("aria-label=\"heading\"")
+    }));
     assert!(
         !outline(&svg)
             .iter()

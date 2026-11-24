@@ -213,11 +213,17 @@ fn note_queue_preserves_definition_and_reference_owners_through_cycles() {
 }
 
 #[test]
-fn colliding_note_ids_are_not_misrepresented_as_resolved_fragment_links() {
+fn colliding_note_ids_resolve_to_distinct_heading_note_and_return_locations() {
     let doc = Document {
         blocks: vec![
             heading("fn-a"),
-            Block::Paragraph(vec![reference("a"), reference("missing"), link("#fn-a")]),
+            Block::Paragraph(vec![
+                reference("a"),
+                reference("missing"),
+                link("#fn-a"),
+                link("#fn-a-2"),
+                link("#fnref-1"),
+            ]),
             note("a", vec![]),
         ],
     };
@@ -228,20 +234,23 @@ fn colliding_note_ids_are_not_misrepresented_as_resolved_fragment_links() {
         report.references[1].finding.as_ref().unwrap().code,
         "missing_footnote"
     );
-    assert_eq!(
-        report.references[2].finding.as_ref().unwrap().code,
-        "ambiguous_anchor"
-    );
-    assert_eq!(report.references[2].target_block_index, None);
-    assert_eq!(
-        report
-            .anchors
-            .iter()
-            .find(|a| a.id == "fn-a")
-            .unwrap()
-            .occurrences,
-        2
-    );
+    assert_eq!(report.references.len(), 5);
+    for (reference, target) in report.references[2..].iter().zip([0, 2, 1]) {
+        assert_eq!(reference.target_block_index, Some(target));
+        assert!(reference.finding.is_none());
+    }
+    assert!(report.anchors.iter().all(|anchor| anchor.occurrences == 1));
+    for (id, owner) in [("fn-a", 0), ("fn-a-2", 2), ("fnref-1", 1)] {
+        assert_eq!(
+            report
+                .anchors
+                .iter()
+                .find(|anchor| anchor.id == id)
+                .unwrap()
+                .block_index,
+            owner
+        );
+    }
 }
 
 #[test]

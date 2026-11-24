@@ -1,10 +1,8 @@
-//! EPUB-owned note targets share the HTML renderer's actual heading inventory.
+//! Renderer-owned note targets share the HTML renderer's actual heading inventory.
 //! Keep legacy identifiers when available, and reserve all of them before
 //! allocating replacements so one note cannot take another note's target.
 
 use std::collections::BTreeSet;
-
-use super::HeadingIdentifiers;
 
 pub(super) struct Anchors {
     headings: BTreeSet<String>,
@@ -13,10 +11,13 @@ pub(super) struct Anchors {
 }
 
 impl Anchors {
-    pub(super) fn new(inventory: HeadingIdentifiers) -> Self {
-        let headings: BTreeSet<_> = inventory.headings.into_iter().flatten().collect();
-        let mut occupied = inventory.other_anchors;
-        occupied.extend(headings.iter().cloned());
+    pub(super) fn new(heading_ids: &[Option<String>], note_order: &[String]) -> Self {
+        let headings: BTreeSet<_> = heading_ids.iter().flatten().cloned().collect();
+        let mut occupied = headings.clone();
+        for (index, id) in note_order.iter().enumerate() {
+            occupied.insert(format!("fn-{id}"));
+            occupied.insert(format!("fnref-{}", index + 1));
+        }
         Self {
             headings,
             occupied,
@@ -56,5 +57,9 @@ impl Anchors {
         self.notes
             .get(number.checked_sub(1)?)
             .map(|note| note.1.as_str())
+    }
+
+    pub(super) fn into_pairs(self) -> Vec<(String, String)> {
+        self.notes
     }
 }

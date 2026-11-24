@@ -175,8 +175,47 @@ fn headings_and_other_note_names_cannot_capture_generated_links() {
         assert!(chapter.contains("id=\"fnref-1-3\""));
         assert!(chapter.contains("href=\"#fn-note-5\" epub:type=\"noteref\""));
         assert!(chapter.contains("href=\"#fnref-1-3\" epub:type=\"backlink\""));
-        assert!(chapter.contains("href=\"#fn-note\">Authored heading</a>"));
+        assert!(chapter.contains("href=\"#fn-note-2\">Authored heading</a>"));
+        assert!(!chapter.contains("href=\"#fn-note\">Authored heading</a>"));
     }
+}
+
+#[test]
+fn source_note_links_survive_unicode_heading_lowering_in_documents_and_books() {
+    let source = "<h1>fn-café</h1>\n\n# fn-café\n\nReference[^café].\n\n[^café]: Evidence.\n\n[Source heading](#fn-caf%C3%A9) [Actual note](#fn-caf%C3%A9-2)\n";
+    for bytes in publications(source, &HtmlOptions::default()) {
+        let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+        assert_notes(&chapter, 1, 1);
+        assert!(chapter.contains("<h1 id=\"fn-café-2\">fn-café</h1>"));
+        assert!(chapter.contains("<li id=\"fn-café-3\" epub:type=\"endnote\">"));
+        assert!(chapter.contains("href=\"#fn-caf%C3%A9-2\">Source heading</a>"));
+        assert!(chapter.contains("href=\"#fn-caf%C3%A9-3\">Actual note</a>"));
+        assert!(!chapter.contains("href=\"#fn-caf%C3%A9-2\">Actual note</a>"));
+    }
+}
+
+#[test]
+fn cross_chapter_note_links_follow_source_identity_after_safe_html_lowering() {
+    let book = build_book(&[
+        BookInput {
+            path: "start.md".into(),
+            source: "# Start\n\n[Heading](notes.md?edition=2#fn-note) [Note](notes.md#fn-note-2) [Citation](notes.md#fnref-1-2)\n".into(),
+        },
+        BookInput {
+            path: "notes.md".into(),
+            source: "<h1>fn-note</h1>\n\n# fn-note\n\n<h1>fnref-1</h1>\n\n# fnref-1\n\nClaim[^note].\n\n[^note]: Evidence.\n".into(),
+        },
+    ]).unwrap();
+    let bytes = epub::render_book_epub(&book, &HtmlOptions::default()).unwrap();
+    let start = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+    let notes = entry_text(&bytes, "OEBPS/chapter-2.xhtml");
+    assert_well_formed_xml(&start);
+    assert_notes(&notes, 1, 1);
+    assert!(start.contains("href=\"chapter-2.xhtml?edition=2#fn-note-2\">Heading</a>"));
+    assert!(start.contains("href=\"chapter-2.xhtml#fn-note-3\">Note</a>"));
+    assert!(start.contains("href=\"chapter-2.xhtml#fnref-1-3\">Citation</a>"));
+    assert!(!start.contains("href=\"chapter-2.xhtml#fn-note-2\">Note</a>"));
+    assert!(!start.contains("href=\"chapter-2.xhtml#fnref-1-2\">Citation</a>"));
 }
 
 #[test]

@@ -168,7 +168,7 @@ fn referenced_notes_follow_emission_order_and_cycles_terminate() {
 }
 
 #[test]
-fn undefined_notes_and_colliding_note_heading_ids_are_reported() {
+fn colliding_note_heading_ids_resolve_and_undefined_notes_are_reported() {
     let book = one(vec![
         heading("fn-a"),
         Block::Paragraph(vec![
@@ -177,13 +177,28 @@ fn undefined_notes_and_colliding_note_heading_ids_are_reported() {
                 id: "missing".into(),
             },
             link("#fn-a"),
+            link("#fn-a-2"),
         ]),
         note("a", vec![]),
     ]);
     assert_eq!(
         codes(&check_book_links(&book).unwrap()),
-        ["missing_footnote", "ambiguous_anchor"]
+        ["missing_footnote"]
     );
+    let nav = navigation(&book.chapters[0].doc);
+    assert_eq!(nav.anchors["fn-a"].kind, AnchorKind::Heading);
+    assert_eq!(nav.anchors["fn-a-2"].kind, AnchorKind::Footnote);
+    assert_eq!(nav.anchors["fn-a-2"].title, "a");
+    assert!(nav.anchors.values().all(|anchor| anchor.occurrences == 1));
+    let html =
+        crate::html::render_fragment(&book.chapters[0].doc.blocks, &crate::HtmlOptions::default());
+    for anchor in nav.anchors.keys() {
+        assert_eq!(
+            html.matches(&format!("id=\"{anchor}\"")).count(),
+            1,
+            "{anchor}"
+        );
+    }
 }
 
 #[test]

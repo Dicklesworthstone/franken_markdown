@@ -538,14 +538,26 @@ fn footnotes<W: Write + ?Sized>(
         if let Some(children) = state.footnote_defs.get(id.as_str()).copied() {
             out.text("<li id=\"")?;
             out.escaped(state.id_prefix, true)?;
-            out.text("fn-")?;
-            out.escaped(&id, true)?;
+            if let Some(anchor) = state.note_anchors.as_ref().and_then(|a| a.body(index + 1)) {
+                out.escaped(anchor, true)?;
+            } else {
+                out.text("fn-")?;
+                out.escaped(&id, true)?;
+            }
             out.text("\">")?;
             blocks(None, children, out, opts, state)?;
             out.text(" <a class=\"footnote-backref\" href=\"#")?;
             out.buffered(|html| super::push_fragment_identifier(state.id_prefix, html))?;
-            out.text("fnref-")?;
-            out.number((index + 1) as u64)?;
+            if let Some(anchor) = state
+                .note_anchors
+                .as_ref()
+                .and_then(|a| a.reference(index + 1))
+            {
+                out.buffered(|html| super::push_fragment_identifier(anchor, html))?;
+            } else {
+                out.text("fnref-")?;
+                out.number((index + 1) as u64)?;
+            }
             out.text("\">↩</a>\n</li>\n")?;
         }
         index += 1;

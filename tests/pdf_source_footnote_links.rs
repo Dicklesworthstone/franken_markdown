@@ -152,24 +152,40 @@ fn decoded_note_fragments_follow_first_use_instead_of_definition_order() {
 }
 
 #[test]
-fn ambiguous_ids_and_unreferenced_notes_cannot_capture_public_links() {
+fn collision_safe_note_ids_preserve_distinct_heading_body_and_return_targets() {
     let doc = parse_markdown(
-        "# fn-n\n\n## fnref-1\n\nCited.[^n] [Ambiguous note](#fn-n) [Ambiguous return](#fnref-1) \
-         [Unreferenced](#fn-unused) [Missing](#fn-missing)\n\n## fn-heading\n\n[Heading](#fn-heading)\n\n\
+        "# fn-n\n\n## fnref-1\n\nCited.[^n] [Note heading](#fn-n) [Return heading](#fnref-1) \
+         [Note](#fn-n-2) [Return](#fnref-1-2) [Unreferenced](#fn-unused) [Missing](#fn-missing)\n\n\
+         ## fn-heading\n\n[Heading](#fn-heading)\n\n\
          [^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
     );
     let annotations = links(&render_pdf_document(&doc, &PdfOptions::default()).unwrap());
-    assert_eq!(annotations.len(), 4);
-    assert!(
-        annotations[0].is_some(),
-        "the actual citation still resolves"
+    assert_eq!(
+        annotations.len(),
+        6,
+        "missing and unreferenced note fragments remain omitted"
     );
-    assert_eq!(&annotations[1..3], &[None, None]);
-    assert!(
-        annotations[3].is_some(),
-        "ordinary namespace-shaped headings still work"
+    assert!(annotations.iter().all(Option::is_some), "{annotations:?}");
+    assert_eq!(
+        annotations[0], annotations[3],
+        "the allocated note-body fragment matches the actual citation"
     );
-    assert_ne!(annotations[0], annotations[3]);
+    let note = annotations[0].unwrap();
+    let note_heading = annotations[1].unwrap();
+    let return_heading = annotations[2].unwrap();
+    let citation = annotations[4].unwrap();
+    let ordinary_heading = annotations[5].unwrap();
+    for target in [note_heading, return_heading, citation, ordinary_heading] {
+        assert_eq!(target.page, note.page);
+    }
+    assert!(
+        note_heading.y > return_heading.y && return_heading.y > citation.y && citation.y > note.y,
+        "headings, the source citation and the page-foot note stay distinct: {annotations:?}"
+    );
+    assert_ne!(
+        note, ordinary_heading,
+        "unrelated namespace-shaped headings still keep their own destination"
+    );
 }
 
 #[test]

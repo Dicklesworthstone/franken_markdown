@@ -459,7 +459,7 @@ struct RenderState<'a> {
     epub_notes: bool,
     /// Lazy source-owned anchor allocation reserves every emitted heading
     /// and legacy note target before choosing a collision-free alternative.
-    epub_note_anchors: Option<epub_notes::Anchors>,
+    note_anchors: Option<epub_notes::Anchors>,
     /// Pre-computed heading inventory (level, plain text, anchor id) in
     /// document order — used by the TOC marker. Ids are produced by the same
     /// fresh-state walk the heading renderer performs, so they match exactly.
@@ -549,14 +549,27 @@ impl<'a> RenderState<'a> {
     }
 
     fn footnote_number(&mut self, id: &str) -> Option<(usize, bool)> {
+        let (number, first) = self.record_footnote_reference(id)?;
+        if self.note_anchors.is_none() {
+            let inventory = source_anchor_inventory(self.root_blocks.iter());
+            self.note_anchors = Some(epub_notes::Anchors::new(
+                &inventory.headings,
+                &inventory.footnote_order,
+            ));
+        }
+        if first && let Some(anchors) = &mut self.note_anchors {
+            anchors.push(id, number);
+        }
+        Some((number, first))
+    }
+
+    /// Record source ownership without allocating output identifiers. The
+    /// heading/note inventory uses this path, so its prepass cannot recurse
+    /// into the lazy anchor allocation performed during actual rendering.
+    fn record_footnote_reference(&mut self, id: &str) -> Option<(usize, bool)> {
         self.ensure_footnote_defs();
         if !self.footnote_defs.contains_key(id) {
             return None;
-        }
-        if self.epub_notes && self.epub_note_anchors.is_none() {
-            self.epub_note_anchors = Some(epub_notes::Anchors::new(
-                heading_identifiers_for_blocks(self.root_blocks),
-            ));
         }
         let next_number = self.footnote_numbers.len() + 1;
         let number = *self
@@ -567,9 +580,6 @@ impl<'a> RenderState<'a> {
         if first {
             // Number-order record drives both trailing notes and their anchors.
             self.footnote_order.push(id.to_string());
-            if let Some(anchors) = &mut self.epub_note_anchors {
-                anchors.push(id, number);
-            }
         }
         Some((number, first))
     }
@@ -1770,6 +1780,21 @@ fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
 pub(crate) struct HeadingIdentifiers {
     pub(crate) headings: Vec<Option<String>>,
     pub(crate) other_anchors: BTreeSet<String>,
+    /// Actual note destinations, in first-reference order. Source identities
+    /// stay separate from allocated IDs so book links can address the same
+    /// note even when a heading owns its traditional fragment spelling.
+    pub(crate) footnotes: Vec<FootnoteIdentifiers>,
+}
+
+pub(crate) struct FootnoteIdentifiers {
+    pub(crate) source_id: String,
+    pub(crate) body: String,
+    pub(crate) reference: String,
+}
+
+struct SourceAnchorInventory {
+    headings: Vec<Option<String>>,
+    footnote_order: Vec<String>,
 }
 
 pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
@@ -1790,6 +1815,35 @@ pub(crate) fn spanned_heading_identifiers(doc: &crate::SpannedDocument) -> Headi
 fn heading_identifiers_for_roots<'a>(
     roots: impl Iterator<Item = &'a Block> + Clone,
 ) -> HeadingIdentifiers {
+    let inventory = source_anchor_inventory(roots);
+    let mut anchors = epub_notes::Anchors::new(&inventory.headings, &inventory.footnote_order);
+    for (index, id) in inventory.footnote_order.iter().enumerate() {
+        anchors.push(id, index + 1);
+    }
+    let footnotes: Vec<_> = inventory
+        .footnote_order
+        .into_iter()
+        .zip(anchors.into_pairs())
+        .map(|(source_id, (body, reference))| FootnoteIdentifiers {
+            source_id,
+            body,
+            reference,
+        })
+        .collect();
+    let other_anchors = footnotes
+        .iter()
+        .flat_map(|note| [note.body.clone(), note.reference.clone()])
+        .collect();
+    HeadingIdentifiers {
+        headings: inventory.headings,
+        other_anchors,
+        footnotes,
+    }
+}
+
+fn source_anchor_inventory<'a>(
+    roots: impl Iterator<Item = &'a Block> + Clone,
+) -> SourceAnchorInventory {
     let mut ordinals = HashMap::new();
     let mut definitions = BTreeMap::new();
     for root in roots.clone() {
@@ -1832,14 +1886,9 @@ fn heading_identifiers_for_roots<'a>(
             collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state);
         }
     }
-    let mut other_anchors = BTreeSet::new();
-    for (id, number) in state.footnote_numbers {
-        other_anchors.insert(format!("fn-{id}"));
-        other_anchors.insert(format!("fnref-{number}"));
-    }
-    HeadingIdentifiers {
+    SourceAnchorInventory {
         headings,
-        other_anchors,
+        footnote_order: state.footnote_order,
     }
 }
 
@@ -1875,7 +1924,7 @@ fn collect_emitted_heading_ids<'a>(
         for inline in inlines {
             match inline {
                 Inline::FootnoteRef { id } => {
-                    let _ = state.footnote_number(id);
+                    let _ = state.record_footnote_reference(id);
                 }
                 Inline::Emphasis(inner)
                 | Inline::Strong(inner)
@@ -2035,11 +2084,7 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
     };
     out.push_str("<li id=\"");
     push_escaped_attr(state.id_prefix, out);
-    if let Some(anchor) = state
-        .epub_note_anchors
-        .as_ref()
-        .and_then(|a| a.body(number))
-    {
+    if let Some(anchor) = state.note_anchors.as_ref().and_then(|a| a.body(number)) {
         push_escaped_attr(anchor, out);
     } else {
         out.push_str("fn-");
@@ -2056,7 +2101,7 @@ fn push_footnote(state: &mut RenderState<'_>, out: &mut String, opts: &HtmlOptio
     out.push_str(" <a class=\"footnote-backref\" href=\"#");
     push_fragment_identifier(state.id_prefix, out);
     if let Some(anchor) = state
-        .epub_note_anchors
+        .note_anchors
         .as_ref()
         .and_then(|a| a.reference(number))
     {
@@ -2092,7 +2137,7 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
         out.push_str(" id=\"");
         push_escaped_attr(state.id_prefix, out);
         if let Some(anchor) = state
-            .epub_note_anchors
+            .note_anchors
             .as_ref()
             .and_then(|a| a.reference(number))
         {
@@ -2108,11 +2153,7 @@ fn render_footnote_ref(id: &str, out: &mut String, state: &mut RenderState<'_>) 
     if linked {
         out.push_str("<a href=\"#");
         push_fragment_identifier(state.id_prefix, out);
-        if let Some(anchor) = state
-            .epub_note_anchors
-            .as_ref()
-            .and_then(|a| a.body(number))
-        {
+        if let Some(anchor) = state.note_anchors.as_ref().and_then(|a| a.body(number)) {
             push_fragment_identifier(anchor, out);
         } else {
             out.push_str("fn-");

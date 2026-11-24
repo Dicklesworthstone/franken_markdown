@@ -113,7 +113,7 @@ pub(super) struct Navigation {
     toc_headings: BTreeMap<super::toc::HeadingTarget, usize>,
     /// Exact immutable prepared Inline identities, never authored destinations.
     note_inlines: BTreeMap<usize, EndnoteTarget>,
-    note_aliases: BTreeMap<String, EndnoteTarget>,
+    note_aliases: BTreeMap<String, (EndnoteTarget, bool)>,
     note_positions: BTreeMap<EndnoteTarget, f64>,
     regions: Vec<Region>,
     seen: BTreeSet<usize>,
@@ -137,7 +137,10 @@ impl Navigation {
                 continue;
             }
             self.metadata_bytes += name.len();
-            self.note_aliases.insert(name.to_owned(), target);
+            self.note_aliases.insert(
+                name.to_owned(),
+                (target, prepared.source_alias(name).is_some()),
+            );
         }
         !self.note_inlines.is_empty()
     }
@@ -358,15 +361,20 @@ impl Navigation {
                     Target::Fragment(fragment) if fragment.is_empty() => Some(View::Top),
                     Target::Fragment(fragment) if !self.note_limited => {
                         match (self.headings.get(fragment), self.note_aliases.get(fragment)) {
-                            // A source spelling owned by two emitted elements
-                            // is ambiguous. Generated typed note links bypass
-                            // source names and still reach the correct object.
+                            // Original source-owned note IDs cannot be captured
+                            // by export-only headings or headings renamed while
+                            // lowering raw HTML. Native-only legacy aliases keep
+                            // the existing collision/ambiguity policy.
+                            (_, Some(&(target, true))) => self
+                                .note_positions
+                                .contains_key(&target)
+                                .then_some(View::Endnote(target)),
                             (Some(_), Some(_)) => None,
                             (Some(heading), None) => Some(View::Heading(heading.id)),
-                            (None, Some(target)) if !self.heading_limited => self
+                            (None, Some(&(target, _))) if !self.heading_limited => self
                                 .note_positions
-                                .contains_key(target)
-                                .then_some(View::Endnote(*target)),
+                                .contains_key(&target)
+                                .then_some(View::Endnote(target)),
                             (None, _) => None,
                         }
                     }

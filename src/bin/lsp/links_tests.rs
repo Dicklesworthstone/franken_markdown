@@ -351,16 +351,48 @@ fn nested_targets_keep_their_real_enclosing_source_block() -> TestResult {
 }
 
 #[test]
-fn missing_invalid_and_ambiguous_anchors_never_jump_to_an_arbitrary_target() -> TestResult {
-    for destination in ["#mis¦sing", "#%z¦z", "#fn-¦a"] {
+fn missing_and_invalid_anchors_never_jump_to_an_arbitrary_target() -> TestResult {
+    for destination in ["#mis¦sing", "#%z¦z", "#fn-¦a-99"] {
         let source = format!("# fn-a\n\nUse[^a]. [go]({destination})\n\n[^a]: note\n");
         assert_eq!(call("textDocument/definition", &source)?, Json::Null);
     }
-    let result = call(
-        "textDocument/completion",
-        "# fn-a\n\nUse[^a]. [go](#fn-¦)\n\n[^a]: note\n",
-    )?;
-    assert!(items(&result).is_empty());
+    Ok(())
+}
+
+#[test]
+fn heading_note_and_backreference_destinations_keep_distinct_source_locations() -> TestResult {
+    for (destination, line) in [
+        ("#fn-¦a", 0),
+        ("#fn-¦a-2", 6),
+        ("#fnref-¦1", 2),
+        ("#fnref-¦1-2", 4),
+    ] {
+        let source = format!("# fn-a\n\n# fnref-1\n\nUse[^a]. [go]({destination})\n\n[^a]: note\n");
+        let result = call("textDocument/definition", &source)?;
+        assert_eq!(
+            result.get("uri").and_then(Json::as_str),
+            Some("untitled:links")
+        );
+        assert_eq!(
+            result.get("range").and_then(|range| range.get("start")),
+            Some(&position(Position { line, character: 0 })),
+            "{destination}",
+        );
+    }
+    // Fragment completion offers headings; generated note destinations stay
+    // navigable without capturing or hiding those authored heading entries.
+    for (prefix, expected) in [("#fn-¦", "#fn-a"), ("#fnref-¦", "#fnref-1")] {
+        let source = format!("# fn-a\n\n# fnref-1\n\nUse[^a]. [go]({prefix})\n\n[^a]: note\n");
+        let result = call("textDocument/completion", &source)?;
+        assert_eq!(labels(&result), [expected]);
+        assert_eq!(
+            items(&result)[0]
+                .get("textEdit")
+                .and_then(|edit| edit.get("newText"))
+                .and_then(Json::as_str),
+            Some(expected)
+        );
+    }
     Ok(())
 }
 

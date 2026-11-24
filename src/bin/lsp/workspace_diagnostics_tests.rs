@@ -330,7 +330,7 @@ fn code_images_and_unpublished_note_bodies_do_not_create_edges() {
 }
 
 #[test]
-fn referenced_notes_and_real_heading_note_collisions_follow_publication() {
+fn referenced_notes_and_disambiguated_heading_note_targets_follow_publication() {
     let mut server = server();
     open(&mut server, A, "[note](b.md#fn-note)", 1);
     let hidden = open(&mut server, B, "[^note]: Hidden", 1);
@@ -343,12 +343,21 @@ fn referenced_notes_and_real_heading_note_collisions_follow_publication() {
     let collision = replace(
         &mut server,
         B,
-        "# fn-note\n\nnote[^note]\n\n[^note]: Visible",
+        "# fn-note\n\n# fnref-1\n\nnote[^note]\n\n[^note]: Visible",
         3,
     );
+    assert!(entries(report(&collision, A).unwrap()).is_empty());
+    let distinct_targets = replace(
+        &mut server,
+        A,
+        "[heading](b.md#fn-note) [note](b.md#fn-note-2) [citation heading](b.md#fnref-1) [return](b.md#fnref-1-2)",
+        2,
+    );
+    assert!(entries(report(&distinct_targets, A).unwrap()).is_empty());
+    let missing = replace(&mut server, A, "[missing](b.md#fn-note-99)", 3);
     assert_eq!(
-        codes(report(&collision, A).unwrap()),
-        ["workspace_ambiguous_anchor"]
+        codes(report(&missing, A).unwrap()),
+        ["workspace_missing_anchor"]
     );
 }
 

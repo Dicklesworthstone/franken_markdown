@@ -1203,14 +1203,25 @@ fn epub_footnote_links_address_literal_ids_after_uri_fragment_decoding() {
 }
 
 #[test]
-fn epub_heading_links_do_not_resolve_ambiguous_footnote_anchors() {
-    let source = "<h1>fn-note</h1>\n\n# fn-note\n\n<h1>fnref-1</h1>\n\n# fnref-1\n\nReference[^note].\n\n[^note]: Note body.\n\n[Ambiguous note](#fn-note) [Ambiguous backreference](#fnref-1)\n";
+fn epub_heading_links_preserve_distinct_source_headings_notes_and_references() {
+    // Ordinary HTML now gives the source headings fn-note/fnref-1 and the
+    // generated note targets fn-note-2/fnref-1-2. Lowered HTML adds headings
+    // before them, so all four source destinations must move independently.
+    let source = "<h1>fn-note</h1>\n\n# fn-note\n\n<h1>fnref-1</h1>\n\n# fnref-1\n\nReference[^note].\n\n[^note]: Note body.\n\n[Source heading](#fn-note) [Citation heading](#fnref-1) [Actual note](#fn-note-2) [Actual reference](#fnref-1-2)\n";
     let archive = epub::render_epub(&parse_markdown(source), &HtmlOptions::default()).unwrap();
     let chapter = entry_text(&archive, "OEBPS/chapter-1.xhtml");
     assert!(chapter.contains("<h1 id=\"fn-note-2\">fn-note</h1>"));
     assert!(chapter.contains("<h1 id=\"fnref-1-2\">fnref-1</h1>"));
-    assert!(chapter.contains("href=\"#fn-note\">Ambiguous note</a>"));
-    assert!(chapter.contains("href=\"#fnref-1\">Ambiguous backreference</a>"));
+    assert!(chapter.contains("href=\"#fn-note-2\">Source heading</a>"));
+    assert!(chapter.contains("href=\"#fnref-1-2\">Citation heading</a>"));
+    assert!(chapter.contains("href=\"#fn-note-3\">Actual note</a>"));
+    assert!(chapter.contains("href=\"#fnref-1-3\">Actual reference</a>"));
+    assert!(chapter.contains("<li id=\"fn-note-3\" epub:type=\"endnote\">"));
+    assert!(chapter.contains("id=\"fnref-1-3\"><a href=\"#fn-note-3\" epub:type=\"noteref\""));
+    assert!(!chapter.contains("href=\"#fn-note\">Source heading</a>"));
+    assert!(!chapter.contains("href=\"#fnref-1\">Citation heading</a>"));
+    assert!(!chapter.contains("href=\"#fn-note-2\">Actual note</a>"));
+    assert!(!chapter.contains("href=\"#fnref-1-2\">Actual reference</a>"));
     assert_well_formed_xml(&chapter);
 }
 

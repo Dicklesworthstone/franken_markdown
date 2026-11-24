@@ -262,21 +262,103 @@ fn svg_footnote_links_preserve_enclosing_links_and_return_to_the_first_nested_ci
 }
 
 #[test]
-fn svg_footnote_source_alias_collisions_are_inert_but_typed_links_remain_valid() {
+fn svg_footnote_source_aliases_keep_headings_notes_and_returns_distinct() {
     let doc = parse_markdown(concat!(
         "# fn-n\n\n## fnref-1\n\nClaim[^n].\n\n",
-        "[Ambiguous note](#fn-n) [Ambiguous return](#fnref-1) [Real second heading](#fn-n-2).\n\n",
+        "[First heading](#fn-n) [Citation heading](#fnref-1) [Second heading](#fn-n-2).\n\n",
+        "[Actual note](#fn-n-3) [Actual return](#fnref-1-2).\n\n",
         "# fn-n\n\n[^n]: Note.\n"
     ));
-    let (svg, warnings) = render(&doc);
-    assert!(!has_link(&svg, "Ambiguous note"));
-    assert!(!has_link(&svg, "Ambiguous return"));
-    assert!(has_link(&svg, "Real second heading"));
-    assert_eq!(attr(named_link(&svg, "Footnote 1"), "href"), "#fmd-note-1");
+    let prepared = PreparedEndnotes::new(&doc);
     assert_eq!(
-        attr(named_link(&svg, "Return to footnote 1 citation"), "href"),
+        prepared.source_alias("fn-n-3"),
+        Some(EndnoteTarget::Note(1))
+    );
+    assert_eq!(
+        prepared.source_alias("fnref-1-2"),
+        Some(EndnoteTarget::Reference(1))
+    );
+    assert_eq!(prepared.source_alias("fn-n"), None);
+    assert_eq!(
+        prepared.aliases().collect::<Vec<_>>(),
+        [
+            ("fn-n-3", EndnoteTarget::Note(1)),
+            ("fnref-1-2", EndnoteTarget::Reference(1)),
+        ]
+    );
+    let (svg, warnings) = render(&doc);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    for (label, target) in [
+        ("First heading", "#fmd-heading-0"),
+        ("Citation heading", "#fmd-heading-1"),
+        ("Second heading", "#fmd-heading-2"),
+        ("Actual note", "#fmd-note-1"),
+        ("Actual return", "#fmd-note-ref-1"),
+        ("Footnote 1", "#fmd-note-1"),
+        ("Return to footnote 1 citation", "#fmd-note-ref-1"),
+    ] {
+        assert_eq!(attr(named_link(&svg, label), "href"), target, "{label}");
+    }
+    assert_destinations_exist(&svg);
+}
+
+#[test]
+fn svg_source_note_aliases_survive_extra_headings_from_raw_html_lowering() {
+    let doc = parse_markdown(concat!(
+        "[TOC]\n\n<h2>fn-n</h2>\n\n# fn-n\n\n",
+        "<h2>fnref-1</h2>\n\n# fnref-1\n\nClaim[^n].\n\n",
+        "[Source note](#fn-n-2) [Source return](#fnref-1-2).\n\n",
+        "[^n]: Evidence.\n"
+    ));
+    let prepared = PreparedEndnotes::new(&doc);
+    assert_eq!(
+        prepared.source_alias("fn-n-2"),
+        Some(EndnoteTarget::Note(1))
+    );
+    assert_eq!(
+        prepared.source_alias("fnref-1-2"),
+        Some(EndnoteTarget::Reference(1))
+    );
+    let (svg, warnings) = render(&doc);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(attr(named_link(&svg, "Source note"), "href"), "#fmd-note-1");
+    assert_eq!(
+        attr(named_link(&svg, "Source return"), "href"),
         "#fmd-note-ref-1"
     );
+    // Both lower-only conflicting heading destinations exist independently
+    // through the typed TOC; they cannot capture an authored source note link.
+    assert!(svg.contains("<view id=\"fmd-heading-1\""));
+    assert!(svg.contains("<view id=\"fmd-heading-3\""));
+    assert_destinations_exist(&svg);
+}
+
+#[test]
+fn svg_native_only_note_aliases_keep_legacy_ambiguity_and_missing_return_policy() {
+    let doc = parse_markdown(concat!(
+        "# fn-orphan\n\nClaim[^main].\n\n",
+        "[Source note](#fn-main) [Orphan body](#fn-orphan) ",
+        "[Orphan return](#fnref-2) [Missing](#fn-absent).\n\n",
+        "[^main]: Referenced evidence.\n\n[^orphan]: Complete orphan body.\n"
+    ));
+    let prepared = PreparedEndnotes::new(&doc);
+    assert_eq!(prepared.document(), doc.with_endnotes().as_ref());
+    assert_eq!(
+        prepared.source_alias("fn-main"),
+        Some(EndnoteTarget::Note(1))
+    );
+    assert_eq!(prepared.source_alias("fn-orphan"), None);
+    assert!(
+        prepared
+            .aliases()
+            .any(|(name, target)| name == "fn-orphan" && target == EndnoteTarget::Note(2))
+    );
+    assert!(!prepared.aliases().any(|(name, _)| name == "fnref-2"));
+    let (svg, warnings) = render(&doc);
+    assert_eq!(attr(named_link(&svg, "Source note"), "href"), "#fmd-note-1");
+    for label in ["Orphan body", "Orphan return", "Missing"] {
+        assert!(!has_link(&svg, label), "{label}");
+    }
     assert_eq!(
         warnings
             .iter()

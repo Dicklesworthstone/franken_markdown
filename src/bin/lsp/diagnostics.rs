@@ -374,12 +374,19 @@ mod tests {
     }
 
     #[test]
-    fn emitted_footnote_collisions_are_reported_but_unused_note_examples_are_not() {
-        let source = "# fn-note\n\n[^note] [ambiguous](#fn-note)\n\n[^note]: Text.\n\n[^unused]: [example](#absent)\n";
+    fn headings_and_allocated_notes_validate_while_unused_note_examples_are_omitted() {
+        let source = "# fn-note\n\n# fnref-1\n\n[^note] [Heading](#fn-note) [Citation heading](#fnref-1) [Actual note](#fn-note-2) [Actual reference](#fnref-1-2)\n\n[^note]: Text.\n\n[^unused]: [example](#absent)\n";
         let report = inspect(source);
-        assert!(anchors(&report).is_empty());
-        assert_eq!(entries(&report).iter().filter(|entry| entry.get("code").and_then(Json::as_str)
-            == Some("ambiguous_anchor")).count(), 1);
+        assert!(entries(&report).is_empty());
+        let broken =
+            inspect(&source.replace("[Actual note](#fn-note-2)", "[Missing](#fn-note-99)"));
+        assert_eq!(anchors(&broken).len(), 1);
+        assert!(
+            anchors(&broken)[0]
+                .get("message")
+                .and_then(Json::as_str)
+                .is_some_and(|message| message.contains("#fn-note-99"))
+        );
     }
 
     #[test]

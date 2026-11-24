@@ -174,7 +174,13 @@ preserved, and fragments are percent-decoded once as UTF-8. Heading IDs reuse th
 renderer-aligned search-index algorithm, including duplicate-heading suffixes.
 Referenced notes follow first-reference emission order; nested citations and
 cycles emit each note once, the first duplicate definition wins, and unused note
-bodies are excluded. Heading/note ID collisions are reported when targeted.
+bodies are excluded. Source headings keep their IDs when a note or citation
+would otherwise collide. Generated note and return IDs use the first free
+suffix starting at `-2`, reserving the legacy IDs of other referenced notes
+before choosing a suffix. For example, a heading named `fn-note` remains
+`#fn-note`, while a colliding note can be reached through `#fn-note-2`.
+The checker, editor navigation, and PDF links use these same source IDs; EPUB
+preserves their identity even when lowering raw HTML introduces more headings.
 
 ## Exact scope and budgets
 

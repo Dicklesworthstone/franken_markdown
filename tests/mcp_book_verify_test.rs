@@ -249,11 +249,16 @@ fn clean_unicode_nested_and_reference_style_links_use_publication_ids() {
 }
 
 #[test]
-fn published_footnote_collisions_fail_but_unpublished_examples_do_not() {
+fn published_footnotes_keep_distinct_ids_and_unpublished_examples_are_ignored() {
     let report = verify(args(
-        "# fn-note\n\n[^note] [ambiguous](#fn-note)\n\n[^note]: Visible.\n\n[^unused]: [hidden](#missing)\n",
+        "# fn-note\n\n[^note] [heading](#fn-note) [note](#fn-note-2) [return](#fnref-1)\n\n[^note]: Visible.\n\n[^unused]: [hidden](#missing)\n",
     ));
-    assert_eq!(codes(&report), ["ambiguous_anchor"]);
+    assert_eq!(count(&report, "findings"), 0);
+    assert_eq!(count(&report, "checked"), 4);
+    let report = verify(args(
+        "# fn-note\n\n[^note] [missing](#fn-note-99)\n\n[^note]: Visible.\n",
+    ));
+    assert_eq!(codes(&report), ["missing_anchor"]);
     let report = verify(args(
         "# Top\n\n`[not a link](#missing)`\n\n```md\n[example](#missing)\n```\n\n[^unused]: [hidden](#missing)",
     ));

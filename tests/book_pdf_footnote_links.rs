@@ -152,6 +152,46 @@ fn chapter_scoped_note_links_bind_to_the_actual_citation_destinations() {
 }
 
 #[test]
+fn colliding_note_fragments_keep_each_chapters_body_and_citation_identity() {
+    let renderer = book(&[
+        (
+            "one.md",
+            "# One\n\nFirst source.[^n]\n\n[Local note](#fn-n) [Other note](two.md#fn-n-2) \
+             [Other heading](two.md#fn-n) [Other citation](two.md#fnref-1-2)\n\n\
+             [^n]: First citation body.\n",
+        ),
+        (
+            "two.md",
+            "# fn-n\n\n## fnref-1\n\nSecond source.[^n]\n\n\
+             [Back to first](one.md#fn-n)\n\n[^n]: Second citation body.\n",
+        ),
+    ]);
+    let annotations = links(&renderer.render_pdf().unwrap());
+    assert_eq!(annotations.len(), 7);
+    assert!(annotations.iter().all(Option::is_some), "{annotations:?}");
+    assert_eq!(annotations[0], annotations[1]);
+    assert_eq!(
+        annotations[0], annotations[6],
+        "the same source label in another chapter cannot capture the first note"
+    );
+    assert_eq!(
+        annotations[2], annotations[5],
+        "the forward link follows the second chapter's allocated note body"
+    );
+    let first_note = annotations[0].unwrap();
+    let second_note = annotations[2].unwrap();
+    let second_heading = annotations[3].unwrap();
+    let second_citation = annotations[4].unwrap();
+    assert_ne!(first_note.page, second_note.page);
+    assert_eq!(second_heading.page, second_note.page);
+    assert_eq!(second_citation.page, second_note.page);
+    assert!(
+        second_heading.y > second_citation.y && second_citation.y > second_note.y,
+        "the second chapter's heading, citation and note remain distinct: {annotations:?}"
+    );
+}
+
+#[test]
 fn note_numbers_follow_first_use_not_definition_order_or_anchor_spelling() {
     let renderer = book(&[(
         "one.md",
@@ -210,24 +250,30 @@ fn oversized_note_links_keep_the_actual_multipage_fallback_destination() {
 }
 
 #[test]
-fn missing_unreferenced_and_ambiguous_note_ids_do_not_capture_other_targets() {
+fn collision_safe_note_ids_keep_heading_targets_and_unresolved_links_distinct() {
     let renderer = book(&[(
         "one.md",
-        "# fn-n\n\nCited.[^n] [Ambiguous](#fn-n) [Unreferenced](#fn-unused) [Missing](#fn-absent)\n\n## fn-heading\n\n[Ordinary heading](#fn-heading)\n\n[^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
+        "# fn-n\n\nCited.[^n] [Heading](#fn-n) [Note](#fn-n-2) [Unreferenced](#fn-unused) [Missing](#fn-absent)\n\n## fn-heading\n\n[Ordinary heading](#fn-heading)\n\n[^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
     )]);
-    let bytes = renderer.render_pdf().unwrap();
-    let annotations = links(&bytes);
-    assert_eq!(annotations.len(), 5);
-    assert!(
-        annotations[0].is_some(),
-        "the ordinary citation still works"
+    let annotations = links(&renderer.render_pdf().unwrap());
+    assert_eq!(annotations.len(), 6);
+    for index in [0, 1, 2, 5] {
+        assert!(annotations[index].is_some(), "{annotations:?}");
+    }
+    assert_eq!(
+        annotations[0], annotations[2],
+        "the allocated note fragment matches its source citation"
     );
-    assert_eq!(&annotations[1..4], &[None, None, None]);
+    assert_eq!(&annotations[3..5], &[None, None]);
+    let note = annotations[0].unwrap();
+    let heading = annotations[1].unwrap();
+    let ordinary_heading = annotations[5].unwrap();
+    assert_eq!(heading.page, note.page);
+    assert_eq!(ordinary_heading.page, note.page);
     assert!(
-        annotations[4].is_some(),
-        "prefixes do not reserve heading IDs"
+        heading.y > ordinary_heading.y && ordinary_heading.y > note.y,
+        "both authored headings remain above the distinct page-foot note: {annotations:?}"
     );
-    assert_ne!(annotations[0], annotations[4]);
 }
 
 #[test]
@@ -259,18 +305,26 @@ fn included_definitions_keep_their_containing_chapter_scope() {
 }
 
 #[test]
-fn missing_unreferenced_and_ambiguous_citation_ids_do_not_capture_heading_targets() {
+fn collision_safe_citation_ids_keep_heading_and_return_targets_distinct() {
     let renderer = book(&[(
         "one.md",
-        "# fnref-1\n\nCited.[^n] [Ambiguous](#fnref-1) [Unreferenced](#fnref-2) [Missing](#fnref-99)\n\n## fnref-heading\n\n[Ordinary heading](#fnref-heading)\n\n[^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
+        "# fnref-1\n\nCited.[^n] [Heading](#fnref-1) [Return](#fnref-1-2) [Unreferenced](#fnref-2) [Missing](#fnref-99)\n\n## fnref-heading\n\n[Ordinary heading](#fnref-heading)\n\n[^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n",
     )]);
     let annotations = links(&renderer.render_pdf().unwrap());
-    assert_eq!(annotations.len(), 5);
-    assert!(annotations[0].is_some(), "the note citation remains linked");
-    assert_eq!(&annotations[1..4], &[None, None, None]);
+    assert_eq!(annotations.len(), 6);
+    for index in [0, 1, 2, 5] {
+        assert!(annotations[index].is_some(), "{annotations:?}");
+    }
+    assert_eq!(&annotations[3..5], &[None, None]);
+    let note = annotations[0].unwrap();
+    let heading = annotations[1].unwrap();
+    let citation = annotations[2].unwrap();
+    let ordinary_heading = annotations[5].unwrap();
+    for target in [heading, citation, ordinary_heading] {
+        assert_eq!(target.page, note.page);
+    }
     assert!(
-        annotations[4].is_some(),
-        "a prefix alone does not reserve a heading ID"
+        heading.y > citation.y && citation.y > ordinary_heading.y && ordinary_heading.y > note.y,
+        "the heading, source citation, later heading and note remain distinct: {annotations:?}"
     );
-    assert_ne!(annotations[0], annotations[4]);
 }

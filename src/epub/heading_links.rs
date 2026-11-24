@@ -1,4 +1,4 @@
-//! Preserve authored heading targets when safe HTML adds export-only headings.
+//! Preserve authored heading and note targets when safe HTML adds export-only headings.
 //!
 //! Generated EPUB navigation addresses the lowered document directly. Authored
 //! links instead name the original document's anchors. The lowering sidecar
@@ -49,6 +49,25 @@ impl HeadingLinks {
                 // A source ID shared with a note/backreference is ambiguous.
                 // Never turn that ambiguity into a silently selected heading.
                 changed.insert(original_id.clone(), target);
+            }
+        }
+        // Added headings can also occupy a note's already-disambiguated source
+        // ID. Match those targets by their source note identity, never by their
+        // numeric spelling or by rendered text, so a link to a note cannot be
+        // captured by an export-only heading (or a different note).
+        let note_targets: BTreeMap<_, _> = emitted
+            .footnotes
+            .iter()
+            .map(|note| (note.source_id.as_str(), note))
+            .collect();
+        for note in original.footnotes {
+            if let Some(target) = note_targets.get(note.source_id.as_str()) {
+                if note.body != target.body {
+                    changed.insert(note.body, target.body.clone());
+                }
+                if note.reference != target.reference {
+                    changed.insert(note.reference, target.reference.clone());
+                }
             }
         }
         Ok(Self(changed))

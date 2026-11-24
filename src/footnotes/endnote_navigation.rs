@@ -39,7 +39,7 @@ pub struct PreparedEndnotes<'a> {
     body_len: usize,
     inline_targets: BTreeMap<usize, EndnoteTarget>,
     note_starts: BTreeMap<usize, usize>,
-    aliases: BTreeMap<String, EndnoteTarget>,
+    aliases: BTreeMap<String, (EndnoteTarget, bool)>,
     limited: bool,
 }
 
@@ -49,8 +49,8 @@ impl<'a> PreparedEndnotes<'a> {
     /// the existing first-definition-wins policy. Reference cycles are followed
     /// once, and unreferenced definitions remain in the final Notes section.
     #[must_use]
-    pub fn new(source: &'a Document) -> Self {
-        let source = crate::safe_html::lower(source);
+    pub fn new(original: &'a Document) -> Self {
+        let source = crate::safe_html::lower(original);
         let mut notes = Notes::default();
         notes.collect(&source.blocks);
         if notes.definitions.is_empty() && !notes.has_reference {
@@ -117,9 +117,44 @@ impl<'a> PreparedEndnotes<'a> {
 
         let mut aliases = BTreeMap::new();
         let mut alias_bytes = 0usize;
-        for (&id, &index) in &notes.indices {
+        let mut source_notes = BTreeSet::new();
+        // Keep original HTML source identities even if lowering adds headings
+        // or native endnotes append otherwise-unreferenced definitions. Native
+        // numbers remain owned by the existing complete endnote transform.
+        for note in crate::html::heading_identifiers(original).footnotes {
+            let Some(&index) = notes.indices.get(note.source_id.as_str()) else {
+                continue;
+            };
+            source_notes.insert(index);
             let number = numbering.numbers[index];
             if number > MAX_NOTES {
+                continue;
+            }
+            for (name, target) in [
+                (note.body, EndnoteTarget::Note(number)),
+                (note.reference, EndnoteTarget::Reference(number)),
+            ] {
+                if matches!(target, EndnoteTarget::Reference(_))
+                    && !metadata.cited.contains(&number)
+                {
+                    continue;
+                }
+                insert_alias(
+                    &mut aliases,
+                    &mut alias_bytes,
+                    &mut metadata.limited,
+                    name,
+                    target,
+                    true,
+                );
+            }
+        }
+        // Native publication also retains unreferenced notes. Keep their
+        // legacy aliases and ambiguity policy, but they cannot take an ID
+        // already owned by a referenced source note.
+        for (&id, &index) in &notes.indices {
+            let number = numbering.numbers[index];
+            if number > MAX_NOTES || source_notes.contains(&index) {
                 continue;
             }
             let note_alias = if id.len() <= MAX_ALIAS_LEN - 3 {
@@ -143,12 +178,14 @@ impl<'a> PreparedEndnotes<'a> {
                 {
                     continue;
                 }
-                if name.len() > MAX_ALIAS_LEN || name.len() > MAX_ALIAS_BYTES - alias_bytes {
-                    metadata.limited = true;
-                    continue;
-                }
-                alias_bytes += name.len();
-                aliases.insert(name, target);
+                insert_alias(
+                    &mut aliases,
+                    &mut alias_bytes,
+                    &mut metadata.limited,
+                    name,
+                    target,
+                    false,
+                );
             }
         }
         Self {
@@ -199,13 +236,26 @@ impl<'a> PreparedEndnotes<'a> {
         });
     }
 
-    /// Literal source fragment names (`fn-ID`, `fnref-N`) and typed targets.
-    /// Names are not percent-decoded: hosts decode incoming fragments once and
-    /// must refuse aliases colliding with another emitted source destination.
+    /// Literal source fragment names and typed targets. Referenced notes use
+    /// the shared HTML IDs after reserving source headings; native-only notes
+    /// retain legacy names. Names are not percent-decoded: hosts decode
+    /// incoming fragments once, then query [`Self::source_alias`] to distinguish
+    /// source ownership from a legacy alias that may collide with a heading.
     pub fn aliases(&self) -> impl Iterator<Item = (&str, EndnoteTarget)> {
         self.aliases
             .iter()
-            .map(|(name, &target)| (name.as_str(), target))
+            .map(|(name, &(target, _))| (name.as_str(), target))
+    }
+
+    /// A collision-safe note destination owned by the original source document.
+    /// Such an alias takes precedence over headings added or renamed by export
+    /// lowering. Other aliases are native-only fallback names and retain the
+    /// host's ambiguity policy. Pass a literal, already-decoded fragment.
+    #[must_use]
+    pub fn source_alias(&self, name: &str) -> Option<EndnoteTarget> {
+        self.aliases
+            .get(name)
+            .and_then(|&(target, source_owned)| source_owned.then_some(target))
     }
 
     /// Navigation admission reached a bound. All document content is retained;
@@ -214,6 +264,25 @@ impl<'a> PreparedEndnotes<'a> {
     pub fn navigation_limited(&self) -> bool {
         self.limited
     }
+}
+
+fn insert_alias(
+    aliases: &mut BTreeMap<String, (EndnoteTarget, bool)>,
+    bytes: &mut usize,
+    limited: &mut bool,
+    name: String,
+    target: EndnoteTarget,
+    source_owned: bool,
+) {
+    if aliases.contains_key(&name) {
+        return;
+    }
+    if name.len() > MAX_ALIAS_LEN || name.len() > MAX_ALIAS_BYTES - *bytes {
+        *limited = true;
+        return;
+    }
+    *bytes += name.len();
+    aliases.insert(name, (target, source_owned));
 }
 
 fn identity(inline: &Inline) -> usize {

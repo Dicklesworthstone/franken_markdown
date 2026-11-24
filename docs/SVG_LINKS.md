@@ -99,12 +99,21 @@ Explicitly calling the legacy `with_endnotes()` before rendering retains its
 old text-only note behavior because that API intentionally discards provenance.
 
 Source aliases are literal: a note ID `%31` is addressed by `#fn-%2531`, whereas
-`#fn-%31` addresses an ID `1`. Neither is decoded twice. If a heading and a note
-or citation own the same source spelling, an ordinary link to that ambiguous
-spelling stays inactive and reports `svg_link_unresolved`. Generated typed note
-links continue to reach the correct object. Private output IDs
-`fmd-note-N` and `fmd-note-ref-N` cannot be used as author-created aliases, just
-as raw fragments cannot target glyph definitions.
+`#fn-%31` addresses an ID `1`. Neither is decoded twice. Referenced notes and
+citations use the same collision-safe source IDs as HTML: a heading keeps
+`#fn-evidence` while its colliding note receives the first available suffix,
+such as `#fn-evidence-2`. Source-owned note aliases also keep their identity
+when raw HTML lowering inserts or renames a heading to that spelling.
+
+`PreparedEndnotes::aliases()` retains its iterator contract, and
+`PreparedEndnotes::source_alias()` identifies aliases owned by the original
+source document. A host can give those aliases precedence over export-only
+heading names. Native-only, unreferenced notes retain legacy aliases; collisions
+between those aliases and headings remain inactive with `svg_link_unresolved`.
+An unreferenced note cannot replace an alias already owned by a referenced note.
+Generated typed note links continue to reach the correct object. Private output
+IDs `fmd-note-N` and `fmd-note-ref-N` cannot be used as author-created aliases,
+just as raw fragments cannot target glyph definitions.
 
 The markup follows SVG 2's native links, named views and pointer-event regions:
 https://www.w3.org/TR/SVG2/linking.html

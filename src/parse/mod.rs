@@ -487,6 +487,11 @@ struct ParseProfiler {
     inline_cache: InlineParseCache,
     inline_parse_depth: usize,
     inline_work: InlineWorkBudget,
+    // Accepted bracket links deactivate enclosing link openers even inside an
+    // image description, whose final AST keeps only flattened alternative text.
+    // Scope this provenance to each speculative label; angle autolinks do not
+    // deactivate bracket openers across an accepted image.
+    inline_bracket_link: bool,
     // GFM table escapes also apply inside code spans. Keep the original cell
     // source for destination tracking, and scope this decoding to its inlines.
     table_cell_code_escapes: bool,
@@ -512,6 +517,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
+            inline_bracket_link: false,
             table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
@@ -529,6 +535,7 @@ impl ParseProfiler {
             inline_cache: InlineParseCache::default(),
             inline_parse_depth: 0,
             inline_work: InlineWorkBudget::default(),
+            inline_bracket_link: false,
             table_cell_code_escapes: false,
             block_depth: 0,
             destinations: None,
@@ -5460,10 +5467,10 @@ fn parse_inlines_chars_with_refs_profiled(
             }
             '[' => {
                 // CommonMark forbids links inside links at any nesting level (an
-                // inner link wins; the outer brackets stay literal). Images are
-                // exempt — their description is flattened to alt text — so this
-                // guard applies only to the link-forming paths, not the `!` image
-                // path above. Without it, `[a [b](/u)](/u)` emits nested <a>.
+                // inner link wins; the outer brackets stay literal). Images may
+                // contain links, but retain their bracket-link provenance after
+                // flattening the description. This guard applies to link-forming
+                // paths, not the `!` image path above.
                 let close = if context == InlineContext::LinkLabel {
                     bracket_pairs
                         .get_or_insert_with(|| {
@@ -6414,13 +6421,16 @@ fn parse_link_like(
     let target = parse_inline_link_target(chars, close, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
     let previous_limit = profiler.inline_work.limit;
+    let previous_bracket_link = std::mem::take(&mut profiler.inline_bracket_link);
     let content = parse_inlines_chars_nested(
         &chars[i + 1..close],
         refs,
         InlineContext::LinkLabel,
         profiler,
     );
-    let nested_link = !image && contains_link(&content);
+    let nested_link = !image && (profiler.inline_bracket_link || contains_link(&content));
+    profiler.inline_bracket_link =
+        previous_bracket_link || (!nested_link && (profiler.inline_bracket_link || !image));
     if nested_link {
         profiler.destination_rollback(mark);
         if !profiler.inline_work.exhausted {
@@ -6669,13 +6679,16 @@ fn parse_reference_link_like(
         reference_link_target(chars, i, close, refs, &mut profiler.inline_work)?;
     let mark = profiler.destination_mark();
     let previous_limit = profiler.inline_work.limit;
+    let previous_bracket_link = std::mem::take(&mut profiler.inline_bracket_link);
     let content = parse_inlines_chars_nested(
         &chars[i + 1..close],
         refs,
         InlineContext::LinkLabel,
         profiler,
     );
-    let nested_link = !image && contains_link(&content);
+    let nested_link = !image && (profiler.inline_bracket_link || contains_link(&content));
+    profiler.inline_bracket_link =
+        previous_bracket_link || (!nested_link && (profiler.inline_bracket_link || !image));
     if nested_link {
         profiler.destination_rollback(mark);
         if !profiler.inline_work.exhausted {
@@ -7632,12 +7645,13 @@ struct OpenBracket {
     index: usize,
     image: bool,
     contains_link: bool,
+    contains_bracket_link: bool,
 }
 
 /// `S` chooses only the table storage width. Matching recognizes the same
 /// opaque atoms and target grammar as the tokenizer. Accepted inner links make
-/// an outer link invalid; an accepted image instead flattens its label, so links
-/// inside it must not invalidate an enclosing link.
+/// an outer link invalid. Images flatten visible child links, but accepted
+/// bracket links still deactivate earlier link openers across that image.
 fn compute_bracket_pairs_in<S: PairTable>(
     chars: &[char],
     refs: &ReferenceMap,
@@ -7690,6 +7704,7 @@ fn compute_bracket_pairs_in<S: PairTable>(
                     index: i,
                     image: true,
                     contains_link: false,
+                    contains_bracket_link: false,
                 });
             }
             '[' => {
@@ -7701,6 +7716,7 @@ fn compute_bracket_pairs_in<S: PairTable>(
                         pairs.record(i, close, false);
                         if let Some(parent) = open_stack.last_mut() {
                             parent.contains_link = true;
+                            parent.contains_bracket_link = true;
                         }
                         i = next - 1;
                     } else {
@@ -7713,16 +7729,18 @@ fn compute_bracket_pairs_in<S: PairTable>(
                         index: i,
                         image: false,
                         contains_link: false,
+                        contains_bracket_link: false,
                     });
                 }
             }
             ']' => {
                 if let Some(open) = open_stack.pop() {
-                    pairs.record(open.index, i, open.contains_link);
+                    let blocks_link = open.contains_link || open.contains_bracket_link;
+                    pairs.record(open.index, i, blocks_link);
                     if root == Some(open.index) {
                         break;
                     }
-                    let next = if open.image || !open.contains_link {
+                    let next = if open.image || !blocks_link {
                         parse_inline_link_target(chars, i, work)
                             .map(|target| target.next)
                             .or_else(|| {
@@ -7737,8 +7755,11 @@ fn compute_bracket_pairs_in<S: PairTable>(
                     } else {
                         open.contains_link
                     };
-                    if contains_link && let Some(parent) = open_stack.last_mut() {
-                        parent.contains_link = true;
+                    let contains_bracket_link =
+                        open.contains_bracket_link || (next.is_some() && !open.image);
+                    if let Some(parent) = open_stack.last_mut() {
+                        parent.contains_link |= contains_link;
+                        parent.contains_bracket_link |= contains_bracket_link;
                     }
                     if let Some(next) = next {
                         i = next - 1;

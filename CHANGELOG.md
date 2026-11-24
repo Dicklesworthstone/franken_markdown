@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline grids; fixed-grid/page-count conflicts remain rejected before apply.
   Standalone Save HTML retains the selected controls on reopening.
 
+### Fixed
+
+- Bracket links inside image descriptions now deactivate enclosing Markdown
+  links before alternative text is flattened. Valid image links containing
+  angle autolinks remain supported, and source destination inventories no
+  longer include rejected outer links.
+
 ## [0.8.1] - 2026-11-23
 
 A maintenance and reliability release (21 commits since 0.8.0) shipping

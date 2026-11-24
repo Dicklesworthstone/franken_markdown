@@ -72,25 +72,30 @@ fn image_destinations_and_titles_cannot_steal_the_enclosing_link_bracket() {
 }
 
 #[test]
-fn accepted_images_flatten_child_links_without_disabling_their_outer_link() {
+fn accepted_images_keep_child_link_precedence_after_flattening() {
+    // CommonMark's link/image algorithm deactivates every earlier '[' when a
+    // bracket link is accepted, including openers outside an image label.
     let source = "[![before [inner](/inside \"`x\") after](image].png)](/outer)";
     assert_eq!(
         parse_inlines(source),
-        vec![Inline::Link {
-            dest: "/outer".into(),
-            title: None,
-            content: vec![Inline::Image {
+        vec![
+            Inline::Text("[".into()),
+            Inline::Image {
                 dest: "image].png".into(),
                 title: None,
                 alt: "before inner after".into(),
-            }],
-        }]
+            },
+            Inline::Text("](/outer)".into()),
+        ]
     );
-    let targets: Vec<_> = destination_spans(source)
-        .into_iter()
-        .map(|span| span.dest)
-        .collect();
-    assert_eq!(targets, ["image].png", "/outer"]);
+    let targets = destination_spans(source);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].dest, "image].png");
+    assert_eq!(&source[targets[0].range.clone()], "image].png");
+    assert_eq!(
+        fragment(source),
+        "<p>[<img src=\"image%5D.png\" alt=\"before inner after\">](/outer)</p>\n"
+    );
 }
 
 #[test]
@@ -197,13 +202,24 @@ fn code_html_math_and_footnotes_keep_brackets_inside_their_atoms() {
             "{source:?}"
         );
     }
+    // Explicit targets win over caret-label citations. The balanced target
+    // owns the bracket-looking text; only an unterminated outer target leaves
+    // the citation and following ordinary Markdown available to tokenize.
+    let source = "[^n]([later](/later))";
     assert_eq!(
-        parse_inlines("[^n]([later](/later))"),
+        parse_inlines(source),
+        vec![link("^n", "[later](/later)", None)]
+    );
+    let targets = destination_spans(source);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].dest, "[later](/later)");
+    assert_eq!(&source[targets[0].range.clone()], "[later](/later)");
+    assert_eq!(
+        parse_inlines("[^n]([later](/later)"),
         vec![
             Inline::FootnoteRef { id: "n".into() },
             Inline::Text("(".into()),
             link("later", "/later", None),
-            Inline::Text(")".into()),
         ]
     );
 }

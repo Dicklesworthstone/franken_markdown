@@ -3890,11 +3890,30 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
         let title_right = right_x - page_column_w - 2.0 * space_w;
         let max_indent = (title_right - base_x - 2.0 * font_size).max(0.0);
         let left_x = base_x + level_indent.min(max_indent);
-        let title_width = (title_right - left_x).max(1.0);
+        let title_width = title_right - left_x;
         let mut toks = Vec::new();
         push_text_tokens(&title, F_BODY, false, None, &mut toks);
         apply_symbol_fallback(&mut toks, cx.faces);
-        let wrapped = wrap_cell_styled(&toks, title_width, font_size, cx.faces, &cx.width_cache);
+        let wrap = |width: f32| {
+            wrap_cell_styled(&toks, width.max(1.0), font_size, cx.faces, &cx.width_cache)
+        };
+        let mut wrapped = wrap(title_width);
+        // A hanging list can leave less than one intact title glyph beside
+        // the page label. Reflow the title across the actual available width.
+        // If the last baseline still cannot accommodate both, count the label
+        // as its own row during pagination and TOC page-number convergence.
+        if wrapped.iter().any(|row| row.width > title_width + 0.01) {
+            wrapped = wrap(right_x - left_x);
+            if wrapped
+                .last()
+                .is_some_and(|row| row.width > title_width + 0.01)
+            {
+                wrapped.push(CellWrapLine {
+                    runs: Vec::new(),
+                    width: 0.0,
+                });
+            }
+        }
         let count = wrapped.len();
         let group = cx.alloc_flow();
         for (index, row) in wrapped.into_iter().enumerate() {
@@ -3919,7 +3938,11 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 x += run.width;
             }
             if last {
-                append_pdf_toc_page(&mut segs, &target, x, right_x, &page_str, font_size, cx);
+                // A label-only row has no title to connect with dot leaders.
+                let title_end = if segs.is_empty() { right_x } else { x };
+                append_pdf_toc_page(
+                    &mut segs, &target, title_end, right_x, &page_str, font_size, cx,
+                );
             }
             out.push(Line {
                 size: font_size,

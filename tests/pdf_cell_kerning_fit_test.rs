@@ -279,3 +279,43 @@ fn table_repairs_have_identical_streaming_and_browser_adapter_output() {
     .unwrap();
     assert_eq!(browser.bytes, native);
 }
+
+#[test]
+fn a_list_toc_keeps_its_page_label_clear_of_indivisible_title_glyphs() {
+    let source = "1000. [[TOC]]\n\n# W\n";
+    // The hanging ordinal uses about 36pt at the normal 11pt body size.
+    // At 48pt the remaining measure fits the serif W, but not W and 1.
+    for (measure, stacked) in [(48.0, true), (90.0, false)] {
+        let options = options(measure);
+        let pdf = render_pdf(source, &options).unwrap();
+        let paint = runs(&pdf);
+        let title = paint
+            .iter()
+            .find(|run| run.text == "W" && run.size <= 11.0)
+            .unwrap();
+        let label = paint
+            .iter()
+            .find(|run| run.text == "1" && run.size == title.size)
+            .unwrap();
+        let heading = paint
+            .iter()
+            .find(|run| run.text == "W" && run.size > 11.0)
+            .unwrap();
+        assert_eq!(title.page, label.page);
+        assert_eq!(label.text, (heading.page + 1).to_string());
+        let right = options.theme.page.size.width_pt - options.theme.page.margins.right_pt;
+        assert!(title.x + title.width <= right + 0.02);
+        assert!((label.x + label.width - right).abs() < 0.02);
+        if stacked {
+            assert_eq!(title.size, 10.0);
+            assert!(
+                label.x < title.x + title.width,
+                "the two runs need separate rows"
+            );
+            assert!(label.y < title.y - title.size);
+        } else {
+            assert_eq!(label.y, title.y);
+            assert!(label.x >= title.x + title.width);
+        }
+    }
+}

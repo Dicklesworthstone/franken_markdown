@@ -100,6 +100,41 @@ request, not a guarantee that arbitrary content can fit. Expansion enables glyph
 expansion without protrusion; protrusion retains the native combined mode.
 PDF timestamps remain explicitly deterministic at epoch zero.
 
+The **PDF headers and footers** group provides independent left, center and right text
+slots for both page bands, a rule for each band, and an option to leave the first
+physical page without any header, footer or page number. For example, put
+`{title}` in Header left, `{section}` in Header right, and `{page} / {pages}` in
+Footer center, then enable Header rule and apply. The renderer expands the
+templates against the final PDF page layout. Canvas remains a continuous preview
+and does not display the page bands.
+
+Templates support `{page}`, `{pages}`, `{title}`, `{author}`, `{date}`, `{section}`
+and `{chapter}`; unknown tokens remain literal. The date token uses the export's
+deterministic timestamp, currently `1970-01-01`, rather than the current date.
+Text is preserved exactly, including leading/trailing spaces and unchanged
+imported CR/LF. Each slot renders on one line: the renderer replaces each control
+character with a space. Each slot allows at most 4,096 UTF-8 bytes, and all six
+together allow at most 16,384 UTF-16 units. The shared validator reports invalid
+Unicode or limits before applying the settings.
+
+An empty Footer center lets **PDF page numbers** supply its usual centered
+folio. Any nonempty Footer center takes precedence, including whitespace, and
+remains explicit content even when automatic page numbers are Off. The controls
+do not rewrite templates or add another page number. To suppress page numbers
+on the first page, enter `{page}` in Footer center and enable the first-page
+option. That option requires a nonempty header/footer or an enabled rule; it
+suppresses all first-page bands and automatic page numbers without renumbering
+later pages. Explicit bands must fit the selected top/bottom margins; the
+renderer reports an error if they do not fit.
+
+All nine header/footer fields are part of the same applied settings capture as
+PDF export and configured PDF verification. Editing them invalidates prepared
+PDFs and reports. They round-trip in `.fmdflow.json` projects, survive a
+same-document remount, and reset when opening plain Markdown or resetting all
+settings. Older projects without these fields retain the original PDF defaults.
+The text controls do not grant decorative-image access; running-band images
+remain available through the explicit asset APIs.
+
 Paper controls select Letter, A4, A5, Legal, Tabloid, or custom width and height,
 with an optional portrait/landscape orientation. Custom dimensions are used only
 when **Custom dimensions** is selected; incomplete or conflicting fields are

@@ -552,7 +552,7 @@ fn superscript_fallback_retains_real_styled_glyphs_and_primary_font_precedence()
             })
             .collect();
         assert_eq!(painted.len(), 40, "all ten numerals in all four styles");
-        for (run, style) in painted.chunks_exact(10).zip(styles) {
+        for (run, style) in painted.as_chunks::<10>().0.iter().zip(styles) {
             let expected = fonts::load_body(FontFamily::Sans, style).unwrap();
             for ((slot, gid), digit) in run.iter().copied().zip(digits.chars()) {
                 assert_ne!(gid, 0);

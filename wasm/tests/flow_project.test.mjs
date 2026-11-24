@@ -13,7 +13,10 @@ const settings = Object.freeze({ profile: "commonmark-gfm", font: "serif",
   marginTopPt: 36, marginRightPt: 42, marginBottomPt: 38, marginLeftPt: 44,
   baselineGridPt: 14, optimalPagination: true, strictPagination: true, splitFootnotes: true,
   footnoteBacklinks: true, pdfLineHeight: 1.4, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.5,
-  typographyThemeSpacing: true, microtype: "expansion", darkMode: "disabled" });
+  typographyThemeSpacing: true, microtype: "expansion", darkMode: "disabled",
+  headerLeft: "  {title}\r\nÉdition 😀  ", headerCenter: "{section}", headerRight: "{chapter}",
+  footerLeft: "{author}\r{date}", footerCenter: "{page} / {pages}", footerRight: "{literal}",
+  headerRule: true, footerRule: false, skipFirstPage: true });
 
 test("versioned Flow projects round-trip exact source and the complete applied export profile", () => {
   const text = serializeFlowProject(document, settings), restored = parseFlowProject(text);
@@ -27,6 +30,11 @@ test("versioned Flow projects round-trip exact source and the complete applied e
   assert.equal(configured.pdf.typography.tableCellPaddingXEm, 0);
   assert.equal(restored.settings.pageSize, "a4");
   assert.deepEqual(configured.pdf, normalizeRenderSettings(settings).pdf);
+  assert.deepEqual(configured.pdf.running, {
+    header: { left: "  {title}\r\nÉdition 😀  ", center: "{section}", right: "{chapter}", rule: true },
+    footer: { left: "{author}\r{date}", center: "{page} / {pages}", right: "{literal}", rule: false },
+    skipFirstPage: true,
+  });
   assert.equal(configured.epub.author, "Émilie");
   assert(Object.isFrozen(restored) && Object.isFrozen(restored.document) && Object.isFrozen(restored.settings));
   assert.equal(serializeFlowProject(restored.document, restored.settings), text);
@@ -39,7 +47,23 @@ test("project file and Blob keep BOM, CRLF, Unicode, nulls and explicit zero val
   assert.equal(restored.document.source, document.source);
   assert.equal(restored.settings.tableCellPaddingXEm, 0);
   assert.equal(restored.settings.fitToPages, null);
+  assert.equal(restored.settings.headerLeft, "  {title}\r\nÉdition 😀  ");
+  assert.equal(restored.settings.footerLeft, "{author}\r{date}");
+  assert.equal(restored.settings.footerRule, false);
+  assert.equal(restored.settings.skipFirstPage, true);
   assert.deepEqual(parseFlowProject("\ufeff" + await output.blob.text()), restored);
+});
+
+test("version-one projects without running fields retain the original PDF defaults", () => {
+  const restored = parseFlowProject(JSON.stringify({
+    schema: "franken-markdown-flow-project", version: 1, document,
+    settings: { title: "Existing project", pageNumbers: true },
+  }));
+  assert.equal(restored.settings.headerLeft, "");
+  assert.equal(restored.settings.footerCenter, "");
+  assert.equal(restored.settings.skipFirstPage, null);
+  assert.deepEqual(normalizeRenderSettings(restored.settings).pdf,
+    { maxOutputBytes: 67108864, title: "Existing project", pageNumbers: true, metadataEpochSeconds: 0 });
 });
 
 for (const bad of [
@@ -53,8 +77,10 @@ for (const bad of [
 
 for (const bad of [{ images: [] }, { workerUrl: "https://example.invalid" }, { page: {} },
   { profile: "typo" }, { pageSize: "custom" }, { baselineGridPt: 14, fitToPages: 2 },
-  { pdfLineHeight: 1.4, typographyThemeSpacing: false }, { author: "\ud800" }]) {
-  test("projects refuse invalid or authority-bearing settings: " + JSON.stringify(bad), () => {
+  { pdfLineHeight: 1.4, typographyThemeSpacing: false }, { author: "\ud800" },
+  { headerLeft: "\ud800" }, { footerCenter: "😀".repeat(1025) },
+  { running: { footer: { center: "{page}" } } }, { skipFirstPage: true }, { headerRule: "true" }]) {
+  test("projects refuse invalid or authority-bearing settings: " + JSON.stringify(bad).slice(0, 90), () => {
     assert.throws(() => captureFlowProject(document, bad));
   });
 }

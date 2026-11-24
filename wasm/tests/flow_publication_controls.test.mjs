@@ -385,7 +385,10 @@ test("configured verification and PDF export share exact source, settings, diale
   const f = await fixture(); t.after(f.dispose);
   f.changeSettings({ profile: "commonmark-gfm", footnoteBacklinks: true, splitFootnotes: true,
     optimalPagination: true, strictPagination: true, baselineGridPt: 12,
-    typographyThemeSpacing: true, pdfLineHeight: 1.4, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.75 });
+    typographyThemeSpacing: true, pdfLineHeight: 1.4, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.75,
+    headerLeft: "  {title}\r\nÉdition 😀  ", headerCenter: "{section}", headerRight: "{chapter}",
+    footerLeft: "{author}\r{date}", footerCenter: "{page} / {pages}", footerRight: "{literal}",
+    headerRule: true, footerRule: false, skipFirstPage: true, pageNumbers: false });
   f.controller.update(f.input(f.source)); await f.controller.whenIdle();
   assert.equal(f.controller.state.status, "ready", JSON.stringify(f.controller.state.error));
   await f.verify();
@@ -405,8 +408,47 @@ test("configured verification and PDF export share exact source, settings, diale
   assert.equal(f.calls[0].options.splitFootnotes, true);
   assert.equal(f.calls[0].options.strictPagination, true);
   assert.equal(f.calls[0].options.typography.tableCellPaddingXEm, 0);
+  assert.equal(f.calls[0].options.pageNumbers, false);
+  assert.deepEqual(f.calls[0].options.running, {
+    header: { left: "  {title}\r\nÉdition 😀  ", center: "{section}", right: "{chapter}", rule: true },
+    footer: { left: "{author}\r{date}", center: "{page} / {pages}", right: "{literal}", rule: false },
+    skipFirstPage: true,
+  });
   assert.deepEqual(f.calls[0].options.pdfImages[0].bytes, f.payload);
 });
+
+for (const format of ["pdf", "pdf-verification"]) {
+  test("pending " + format + " retains its bands and refuses changed running settings", async t => {
+    const f = await fixture(), held = gate(); t.after(f.dispose);
+    f.changeSettings({ headerLeft: "Original header", footerCenter: "{page}", skipFirstPage: true });
+    f.renderGate = held;
+    if (format === "pdf") f.buttons.pdf.click();
+    else f.verificationElements.verify.click();
+    assert.equal(f.calls.length, 1);
+    f.changeSettings({ headerLeft: "Replacement header", footerRule: true, skipFirstPage: false });
+    held.resolve();
+    await (format === "pdf" ? f.lastExport : f.lastVerification);
+    await turn();
+    const status = format === "pdf" ? f.status : f.verificationElements.status;
+    assert.equal(f.calls[0].options.running.header.left, "Original header");
+    assert.equal(f.calls[0].options.running.skipFirstPage, true);
+    assert.equal(f.blobs.length, 0);
+    assert.match(status.textContent, /STALE_OPTIONS/);
+    if (format === "pdf") await f.prepare("pdf");
+    else await f.verify();
+    assert.deepEqual(f.calls[1].options.running, {
+      header: { left: "Replacement header" }, footer: { center: "{page}", rule: true }, skipFirstPage: false,
+    });
+    assert.equal(f.blobs.length, 1);
+    const download = format === "pdf" ? f.download : f.verificationElements.download;
+    f.changeSettings({ footerCenter: "{page} / {pages}" });
+    assert.equal(download.click().defaultPrevented, true);
+    assert.equal(download.hidden, true);
+    assert.match(status.textContent, format === "pdf" ? /Publishing settings changed/ : /report is stale/);
+    assert.equal(f.revoked.length, 1);
+    assert.equal(f.sourceEditor.value, f.source);
+  });
+}
 
 test("verification rejects unresolved images and missing package support without replacing the source", async t => {
   for (const unavailable of ["assets", "verifier"]) {

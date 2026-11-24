@@ -394,13 +394,20 @@ test("unapplied or invalid settings block project saving while plain Markdown re
 
 test("plain Markdown still resets document settings after a project restore", async t => {
   const { nodes, doc } = await setup(t);
-  await openProject(nodes, projectFile("# Project", { profile: "commonmark-gfm", title: "Saved", font: "serif", splitFootnotes: true }));
+  await openProject(nodes, projectFile("# Project", { profile: "commonmark-gfm", title: "Saved", font: "serif", splitFootnotes: true,
+    headerLeft: "{title}", footerCenter: "{page}", headerRule: true, footerRule: false, skipFirstPage: true }));
   nodes["open-markdown"].files = [new File(["# Plain"], "plain.md")];
   nodes["open-markdown"].dispatchEvent(new Event("change")); await tick(); await tick();
   const current = await readProject(nodes);
   assert.equal(current.settings.profile, null);
   assert.equal(current.settings.title, "");
   assert.equal(current.settings.splitFootnotes, null);
+  assert.equal(current.settings.headerLeft, "");
+  assert.equal(current.settings.footerCenter, "");
+  assert.equal(current.settings.headerRule, null);
+  assert.equal(current.settings.footerRule, null);
+  assert.equal(current.settings.skipFirstPage, null);
+  assert.equal(Object.hasOwn(getRenderSettingsBinding(nodes.source).exportOptions("pdf"), "running"), false);
   assert.equal(current.settings.font, "serif");
   assert.equal(doc.querySelector("#render-profile").value, "");
 });
@@ -466,23 +473,43 @@ test("preview observer failures never block project recovery or change the appli
 });
 
 
-test("multiline project metadata stays exact through DOM normalization, unrelated edits and repeated saves", async t => {
-  const { nodes, doc } = await setup(t), metadata = { title: "A\r\nB\rC\nD", author: "First\r\nLast" };
+test("project metadata and running text stay exact through DOM normalization, unrelated edits and repeated saves", async t => {
+  const { nodes, doc } = await setup(t);
+  const templates = { headerLeft: "  {title}\r\nÉdition 😀  ", headerCenter: "{section}\rHeading", headerRight: "{chapter}",
+    footerLeft: "{author}\r{date}", footerCenter: "{page}\r\n/ {pages}", footerRight: "{literal}" };
+  const metadata = { title: "A\r\nB\rC\nD", author: "First\r\nLast", ...templates,
+    headerRule: true, footerRule: false, skipFirstPage: true };
   await openProject(nodes, projectFile("# Multiline metadata", metadata));
   const title = doc.querySelector("#render-title"), author = doc.querySelector("#render-author");
   assert.equal(title.tagName, "TEXTAREA"); assert.equal(author.tagName, "TEXTAREA");
   assert.equal(title.value, metadata.title.replace(/\r\n?/g, "\n"));
   assert.equal(author.value, metadata.author.replace(/\r\n?/g, "\n"));
+  for (const [key, text] of Object.entries(templates)) {
+    assert.equal(doc.querySelector("#render-" + key).tagName, "TEXTAREA");
+    assert.equal(doc.querySelector("#render-" + key).value, text.replace(/\r\n?/g, "\n"));
+  }
   const binding = getRenderSettingsBinding(nodes.source);
   assert.equal(binding.exportOptions("pdf").title, metadata.title);
   assert.equal(binding.exportOptions("epub").author, metadata.author);
+  assert.deepEqual(binding.exportOptions("pdf").running, {
+    header: { left: templates.headerLeft, center: templates.headerCenter, right: templates.headerRight, rule: true },
+    footer: { left: templates.footerLeft, center: templates.footerCenter, right: templates.footerRight, rule: false },
+    skipFirstPage: true,
+  });
   let saved = await readProject(nodes);
   assert.equal(saved.settings.title, metadata.title); assert.equal(saved.settings.author, metadata.author);
+  for (const [key, value] of Object.entries(metadata)) assert.equal(saved.settings[key], value);
   applySettings(doc, { pageSize: "a5" });
   doc.querySelector("#render-settings-discard").click();
   saved = await readProject(nodes);
   assert.equal(saved.settings.title, metadata.title); assert.equal(saved.settings.author, metadata.author);
+  for (const [key, value] of Object.entries(metadata)) assert.equal(saved.settings[key], value);
   applySettings(doc, { title: "Edited\r\nmetadata" });
   assert.equal((await readProject(nodes)).settings.title, "Edited\nmetadata");
   assert.equal(binding.exportOptions("pdf").author, metadata.author);
+  applySettings(doc, { headerLeft: "Edited\r\nheader" });
+  saved = await readProject(nodes);
+  assert.equal(saved.settings.headerLeft, "Edited\nheader");
+  assert.equal(saved.settings.footerCenter, templates.footerCenter);
+  assert.equal(binding.exportOptions("pdf").running.footer.center, templates.footerCenter);
 });

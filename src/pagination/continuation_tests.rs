@@ -346,9 +346,8 @@ fn exhaustive_partitions_match_the_global_body_boundary_minimum() {
                         .collect(),
                 });
             }
-            for boundary in 1..count {
-                input.break_costs[boundary] =
-                    Some(((boundary * 31 + seed * 17) % 9) as i64 * 1_000 - 2_000);
+            for (boundary, cost) in input.break_costs.iter_mut().enumerate().take(count).skip(1) {
+                *cost = Some(((boundary * 31 + seed * 17) % 9) as i64 * 1_000 - 2_000);
             }
             if seed % 3 == 0 {
                 input.forced[count / 2] = true;

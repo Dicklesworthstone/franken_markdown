@@ -178,6 +178,162 @@ test("all publishing options reach only the appropriate export format", () => {
     assert.equal(options.allowRawHtml, undefined);
   }
 });
+test("all running text slots and rules are literal, frozen PDF-only settings", () => {
+  const values = {
+    headerLeft: "  {title} — Édition 😀  ", headerCenter: "{section}", headerRight: "{chapter}",
+    footerLeft: "{author}\r\n{date}", footerCenter: "{page} / {pages}", footerRight: "{unknown}",
+    headerRule: true, footerRule: false, skipFirstPage: true,
+  };
+  const settings = normalizeRenderSettings(values), defaults = normalizeRenderSettings();
+  assert.deepEqual(settings.pdf.running, {
+    header: { left: values.headerLeft, center: "{section}", right: "{chapter}", rule: true },
+    footer: { left: values.footerLeft, center: "{page} / {pages}", right: "{unknown}", rule: false },
+    skipFirstPage: true,
+  });
+  for (const options of [settings.pdf.running, settings.pdf.running.header, settings.pdf.running.footer])
+    assert(Object.isFrozen(options));
+  for (const format of ["preview", "html", "epub", "svg"])
+    assert.deepEqual(settings[format], defaults[format]);
+  assert.deepEqual(normalizeRenderSettings(JSON.parse(JSON.stringify(settings.values))), settings);
+  values.headerLeft = "Changed caller input";
+  assert.equal(settings.pdf.running.header.left, "  {title} — Édition 😀  ");
+  assert.equal(Object.hasOwn(defaults.pdf, "running"), false);
+});
+
+test("running slots preserve native page-number precedence without synthesizing templates", () => {
+  for (const pageNumbers of [true, false, null]) {
+    for (const footerCenter of ["", " ", "{page} / {pages}", "{date}"]) {
+      const settings = normalizeRenderSettings({ pageNumbers, footerCenter, headerLeft: "Title" });
+      assert.equal(settings.pdf.pageNumbers, pageNumbers === null ? undefined : pageNumbers);
+      assert.deepEqual(settings.pdf.running, { header: { left: "Title" },
+        ...(footerCenter === "" ? {} : { footer: { center: footerCenter } }) });
+    }
+    assert.throws(() => normalizeRenderSettings({ pageNumbers, skipFirstPage: true }),
+      { code: "INVALID_OPTIONS" });
+  }
+  assert.deepEqual(normalizeRenderSettings({ footerCenter: "{page}", skipFirstPage: true }).pdf.running,
+    { footer: { center: "{page}" }, skipFirstPage: true });
+  assert.deepEqual(normalizeRenderSettings({ headerRule: true, skipFirstPage: true }).pdf.running,
+    { header: { rule: true }, skipFirstPage: true });
+  assert.deepEqual(normalizeRenderSettings({ headerRule: false, footerRule: false, skipFirstPage: false }).pdf.running,
+    { header: { rule: false }, footer: { rule: false }, skipFirstPage: false });
+});
+
+test("running templates use shared Unicode and aggregate limits and reject unsupported values", () => {
+  const slots = ["headerLeft", "headerCenter", "headerRight", "footerLeft", "footerCenter", "footerRight"];
+  for (const key of slots) {
+    for (const value of [null, true, 4, [], {}, "x".repeat(4097), "😀".repeat(1025)])
+      assert.throws(() => normalizeRenderSettings({ [key]: value }), { code: "INVALID_OPTIONS" }, key);
+    assert.throws(() => normalizeRenderSettings({ [key]: "\ud800" }), { code: "INVALID_UNICODE" }, key);
+    assert.equal(normalizeRenderSettings({ [key]: "😀".repeat(1024) }).values[key], "😀".repeat(1024));
+  }
+  for (const key of ["headerRule", "footerRule", "skipFirstPage"])
+    for (const value of ["true", 0, {}, []])
+      assert.throws(() => normalizeRenderSettings({ [key]: value }), { code: "INVALID_OPTIONS" }, key);
+  const maximum = Object.fromEntries(slots.slice(0, 4).map(key => [key, "x".repeat(4096)]));
+  assert.equal(normalizeRenderSettings(maximum).pdf.running.footer.left.length, 4096);
+  assert.throws(() => normalizeRenderSettings({ ...maximum, footerCenter: "x" }), { code: "BUDGET_EXCEEDED" });
+  for (const input of [{ running: { header: { left: "Hidden nested option" } } },
+    { headerImage: { dest: "logo.png" } }, { skipFirstPage: true, footerRule: false }])
+    assert.throws(() => normalizeRenderSettings(input), { code: "INVALID_OPTIONS" });
+});
+
+test("running controls apply atomically, invalidate publication, and leave preview and source intact", t => {
+  const f = fixture(); t.after(() => f.controls.dispose());
+  const before = f.controls.settings;
+  const slots = { headerLeft: "{title}", headerCenter: "{section}", headerRight: "{chapter}",
+    footerLeft: "{author}", footerCenter: "{page} / {pages}", footerRight: "Édition 😀" };
+  for (const [key, value] of Object.entries(slots)) {
+    const field = f.el(`render-${key}`);
+    assert.equal(field.tagName, "TEXTAREA");
+    assert.equal(field.maxLength, 4096);
+    assert.equal(field.parentNode.children[0].attributes.for, field.id);
+    assert.match(field.attributes["aria-describedby"], /render-running-help/);
+    f.set(key, value);
+  }
+  for (const [key, value] of [["headerRule", "true"], ["footerRule", "false"], ["skipFirstPage", "true"]]) {
+    assert.deepEqual(f.el(`render-${key}`).children.map(option => option.value), ["", "true", "false"]);
+    f.set(key, value);
+  }
+  assert.equal(f.controls.settings, before);
+  assert.equal(f.invalidated.length, 9);
+  assert.throws(() => f.controls.exportOptions("pdf"), { code: "UNAPPLIED_SETTINGS" });
+  assert.throws(() => f.controls.capture(), { code: "UNAPPLIED_SETTINGS" });
+  f.set("footerRight", "😀".repeat(1025)); f.submit();
+  assert.equal(f.controls.settings, before);
+  assert.equal(f.applied.length, 0);
+  assert.equal(f.el("render-footerRight").value, "😀".repeat(1025));
+  assert.equal(f.el("render-headerLeft").value, "{title}");
+  assert.match(f.el("render-settings-status").textContent, /4096 UTF-8 bytes/);
+  f.set("footerRight", slots.footerRight); f.submit();
+  assert.equal(f.applied.length, 1);
+  assert.equal(f.applied[0].change.previewChanged, false);
+  assert.deepEqual(f.controls.exportOptions("pdf").running, {
+    header: { left: "{title}", center: "{section}", right: "{chapter}", rule: true },
+    footer: { left: "{author}", center: "{page} / {pages}", right: "Édition 😀", rule: false },
+    skipFirstPage: true,
+  });
+  assert.equal(f.controls.capture().headerLeft, "{title}");
+  assert.equal(f.controls.dirty, false);
+  assert.equal(f.sourceEditor.value, "# Original Markdown");
+  assert.equal(f.sourceEditor.selectionStart, 2); assert.equal(f.sourceEditor.selectionEnd, 5);
+  assert.equal(f.inputEvents, 0);
+});
+
+test("running settings survive remount and restore, discard drafts, and reset at document boundaries", t => {
+  const f = fixture(); t.after(() => f.controls.dispose());
+  const imported = { font: "serif", headerLeft: "{title}", footerCenter: "{page}",
+    headerRule: true, footerRule: false, skipFirstPage: true };
+  f.controls.restore(imported);
+  const captured = JSON.parse(JSON.stringify(f.controls.capture()));
+  const options = f.controls.exportOptions("pdf");
+  f.remount(captured);
+  assert.deepEqual(f.controls.exportOptions("pdf"), options);
+  f.set("headerLeft", "Unapplied");
+  f.el("render-settings-discard").click();
+  assert.equal(f.el("render-headerLeft").value, "{title}");
+  assert.equal(f.controls.dirty, false);
+  f.set("headerLeft", "Another draft");
+  f.controls.restore(captured);
+  assert.equal(f.el("render-headerLeft").value, "{title}");
+  assert.equal(f.controls.dirty, false);
+  f.controls.reset();
+  assert.equal(Object.hasOwn(f.controls.exportOptions("pdf"), "running"), false);
+  f.controls.restore(imported);
+  f.set("footerRight", "Old document's draft");
+  f.sourceEditor.dispatchEvent(new Event("fmd-document-replaced"));
+  assert.equal(f.controls.settings.preview.font, "serif");
+  assert.equal(Object.hasOwn(f.controls.exportOptions("pdf"), "running"), false);
+  for (const key of ["headerLeft", "headerCenter", "headerRight", "footerLeft", "footerCenter", "footerRight",
+    "headerRule", "footerRule", "skipFirstPage"])
+    assert.equal(f.el(`render-${key}`).value, "");
+  assert.equal(f.controls.dirty, false);
+  assert.equal(f.sourceEditor.value, "# Original Markdown"); assert.equal(f.inputEvents, 0);
+});
+
+test("unchanged textarea views retain exact imported running CRLF while edited templates use the view", t => {
+  const f = fixture(); t.after(() => f.controls.dispose());
+  const slots = ["headerLeft", "headerCenter", "headerRight", "footerLeft", "footerCenter", "footerRight"];
+  // Real textarea values normalize CR and CRLF on assignment. Model that
+  // browser boundary while exercising production restore/write/draft logic.
+  for (const key of slots) {
+    let view = "";
+    Object.defineProperty(f.el(`render-${key}`), "value", {
+      get: () => view, set: value => { view = String(value).replace(/\r\n?/g, "\n"); },
+    });
+  }
+  const imported = Object.fromEntries(slots.map(key => [key, `${key}\r\n{page}\rEnd`]));
+  f.controls.restore(imported);
+  assert.equal(f.controls.dirty, false);
+  for (const key of slots) assert.equal(f.el(`render-${key}`).value, `${key}\n{page}\nEnd`);
+  f.set("headerRule", "true"); f.submit();
+  for (const key of slots) assert.equal(f.controls.capture()[key], imported[key]);
+  assert.equal(f.controls.exportOptions("pdf").running.footer.left, imported.footerLeft);
+  f.set("headerLeft", "Edited\r\n{page}"); f.submit();
+  assert.equal(f.controls.capture().headerLeft, "Edited\n{page}");
+  assert.equal(f.controls.exportOptions("pdf").running.footer.left, imported.footerLeft);
+});
+
 for (const [key, value] of [
   ["profile", ""],
   ["profile", "gfm"],
@@ -505,6 +661,8 @@ test("applied settings pass through real export and adapter validation without c
     tableCellPaddingXEm: 0,
     tableCellPaddingYEm: 1.25,
     microtype: "expansion",
+    headerLeft: "{title}", headerRight: "{section}", footerCenter: "{page} / {pages}",
+    headerRule: true, footerRule: false, skipFirstPage: true,
   });
   const session = withFlowExports(
     adapter,
@@ -527,6 +685,11 @@ test("applied settings pass through real export and adapter validation without c
   assert.equal(calls[1].options.baseFontSize, 13);
   assert.equal(calls[0].options.page, undefined);
   assert.equal(calls[0].options.typography, undefined);
+  assert.equal(calls[0].options.running, undefined);
+  assert.deepEqual(calls[1].options.running, {
+    header: { left: "{title}", right: "{section}", rule: true },
+    footer: { center: "{page} / {pages}", rule: false }, skipFirstPage: true,
+  });
   assert.deepEqual(calls[1].options.page, {
     size: { widthPt: 297 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
     margins: { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 36 },

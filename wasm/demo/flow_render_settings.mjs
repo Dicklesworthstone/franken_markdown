@@ -1,5 +1,5 @@
 // Applied renderer configuration, not CSS pretending to change engine metrics.
-// Session-only primitives: never source, file handles, images or trust grants.
+// Applied data-only primitives: never source, file handles, images or trust grants.
 
 import { normalizeFlowExport } from "../flow_export.mjs";
 import { FlowError, validateCreation } from "../flow_session.mjs";
@@ -22,6 +22,15 @@ const DEFAULTS = Object.freeze({
   headingScale: null,
   tableFontSize: null,
   fitToPages: null,
+  headerLeft: "",
+  headerCenter: "",
+  headerRight: "",
+  footerLeft: "",
+  footerCenter: "",
+  footerRight: "",
+  headerRule: null,
+  footerRule: null,
+  skipFirstPage: null,
   pageSize: null,
   pageOrientation: null,
   pageWidthPt: null,
@@ -86,6 +95,10 @@ const TYPOGRAPHY_SPACING = Object.freeze({
   tableCellPaddingXEm: "tableCellPaddingXEm",
   tableCellPaddingYEm: "tableCellPaddingYEm",
 });
+const RUNNING_TEXT = Object.freeze({
+  header: Object.freeze({ headerLeft: "left", headerCenter: "center", headerRight: "right" }),
+  footer: Object.freeze({ footerLeft: "left", footerCenter: "center", footerRight: "right" }),
+});
 const optionalSelects = ["profile", "microtype", "pageSize", "pageOrientation"];
 const equal = (a, b) => Object.keys(DEFAULTS).every((key) => a.values[key] === b.values[key]);
 const previewEqual = (a, b) =>
@@ -131,7 +144,7 @@ export function normalizeRenderSettings(input = {}) {
     codeSize: layout.codeSize,
     lineHeight: layout.lineHeight,
   });
-  for (const key of ["title", "lang", "author"])
+  for (const key of ["title", "lang", "author", ...Object.values(RUNNING_TEXT).flatMap(Object.keys)])
     if (typeof values[key] !== "string")
       fail(`${key} must be text; use empty text for the renderer default.`);
   // Null is the explicit "renderer default" for optional switches/numbers. Do
@@ -139,6 +152,7 @@ export function normalizeRenderSettings(input = {}) {
   for (const key of [
     "toc", "pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination",
     "footnoteBacklinks", "splitFootnotes",
+    "headerRule", "footerRule", "skipFirstPage",
     ...Object.keys(TYPOGRAPHY_FIELDS),
   ]) {
     if (values[key] !== null && typeof values[key] !== "boolean")
@@ -176,6 +190,16 @@ export function normalizeRenderSettings(input = {}) {
   if (Object.keys(margins).length) page.margins = margins;
   const typography = Object.fromEntries(Object.entries({ ...TYPOGRAPHY_FIELDS, ...TYPOGRAPHY_SPACING })
     .filter(([key]) => values[key] !== null).map(([key, mode]) => [mode, values[key]]));
+  // Templates are literal data. The shared PDF normalizer owns their Unicode
+  // and byte bounds; the renderer owns expansion, page-number sugar and fitting.
+  const running = {};
+  for (const [band, slots] of Object.entries(RUNNING_TEXT)) {
+    const content = Object.fromEntries(Object.entries(slots)
+      .filter(([key]) => values[key] !== "").map(([key, slot]) => [slot, values[key]]));
+    if (values[`${band}Rule`] !== null) content.rule = values[`${band}Rule`];
+    if (Object.keys(content).length) running[band] = content;
+  }
+  if (values.skipFirstPage !== null) running.skipFirstPage = values.skipFirstPage;
   const selected = (keys) =>
     Object.fromEntries(
       keys
@@ -195,6 +219,7 @@ export function normalizeRenderSettings(input = {}) {
       ...selected([...common, ...pdfOnly]), metadataEpochSeconds: 0,
       ...(Object.keys(page).length ? { page } : {}),
       ...(Object.keys(typography).length ? { typography } : {}),
+      ...(Object.keys(running).length ? { running } : {}),
     },
     validationToken,
   );
@@ -252,6 +277,15 @@ const FIELDS = [
   ["headingScale", "PDF heading scale (optional)", "number", 1.05, 2],
   ["tableFontSize", "PDF table size in points (optional)", "number", 5, 24],
   ["fitToPages", "PDF target page count (optional, not guaranteed)", "number", 1, 1000, true],
+  ["headerLeft", "PDF header left", "textarea", 4096],
+  ["headerCenter", "PDF header center", "textarea", 4096],
+  ["headerRight", "PDF header right", "textarea", 4096],
+  ["headerRule", "PDF header rule", "boolean", booleanChoices],
+  ["footerLeft", "PDF footer left", "textarea", 4096],
+  ["footerCenter", "PDF footer center (overrides automatic page number)", "textarea", 4096],
+  ["footerRight", "PDF footer right", "textarea", 4096],
+  ["footerRule", "PDF footer rule", "boolean", booleanChoices],
+  ["skipFirstPage", "Leave the first PDF page without headers, footers or page numbers", "boolean", booleanChoices],
   ["pageSize", "PDF paper size", "select", [
     ["", "Renderer default"], ["letter", "Letter"], ["a4", "A4"], ["a5", "A5"],
     ["legal", "Legal"], ["tabloid", "Tabloid"], ["custom", "Custom dimensions"],
@@ -330,16 +364,23 @@ function mount(root) {
             ? "Shared export options"
             : key === "author"
               ? "PDF publishing"
-              : key === "pageSize"
-                ? "PDF paper and margins"
-                : key === "baselineGridPt"
-                  ? "PDF pagination and typography"
-                  : key === "darkMode"
-                    ? "HTML and EPUB publishing"
-                    : null;
+              : key === "headerLeft"
+                ? "PDF headers and footers"
+                : key === "pageSize"
+                  ? "PDF paper and margins"
+                  : key === "baselineGridPt"
+                    ? "PDF pagination and typography"
+                    : key === "darkMode"
+                      ? "HTML and EPUB publishing"
+                      : null;
       if (groupTitle) {
         group = make("fieldset");
         group.append(make("legend", groupTitle));
+        if (key === "headerLeft") group.append(make(
+          "p",
+          "Text supports {page}, {pages}, {title}, {author}, {date}, {section} and {chapter}; unknown tokens remain literal. Empty slots are omitted. A nonempty footer center takes precedence over automatic page numbers and remains visible when page numbers are Off. Skipping the first page requires a nonempty header/footer or an enabled rule; for page numbers alone, enter {page} in Footer center. Page numbering still counts the first page. Headers and footers must fit the selected margins and appear in the PDF. The flowing Canvas preview does not show them.",
+          "render-running-help",
+        ));
         form.append(group);
       }
       const row = make("p"),
@@ -351,7 +392,9 @@ function mount(root) {
         undefined,
         id,
       );
-      field.setAttribute("aria-describedby", "render-settings-help render-settings-status");
+      field.setAttribute("aria-describedby", "render-settings-help render-settings-status"
+        + (Object.values(RUNNING_TEXT).some(slots => Object.hasOwn(slots, key))
+          || ["headerRule", "footerRule", "skipFirstPage"].includes(key) ? " render-running-help" : ""));
       field.style.maxWidth = "100%";
       field.style.minHeight = "44px";
       if (field.tagName.toLowerCase() === "select") {

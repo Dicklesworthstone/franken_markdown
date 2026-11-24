@@ -147,6 +147,12 @@ export function createDemoWorkspaceWorker(options = {}) {
             throw error;
           } finally { starting = false; }
         }
+        // Disposal during endpoint listener registration predates rpc assignment.
+        // Retire that completed transport before any captured source is sent.
+        if (disposed) {
+          rpc.dispose();
+          fail("SESSION_DISPOSED", "Workspace worker was disposed during initialization.");
+        }
         return rpc.request("prepare-workspace", captured.charge, () => {
           const transfer = [], images = captured.options.pdfImages.map(image => {
             const bytes = byteView(image.bytes, DEMO_WORKSPACE_LIMITS.imageBytes).slice();

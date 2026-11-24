@@ -235,6 +235,12 @@ export function createDocumentInspector(options = {}) {
             throw error;
           } finally { starting = false; }
         }
+        // A host endpoint may dispose the inspector from listener registration,
+        // before the newly constructed transport is assigned to rpc.
+        if (disposed) {
+          rpc.dispose();
+          fail("SESSION_DISPOSED", "document inspector was disposed during initialization");
+        }
         return rpc.request("inspect", charge, () => ({
           args: profile === undefined ? [markdown, maxOutputBytes] : [markdown, maxOutputBytes, analysis],
         }), { signal, timeoutMs }).then(value => {

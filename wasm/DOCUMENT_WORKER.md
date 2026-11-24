@@ -53,7 +53,10 @@ request is silently replayed and no rollback is claimed.
 The default 30-second deadline includes queue wait and first-use initialization;
 set `timeoutMs` per renderer or request, or use 0 to disable it. Timer delivery
 still depends on the host event loop, not a real-time scheduler. `dispose()` is
-immediate/idempotent and rejects pending work. Renderer loading errors, traps,
+immediate/idempotent and rejects pending work. This also holds when a custom
+worker endpoint disposes its client while registering startup listeners: the
+endpoint is retired, the request rejects with `SESSION_DISPOSED`, and no source
+is dispatched. Renderer loading errors, traps,
 and malformed output close the worker; there is no main-thread fallback.
 
 Use separate instances when preview cancellation must not terminate a publication

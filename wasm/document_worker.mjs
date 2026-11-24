@@ -578,6 +578,12 @@ export function createWorkerRenderer(options = {}) {
           starting = false;
         }
       }
+      // Listener registration may synchronously dispose the public client while
+      // its transport is still being constructed and rpc has not been assigned.
+      if (disposed) {
+        rpc.dispose();
+        fail("SESSION_DISPOSED", "document worker was disposed during initialization");
+      }
       const expected = format === "compare"
         ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength, profile: input.options.profile }
         : format === "verify" ? { sourceLength: input.sourceLength, profile: input.options.profile }

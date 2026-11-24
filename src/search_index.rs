@@ -92,7 +92,8 @@ pub fn build_search_index(doc: &Document) -> SearchIndex {
 /// inside tables, definitions, and other notes). Unreferenced notes are omitted,
 /// duplicate definitions use the first, and cycles emit each note only once.
 /// Note headings consume IDs after all body headings, preserving collision
-/// parity. Note text before its first heading targets the actual `fn-ID` anchor.
+/// parity. Note text before its first heading targets the actual note anchor,
+/// including collision-safe alternatives when a heading owns `fn-ID`.
 ///
 /// This function does not retain source text or clone the document AST.
 #[must_use]
@@ -118,6 +119,19 @@ fn build_index(doc: &Document, full: bool) -> SearchIndex {
         full,
         &mut notes,
     );
+    // Note targets share a namespace with headings and other source-owned
+    // notes. Reuse the renderer's complete allocation, including headings and
+    // references discovered inside later note bodies. A guessed `fn-ID` can
+    // otherwise send a search result to an unrelated heading.
+    let note_anchors: HashMap<_, _> = if full && !notes.order.is_empty() {
+        crate::html::heading_identifiers(doc)
+            .footnotes
+            .into_iter()
+            .map(|note| (note.source_id, note.body))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let mut cursor = 0;
     while let Some(id) = notes.order.get(cursor).copied() {
         cursor += 1;
@@ -127,7 +141,10 @@ fn build_index(doc: &Document, full: bool) -> SearchIndex {
             .and_then(|defs| defs.get(id))
             .copied();
         if let Some(blocks) = blocks {
-            current_anchor = format!("fn-{id}");
+            current_anchor = note_anchors
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("fn-{id}"));
             walk_blocks(
                 blocks,
                 &mut state,

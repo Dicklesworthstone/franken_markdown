@@ -1,8 +1,7 @@
-//! Standalone integration tests for `src/search_index.rs`.
+//! Integration tests for the public search-index API.
 //!
-//! The module is included directly (not via the crate root) so these tests
-//! run before the module is registered in `lib.rs`. The critical guarantee
-//! under test: heading anchors produced by `build_search_index` match the
+//! The critical guarantee under test: heading anchors produced by
+//! `build_search_index` match the
 //! `id="..."` attributes the HTML emitter produces, byte-for-byte, including
 //! duplicate-heading collision suffixes.
 //!
@@ -10,13 +9,12 @@
 //! restriction lints here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../src/search_index.rs"]
-mod search_index;
-
 use franken_markdown::ast::{Block, Document, Inline};
 use franken_markdown::html;
+use franken_markdown::search_index::{
+    EntryKind, build_full_search_index, build_search_index, search_index_json,
+};
 use franken_markdown::{HtmlOptions, parse};
-use search_index::{EntryKind, build_search_index, search_index_json};
 
 /// Extract every `<hN id="...">` id from rendered HTML, in document order.
 fn html_heading_ids(rendered: &str) -> Vec<String> {
@@ -320,5 +318,65 @@ impl EntryKindExt for EntryKind {
             EntryKind::Heading => "heading",
             EntryKind::Paragraph => "paragraph",
         }
+    }
+}
+
+#[test]
+fn full_index_note_targets_follow_the_rendered_collision_allocation() {
+    let cases: &[(&str, &[(&str, &str)])] = &[
+        (
+            "# fn-a\n\nBody[^a].\n\n[^a]: First needle.\n",
+            &[("First needle.", "fn-a-2")],
+        ),
+        (
+            "# fn-a\n\nBody[^a] and [^a-2].\n\n[^a]: First needle.\n\n[^a-2]: Second needle.\n",
+            &[("First needle.", "fn-a-3"), ("Second needle.", "fn-a-2")],
+        ),
+        (
+            "Body[^a].\n\n[^a]: First needle.\n\n    # fn-a\n",
+            &[("First needle.", "fn-a-2")],
+        ),
+        (
+            "Body[^a].\n\n[^a]: First needle.\n\n[^unused]: # fn-a\n",
+            &[("First needle.", "fn-a")],
+        ),
+        (
+            "# fnref-1\n\nBody[^a].\n\n[^a]: First needle.\n",
+            &[("First needle.", "fn-a")],
+        ),
+    ];
+    for (source, expected) in cases {
+        let doc = parse(source);
+        let index = build_full_search_index(&doc);
+        let rendered = html::render_fragment(&doc.blocks, &HtmlOptions::default());
+        for (text, anchor) in *expected {
+            let entry = index
+                .entries
+                .iter()
+                .find(|entry| entry.text == *text)
+                .unwrap();
+            assert_eq!(entry.anchor, *anchor, "{source:?}");
+            assert!(
+                rendered.contains(&format!("<li id=\"{anchor}\">")),
+                "search target does not identify an emitted note: {source:?}: {rendered}"
+            );
+        }
+    }
+}
+
+#[test]
+fn full_index_does_not_invent_heading_ids_for_sanitized_raw_html() {
+    let doc = parse("<h2>Topic</h2>\n\n# Topic\n\n# Topic\n");
+    let rendered = html::render_fragment(&doc.blocks, &HtmlOptions::default());
+    let index = build_full_search_index(&doc);
+    let anchors: Vec<_> = index
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Heading)
+        .map(|entry| entry.anchor.as_str())
+        .collect();
+    assert_eq!(anchors, ["topic", "topic-2"]);
+    for anchor in anchors {
+        assert!(rendered.contains(&format!("<h1 id=\"{anchor}\">Topic</h1>")));
     }
 }

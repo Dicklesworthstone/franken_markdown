@@ -649,7 +649,7 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
 | `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
 | `--interactive-html` | Self-hosting single-file HTML workspace with live editor, preview and client-side PDF export (alias `--self-hosting`) |
-| `--search-index <path>` | Also write a deterministic JSON search index (headings + anchored paragraphs, schema `fmd-search-index-v1`) for docs-site search |
+| `--search-index <path>` | Also write a deterministic full-content JSON search index: headings, prose, code, tables, definitions, mathematics and referenced notes, with the selected authoring grammar and actual HTML anchors (schema `fmd-search-index-v1`; see [search sidecars](docs/NATIVE_SEARCH_INDEX.md)) |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
 | `--title <text>` | Set the document title (otherwise the first heading, then "Document") |
 | `--author <text>` | Set PDF author metadata |

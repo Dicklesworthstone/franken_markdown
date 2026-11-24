@@ -334,8 +334,8 @@ struct RenderArgs {
     /// real-time preview, document statistics, and client-side PDF export.
     #[arg(long, visible_alias = "self-hosting")]
     interactive_html: bool,
-    /// Write a deterministic JSON search index (headings + anchored paragraph
-    /// chunks, schema fmd-search-index-v1) for docs-site search integrations.
+    /// Write a deterministic full-content JSON search index (headings, prose,
+    /// code, tables, definitions, math and notes; schema fmd-search-index-v1).
     #[arg(long, value_name = "PATH")]
     search_index: Option<PathBuf>,
     /// Maximum Markdown input bytes accepted before rendering.
@@ -2257,7 +2257,8 @@ fn run_render_with_preview(
     // Built from the same AST; rides the staged write so a failure anywhere
     // rolls back all outputs together.
     let search_index_bytes = if let Some(index_path) = args.search_index.as_deref() {
-        let index = crate::search_index::build_search_index(&doc);
+        let document = crate::apply_profile(&doc, profile);
+        let index = crate::search_index::build_full_search_index(&document);
         let bytes = crate::search_index::search_index_json(&index).into_bytes();
         Some((index_path, bytes))
     } else {

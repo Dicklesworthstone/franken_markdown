@@ -13,6 +13,9 @@ use std::ops::Range;
 pub(crate) struct Row {
     pub height: i64,
     pub continuation_prefix: i64,
+    /// Additional painted depth when this is the last body row on a page.
+    /// Interior rows already share their ordinary leading and trailing gaps.
+    pub suffix: i64,
     pub block: usize,
 }
 
@@ -259,7 +262,7 @@ impl<'a> Measured<'a> {
         let mut body_heights = Vec::with_capacity(count + 1);
         body_heights.push(0);
         for row in &input.rows {
-            if row.height <= 0 || row.continuation_prefix < 0 {
+            if row.height <= 0 || row.continuation_prefix < 0 || row.suffix < 0 {
                 return Err(Error::Invalid("invalid body row height"));
             }
             let previous = body_heights.last().copied().unwrap_or(0);
@@ -307,8 +310,11 @@ impl<'a> Measured<'a> {
 
     fn body_height(&self, start: usize, end: usize) -> Result<i64, Error> {
         height_sum(
-            self.body_heights[end] - self.body_heights[start],
-            self.input.rows[start].continuation_prefix,
+            height_sum(
+                self.body_heights[end] - self.body_heights[start],
+                self.input.rows[start].continuation_prefix,
+            )?,
+            self.input.rows[end - 1].suffix,
         )
     }
 
@@ -529,7 +535,12 @@ fn search_plan(input: &Input, search: &mut Search) -> Result<Plan, Error> {
             search.charge(1)?;
             let height = measured.body_height(start, end)?;
             if height > options.capacity {
-                break;
+                // Boundary-only ink can shrink at the next row. Stop only
+                // when the monotonically growing body itself cannot fit.
+                if height - input.rows[end - 1].suffix > options.capacity {
+                    break;
+                }
+                continue;
             }
             if !measured.legal(start, end) {
                 continue;

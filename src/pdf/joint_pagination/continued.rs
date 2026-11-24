@@ -576,6 +576,7 @@ mod tests {
                                 .map(|index| solver::Row {
                                     height: 10,
                                     continuation_prefix: 0,
+                                    suffix: 0,
                                     block: usize::from(index >= first),
                                 })
                                 .collect(),

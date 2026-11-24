@@ -310,6 +310,33 @@ fn bottom_guard(line: &Line) -> f32 {
     (paint_ink(line, true, true).1 - line_baseline_lift(line) - line.gap_after).max(0.0)
 }
 
+/// Body page breaks discard the last trailing gap, but must retain the ink
+/// below that row's cursor. This includes full-size fallback endnotes that
+/// share the continuation pager with admitted page-foot fragments.
+pub(super) fn body_bottom_guard(line: &Line) -> f32 {
+    if line.grid.is_some() {
+        return 0.0;
+    }
+    let mut below = paint_ink(line, true, true).1;
+    // Unlike prepared note fragments, ordinary body rows do not copy inline
+    // object metrics into text_ink. Their baseline lift still reserves the
+    // extra depth, so include the complete object before subtracting it.
+    for seg in &line.segs {
+        if is_inline_math(seg.slot) {
+            if let Some(formula) =
+                inline_math_fit::placement(&seg.text, line.size, seg.slot == F_DISPLAY_MATH)
+            {
+                below = below.max(formula.descent);
+            }
+        } else if seg.slot == F_IMAGE
+            && let Some(image) = inline_image::image_box(&seg.text, line.size)
+        {
+            below = below.max(image.descent);
+        }
+    }
+    (below - line_baseline_lift(line)).max(0.0)
+}
+
 fn container_clearance(before: &Line, after: &Line) -> f32 {
     if before.grid.is_some() && after.grid.is_some() {
         // The shared grid measures every possible predecessor's descent.
@@ -771,7 +798,7 @@ fn body_height(
             true,
         );
     }
-    let mut height = repeated_table_header_height(lines, start, page);
+    let mut height = repeated_table_header_height_guarded(lines, start, page, body_bottom_guard);
     for (index, line) in lines.iter().enumerate().take(end).skip(start) {
         height += line_leading(line);
         if index + 1 < end {
@@ -784,6 +811,9 @@ fn body_height(
         }
     }
     height
+        + lines
+            .get(end.saturating_sub(1))
+            .map_or(0.0, body_bottom_guard)
 }
 
 fn place<'a>(
@@ -867,12 +897,13 @@ pub(super) fn next_planned_page<'a>(
     let mut placed = if chosen.body.is_empty() {
         Vec::new()
     } else {
-        place_lines_shrunk(
+        place_lines_shrunk_guarded(
             &lines[..notes.body_end],
             chosen.body.start,
             chosen.body.end,
             page.with_foot_reserve(chosen.allocation.reserve),
             None,
+            body_bottom_guard,
         )
     };
     place(
@@ -928,13 +959,15 @@ pub(super) fn next_page<'a>(
     // Body pages aim at the historical 40% note share. A citation may need
     // more for all its mandatory first fragments, but never loses its row.
     let first = &body[*start];
-    let maximum = (capacity - line_leading(first) - first.gap_after).max(0.0);
+    let maximum =
+        (capacity - line_leading(first) - first.gap_after.max(body_bottom_guard(first))).max(0.0);
     let preferred = (capacity * PAGE_NOTE_MAX_SHARE).min(maximum);
     let mut reserve = 0.0;
     let mut chosen: Option<(usize, Option<usize>, PageGeom, Allocation)> = None;
     for _ in 0..8 {
         let geometry = page.with_foot_reserve(reserve);
-        let (end, shrink) = choose_page_break_with_void_control(body, *start, geometry);
+        let (end, shrink) =
+            choose_page_break_with_void_control_guarded(body, *start, geometry, body_bottom_guard);
         let allocation = allocate(lines, notes, cursor, *start, end, preferred);
         let need = allocation.reserve;
         if need <= reserve + 0.001
@@ -960,7 +993,8 @@ pub(super) fn next_page<'a>(
         let geometry = page.with_foot_reserve(allocation.reserve);
         (end, None, geometry, allocation)
     });
-    let mut placed = place_lines_shrunk(body, *start, end, geometry, shrink);
+    let mut placed =
+        place_lines_shrunk_guarded(body, *start, end, geometry, shrink, body_bottom_guard);
     place(
         &mut placed,
         lines,

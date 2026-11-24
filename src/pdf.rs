@@ -4536,7 +4536,12 @@ fn admit_page_notes(
         } else {
             0.0
         };
-        let body_height = line_leading(line) + line.gap_after + heading_gap;
+        let body_height = if continued {
+            line_leading(line)
+                + (line.gap_after + heading_gap).max(split_footnotes::body_bottom_guard(line))
+        } else {
+            line_leading(line) + line.gap_after + heading_gap
+        };
         let used = reserved.entry(index).or_default();
         let minimum = if continued {
             split_footnotes::minimum_reserve(&note.lines)
@@ -31762,9 +31767,16 @@ fn paginate_lines_with<'a>(
     pages
 }
 
-fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
+fn choose_page_break(
+    lines: &[Line],
+    start: usize,
+    page: PageGeom,
+    bottom_guard: impl Fn(&Line) -> f32,
+) -> usize {
     let full_capacity = (page.top_y() - page.bottom).max(0.0);
-    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
+    let capacity = (full_capacity
+        - repeated_table_header_height_guarded(lines, start, page, &bottom_guard))
+    .max(0.0);
     let mut used = 0.0f32;
 
     // Forced boundaries (book chapter breaks, j0o4): a line flagged
@@ -31778,7 +31790,7 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
             return idx;
         }
         let leading = line_leading(line);
-        if idx > start && used + leading > capacity {
+        if idx > start && used + leading + bottom_guard(line) > capacity {
             break;
         }
         used += leading + line.gap_after;
@@ -31798,7 +31810,8 @@ fn choose_page_break(lines: &[Line], start: usize, page: PageGeom) -> usize {
         if splits_heading_group(lines, candidate) {
             continue;
         }
-        let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
+        let guarded_used = candidate_used + (bottom_guard(line) - line.gap_after).max(0.0);
+        let score = break_score_for_used_height(lines, candidate, capacity, guarded_used);
         if score < best_score {
             best_score = score;
             best = candidate;
@@ -32156,7 +32169,18 @@ fn choose_page_break_with_void_control(
     start: usize,
     page: PageGeom,
 ) -> (usize, Option<usize>) {
-    let baseline_end = choose_page_break(lines, start, page);
+    choose_page_break_with_void_control_guarded(lines, start, page, |_| 0.0)
+}
+
+/// Continued page notes require room for the body's final painted descent as
+/// well as its baseline. Ordinary pagination retains its historical geometry.
+fn choose_page_break_with_void_control_guarded(
+    lines: &[Line],
+    start: usize,
+    page: PageGeom,
+    bottom_guard: impl Fn(&Line) -> f32,
+) -> (usize, Option<usize>) {
+    let baseline_end = choose_page_break(lines, start, page, &bottom_guard);
     if page.grid.is_some() {
         return (baseline_end, None);
     }
@@ -32170,7 +32194,9 @@ fn choose_page_break_with_void_control(
     }
 
     let full_capacity = (page.top_y() - page.bottom).max(0.0);
-    let capacity = (full_capacity - repeated_table_header_height(lines, start, page)).max(0.0);
+    let capacity = (full_capacity
+        - repeated_table_header_height_guarded(lines, start, page, &bottom_guard))
+    .max(0.0);
     let mut used = 0.0f32;
     for line in &lines[start..baseline_end] {
         used += line_leading(line) + line.gap_after;
@@ -32182,7 +32208,10 @@ fn choose_page_break_with_void_control(
     } else {
         0.0
     };
-    let void_ratio = ((capacity - (used - tail_gap)).max(0.0)) / capacity.max(1.0);
+    let tail_guard = lines
+        .get(baseline_end.saturating_sub(1))
+        .map_or(0.0, &bottom_guard);
+    let void_ratio = ((capacity - (used - tail_gap + tail_guard)).max(0.0)) / capacity.max(1.0);
     if void_ratio < VOID_TRIGGER_FRACTION {
         return (baseline_end, None);
     }
@@ -32202,7 +32231,7 @@ fn choose_page_break_with_void_control(
             line.gap_after
         };
         let leading = line_leading(line);
-        if idx > start && used_s + leading > capacity {
+        if idx > start && used_s + leading + bottom_guard(line) > capacity {
             break;
         }
         used_s += leading + gap;
@@ -32226,7 +32255,8 @@ fn choose_page_break_with_void_control(
         if splits_heading_group(lines, candidate) {
             continue;
         }
-        let score = break_score_for_used_height(lines, candidate, capacity, candidate_used);
+        let guarded_used = candidate_used + (bottom_guard(line) - gap).max(0.0);
+        let score = break_score_for_used_height(lines, candidate, capacity, guarded_used);
         if score < best_score {
             best_score = score;
             best = candidate;
@@ -32827,7 +32857,7 @@ mod keep_with_next_tests {
             grid: None,
         };
 
-        assert_eq!(choose_page_break(&lines, 0, page), 3);
+        assert_eq!(choose_page_break(&lines, 0, page, |_| 0.0), 3);
     }
 }
 
@@ -32915,7 +32945,7 @@ mod void_budget_tests {
         let lines = frontier(50.0);
         let page = page(134.0);
         assert_eq!(
-            choose_page_break(&lines, 0, page),
+            choose_page_break(&lines, 0, page, |_| 0.0),
             5,
             "legacy oracle strands the void"
         );
@@ -32968,7 +32998,7 @@ mod void_budget_tests {
         let lines = frontier(10.0);
         let page = page(110.0);
         let (end, shrink_from) = choose_page_break_with_void_control(&lines, 0, page);
-        assert_eq!(end, choose_page_break(&lines, 0, page));
+        assert_eq!(end, choose_page_break(&lines, 0, page, |_| 0.0));
         assert_eq!(shrink_from, None);
     }
 }
@@ -33033,7 +33063,18 @@ fn place_lines_shrunk<'a>(
     page: PageGeom,
     shrink_from: Option<usize>,
 ) -> Vec<Placed<'a>> {
-    let repeated = repeated_table_header_lines(lines, start, page);
+    place_lines_shrunk_guarded(lines, start, end, page, shrink_from, |_| 0.0)
+}
+
+fn place_lines_shrunk_guarded<'a>(
+    lines: &'a [Line],
+    start: usize,
+    end: usize,
+    page: PageGeom,
+    shrink_from: Option<usize>,
+    bottom_guard: impl Fn(&Line) -> f32,
+) -> Vec<Placed<'a>> {
+    let repeated = repeated_table_header_lines_guarded(lines, start, page, bottom_guard);
     let mut placed = Vec::with_capacity(repeated.len() + end.saturating_sub(start));
     if page.grid.is_some() {
         baseline_grid::place(
@@ -33074,7 +33115,16 @@ fn place_lines_shrunk<'a>(
 }
 
 fn repeated_table_header_height(lines: &[Line], start: usize, page: PageGeom) -> f32 {
-    repeated_table_header_lines(lines, start, page)
+    repeated_table_header_height_guarded(lines, start, page, |_| 0.0)
+}
+
+fn repeated_table_header_height_guarded(
+    lines: &[Line],
+    start: usize,
+    page: PageGeom,
+    bottom_guard: impl Fn(&Line) -> f32,
+) -> f32 {
+    repeated_table_header_lines_guarded(lines, start, page, bottom_guard)
         .iter()
         .copied()
         .map(|line| line_leading(line) + line.gap_after)
@@ -33090,13 +33140,23 @@ fn repeated_table_header_height(lines: &[Line], start: usize, page: PageGeom) ->
 /// fitting header too tall. Never manufacture a minimum body capacity after
 /// reserving a header; that would place real rows below the page boundary.
 fn repeated_table_header_lines(lines: &[Line], start: usize, page: PageGeom) -> Vec<&Line> {
+    repeated_table_header_lines_guarded(lines, start, page, |_| 0.0)
+}
+
+fn repeated_table_header_lines_guarded(
+    lines: &[Line],
+    start: usize,
+    page: PageGeom,
+    bottom_guard: impl Fn(&Line) -> f32,
+) -> Vec<&Line> {
     let mut repeated = table_header_prefix(lines, start);
     let height: f32 = repeated
         .iter()
         .map(|line| line_leading(line) + line.gap_after)
         .sum();
     let first_leading = lines.get(start).map_or(0.0, line_leading);
-    if height + first_leading > page.top_y() - page.bottom {
+    let first_guard = lines.get(start).map_or(0.0, bottom_guard);
+    if height + first_leading + first_guard > page.top_y() - page.bottom {
         repeated.clear();
     }
     repeated
@@ -46233,6 +46293,81 @@ mod plass_pagination_tests {
     fn with_page_break(mut l: Line) -> Line {
         l.page_break_before = true;
         l
+    }
+
+    #[test]
+    fn continued_body_ink_includes_formula_depth_before_its_baseline_lift() {
+        let source = "\\frac{1}{\\frac{2}{3}}";
+        let mut row = line(FlowKind::Paragraph, 77, 0, 1);
+        let formula = inline_math_fit::placement(source, row.size, false).unwrap();
+        assert!(formula.descent > row.size * INLINE_MATH_DESCENT_ROOM);
+        row.segs.push(Seg {
+            x: 0.0,
+            slot: F_MATH,
+            text_hash: seg_text_hash(source),
+            text: source.to_string(),
+            link: None,
+            fill: Fill::Black,
+            strike: false,
+            task: None,
+            list_label: false,
+            note_spans: Default::default(),
+            width: formula.advance,
+            expansion_permille: 0,
+        });
+        assert_eq!(row.text_ink, (0.0, 0.0));
+        let guard = split_footnotes::body_bottom_guard(&row);
+        let baseline = placed_line_baseline(guard, &row);
+        assert!(baseline - formula.descent >= -0.001);
+        assert!(guard >= row.size * INLINE_MATH_DESCENT_ROOM - 0.001);
+    }
+
+    #[test]
+    fn continued_body_header_admission_and_painting_reserve_the_first_rows_ink() {
+        let mut lines: Vec<_> = (0..4)
+            .map(|index| line(FlowKind::TableHeader, 77, index, 4))
+            .chain((0..2).map(|_| line(FlowKind::TableRow, 77, 0, 1)))
+            .collect();
+        let page = page(75.0);
+        let start = 5;
+        let guard = split_footnotes::body_bottom_guard;
+        // The historical baseline-only header fits (72.60pt), but the
+        // continued body's complete table ink requires 77pt.
+        assert_eq!(repeated_table_header_lines(&lines, start, page).len(), 4);
+        assert!(repeated_table_header_lines_guarded(&lines, start, page, guard).is_empty());
+        assert_eq!(
+            choose_page_break_with_void_control_guarded(&lines, start, page, guard),
+            (6, None)
+        );
+        let placed = place_lines_shrunk_guarded(&lines, start, 6, page, None, guard);
+        assert_eq!(placed.len(), 1);
+        assert!(std::ptr::eq(placed[0].line, &lines[start]));
+        assert!(placed[0].y - guard(placed[0].line) >= page.bottom);
+
+        // Replay an actual continuation cursor after its earlier citation
+        // and note have been painted. It must retain this source row while
+        // omitting only the optional repeated header that cannot fit.
+        lines.push(page_note_separator(page));
+        let mut note = line(FlowKind::Paragraph, 78, 0, 1);
+        note.flow.note = 1;
+        note.flow.split_note = true;
+        lines.push(note);
+        let notes = PageNotes {
+            body_end: 6,
+            separator: 6,
+            first_refs: vec![(0, 7..8)],
+            continuation: None,
+        };
+        let mut cursor = split_footnotes::Cursor::default();
+        let mut start = start;
+        let mut emitted = true;
+        let placed =
+            split_footnotes::next_page(&lines, &notes, &mut cursor, &mut start, page, &mut emitted)
+                .unwrap();
+        assert_eq!(start, 6);
+        assert_eq!(placed.len(), 1);
+        assert!(std::ptr::eq(placed[0].line, &lines[5]));
+        assert!(placed[0].y - guard(placed[0].line) >= page.bottom);
     }
 
     /// Total pagination cost of a page partition, replicating the DP edge

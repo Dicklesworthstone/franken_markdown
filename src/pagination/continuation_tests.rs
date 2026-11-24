@@ -26,6 +26,7 @@ fn input(heights: &[i64], notes: &[(usize, &[i64])]) -> Input {
             .map(|(block, &height)| Row {
                 height,
                 continuation_prefix: 0,
+                suffix: 0,
                 block,
             })
             .collect(),
@@ -105,6 +106,7 @@ fn oracle_page(
             .map(|row| row.height)
             .sum::<i64>()
             + input.rows[body.start].continuation_prefix
+            + input.rows[body.end - 1].suffix
     };
     if body_height > options.capacity {
         return None;
@@ -227,6 +229,7 @@ fn oracle_cost(input: &Input, options: Options, pages: &[Page]) -> i128 {
                     .map(|row| row.height)
                     .sum::<i64>()
                     + input.rows[page.body.start].continuation_prefix
+                    + input.rows[page.body.end - 1].suffix
             };
             let gap = capacity - i128::from(body_height + page.reserve);
             let ragged = if index + 1 == pages.len() {
@@ -333,6 +336,10 @@ fn exhaustive_partitions_match_the_global_body_boundary_minimum() {
                 .map(|index| 9 + ((seed * 7 + index * 11) % 19) as i64)
                 .collect();
             let mut input = input(&heights, &[]);
+            for (index, row) in input.rows.iter_mut().enumerate() {
+                row.continuation_prefix = ((seed + index * 2) % 5) as i64;
+                row.suffix = ((seed * 3 + index) % 7) as i64;
+            }
             for (note, reference) in [0, count / 2, count - 1].into_iter().enumerate() {
                 input.notes.push(Note {
                     first_reference: reference,
@@ -425,6 +432,58 @@ fn body_and_note_continuation_prefixes_are_charged_on_every_physical_page() {
     assert_eq!(result.pages[1].reserve, 19);
     assert_eq!(result.pages[2].reserve, 59);
     assert_eq!(result.pages[3].reserve, 59);
+}
+
+#[test]
+fn last_body_ink_changes_the_boundary_without_charging_interior_suffixes() {
+    let mut input = input(&[10, 10], &[]);
+    assert_eq!(assert_oracle(&input, options(25)).unwrap().pages.len(), 1);
+    input.rows[0].suffix = 4;
+    input.rows[1].suffix = 6;
+    let result = assert_oracle(&input, options(25)).unwrap();
+    assert_eq!(
+        result
+            .pages
+            .iter()
+            .map(|page| page.body.clone())
+            .collect::<Vec<_>>(),
+        [0..1, 1..2]
+    );
+    // A boundary-only guard can be larger than the next row's complete box.
+    // Rejecting that boundary must not prune a later fitting page end.
+    input.rows[0].suffix = 30;
+    input.rows[1].suffix = 0;
+    let result = assert_oracle(&input, options(25)).unwrap();
+    assert_eq!(result.pages.len(), 1);
+    assert_eq!(result.pages[0].body, 0..2);
+}
+
+#[test]
+fn body_prefix_and_final_ink_leave_pending_notes_for_complete_note_only_pages() {
+    let mut input = input(&[10, 10], &[(0, &[3, 3, 3, 3])]);
+    input.forced[1] = true;
+    input.rows[1].continuation_prefix = 7;
+    input.rows[1].suffix = 5;
+    assert!(assert_oracle(&input, options(20)).is_none());
+    let result = assert_oracle(&input, options(25)).unwrap();
+    assert_eq!(
+        result
+            .pages
+            .iter()
+            .map(|page| page.body.clone())
+            .collect::<Vec<_>>(),
+        [0..1, 1..2, 2..2]
+    );
+    assert!(result.pages[1].fragments.is_empty());
+    assert_eq!(result.pages[2].reserve, 14);
+    assert_eq!(
+        result.pages[2].fragments,
+        [Fragment {
+            note: 0,
+            start: 1,
+            end: 4
+        }]
+    );
 }
 
 #[test]
@@ -620,7 +679,7 @@ fn work_nodes_fragments_blocks_and_retained_ranges_have_typed_budget_failures() 
 #[test]
 fn malformed_partitions_heights_and_citation_order_are_rejected() {
     let original = input(&[10, 10, 10], &[(0, &[5]), (2, &[5])]);
-    for case in 0..10 {
+    for case in 0..11 {
         let mut bad = original.clone();
         match case {
             0 => {
@@ -636,6 +695,7 @@ fn malformed_partitions_heights_and_citation_order_are_rejected() {
             6 => bad.notes.swap(0, 1),
             7 => bad.notes[0].units[0].minimum_units = 0,
             8 => bad.notes[1].units[0].minimum_units = 2,
+            9 => bad.rows[1].suffix = -1,
             _ => bad.separator = -1,
         }
         assert!(

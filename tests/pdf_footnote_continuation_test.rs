@@ -832,34 +832,41 @@ fn oversubscribed_first_fragments_keep_complete_notes_and_real_destinations() {
     }
     let mut options = options();
     options.theme.page.size.height_pt = 192.0;
-    let bytes = render_pdf(&source, &options).unwrap();
-    let pages = painted_pages(&bytes);
-    let citing_page = locate(&pages, "CROWDCLAIM").0;
-    let mut continued = 0;
-    let mut fallback = 0;
-    let targets: Vec<_> = (0..9).map(|index| format!("EDGE{index}ROW000")).collect();
-    for (index, marker) in targets.iter().enumerate() {
-        assert_markers(&pages, &format!("EDGE{index}ROW"), 8);
-        let (page, run) = locate(&pages, marker);
-        if run.size < 11.0 {
-            continued += 1;
-            assert_eq!(page, citing_page, "admitted first fragment {marker}");
-        } else {
-            fallback += 1;
+    for strict in [false, true] {
+        options.strict_pagination = strict;
+        let rendered = render_pdf_reported(&source, &options).unwrap();
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
         }
+        let bytes = rendered.bytes;
+        let pages = painted_pages(&bytes);
+        let citing_page = locate(&pages, "CROWDCLAIM").0;
+        let mut continued = 0;
+        let mut fallback = 0;
+        let targets: Vec<_> = (0..9).map(|index| format!("EDGE{index}ROW000")).collect();
+        for (index, marker) in targets.iter().enumerate() {
+            assert_markers(&pages, &format!("EDGE{index}ROW"), 8);
+            let (page, run) = locate(&pages, marker);
+            if run.size < 11.0 {
+                continued += 1;
+                assert_eq!(page, citing_page, "admitted first fragment {marker}");
+            } else {
+                fallback += 1;
+            }
+        }
+        assert!(
+            continued > 0 && fallback > 0,
+            "fixture must cross first-fragment admission: {continued}/{fallback}"
+        );
+        assert!(text(&pages).contains("Notes"));
+        assert_geometry(&pages, &options);
+        let target_refs: Vec<_> = targets.iter().map(String::as_str).collect();
+        assert_destinations(&bytes, &pages, &target_refs);
+        assert_eq!(
+            String::from_utf8_lossy(&bytes).matches("/S /Note ").count(),
+            9
+        );
     }
-    assert!(
-        continued > 0 && fallback > 0,
-        "fixture must cross first-fragment admission: {continued}/{fallback}"
-    );
-    assert!(text(&pages).contains("Notes"));
-    assert_geometry(&pages, &options);
-    let target_refs: Vec<_> = targets.iter().map(String::as_str).collect();
-    assert_destinations(&bytes, &pages, &target_refs);
-    assert_eq!(
-        String::from_utf8_lossy(&bytes).matches("/S /Note ").count(),
-        9
-    );
 }
 
 #[test]
@@ -2871,7 +2878,9 @@ fn short_note_paragraphs_stay_whole_without_capturing_adjacent_paragraphs() {
 
 #[test]
 fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
-    let word = "abcdefghijklmno\u{00ad}pqrstuvwxyz";
+    // Both authored fragments fit the 72-point measure; a longer prefix
+    // would exercise an earlier emergency break instead of choosing the SHY.
+    let word = "abcdefghijklm\u{00ad}nopqrstuvwxyz";
     let source = format!(
         "WORDCITE.[^long]\n\n[^long]: {}\n",
         std::iter::repeat_n(word, 16)
@@ -2911,7 +2920,7 @@ fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
                     page.runs.iter().any(|next| {
                         !next.artifact
                             && next.size < 10.9
-                            && next.text.chars().any(|ch| ch.is_ascii_alphabetic())
+                            && next.text.contains("nopqrstuvwxyz")
                             && next.y < run.y - PRECISION
                     }),
                     "page {} strands an intra-word hyphen: {run:?}",
@@ -2919,9 +2928,9 @@ fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
                 );
             }
         }
-        assert!(
-            hyphens > 0,
-            "the fixture must exercise actual discretionary breaks"
+        assert_eq!(
+            hyphens, 16,
+            "every source word must exercise its actual discretionary break"
         );
         assert_geometry(&pages, &options);
         assert_grid_rows(&pages, &options);

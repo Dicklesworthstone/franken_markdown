@@ -135,6 +135,7 @@ fn evaluate_measured(
             input.rows.push(solver::Row {
                 height: row_height(line)?.max(1),
                 continuation_prefix,
+                suffix: measured((body_bottom_guard(line) - line.gap_after).max(0.0))?,
                 block,
             });
         }
@@ -230,7 +231,13 @@ fn evaluate_measured(
         } else {
             let geometry = page.with_foot_reserve(reserve);
             if table_header_prefix(body, planned.body.start).len()
-                != repeated_table_header_lines(body, planned.body.start, geometry).len()
+                != repeated_table_header_lines_guarded(
+                    body,
+                    planned.body.start,
+                    geometry,
+                    body_bottom_guard,
+                )
+                .len()
             {
                 return Err(PdfPaginationFailure::InvalidPlan(
                     "continued-note plan could not retain the required body table header",

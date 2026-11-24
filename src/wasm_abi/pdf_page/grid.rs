@@ -3,10 +3,9 @@
 
 use wasm_bindgen::prelude::*;
 
-use super::book_advanced::book_presentation;
 use super::{
-    FmdRenderResult, configured_book_assets, configured_book_inputs, configured_pdf_options,
-    render_error_to_js, render_result, running_content, wasm,
+    FmdRenderResult, configured_pdf_options, render_error_to_js, render_result, running_content,
+    wasm,
 };
 
 /// Render one document with the complete paper/running-image/typography
@@ -247,35 +246,9 @@ pub fn render_book_pdf_configured_profiled(
     baseline_grid_pt: f64,
     authoring_profile: Option<String>,
 ) -> Result<FmdRenderResult, JsValue> {
-    let profile = super::super::parse_authoring_profile(authoring_profile.as_deref())
-        .map_err(JsValue::from_str)?;
-    let grid = admit_grid(baseline_grid_pt, fit_to_pages).map_err(render_error_to_js)?;
-    let running = book_presentation(
-        typography.as_deref(),
-        running_slots,
-        header_rule,
-        footer_rule,
-        skip_first_page,
-        running_image_destinations,
-        running_image_positions,
-        running_image_heights,
-    )
-    .map_err(|error| JsValue::from_str(&error))?;
-    let inputs = configured_book_inputs(paths, sources).map_err(JsValue::from_str)?;
-    configured_book_assets(
-        &image_destinations,
-        &image_bytes_flat,
-        &image_bytes_lengths,
-        [
-            &body_regular,
-            &body_bold,
-            &body_italic,
-            &body_bold_italic,
-            &mono_regular,
-        ],
-    )
-    .map_err(JsValue::from_str)?;
-    let mut options = configured_pdf_options(
+    super::book_sources::render_book_pdf_configured_sources(
+        paths,
+        sources,
         font,
         dark_mode,
         title,
@@ -303,24 +276,20 @@ pub fn render_book_pdf_configured_profiled(
         fit_to_pages,
         microtype_protrusion,
         page_geometry,
-    )?
-    .with_running(running);
-    options.profile = profile;
-    options.theme.page.baseline_grid = grid;
-    // Admission already checked the bounded token list. Apply it after the
-    // legacy settings so expansion-only can override conservative protrusion,
-    // exactly as on the single-document path.
-    options
-        .apply_typography_tokens(typography.as_deref())
-        .map_err(|error| JsValue::from_str(&error))?;
-    let mut renderer = crate::book::BookRenderer::from_sources_with_profile(&inputs, &[], profile)
-        .map_err(render_error_to_js)?;
-    *renderer.options_mut() = options;
-    let report = renderer.render_pdf_reported().map_err(render_error_to_js)?;
-    Ok(super::super::book_pdf_artifact_result(
-        report,
-        renderer.source_length(),
-    ))
+        running_slots,
+        header_rule,
+        footer_rule,
+        skip_first_page,
+        running_image_destinations,
+        running_image_positions,
+        running_image_heights,
+        typography,
+        baseline_grid_pt,
+        authoring_profile,
+        Vec::new(),
+        Vec::new(),
+        true,
+    )
 }
 
 // Native-testable admission, before any JsValue construction or large copies.

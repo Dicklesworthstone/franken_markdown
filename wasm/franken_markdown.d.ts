@@ -271,18 +271,33 @@ export interface FmdSvgRenderOutput extends FmdRenderOutput {
   extension: "svg";
 }
 
+/** Explicit source bundle shared by one-shot book publications. */
+export interface FmdBookSourceOptions {
+  /** Expand selected sources in Rust (default true); never read external files.
+   * Disabling expansion requires includeSources to be empty.
+   */
+  expandIncludes?: boolean;
+  /** Additional UTF-8 include resources. These never become chapter pages.
+   * Resources may be non-Markdown text, such as a selected code snippet.
+   * Chapters/resources share the 4096-source and 64 MiB text/path budget.
+   */
+  includeSources?: readonly FmdBookFile[];
+}
+
+/** Root one-shot PDF options. Include resources or disabled expansion require
+ * renderBookPdfConfiguredSources in the matching generated WASM package.
+ * Chapter-aware PDF/A remains available from the ./book entry point.
+ */
+export interface FmdBookPdfOptions extends Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">,
+  FmdBookSourceOptions {}
+
 /** Canonical offline HTML-site options. PDF-only settings are rejected rather
  * than silently discarded. Parsing remains safe; raw HTML is not passed through.
  */
 export interface FmdBookSiteOptions extends Pick<FmdRenderOptions,
   "profile" | "font" | "darkMode" | "title" | "customCss" | "fontScale" | "typeSize" |
-  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding"> {
-  /** Expand selected sources in Rust (default true); never read external files. */
-  expandIncludes?: boolean;
-  /** Additional UTF-8 include resources. These never become chapter pages.
-   * Chapters/resources share the 4096-source and 64 MiB text/path budget.
-   */
-  includeSources?: readonly FmdBookFile[];
+  "lang" | "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "fontEmbedding">,
+  FmdBookSourceOptions {
   allowRawHtml?: false;
 }
 /** Book PDF output acknowledges an explicitly selected authoring dialect. */
@@ -346,7 +361,7 @@ export interface FmdRenderer {
   extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
   accessibilityAudit(markdown: string, options?: FmdAnalysisOptions): Promise<FmdAccessibilityReport>;
   documentStats(markdown: string, options?: FmdAnalysisOptions): Promise<FmdDocumentStats>;
-  renderBookPdf(files: FmdBookFile[], options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">): Promise<FmdBookPdfOutput>;
+  renderBookPdf(files: readonly FmdBookFile[], options?: FmdBookPdfOptions): Promise<FmdBookPdfOutput>;
   renderBookSite(files: readonly FmdBookFile[], options?: FmdBookSiteOptions): Promise<FmdBookSiteOutput>;
   renderEpub(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
@@ -457,12 +472,15 @@ export function extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceInd
 export function accessibilityAudit(markdown: string, options?: FmdAnalysisOptions): Promise<FmdAccessibilityReport>;
 export function documentStats(markdown: string, options?: FmdAnalysisOptions): Promise<FmdDocumentStats>;
 /** Publish ordered chapters with the same PDF typography, running bands and
- * explicit pdfImages as renderPdf. Advanced settings require matching generated
- * WASM; older packages reject them with UNSUPPORTED_WASM_PACKAGE.
+ * explicit pdfImages as renderPdf. Additional includeSources remain resources,
+ * never extra chapters; expandIncludes defaults to true. The entire source
+ * bundle, settings and assets are captured before initialization can yield.
+ * Advanced settings require matching generated WASM; older packages reject
+ * them with UNSUPPORTED_WASM_PACKAGE.
  * For chapter-aware PDF/A emission, use renderBookPdf from the ./book entry. */
 export function renderBookPdf(
-  files: FmdBookFile[],
-  options?: Omit<FmdPdfRenderOptions, "pdfA" | "pdfAStrict">,
+  files: readonly FmdBookFile[],
+  options?: FmdBookPdfOptions,
 ): Promise<FmdBookPdfOutput>;
 export function renderBookSite(
   files: readonly FmdBookFile[],

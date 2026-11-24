@@ -610,6 +610,31 @@ host-only logos absent from chapter Markdown. Its additive
 `microtype: "expansion"`. Older packages reject these requested features with
 `UNSUPPORTED_WASM_PACKAGE`; omitted or disabled settings preserve existing
 book defaults and signatures. See [book publishing](BOOK.md) for an example.
+
+The root book PDF helper also accepts `includeSources` and `expandIncludes`,
+matching the site and retained-book source model. For example:
+
+```js
+import { renderBookPdf } from "@franken-suite/franken-markdown";
+const output = await renderBookPdf([
+  { path: "guide/start.md", source: "# Guide\n\n{{#include ../parts/intro.txt}}\n" },
+], {
+  includeSources: [{ path: "parts/intro.txt", source: "A reusable introduction.\n" }],
+});
+```
+
+Only `guide/start.md` becomes a chapter. Include resources may contain Markdown
+or selected code/text snippets and share the 4,096-source and 64 MiB UTF-8
+path/source budget with chapters. Rust resolves nested directives, selectors,
+cycles and diagnostics using the selected authoring profile. No source is read
+from the network or filesystem. Set `expandIncludes: false` with no extra sources
+to preserve literal directives. Supplying include resources or disabling
+expansion requires the additive `renderBookPdfConfiguredSources` binding; stale
+packages fail with `UNSUPPORTED_WASM_PACKAGE` before source or asset payloads are
+read. Empty resources and the default expansion policy preserve legacy calls.
+Source strings, settings and exact image/font byte views are captured before
+initialization can yield to edits. See [shared snippets](BOOK.md#shared-snippets-and-include-only-sources).
+
 The stateless `document-worker` supports the same running bands and `pdfImages`
 through `renderPdf` and `render("pdf", ...)`. It captures nested settings before
 queueing and charges their strings and records against the worker ingress budget.

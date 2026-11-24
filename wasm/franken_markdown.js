@@ -1205,12 +1205,15 @@ export async function renderBookPdf(files, options = {}) {
   if (typeof wasmBindings.renderBookPdfConfiguredPage !== "function"
       && typeof wasmBindings.renderBookPdfConfiguredAdvanced !== "function"
       && typeof wasmBindings.renderBookPdfConfiguredGrid !== "function"
-      && typeof wasmBindings.renderBookPdfConfiguredProfiled !== "function") {
+      && typeof wasmBindings.renderBookPdfConfiguredProfiled !== "function"
+      && typeof wasmBindings.renderBookPdfConfiguredSources !== "function") {
     requireBrowserBinding("renderBookPdf", "wasm-book");
   }
   // Capture source, primitive settings, geometry and owned assets before init.
   const prepared = bookPdfArguments(files, options);
-  const render = prepared.profile !== undefined
+  const render = prepared.sourceBundle
+    ? requireBrowserBinding("renderBookPdfConfiguredSources", "book PDF include sources")
+    : prepared.profile !== undefined
     ? requireBrowserBinding("renderBookPdfConfiguredProfiled", "book PDF authoring profiles")
     : prepared.grid > 0
     ? requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support")
@@ -1224,7 +1227,7 @@ export async function renderBookPdf(files, options = {}) {
     throw error;
   }
   if (prepared.strictPagination || prepared.footnoteBacklinks || prepared.splitFootnotes) {
-    requireBindingArguments(render, prepared.profile !== undefined ? 39 : prepared.grid > 0 ? 38 : 37,
+    requireBindingArguments(render, prepared.sourceBundle ? 42 : prepared.profile !== undefined ? 39 : prepared.grid > 0 ? 38 : 37,
       prepared.splitFootnotes ? "PDF footnote continuation"
         : prepared.footnoteBacklinks ? "PDF footnote backlinks" : "Strict PDF pagination");
   }
@@ -1241,8 +1244,31 @@ export async function renderBookPdf(files, options = {}) {
 // TOC/page-number defaults and narrow ABI. Only configured requests need the
 // additive ABI; neither images nor newer options may silently disappear.
 function bookPdfArguments(files, options) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("book PDF options must be an object");
+  }
+  // Capture the source policy once and admit its complete binding before any
+  // chapter/include text or host asset payload is inspected. An older package
+  // must never silently omit includes or expand a request that disabled them.
+  const { includeSources = [], expandIncludes = true } = options;
+  if (!Array.isArray(includeSources)) throw new TypeError("includeSources must be an array");
+  const includeCount = includeSources.length;
+  if (!Number.isInteger(includeCount) || includeCount < 0 || includeCount > 4096) {
+    throw new RangeError("book needs 1..=4096 chapters and include sources combined");
+  }
+  if (typeof expandIncludes !== "boolean") throw new TypeError("expandIncludes must be a boolean");
+  if (!expandIncludes && includeCount) throw new TypeError("includeSources requires expandIncludes");
+  const sourceBundle = includeCount > 0 || !expandIncludes;
+  if (sourceBundle) {
+    const render = requireBrowserBinding("renderBookPdfConfiguredSources", "book PDF include sources");
+    requireBindingArguments(render, 42, "Book PDF include sources");
+  }
+  // Other option getters may mutate the caller's array. Preserve membership
+  // from the same capture that selected the binding, using a private array
+  // rather than caller-controlled slice/iterator/species behavior.
+  const capturedIncludes = Array.from({ length: includeCount }, (_, index) => includeSources[index]);
   const profile = normalizeAuthoringProfile(options.profile);
-  if (profile !== undefined) {
+  if (profile !== undefined && !sourceBundle) {
     const render = requireBrowserBinding("renderBookPdfConfiguredProfiled", "book PDF authoring profiles");
     requireBindingArguments(render, 39, "Book PDF authoring profiles");
   }
@@ -1253,7 +1279,7 @@ function bookPdfArguments(files, options) {
   validateBaselineGridFit(grid, target);
   // A requested grid must not be dropped by older packages, and refusal must
   // precede source normalization and all host asset validation/copying.
-  if (grid > 0 && profile === undefined) requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support");
+  if (grid > 0 && profile === undefined && !sourceBundle) requireBrowserBinding("renderBookPdfConfiguredGrid", "wasm-book with baseline-grid support");
   const {
     page, font, darkMode, title, author, metadataEpochSeconds,
     allowRawHtml, codeLineNumbers, pdfImages, fontAssets,
@@ -1271,22 +1297,26 @@ function bookPdfArguments(files, options) {
     splitFootnotes,
     microtype: microtype === undefined ? undefined : normalizeMicrotype(microtype),
   });
-  // The profiled path already admitted its complete 39-argument binding above;
-  // it must not require an additional unprofiled advanced/grid export.
-  if (profile === undefined && typesetting?.split(",").includes("theme-spacing")) {
+  // Profile/source bindings already admit the complete typography contract;
+  // they must not require an additional unprofiled advanced/grid export.
+  if (profile === undefined && !sourceBundle && typesetting?.split(",").includes("theme-spacing")) {
     const binding = requireBrowserBinding(grid > 0 ? "renderBookPdfConfiguredGrid"
       : "renderBookPdfConfiguredAdvanced", "wasm-book with theme spacing");
     requireBindingArguments(binding, grid > 0 ? 38 : 37, "PDF theme spacing");
   }
   const bands = pdfRunningOption(normalizePdfRunning(running));
-  const complete = profile !== undefined || typesetting !== undefined || bands !== null || grid > 0;
+  const complete = sourceBundle || profile !== undefined || typesetting !== undefined || bands !== null || grid > 0;
   const geometry = pdfPageGeometry(page);
-  if (!Array.isArray(files) || files.length === 0 || files.length > 4096) {
-    throw new RangeError("book needs 1..=4096 source files");
+  if (!Array.isArray(files) || files.length === 0 || files.length > 4096
+      || capturedIncludes.length > 4096 - files.length) {
+    throw new RangeError("book needs 1..=4096 chapters and include sources combined");
   }
   const normalized = bookFilesOption(files);
+  // Include resources retain their own paths and may be non-Markdown text.
+  // Only the selected chapters become pages, TOC entries and book outlines.
+  const resources = capturedIncludes.length ? bookFilesOption(capturedIncludes) : [];
   let sourceBytes = 0;
-  for (const file of normalized) {
+  for (const file of [...normalized, ...resources]) {
     for (const text of [file.path, file.source]) {
       sourceBytes += bookPdfTextBytes(text, 64 * 1024 * 1024 - sourceBytes);
     }
@@ -1343,7 +1373,7 @@ function bookPdfArguments(files, options) {
   });
   const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
   return {
-    advanced, complete, grid, strictPagination, footnoteBacklinks, splitFootnotes, profile,
+    advanced, complete, grid, strictPagination, footnoteBacklinks, splitFootnotes, profile, sourceBundle,
     args: [paths, sources, family, dark, heading, writer, epoch, raw, lineNumbers,
       images.map(image => image.destination), flat, lengths,
       fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
@@ -1353,7 +1383,8 @@ function bookPdfArguments(files, options) {
       ...(complete ? [bands?.slots ?? [], bands?.headerRule ?? false, bands?.footerRule ?? false,
         bands?.skipFirstPage ?? false, bands?.imageDestinations ?? [],
         bands?.imagePositions ?? new Uint32Array(), bands?.imageHeights ?? new Uint32Array(),
-        typesetting] : []), ...(profile !== undefined ? [grid ?? 0, profile] : grid > 0 ? [grid] : [])],
+        typesetting] : []), ...(sourceBundle || profile !== undefined ? [grid ?? 0, profile] : grid > 0 ? [grid] : []),
+      ...(sourceBundle ? [resources.map(file => file.path), resources.map(file => file.source), expandIncludes] : [])],
   };
 }
 

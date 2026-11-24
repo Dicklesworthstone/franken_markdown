@@ -14,8 +14,10 @@ use crate::wasm;
 mod archival;
 pub use archival::render_pdf_configured_profiled;
 mod book_advanced;
+mod book_sources;
 mod grid;
 pub use book_advanced::render_book_pdf_configured_advanced;
+pub use book_sources::render_book_pdf_configured_sources;
 pub use grid::{
     render_book_pdf_configured_grid, render_book_pdf_configured_profiled,
     render_pdf_configured_grid,

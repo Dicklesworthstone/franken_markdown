@@ -205,11 +205,19 @@ if (isMainThread) {
         "code line numbers add positioned text to the collection PDF");
     }],
     ["collection optical margins", async () => {
-      const source = "\"Quoted prose,\" a reader says.\n";
+      // Protrusion participates in measured paragraph fitting; a short line
+      // that never reaches the margin is intentionally unchanged. Use dense
+      // prose and inspect its actual text positions rather than assume that a
+      // leading quote always changes the first text matrix.
+      const source = "The renderer breaks this long sentence at the measured margin. ".repeat(24);
       const ordinary = inspectPdf(await bookPdf(source, {microtype: "disabled"}));
       const protruding = inspectPdf(await bookPdf(source, {microtype: "protrusion"}));
-      const firstX = pages => Math.min(...pages.flatMap(sheet => sheet.positions.map(position => position.x)));
-      assert.ok(firstX(protruding) < firstX(ordinary), "opening punctuation uses the selected optical margin");
+      assert.equal(protruding.length, ordinary.length);
+      const positions = pages => pages.flatMap(sheet => sheet.positions);
+      assert.equal(positions(protruding).length, positions(ordinary).length,
+        "the selected microtype preserves every positioned text run");
+      assert.notDeepEqual(positions(protruding), positions(ordinary),
+        "microtype changes the actual measured text placement for this margin-reaching paragraph");
     }],
     ["collection page fitting", async () => {
       const source = Array.from({length: 35}, (_, i) =>

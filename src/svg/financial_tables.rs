@@ -1,7 +1,7 @@
 //! Presentation shared with PDF/HTML, measured from retained SVG glyph runs.
 
-use super::{Inline, Op, Poster, RStyle, Word};
-use crate::table_format::{FootingRule, decimal_anchor, decimal_cell_text};
+use super::{Inline, Op, Poster, RStyle, Word, text};
+use crate::table_format::{FootingRule, decimal_anchor, decimal_cell_text_with_footnotes};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct DecimalMeasure {
@@ -10,7 +10,16 @@ pub(super) struct DecimalMeasure {
 }
 
 pub(super) fn cell_measure(poster: &Poster, cell: &[Inline], size: f64) -> Option<DecimalMeasure> {
-    decimal_anchor(&decimal_cell_text(cell)?)?;
+    {
+        let navigation = poster.navigation.borrow();
+        let numeric = decimal_cell_text_with_footnotes(cell, |inline| {
+            matches!(
+                navigation.inline_note(inline),
+                Some(franken_markdown::EndnoteTarget::Note(_))
+            )
+        })?;
+        decimal_anchor(&numeric)?;
+    }
     let mut pieces = Vec::new();
     poster.flatten(cell, RStyle::BODY, &mut pieces);
     let lines = poster.wrap(&pieces, size, f64::MAX);
@@ -20,14 +29,32 @@ pub(super) fn cell_measure(poster: &Poster, cell: &[Inline], size: f64) -> Optio
     line_measure(line)
 }
 
-pub(super) fn line_measure(line: &[Word]) -> Option<DecimalMeasure> {
+/// Retain the exact painted prefix while excluding only verified trailing
+/// citation spans from numeric admission. A navigation boundary may lie inside
+/// one shaped word; looking only at its first style would treat a note label as
+/// part of the amount, or discard the amount along with its citation.
+fn numeric_line_text(line: &[Word]) -> Option<String> {
     let mut text = String::new();
+    let mut cited = false;
     for (index, word) in line.iter().enumerate() {
         if index > 0 && word.gap > 0.0 {
             text.push(' ');
         }
-        text.push_str(&word.text);
+        for (source, citation) in text::citation_spans(word) {
+            if citation {
+                cited = true;
+            } else if cited && !source.chars().all(char::is_whitespace) {
+                return None;
+            } else {
+                text.push_str(source);
+            }
+        }
     }
+    Some(text)
+}
+
+pub(super) fn line_measure(line: &[Word]) -> Option<DecimalMeasure> {
+    let text = numeric_line_text(line)?;
     let anchor = decimal_anchor(&text)?;
     let dot = text[anchor..].starts_with('.');
     let mut byte = 0;

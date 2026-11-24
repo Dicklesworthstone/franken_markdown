@@ -38,9 +38,10 @@ Decimal columns accept:
 - accounting parentheses and percent or per-mille suffixes;
 - emphasis, bold, strike-through and links around numeric text.
 
-Integers align where their decimal point would be. In PDF, HTML, EPUB and the
-shaped Flow preview, amounts can end with one or more defined footnote citations,
-including inside bold or linked text. For example, `**1,234.50[^audit]**` aligns at the decimal
+Integers align where their decimal point would be. In PDF, HTML, EPUB, SVG and
+the shaped Flow preview, amounts can end with one or more defined footnote
+citations, including inside bold or linked text. For example,
+`**1,234.50[^audit]**` aligns at the decimal
 point and keeps its citation, note numbering and links. Citation
 glyphs reserve space to the right of the amount; they do not become digits in
 its numeric value. HTML measurement predicts labels without consuming reference
@@ -50,8 +51,8 @@ linked `[n]` labels and measures their complete rendered width.
 Decimal commas, scientific notation, arbitrary units and other nonnumeric
 content use right alignment. Code, mathematics, images, unresolved references,
 citations inside a number (`12[^audit].50`) and authored superscript characters
-also use the ordinary cell layout. SVG currently uses ordinary cell layout
-for amounts with citations. The original content remains visible in every case.
+also use the ordinary cell layout. The original content remains visible in
+every case.
 
 ## Rendering behavior
 
@@ -61,7 +62,13 @@ different rows; the column allocator reserves room for both. A cell that must
 wrap in a narrow column falls back to right alignment. PDF total rules belong
 to the last physical line of their data row, include clearance for deep inline
 content, and reserve space during pagination. Repeated headers never repeat a
-subtotal rule.
+subtotal rule. SVG distinguishes actual citations through source-owned endnote
+metadata, preserving both amount links and separate citation hit targets even
+when they share a shaped word. Citation glyphs contribute their complete width
+to the column's suffix track. If the selected face and existing fallbacks lack
+superscript digits, SVG loads a style-matched bundled Sans face for those
+digits. This keeps serif citations visible while preserving supplied fonts'
+priority; unused fallback faces remain unloaded.
 
 HTML uses adjacent styled spans and a shared measured suffix track in each
 decimal column. Its ordinary scrollable table wrapper handles wide statements.

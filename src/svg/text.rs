@@ -22,6 +22,22 @@ use paragraph::Paragraph;
 #[path = "discretionary.rs"]
 mod discretionary;
 
+/// Exact source-owned citation runs, including boundaries coalesced into one
+/// prepared shape. Consumers can inspect note provenance without separating
+/// the shape, guessing from superscript glyphs, or allocating another map.
+pub(super) fn citation_spans(word: &Word) -> impl Iterator<Item = (&str, bool)> {
+    word.navigation
+        .is_empty()
+        .then_some((word.text.as_str(), word.style.note_reference.is_some()))
+        .into_iter()
+        .chain(word.navigation.iter().map(move |span| {
+            (
+                &word.text[span.bytes.clone()],
+                span.note_reference.is_some(),
+            )
+        }))
+}
+
 impl Poster {
     /// Optimize each hard-break-delimited paragraph using its prepared widths.
     /// Style boundaries do not introduce spaces or break opportunities. The

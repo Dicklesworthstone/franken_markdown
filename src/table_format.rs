@@ -69,12 +69,6 @@ fn marker_rules(cells: &[Vec<Inline>], columns: usize) -> Option<Vec<FootingRule
     marked.then_some(rules)
 }
 
-/// Plain numeric spelling from text and inline styles that do not insert boxes.
-/// Code, images, formulas and note marks keep their ordinary right alignment.
-pub(crate) fn decimal_cell_text(cell: &[Inline]) -> Option<String> {
-    decimal_cell_text_with_footnotes(cell, |_| false)
-}
-
 /// Admit a numeric spelling followed by renderer-verified citation nodes.
 /// Only a trailing sequence of citations and whitespace is ignored. A note
 /// embedded in a number, an undefined reference, or an authored superscript
@@ -196,7 +190,7 @@ pub(crate) fn decimal_anchor(text: &str) -> Option<usize> {
 }
 
 /// Split accepted styled text at a visible-text byte boundary without flattening
-/// its emphasis or links. Callers first use `decimal_cell_text` to admit it.
+/// its emphasis or links. Callers first use `decimal_cell_text_with_footnotes` to admit it.
 pub(crate) fn split_decimal_cell(cell: &[Inline], at: usize) -> (Vec<Inline>, Vec<Inline>) {
     fn split(cell: &[Inline], remaining: &mut usize) -> (Vec<Inline>, Vec<Inline>) {
         let mut before = Vec::new();
@@ -315,13 +309,22 @@ mod tests {
             title: Some("Total".to_owned()),
             content: vec![Inline::Text("€12.30".to_owned())],
         }])];
-        let text = decimal_cell_text(&cell).unwrap();
+        let text = decimal_cell_text_with_footnotes(&cell, |_| false).unwrap();
         let (before, after) = split_decimal_cell(&cell, decimal_anchor(&text).unwrap());
-        assert_eq!(decimal_cell_text(&before).unwrap(), "€12");
-        assert_eq!(decimal_cell_text(&after).unwrap(), ".30");
+        assert_eq!(
+            decimal_cell_text_with_footnotes(&before, |_| false).unwrap(),
+            "€12"
+        );
+        assert_eq!(
+            decimal_cell_text_with_footnotes(&after, |_| false).unwrap(),
+            ".30"
+        );
         assert!(
             matches!(&after[0], Inline::Strong(inner) if matches!(&inner[0], Inline::Link { dest, .. } if dest == "#total"))
         );
-        assert!(decimal_cell_text(&[Inline::Code("12.3".to_owned())]).is_none());
+        assert!(
+            decimal_cell_text_with_footnotes(&[Inline::Code("12.3".to_owned())], |_| false)
+                .is_none()
+        );
     }
 }

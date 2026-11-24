@@ -44,7 +44,7 @@ use franken_markdown::ast::{Align, Block, Document, Inline, Table};
 use franken_markdown::fonts::{self, FontStyle};
 use franken_markdown::text::Font;
 use franken_markdown::text::outline::Segment;
-use franken_markdown::theme::{Theme, ThemeColors, TypeScale};
+use franken_markdown::theme::{FontFamily, Theme, ThemeColors, TypeScale};
 
 /// Def path data is normalized to a 100 pt em, so use-site scale factors are
 /// simply `size / 100` (0.11 for 11 pt body) and 0.01-quantized def
@@ -59,7 +59,9 @@ const SLOT_SYMBOL: usize = 5;
 const SLOT_EMOJI: usize = 6;
 /// Bundled Han/kana/punctuation face; emoji keeps its original slot.
 const SLOT_CJK: usize = 7;
-const SLOT_COUNT: usize = 8;
+/// Style-matched bundled Sans digits when a face lacks Unicode superscripts.
+const SLOT_SUPERSCRIPT: usize = 8; // + style index
+const SLOT_COUNT: usize = SLOT_SUPERSCRIPT + 4;
 
 // Explicit paths also support the standalone #[path] SVG integration harness.
 #[path = "svg/code.rs"]
@@ -470,11 +472,14 @@ struct Poster {
     /// only if a bundled face failed to parse (the registry tests make that
     /// unreachable in practice); unresolvable glyphs count as missing.
     /// `faces[SLOT_CJK]` stays `None`: read that slot through [`Poster::face`].
-    faces: [Option<Font>; SLOT_COUNT],
+    faces: [Option<Font>; SLOT_SUPERSCRIPT],
     /// The shared bundled CJK fallback, parsed on first use by
     /// [`Poster::face`]. `resolve` reaches it only for characters inside the
     /// face's static ranges, so posters without CJK text never parse it.
     cjk: OnceCell<Option<&'static Font>>,
+    /// Computer Modern and the symbol subset lack superscript numerals.
+    /// Load only a needed Sans style, sharing the bundled font's backing bytes.
+    superscript_faces: [OnceCell<Option<Font>>; 4],
     math_engine: OnceCell<Option<franken_markdown::math::Engine>>,
     images: images::ImageStore,
     navigation: RefCell<links::Navigation>,
@@ -516,6 +521,7 @@ impl Poster {
                 None,
             ],
             cjk: OnceCell::new(),
+            superscript_faces: std::array::from_fn(|_| OnceCell::new()),
             math_engine: OnceCell::new(),
             images: images::ImageStore::default(),
             navigation: RefCell::new(links::Navigation::default()),
@@ -620,8 +626,9 @@ impl Poster {
     // -- glyph resolution / measurement ------------------------------------
 
     /// Map `ch` to `(face slot, glyph id)`: the styled primary face first,
-    /// then the bundled CJK, symbol, and emoji fallbacks. The CJK face is
-    /// preferred for Han/kana; other symbols retain their existing priority.
+    /// then the bundled CJK, symbol, and emoji fallbacks, followed by styled
+    /// superscript digits. The CJK face is preferred for Han/kana; other
+    /// symbols retain their existing priority.
     /// `(slot, 0)` means unmapped.
     fn resolve(&self, ch: char, st: RStyle) -> (usize, u16) {
         let slot = if st.mono {
@@ -651,14 +658,39 @@ impl Poster {
                 }
             }
         }
+        if matches!(
+            ch,
+            '⁰' | '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹'
+        ) {
+            let fallback = SLOT_SUPERSCRIPT + style_index(st.font_style());
+            if let Some(font) = self.face(fallback) {
+                let gid = font.glyph_index(ch);
+                if gid != 0 {
+                    return (fallback, gid);
+                }
+            }
+        }
         (slot, 0)
     }
 
-    /// The face in `slot`. The bundled CJK fallback is parsed once on first
-    /// use and borrowed (`&'static`), never copied per poster.
+    /// The face in `slot`. CJK and superscript fallbacks are loaded on first
+    /// use; all bundled backing bytes remain shared.
     fn face(&self, slot: usize) -> Option<&Font> {
         if slot == SLOT_CJK {
             return *self.cjk.get_or_init(fonts::cjk_face);
+        }
+        if let Some(index) = slot.checked_sub(SLOT_SUPERSCRIPT) {
+            let style = [
+                FontStyle::Regular,
+                FontStyle::Bold,
+                FontStyle::Italic,
+                FontStyle::BoldItalic,
+            ]
+            .get(index)
+            .copied()?;
+            return self.superscript_faces[index]
+                .get_or_init(|| fonts::load_body(FontFamily::Sans, style).ok())
+                .as_ref();
         }
         self.faces[slot].as_ref()
     }

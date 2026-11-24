@@ -16,12 +16,14 @@ pub use archival::render_pdf_configured_profiled;
 mod book_advanced;
 mod book_sources;
 mod grid;
+mod verify;
 pub use book_advanced::render_book_pdf_configured_advanced;
 pub use book_sources::render_book_pdf_configured_sources;
 pub use grid::{
     render_book_pdf_configured_grid, render_book_pdf_configured_profiled,
     render_pdf_configured_grid,
 };
+pub use verify::verify_pdf_configured;
 
 /// Render using the ordinary PDF engine with explicit paper and margins.
 ///

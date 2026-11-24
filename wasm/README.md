@@ -488,6 +488,19 @@ on that captured profile. See [Document inspection](DOCUMENT_INSPECTION.md).
 The accessibility API uses default PDF layout/resources and performs source
 authoring checks; it does not certify a generated PDF.
 
+### Configured PDF verification
+
+`verifyPdf(source, options)` audits the same page geometry, typography, profile,
+running content and supplied images/fonts used by PDF export. It returns the
+complete native report with actual page text runs, anchor checks, parser/render
+findings and a deterministic digest. Both renderer instances and
+`createWorkerRenderer()` expose it; the worker uses the existing owned queue,
+cancellation and byte budgets. The full report is bounded to 8 MiB of UTF-8 JSON.
+Matching `verifyPdfConfigured` generated bindings are required, and older
+packages fail explicitly. This is a layout/authoring audit; PDF/A certification
+options are not accepted. See [configured PDF verification](PDF_VERIFICATION.md)
+for examples, report semantics and package requirements.
+
 Every render result has:
 
 - `format`: `html` or `pdf`,

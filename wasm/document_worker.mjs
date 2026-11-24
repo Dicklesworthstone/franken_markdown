@@ -4,7 +4,7 @@ import { FlowWorkerError, OwnedWorkerRpc, serveOwnedWorker, workerLimits } from 
 
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { analysisAuthoringProfileReceipt, authoringProfileReceipt, isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { analysisAuthoringProfileReceipt, authoringProfileReceipt, isPdfPaginationError, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, normalizePdfVerificationOptions, PDF_VERIFICATION_REPORT_LIMIT, pdfArchivalReceipt, validateBaselineGridFit, validatePdfVerificationReport } from "./render_typography.mjs";
 
 export { FlowWorkerError } from "./worker_transport.mjs";
 export const DOCUMENT_SOURCE_LIMIT = 4 * 1024 * 1024;
@@ -194,6 +194,49 @@ function snapshot(input, maxOutputBytes) {
     });
   }
   return { args: [input.format, input.source, options, maxOutputBytes], transfer };
+}
+
+function verificationInput(source, options) {
+  let admitted;
+  try { admitted = normalizePdfVerificationOptions(options); }
+  catch (error) { fail(error.code ?? "INVALID_OPTIONS", error.message); }
+  // Reuse PDF publication's deep option capture, resource admission and queue
+  // charging. Verification never grants archival or another format's settings.
+  return { ...normalize("pdf", source, admitted), format: "verify" };
+}
+
+function verificationEnvelope(value, max, expected) {
+  if (!value || value.format !== "pdf-verification"
+      || !Number.isSafeInteger(value.sourceLength) || value.sourceLength < 0
+      || value.sourceLength > DOCUMENT_SOURCE_LIMIT
+      || (expected && value.sourceLength !== expected.sourceLength)
+      || !(value.json instanceof Uint8Array))
+    fail("WORKER_PROTOCOL_ERROR", "invalid PDF verification envelope");
+  renderProfile(value, expected, "WORKER_PROTOCOL_ERROR");
+  let size;
+  try { size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(value.json.buffer); }
+  catch { fail("WORKER_PROTOCOL_ERROR", "PDF verification bytes must not be shared"); }
+  if (!size || value.json.byteOffset !== 0 || value.json.byteLength !== size)
+    fail("WORKER_PROTOCOL_ERROR", "PDF verification requires an exact owned report buffer");
+  if (size > Math.min(PDF_VERIFICATION_REPORT_LIMIT, max))
+    fail("BUDGET_EXCEEDED", "PDF verification report exceeds its output limit");
+  return value;
+}
+
+function verificationReport(report, profile, code) {
+  try {
+    validatePdfVerificationReport(report, code);
+    authoringProfileReceipt(report, profile, code);
+  } catch (error) { fail(error.code ?? code, error.message); }
+  return report;
+}
+
+function verificationHelpers(value, max, expected) {
+  verificationEnvelope(value, max, expected);
+  let report;
+  try { report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value.json)); }
+  catch { fail("WORKER_PROTOCOL_ERROR", "invalid PDF verification JSON"); }
+  return Object.freeze(verificationReport(report, expected.profile, "WORKER_PROTOCOL_ERROR"));
 }
 function renderProfile(value, expected, code = "WORKER_PROTOCOL_ERROR") {
   // Without a captured request, validate the receipt's shape only. Every native
@@ -466,6 +509,20 @@ async function compareInWorker(engine, input, max) {
   return { state: null, value, transfer: [value.json.buffer, value.html.bytes.buffer] };
 }
 
+async function verifyInWorker(engine, input, max) {
+  if (typeof engine?.verifyPdf !== "function")
+    fail("UNSUPPORTED_WASM_PACKAGE", "Configured PDF verification requires matching renderer and WASM bindings");
+  const report = verificationReport(await engine.verifyPdf(input.source, input.options),
+    input.options.profile, "UNSUPPORTED_WASM_PACKAGE");
+  const jsonText = JSON.stringify(report);
+  text(jsonText, Math.min(PDF_VERIFICATION_REPORT_LIMIT, max), "PDF verification report");
+  const json = new TextEncoder().encode(jsonText);
+  const value = { format: "pdf-verification", sourceLength: input.sourceLength,
+    ...(input.options.profile === undefined ? {} : { profile: input.options.profile }), json };
+  verificationEnvelope(value, max, { sourceLength: input.sourceLength, profile: input.options.profile });
+  return { state: null, value, transfer: [json.buffer] };
+}
+
 /** A lazy, reusable worker per renderer. Methods accept a final {signal,
  * timeoutMs}. Cancellation in flight closes this renderer; create a new one.
  * Requests queued but not dispatched can be cancelled independently. */
@@ -488,6 +545,11 @@ export function createWorkerRenderer(options = {}) {
       if (controls?.signal?.aborted) fail("ABORTED", "document render was aborted before dispatch");
       const input = prepareInput();
       if (input.charge > limits.maxPendingBytes) fail("WORKER_QUEUE_FULL", "document exceeds worker ingress budget");
+      // The first request has passed its ingress budget and has no queued
+      // competitors. Own its verification assets before workerFactory can call
+      // host code that mutates the selected buffers. Later requests snapshot
+      // inside the transport's synchronous queue admission as usual.
+      const initialVerification = format === "verify" && !rpc ? snapshot(input, maxOutputBytes) : null;
       // Reuse the existing owned transport's admission, deadlines and termination
       // protocol, rather than implementing a second cancellation mechanism.
       if (!rpc) {
@@ -500,6 +562,7 @@ export function createWorkerRenderer(options = {}) {
             if (state !== null) fail("WORKER_PROTOCOL_ERROR", "unexpected document state");
             if (method === "compare") comparisonEnvelope(value, maxOutputBytes);
             else if (method === "publish") publicationEnvelope(value, maxOutputBytes);
+            else if (method === "verify") verificationEnvelope(value, maxOutputBytes);
             else result(value, method, maxOutputBytes);
           });
         } catch (error) {
@@ -511,12 +574,14 @@ export function createWorkerRenderer(options = {}) {
       }
       const expected = format === "compare"
         ? { oldSourceLength: input.oldSourceLength, newSourceLength: input.newSourceLength, profile: input.options.profile }
+        : format === "verify" ? { sourceLength: input.sourceLength, profile: input.options.profile }
         : format === "publish" ? { sourceLength: input.sourceLength, formats: input.targets.map(target => target.format),
           policies: input.targets.map(target => ({
             ...normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict), profile: target.options.profile,
           })) }
         : input.sourceLength;
       const prepare = () => {
+        if (initialVerification) return initialVerification;
         if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
         if (format === "publish") return publicationSnapshot(input, maxOutputBytes);
         return snapshot(input, maxOutputBytes);
@@ -524,6 +589,7 @@ export function createWorkerRenderer(options = {}) {
       return rpc.request(format, input.charge, prepare, controls).then(value => {
         try {
           if (format === "publish") return publicationHelpers(value, maxOutputBytes, expected);
+          if (format === "verify") return verificationHelpers(value, maxOutputBytes, expected);
           return format === "compare" ? comparisonHelpers(value, maxOutputBytes, expected)
             : helpers(result(value, format, maxOutputBytes, expected, input.options));
         }
@@ -534,6 +600,9 @@ export function createWorkerRenderer(options = {}) {
   const render = (format, source, options = {}, controls = {}) =>
     execute(format, () => normalize(format, source, options), controls);
   const api = {
+    verifyPdf(source, options = {}, controls = {}) {
+      return execute("verify", () => verificationInput(source, options), controls);
+    },
     publish(source, targets, controls = {}) {
       return execute("publish", () => publicationInput(source, targets), controls);
     },
@@ -560,6 +629,7 @@ export function installDocumentWorker(endpoint, loadRenderer) {
     if (!Array.isArray(args) || args.length !== 4 || (method !== "compare" && method !== args[0]))
       fail("WORKER_PROTOCOL_ERROR", "invalid document request");
     const input = method === "compare" ? comparisonInput(args[0], args[1], args[2])
+      : method === "verify" ? verificationInput(args[1], args[2])
       : method === "publish" ? publicationInput(args[1], args[2]) : normalize(args[0], args[1], args[2]);
     if (input.charge > 64 * 1024 * 1024) fail("BUDGET_EXCEEDED", "document ingress limit exceeded");
     const max = integer(args[3], 1, DOCUMENT_OUTPUT_LIMIT, "maxOutputBytes");
@@ -568,6 +638,7 @@ export function installDocumentWorker(endpoint, loadRenderer) {
       const engine = await renderer;
       if (method === "compare") return await compareInWorker(engine, input, max);
       if (method === "publish") return await publishInWorker(engine, input, max);
+      if (method === "verify") return await verifyInWorker(engine, input, max);
       const output = await engine[FORMATS[method][0]](input.source, input.options);
       result(output, method, max, input.sourceLength, input.options, "UNSUPPORTED_WASM_PACKAGE");
       // Never detach a binding's storage. Only transfer the owned boundary copy;

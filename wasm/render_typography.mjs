@@ -44,6 +44,120 @@ export function authoringProfileReceipt(report, expected, code = "UNSUPPORTED_WA
 
 export const analysisAuthoringProfileReceipt = authoringProfileReceipt;
 
+/** Full layout verification accepts the PDF export controls, without granting
+ * archival certification or accepting settings for another output format. */
+const PDF_VERIFICATION_KEYS = [
+  "profile", "font", "darkMode", "fontScale", "typeSize", "title", "author",
+  "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers",
+  "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth",
+  "fitToPages", "microtype", "microtypeProtrusion", "typography",
+  "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes",
+  "pdfImages", "fontAssets", "page", "running", "baselineGridPt",
+];
+
+function verificationRecord(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    invalid(`${label} must be a plain data object`);
+  const out = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!keys.includes(key) || !field || !Object.hasOwn(field, "value"))
+      invalid(`unsupported ${label} field or accessor`);
+    if (field.value !== undefined) out[key] = field.value;
+  }
+  return out;
+}
+
+export function normalizePdfVerificationOptions(value = {}) {
+  const out = verificationRecord(value, PDF_VERIFICATION_KEYS, "PDF verification option");
+  if (out.profile !== undefined) out.profile = normalizeAuthoringProfile(out.profile);
+  for (const [key, value] of Object.entries(out)) {
+    if (["allowRawHtml", "codeLineNumbers", "pageNumbers", "toc", "microtypeProtrusion",
+      "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes"].includes(key)) {
+      if (typeof value !== "boolean") invalid(`${key} must be boolean`);
+    } else if (["baseFontSize", "headingScale", "tableFontSize"].includes(key)) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 1000000)
+        invalid(`${key} must be a positive finite number no greater than 1000000`);
+    } else if (["tocDepth", "fitToPages", "metadataEpochSeconds"].includes(key)) {
+      const minimum = key === "metadataEpochSeconds" ? 0 : 1;
+      const maximum = key === "tocDepth" ? 6 : key === "fitToPages" ? 1000 : Number.MAX_SAFE_INTEGER;
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum)
+        invalid(`invalid ${key}`);
+    } else if (["fontScale", "typeSize"].includes(key)) {
+      if (typeof value === "string" ? value.length > 64
+        : typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+        invalid(`invalid ${key}`);
+    } else if (["font", "darkMode", "title", "author", "lang"].includes(key)) {
+      if (typeof value !== "string" || value.length > 4096) invalid(`invalid ${key}`);
+      const choices = { font: ["sans", "serif"], darkMode: ["auto", "disabled"] }[key];
+      if (choices && !choices.includes(value)) invalid(`invalid ${key}`);
+    } else if (key === "pdfImages" || key === "fontAssets") {
+      const fonts = key === "fontAssets", maximum = fonts ? 5 : 4096;
+      if (!Array.isArray(value) || value.length > maximum)
+        invalid(`${key} must be an array with at most ${maximum} entries`);
+      // Capture membership and records before a source coercion, asset copy or
+      // worker callback can replace another selected resource.
+      out[key] = Array.from({ length: value.length }, (_, index) => {
+        const field = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!field || !Object.hasOwn(field, "value")) invalid(`${key} must contain dense data entries`);
+        const asset = verificationRecord(field.value,
+          fonts ? ["slot", "bytes", "weight"] : ["destination", "bytes"], `${key} asset`);
+        if (typeof asset[fonts ? "slot" : "destination"] !== "string") invalid(`invalid ${key} asset key`);
+        if (asset.weight !== undefined && (!Number.isInteger(asset.weight) || asset.weight < 1 || asset.weight > 1000))
+          invalid("font weight must be an integer from 1 through 1000");
+        return Object.freeze(asset);
+      });
+      Object.freeze(out[key]);
+    }
+  }
+  return Object.freeze(out);
+}
+
+/** Maximum complete schema-v1 JSON report, in UTF-8 bytes. */
+export const PDF_VERIFICATION_REPORT_LIMIT = 8 * 1024 * 1024;
+
+/** Validate the complete native report, not just an accessibility subset. This
+ * retains additive native fields and never recalculates the native digest. */
+export function validatePdfVerificationReport(report, code = "INVALID_WASM_RESPONSE") {
+  const fail = () => { throw Object.assign(new Error("Invalid full PDF verification report"), { code }); };
+  const object = value => value && typeof value === "object" && !Array.isArray(value);
+  const field = (value, key) => {
+    if (!object(value)) return fail();
+    const item = Object.getOwnPropertyDescriptor(value, key);
+    if (!item || !Object.hasOwn(item, "value")) return fail();
+    return item.value;
+  };
+  const count = value => Number.isSafeInteger(value) && value >= 0;
+  if (field(report, "schema_version") !== "1" || field(report, "target") !== "pdf"
+      || !count(field(report, "page_count"))
+      || typeof field(report, "digest") !== "string"
+      || !/^fnv1a64:[0-9a-f]{16}$/.test(report.digest)) fail();
+  const anchors = field(report, "anchors"), unresolved = field(anchors, "unresolved");
+  if (!count(field(anchors, "resolved")) || !Array.isArray(unresolved)
+      || !unresolved.every(value => typeof value === "string")) fail();
+  const findings = field(report, "findings"), pages = field(report, "pages");
+  if (!Array.isArray(findings) || !Array.isArray(pages) || pages.length !== report.page_count
+      || field(report, "verdict") !== (findings.length ? "findings" : "clean")) fail();
+  for (const finding of findings) {
+    if (typeof field(finding, "code") !== "string" || !finding.code
+        || typeof field(finding, "detail") !== "string") fail();
+  }
+  for (let index = 0; index < pages.length; index++) {
+    const page = pages[index], runs = field(page, "runs");
+    if (field(page, "number") !== index + 1 || !Array.isArray(runs)) fail();
+    for (const run of runs) {
+      if (typeof field(run, "text") !== "string" || typeof field(run, "kind") !== "string"
+          || !run.kind || !Number.isFinite(field(run, "x")) || !Number.isFinite(field(run, "y"))
+          || !Number.isFinite(field(run, "size")) || run.size < 0) fail();
+    }
+  }
+  const profile = Object.getOwnPropertyDescriptor(report, "profile");
+  if (profile && (!Object.hasOwn(profile, "value")
+      || !["commonmark-gfm", "gfm-plus"].includes(profile.value))) fail();
+  return report;
+}
+
 /** Capture native typography controls, without retaining caller objects or
  * invoking accessors. Missing and explicit false values keep their spelling. */
 export function normalizePdfTypography(value) {

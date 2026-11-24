@@ -1,6 +1,6 @@
 import { pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { normalizeAnalysisOptions, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfTypographyTokens, validateBaselineGridFit } from "./render_typography.mjs";
+import { normalizeAnalysisOptions, normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, normalizePdfVerificationOptions, PDF_VERIFICATION_REPORT_LIMIT, pdfTypographyTokens, validateBaselineGridFit, validatePdfVerificationReport } from "./render_typography.mjs";
 import * as wasmBindings from "./pkg/franken_markdown.js";
 import initWasm, {
   renderEpubConfigured,
@@ -390,34 +390,102 @@ export async function renderPdf(markdown, options = {}) {
   }
 }
 
-// Match the archival native admission before allocating host payload copies.
-function archivalPdfTextBytes(text, maximum) {
-  if (text.length > maximum) throw new RangeError("PDF/A text exceeds its UTF-8 byte limit");
+/** Audit the same configured native layout used by PDF export. This returns
+ * the complete verification report, without emitting or certifying a PDF. */
+export async function verifyPdf(markdown, options = {}) {
+  const selected = normalizePdfVerificationOptions(options);
+  const profile = selected.profile;
+  const baselineGridPt = normalizeBaselineGridPt(selected.baselineGridPt);
+  const fitToPages = integerOption(selected.fitToPages, "fitToPages");
+  validateBaselineGridFit(baselineGridPt, fitToPages);
+  const geometry = pdfPageGeometry(selected.page);
+  const running = pdfRunningOption(selected.running === undefined ? undefined
+    : normalizePdfRunning(selected.running));
+  const typography = typographyOption(selected);
+  const verify = requireBrowserBinding("verifyPdfConfigured", "configured PDF verification");
+  requireBindingArguments(verify, 38, "Configured PDF verification");
+
+  const source = String(markdown);
+  archivalPdfTextBytes(source, 32 * 1024 * 1024, "PDF verification");
+  for (const key of ["title", "author", "lang"])
+    if (selected[key] !== undefined) archivalPdfTextBytes(selected[key], 4096, "PDF verification metadata");
+  const images = pdfImagesOption(selected.pdfImages), fonts = fontAssetsOption(selected.fontAssets);
+  admitArchivalPdfAssets(images, fonts, "PDF verification");
+  const ownedFonts = fonts.map(asset => ({ ...asset, bytes: new Uint8Array(asset.bytes) }));
+  const lengths = new Uint32Array(images.map(image => image.bytes.byteLength));
+  const flatBytes = new Uint8Array(images.reduce((sum, image) => sum + image.bytes.byteLength, 0));
+  let offset = 0;
+  for (const image of images) { flatBytes.set(image.bytes, offset); offset += image.bytes.byteLength; }
+  const fontScale = fontScaleOption(selected.fontScale ?? selected.typeSize);
+  const baseFontSize = numberOption(selected.baseFontSize)
+    ?? (fontScale !== undefined ? 11 * fontScale : undefined);
+  const args = [
+    source, stringOption(selected.font), darkModeOption(selected.darkMode),
+    verbatimOption(selected.title), verbatimOption(selected.author), epochOption(selected.metadataEpochSeconds),
+    Boolean(selected.allowRawHtml), Boolean(selected.codeLineNumbers), images.map(image => image.destination),
+    flatBytes, lengths, fontBytesForSlot(ownedFonts, "body-regular"), fontBytesForSlot(ownedFonts, "body-bold"),
+    fontBytesForSlot(ownedFonts, "body-italic"), fontBytesForSlot(ownedFonts, "body-bold-italic"),
+    fontBytesForSlot(ownedFonts, "mono-regular"), fontWeightsForSlots(ownedFonts),
+    baseFontSize, numberOption(selected.headingScale), numberOption(selected.tableFontSize),
+    Boolean(selected.pageNumbers), fontScale, stringOption(selected.lang), Boolean(selected.toc),
+    integerOption(selected.tocDepth, "tocDepth"), fitToPages,
+    selected.microtype === "protrusion" || selected.microtypeProtrusion === true,
+    geometry, running?.slots ?? [], running?.headerRule ?? false, running?.footerRule ?? false,
+    running?.skipFirstPage ?? false, running?.imageDestinations ?? [],
+    running?.imagePositions ?? new Uint32Array(), running?.imageHeights ?? new Uint32Array(),
+    typography, baselineGridPt, profile,
+  ];
+  // Source, controls and exact resource ranges are owned before even a warm
+  // asynchronous initialization yields. Reuse export's frontmatter precedence.
+  await init();
+  applySourceMetadata(args, { title: 3, author: 4, lang: 22, toc: 23, tocDepth: 24 }, selected.toc === undefined);
+  for (const slot of [3, 4, 22])
+    if (args[slot] !== undefined) archivalPdfTextBytes(args[slot], 4096, "PDF verification metadata");
+  try {
+    const json = verify(...args);
+    if (typeof json !== "string") throw Object.assign(new Error("Invalid PDF verification JSON"), { code: "INVALID_WASM_RESPONSE" });
+    try { archivalPdfTextBytes(json, PDF_VERIFICATION_REPORT_LIMIT, "PDF verification report"); }
+    catch (error) { throw Object.assign(error, { code: error instanceof RangeError ? "BUDGET_EXCEEDED" : "INVALID_WASM_RESPONSE" }); }
+    let report;
+    try { report = JSON.parse(json); }
+    catch { throw Object.assign(new Error("Invalid PDF verification JSON"), { code: "INVALID_WASM_RESPONSE" }); }
+    validatePdfVerificationReport(report);
+    if (Object.hasOwn(report, "profile") && report.profile !== profile)
+      throw Object.assign(new Error("PDF verification returned a conflicting authoring profile"), { code: "INVALID_WASM_RESPONSE" });
+    // This new checked binding parsed the selected grammar. Keep the canonical
+    // native digest unchanged and acknowledge explicit selection additively.
+    return Object.freeze(profile === undefined ? report : { ...report, profile });
+  } catch (error) { throw normalizePdfPaginationError(error); }
+}
+
+// Match the bounded native admission before allocating host payload copies.
+function archivalPdfTextBytes(text, maximum, label = "PDF/A") {
+  if (text.length > maximum) throw new RangeError(`${label} text exceeds its UTF-8 byte limit`);
   let bytes = 0;
   for (const character of text) {
     const cp = character.codePointAt(0);
-    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError("PDF/A text contains an unpaired surrogate");
+    if (cp >= 0xd800 && cp <= 0xdfff) throw new TypeError(`${label} text contains an unpaired surrogate`);
     bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-    if (bytes > maximum) throw new RangeError("PDF/A text exceeds its UTF-8 byte limit");
+    if (bytes > maximum) throw new RangeError(`${label} text exceeds its UTF-8 byte limit`);
   }
   return bytes;
 }
-function admitArchivalPdfAssets(images, fonts) {
+function admitArchivalPdfAssets(images, fonts, label = "PDF/A") {
   const destinations = new Set();
   let textBytes = 0, total = 0;
   for (const image of images) {
-    textBytes += archivalPdfTextBytes(image.destination, 8192);
-    if (textBytes > 65536) throw new RangeError("PDF/A image destinations exceed 64 KiB");
-    if (destinations.has(image.destination)) throw new TypeError("PDF/A image destinations must be unique");
+    textBytes += archivalPdfTextBytes(image.destination, 8192, label);
+    if (textBytes > 65536) throw new RangeError(`${label} image destinations exceed 64 KiB`);
+    if (destinations.has(image.destination)) throw new TypeError(`${label} image destinations must be unique`);
     destinations.add(image.destination);
   }
   for (const { bytes } of [...images, ...fonts]) {
     Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(bytes.buffer);
     new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength); // Reject detached views.
     if (bytes.byteLength === 0 || bytes.byteLength > 32 * 1024 * 1024)
-      throw new RangeError("PDF/A assets must contain 1 byte through 32 MiB");
+      throw new RangeError(`${label} assets must contain 1 byte through 32 MiB`);
     total += bytes.byteLength;
-    if (total > 128 * 1024 * 1024) throw new RangeError("PDF/A assets exceed 128 MiB combined");
+    if (total > 128 * 1024 * 1024) throw new RangeError(`${label} assets exceed 128 MiB combined`);
   }
 }
 
@@ -1425,6 +1493,7 @@ export async function createRenderer(input) {
     renderHtml,
     renderInteractiveHtml,
     renderPdf,
+    verifyPdf,
     renderSemanticDiff,
     renderSvg,
     searchIndex,

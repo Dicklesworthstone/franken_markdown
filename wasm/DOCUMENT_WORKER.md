@@ -31,6 +31,14 @@ render API's bytes, MIME type, extension, source byte count, diagnostics, `text(
 `blob()`, and `filename()` helpers. It does not add a second Markdown parser,
 Canvas export, alternate typesetter, network image loader, or new core dependency.
 
+`verifyPdf(source, options, controls)` runs the complete native PDF layout and
+authoring audit through the same queue. It accepts PDF layout/resources and
+returns the native page, anchor, findings and digest report; it emits no document
+bytes. Source/resources are captured before queueing, and the report is bounded
+to the smaller of 8 MiB UTF-8 JSON and `maxOutputBytes`. It requires matching
+verification bindings and does not accept PDF/A certification settings. See
+[configured PDF verification](PDF_VERIFICATION.md) for the report and options.
+
 ## Cancellation and lifecycle
 
 Each renderer owns one dedicated worker and uses the existing owned RPC

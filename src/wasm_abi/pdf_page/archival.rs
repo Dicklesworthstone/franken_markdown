@@ -242,7 +242,7 @@ fn archival_settings(profile: &str, strict: bool) -> Result<PdfASettings, &'stat
 
 // Both direct ABI callers and worker callers are admitted before parser work,
 // per-resource copies or font decoding. No additional resource authority.
-fn admit_inputs(
+pub(super) fn admit_inputs(
     source: &str,
     destinations: &[String],
     bytes: &[u8],

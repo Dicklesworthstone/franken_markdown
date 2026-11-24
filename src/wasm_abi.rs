@@ -26,7 +26,7 @@ pub use pdf_page::{
     render_book_pdf_configured_advanced, render_book_pdf_configured_grid,
     render_book_pdf_configured_page, render_book_pdf_configured_profiled,
     render_book_pdf_configured_sources, render_pdf_configured_grid, render_pdf_configured_page,
-    render_pdf_configured_profiled,
+    render_pdf_configured_profiled, verify_pdf_configured,
 };
 
 mod epub;

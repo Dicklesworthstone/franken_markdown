@@ -234,6 +234,7 @@
     "document_worker_entry.js",
     "document-worker.d.ts",
     "DOCUMENT_WORKER.md",
+    "PDF_VERIFICATION.md",
     "document-batch.js",
     "document-batch.d.ts",
     "document_batch.mjs",

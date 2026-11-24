@@ -220,6 +220,40 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
   running?: FmdPdfRunning;
 }
 
+/** Layout/authoring verification using the same options and supplied bytes as
+ * PDF export. This does not emit or independently inspect a PDF file and does
+ * not certify PDF/A or PDF/UA. Other-format settings and pdfA/pdfAStrict are
+ * rejected. A fit target reports the resulting page count, not a hard cap. */
+export interface FmdPdfVerifyOptions extends Pick<FmdPdfRenderOptions,
+  "profile" | "font" | "darkMode" | "fontScale" | "typeSize" | "title" | "author" |
+  "metadataEpochSeconds" | "allowRawHtml" | "codeLineNumbers" | "pageNumbers" |
+  "baseFontSize" | "headingScale" | "tableFontSize" | "lang" | "toc" | "tocDepth" |
+  "fitToPages" | "microtype" | "microtypeProtrusion" | "typography" |
+  "optimalPagination" | "strictPagination" | "footnoteBacklinks" | "splitFootnotes" |
+  "pdfImages" | "fontAssets" | "page" | "running" | "baselineGridPt"> {}
+
+/** Complete native schema-v1 verification report, bounded to 8 MiB UTF-8 JSON.
+ * Coordinates describe the native body text layer in points. Running bands are
+ * admitted with their actual margins/assets but are absent from these runs. */
+export interface FmdPdfVerificationReport {
+  readonly schema_version: "1";
+  readonly target: "pdf";
+  readonly profile?: FmdAuthoringProfile;
+  readonly verdict: "clean" | "findings";
+  readonly page_count: number;
+  /** Native FNV-1a change detector for the canonical report, not a signature. */
+  readonly digest: string;
+  readonly anchors: { readonly resolved: number; readonly unresolved: readonly string[] };
+  readonly findings: readonly { readonly code: string; readonly detail: string }[];
+  readonly pages: readonly {
+    readonly number: number;
+    readonly runs: readonly {
+      readonly text: string; readonly x: number; readonly y: number;
+      readonly size: number; readonly kind: string;
+    }[];
+  }[];
+}
+
 /** Lightweight editable HTML. Configured styles, full font faces, images and
  * navigation survive edits and Save HTML; Markdown editing uses its documented
  * JavaScript subset. Raw passthrough and PDF-only options are rejected.
@@ -367,6 +401,7 @@ export interface FmdRenderer {
   renderHtml(markdown: string, options?: FmdRenderOptions): Promise<FmdRenderOutput>;
   renderInteractiveHtml(markdown: string, options?: FmdInteractiveRenderOptions): Promise<FmdRenderOutput>;
   renderPdf(markdown: string, options?: FmdPdfRenderOptions): Promise<FmdRenderOutput>;
+  verifyPdf(markdown: string, options?: FmdPdfVerifyOptions): Promise<FmdPdfVerificationReport>;
   renderSemanticDiff(
     oldMarkdown: string,
     newMarkdown: string,
@@ -470,6 +505,9 @@ export function fontCollectionFaceCount(bytes: FmdFontCollectionBytes): Promise<
  */
 export function extractFontCollectionFace(bytes: FmdFontCollectionBytes, faceIndex?: number): Promise<Uint8Array>;
 export function accessibilityAudit(markdown: string, options?: FmdAnalysisOptions): Promise<FmdAccessibilityReport>;
+/** Verify a configured PDF layout, with bounded owned source/resources. Requires
+ * matching verifyPdfConfigured WASM bindings; older packages fail explicitly. */
+export function verifyPdf(markdown: string, options?: FmdPdfVerifyOptions): Promise<FmdPdfVerificationReport>;
 export function documentStats(markdown: string, options?: FmdAnalysisOptions): Promise<FmdDocumentStats>;
 /** Publish ordered chapters with the same PDF typography, running bands and
  * explicit pdfImages as renderPdf. Additional includeSources remain resources,

@@ -1,4 +1,4 @@
-import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff, FmdAuthoringProfile } from "./franken_markdown.js";
+import type { FmdDiagnostic, FmdRenderOptions, FmdPdfRenderOptions, FmdPdfVerifyOptions, FmdPdfVerificationReport, FmdInteractiveRenderOptions, FmdDiffOptions, FmdSemanticDiff, FmdAuthoringProfile } from "./franken_markdown.js";
 
 export type DocumentFormat = "html" | "pdf" | "svg" | "epub" | "interactive-html";
 type Shared = Pick<FmdRenderOptions, "profile" | "font" | "darkMode" | "fontScale" | "typeSize">;
@@ -74,6 +74,11 @@ export interface DocumentWorkerRenderer {
   readonly disposed: boolean;
   readonly pendingOperations: number;
   readonly pendingBytes: number;
+  /** Full native PDF layout/authoring report from one owned source/options/assets
+   * snapshot. Uses publication's queue, cancellation and deadlines. Source is
+   * bounded to 4 MiB and the complete report to min(maxOutputBytes, 8 MiB).
+   * This does not emit a PDF or certify PDF/A/PDF/UA. */
+  verifyPdf(markdown: string, options?: FmdPdfVerifyOptions, controls?: DocumentControl): Promise<FmdPdfVerificationReport>;
   /** Each source is bounded to 4 MiB UTF-8; oldName/newName and a shared authoring profile are supported.
    * Uses the same queue, cancellation and deadline as document renders.
    */

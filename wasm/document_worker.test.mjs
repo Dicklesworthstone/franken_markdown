@@ -183,11 +183,31 @@ if (!isMainThread) {
     await rejects(api.renderHtml("x", { get title() { calls++; return "bad"; } }), "INVALID_OPTIONS");
     assert.equal(calls, 0);
     for (const [format, options] of [
-      ["svg", { page: {} }], ["epub", { allowRawHtml: true }], ["html", { author: "a" }],
+      ["svg", { page: {} }], ["epub", { allowRawHtml: true }], ["html", { pageNumbers: true }],
       ["pdf", { customCss: "body{}" }], ["html", { allowRawHtml: 1 }],
       ["pdf", { fitToPages: -1 }], ["html", { tocDepth: 7 }], ["pdf", { fontScale: Infinity }],
     ]) await rejects(api.render(format, "text", options), "INVALID_OPTIONS");
     assert.equal(JSON.parse((await api.renderPdf("valid", { metadataEpochSeconds: 0 })).text()).options.metadataEpochSeconds, 0);
+  });
+
+  test("HTML author metadata reaches the worker while PDF-only settings remain rejected", async t => {
+    const api = renderer(t);
+    const source = "# Authored document";
+    const options = { title: "Metadata", author: "Zoë & 李", lang: "fr" };
+    const actual = JSON.parse((await api.renderHtml(source, options)).text());
+    assert.equal(actual.source, source);
+    assert.deepEqual(actual.options, options);
+    assert.equal(actual.renders, 1);
+
+    await rejects(api.renderHtml("must not run", {
+      author: options.author, pageNumbers: true,
+    }), "INVALID_OPTIONS");
+    const after = JSON.parse((await api.renderHtml("after", { author: options.author })).text());
+    assert.deepEqual(after.options, { author: options.author });
+    assert.equal(after.renders, 2);
+    assert.equal(api.disposed, false);
+    assert.equal(api.pendingOperations, 0);
+    assert.equal(api.pendingBytes, 0);
   });
 
   test("queued source/settings and exact asset views are snapshotted without detaching caller storage", async t => {

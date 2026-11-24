@@ -39,13 +39,14 @@ pub struct DocumentStats {
     pub reading_ease_label: &'static str,
     /// Structural element breakdown.
     pub structure: DocumentStructure,
-    /// Document outline (headings in order).
+    /// Published outline, in body then first-reference footnote order.
+    /// Headings in omitted footnote definitions do not appear here.
     pub outline: Vec<OutlineHeading>,
     /// Quality & integrity findings.
     pub findings: Vec<DocFinding>,
 }
 
-/// Structural inventory of document elements.
+/// Structural inventory of source elements, including omitted footnote definitions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DocumentStructure {
     pub headings_total: usize,
@@ -99,23 +100,26 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         markdown.lines().count()
     };
 
-    let mut collector = StatsCollector::default();
-    collector.walk_blocks(&doc.blocks);
+    let identifiers = crate::html::heading_identifiers(doc);
+    let mut collector = StatsCollector {
+        defined_anchors: identifiers.other_anchors,
+        heading_ids: identifiers.headings,
+        note_order: identifiers
+            .footnotes
+            .into_iter()
+            .enumerate()
+            .map(|(index, note)| (note.source_id, index + 1))
+            .collect(),
+        ..StatsCollector::default()
+    };
+    collector.walk_blocks(&doc.blocks, Some(0));
+    let outline = collector.finish_outline();
     collector.structure.code_languages = collector.code_langs_set.into_iter().collect();
 
     // Check for broken internal anchors (e.g. [Link](#missing-target))
     for (anchor, link_text) in &collector.referenced_anchors {
-        let valid = crate::anchors::decode_fragment(anchor).is_some_and(|id| {
-            id.is_empty()
-                || collector.defined_anchors.contains(&id)
-                || collector.footnote_defs_set.contains(&id)
-                || id
-                    .strip_prefix("fn-")
-                    .is_some_and(|note| collector.footnote_defs_set.contains(note))
-                || id
-                    .strip_prefix("fnref-")
-                    .is_some_and(|note| collector.footnote_defs_set.contains(note))
-        });
+        let valid = crate::anchors::decode_fragment(anchor)
+            .is_some_and(|id| id.is_empty() || collector.defined_anchors.contains(&id));
         if !valid {
             collector.findings.push(DocFinding {
                 severity: "warning",
@@ -228,7 +232,7 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
         automated_readability_index,
         reading_ease_label,
         structure: collector.structure,
-        outline: collector.outline,
+        outline,
         findings: collector.findings,
     }
 }
@@ -243,19 +247,28 @@ struct StatsCollector {
     sentences: usize,
     syllables: usize,
     structure: DocumentStructure,
-    outline: Vec<OutlineHeading>,
+    published_headings: Vec<PublishedHeading>,
     code_langs_set: BTreeSet<String>,
     defined_anchors: BTreeSet<String>,
-    slug_counts: BTreeMap<String, usize>,
+    heading_ids: Vec<Option<String>>,
+    next_heading: usize,
+    note_order: BTreeMap<String, usize>,
     referenced_anchors: Vec<(String, String)>,
     footnote_defs_set: BTreeSet<String>,
     footnote_refs_set: BTreeSet<String>,
-    last_heading_level: Option<u8>,
     findings: Vec<DocFinding>,
 }
 
+struct PublishedHeading {
+    order: usize,
+    heading: OutlineHeading,
+    base_slug: String,
+}
+
 impl StatsCollector {
-    fn walk_blocks(&mut self, blocks: &[Block]) {
+    // Source metrics include every definition. Publication order is tracked
+    // separately so omitted notes cannot contribute headings or broken links.
+    fn walk_blocks(&mut self, blocks: &[Block], published: Option<usize>) {
         for block in blocks {
             match block {
                 Block::PageBreak => {}
@@ -264,63 +277,37 @@ impl StatsCollector {
                     self.structure.headings_total += 1;
                     self.structure.headings_by_level[lvl - 1] += 1;
 
-                    if let Some(prev) = self.last_heading_level
-                        && *level > prev + 1
-                    {
-                        self.findings.push(DocFinding {
-                            severity: "warning",
-                            code: "heading_hierarchy_skip",
-                            message: format!(
-                                "heading level H{} follows H{} (skipped H{})",
-                                level,
-                                prev,
-                                prev + 1
-                            ),
+                    // Consume every source slot, including headings from notes
+                    // that the renderer omits. IDs are allocated only once, by
+                    // the shared publication inventory.
+                    let slug = self
+                        .heading_ids
+                        .get_mut(self.next_heading)
+                        .and_then(Option::take);
+                    self.next_heading += 1;
+                    if let Some((order, slug)) = published.zip(slug) {
+                        let mut base_slug = slug_inlines(inlines);
+                        if base_slug.is_empty() {
+                            base_slug.push_str("section");
+                        }
+                        self.defined_anchors.insert(slug.clone());
+                        self.published_headings.push(PublishedHeading {
+                            order,
+                            heading: OutlineHeading {
+                                level: *level,
+                                text: inlines_to_plain(inlines),
+                                slug,
+                            },
+                            base_slug,
                         });
                     }
-                    self.last_heading_level = Some(*level);
-
-                    let plain_text = inlines_to_plain(inlines);
-                    if plain_text.trim().is_empty() {
-                        self.findings.push(DocFinding {
-                            severity: "warning",
-                            code: "empty_heading",
-                            message: format!("heading at level H{} has no text content", level),
-                        });
-                    }
-
-                    let raw_slug = slug_inlines(inlines);
-                    let base_slug = if raw_slug.is_empty() {
-                        "section".to_string()
-                    } else {
-                        raw_slug.clone()
-                    };
-                    let full_slug = assign_heading_id(inlines, &mut self.slug_counts);
-                    if full_slug != base_slug {
-                        self.findings.push(DocFinding {
-                            severity: "info",
-                            code: "duplicate_heading_slug",
-                            message: format!(
-                                "duplicate heading text '{}' generated collision anchor '#{}'",
-                                plain_text, full_slug
-                            ),
-                        });
-                    }
-
-                    self.defined_anchors.insert(full_slug.clone());
-                    self.outline.push(OutlineHeading {
-                        level: *level,
-                        text: plain_text,
-                        slug: full_slug,
-                    });
-
-                    self.analyze_inlines(inlines);
+                    self.analyze_inlines(inlines, published.is_some());
                     // Headings are typically sentences/standalone thoughts
                     self.sentences += 1;
                 }
                 Block::Paragraph(inlines) => {
                     self.structure.paragraphs += 1;
-                    self.analyze_inlines(inlines);
+                    self.analyze_inlines(inlines, published.is_some());
                 }
                 Block::CodeBlock { lang, code } => {
                     self.structure.code_blocks += 1;
@@ -341,10 +328,10 @@ impl StatsCollector {
                             .callouts_by_kind
                             .entry(tag.to_string())
                             .or_insert(0) += 1;
-                        self.walk_blocks(&body);
+                        self.walk_blocks(&body, published);
                     } else {
                         self.structure.blockquotes += 1;
-                        self.walk_blocks(inner);
+                        self.walk_blocks(inner, published);
                     }
                 }
                 Block::List(list) => {
@@ -357,7 +344,7 @@ impl StatsCollector {
                                 self.structure.task_items_completed += 1;
                             }
                         }
-                        self.walk_blocks(&item.blocks);
+                        self.walk_blocks(&item.blocks, published);
                     }
                 }
                 Block::Table(table) => {
@@ -365,12 +352,12 @@ impl StatsCollector {
                     self.structure.table_rows += table.rows.len() + 1; // head + body rows
                     for cell in &table.head {
                         self.structure.table_cells += 1;
-                        self.analyze_inlines(cell);
+                        self.analyze_inlines(cell, published.is_some());
                     }
                     for row in &table.rows {
                         for cell in row {
                             self.structure.table_cells += 1;
-                            self.analyze_inlines(cell);
+                            self.analyze_inlines(cell, published.is_some());
                         }
                     }
                 }
@@ -381,8 +368,15 @@ impl StatsCollector {
                 }
                 Block::FootnoteDefinition { id, blocks } => {
                     self.structure.footnote_definitions += 1;
-                    self.footnote_defs_set.insert(id.clone());
-                    self.walk_blocks(blocks);
+                    let first_definition = self.footnote_defs_set.insert(id.clone());
+                    let note_order = if first_definition {
+                        self.note_order.get(id).copied()
+                    } else {
+                        None
+                    };
+                    // Nested definitions may be reachable even when their
+                    // containing note is unused or a shadowed duplicate.
+                    self.walk_blocks(blocks, note_order);
                 }
                 Block::MathBlock(math) => {
                     self.structure.math_blocks += 1;
@@ -392,10 +386,10 @@ impl StatsCollector {
                 Block::DefinitionList(items) => {
                     for item in items {
                         for term in &item.terms {
-                            self.analyze_inlines(term);
+                            self.analyze_inlines(term, published.is_some());
                         }
                         for def in &item.definitions {
-                            self.analyze_inlines(def);
+                            self.analyze_inlines(def, published.is_some());
                         }
                     }
                 }
@@ -403,14 +397,61 @@ impl StatsCollector {
         }
     }
 
-    fn analyze_inlines(&mut self, inlines: &[Inline]) {
+    fn finish_outline(&mut self) -> Vec<OutlineHeading> {
+        let mut headings = std::mem::take(&mut self.published_headings);
+        // Stable sorting preserves source order within the body and within
+        // each emitted note, while following first-reference order across notes.
+        headings.sort_by_key(|entry| entry.order);
+        let mut last_level: Option<u8> = None;
+        headings
+            .into_iter()
+            .map(|entry| {
+                let heading = entry.heading;
+                if let Some(prev) = last_level
+                    && heading.level > prev.saturating_add(1)
+                {
+                    self.findings.push(DocFinding {
+                        severity: "warning",
+                        code: "heading_hierarchy_skip",
+                        message: format!(
+                            "heading level H{} follows H{} (skipped H{})",
+                            heading.level,
+                            prev,
+                            prev.saturating_add(1)
+                        ),
+                    });
+                }
+                last_level = Some(heading.level);
+                if heading.text.trim().is_empty() {
+                    self.findings.push(DocFinding {
+                        severity: "warning",
+                        code: "empty_heading",
+                        message: format!("heading at level H{} has no text content", heading.level),
+                    });
+                }
+                if heading.slug != entry.base_slug {
+                    self.findings.push(DocFinding {
+                        severity: "info",
+                        code: "duplicate_heading_slug",
+                        message: format!(
+                            "duplicate heading text '{}' generated collision anchor '#{}'",
+                            heading.text, heading.slug
+                        ),
+                    });
+                }
+                heading
+            })
+            .collect()
+    }
+
+    fn analyze_inlines(&mut self, inlines: &[Inline], published: bool) {
         for inline in inlines {
             match inline {
                 Inline::Text(t) => {
                     self.process_prose_text(t);
                 }
                 Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-                    self.analyze_inlines(inner);
+                    self.analyze_inlines(inner, published);
                 }
                 Inline::Code(code) => {
                     self.process_prose_text(code);
@@ -419,13 +460,15 @@ impl StatsCollector {
                     self.structure.links_total += 1;
                     if let Some(anchor) = dest.strip_prefix('#') {
                         self.structure.links_internal_anchors += 1;
-                        let link_text = inlines_to_plain(content);
-                        self.referenced_anchors
-                            .push((anchor.to_string(), link_text));
+                        if published {
+                            let link_text = inlines_to_plain(content);
+                            self.referenced_anchors
+                                .push((anchor.to_string(), link_text));
+                        }
                     } else {
                         self.structure.links_external += 1;
                     }
-                    self.analyze_inlines(content);
+                    self.analyze_inlines(content, published);
                 }
                 Inline::Image { alt, .. } => {
                     self.structure.images += 1;
@@ -551,31 +594,6 @@ fn push_inlines_to_plain(inlines: &[Inline], s: &mut String) {
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => s.push(' '),
             Inline::FootnoteRef { .. } => {}
-        }
-    }
-}
-
-fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>) -> String {
-    let mut base = slug_inlines(inlines);
-    if base.is_empty() {
-        base.push_str("section");
-    }
-    let mut suffix = suffixes.get(base.as_str()).copied().unwrap_or(1);
-    loop {
-        if suffix == 1 {
-            suffix += 1;
-            if !suffixes.contains_key(base.as_str()) {
-                suffixes.insert(base.clone(), suffix);
-                return base;
-            }
-            continue;
-        }
-        let candidate = format!("{base}-{suffix}");
-        suffix += 1;
-        if !suffixes.contains_key(candidate.as_str()) {
-            suffixes.insert(candidate.clone(), 1);
-            suffixes.insert(base, suffix);
-            return candidate;
         }
     }
 }
@@ -976,12 +994,12 @@ Paragraph with [Broken Link](#nonexistent-anchor) and [Footnote Reference][^1].
     }
 
     #[test]
-    fn compute_doc_stats_resolves_fn_prefixed_footnote_anchors() {
+    fn compute_doc_stats_resolves_published_footnote_anchors() {
         let md = r#"# Notes
 
 Here is a statement with a citation[^alpha].
 
-And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [Ref](#fnref-alpha).
+And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [Ref](#fnref-1).
 
 [^alpha]: This is the alpha footnote definition.
 "#;
@@ -991,7 +1009,7 @@ And here is a manual backlink to the footnote note: [Note Alpha](#fn-alpha) or [
         assert_eq!(stats.structure.footnote_definitions, 1);
         assert_eq!(stats.structure.footnote_references, 1);
         assert_eq!(stats.structure.links_internal_anchors, 2);
-        // Neither #fn-alpha nor #fnref-alpha should trigger a broken_internal_anchor warning
+        // Both the note body and its numeric reference anchor are published.
         assert!(
             stats.findings.is_empty(),
             "unexpected findings: {:?}",

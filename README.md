@@ -828,6 +828,8 @@ fmd stats README.md --profile commonmark-gfm --json
 fmd stats --text $'Term\n: Definition' --profile gfm-plus
 fmd diff before.md after.md --profile commonmark-gfm --out review.html
 fmd diff before.md after.md --profile gfm-plus --json
+fmd stats manual.md --expand-includes --json
+fmd diff before/main.md after/main.md --expand-includes --out review.html
 ```
 
 `--profile` selects the authoring grammar before parsing. For example,
@@ -840,9 +842,16 @@ the same page-break marker do not appear as semantic changes.
 Omitting `--profile` inherits the native `profile` config key. With neither a
 flag nor configured profile, historical reports are preserved, including their
 treatment of page-break comments. `stats` accepts a file, `-` for stdin, or `--text`;
-`diff` accepts `-` for either revision. Both commands inspect the supplied text
-without expanding includes or loading publication resources. Invalid profiles
-exit 64 before input is read, and `--max-input-bytes` still bounds each input.
+`diff` accepts `-` for either revision. By default both commands inspect the
+supplied text. `--expand-includes` analyzes the composed document, resolving
+nested and selected includes relative to each revision's own directory with the
+selected grammar. It exposes changes behind otherwise identical include
+directives and includes their headings, prose and links in statistics. The
+expanded buffer and source reads remain bounded, and diff output cannot replace
+any consumed input or its aliases. Images, fonts and remote URLs are not loaded
+for analysis. See [include-aware analysis](docs/NATIVE_ANALYSIS_INCLUDES.md) for
+source ownership, stdin behavior and report semantics. Invalid profiles exit 64
+before input is read, and `--max-input-bytes` bounds each input and expansion.
 
 ### `config`
 

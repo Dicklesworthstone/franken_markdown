@@ -89,8 +89,8 @@ struct DocumentLabView: View {
     @State private var errorMessage: String?
     @State private var exportURL: URL?
     @State private var showShare = false
-    @State private var baseline = ""
-    @State private var diffPreview: SemanticDiffPreview?
+    @StateObject private var comparison = MarkdownComparisonSession()
+    @State private var baselineSelection: MarkdownComparisonSession.Selection?
     @State private var showBaselineImporter = false
     @State private var showBookImporter = false
     @State private var showStylesheetImporter = false
@@ -131,6 +131,9 @@ struct DocumentLabView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        baselineSelection = nil
+                        showBaselineImporter = false
+                        comparison.cancelPending()
                         bookImport.cancelPending()
                         dismiss()
                     }
@@ -146,9 +149,11 @@ struct DocumentLabView: View {
         }
         .fileImporter(
             isPresented: $showBaselineImporter,
-            allowedContentTypes: [.plainText],
+            allowedContentTypes: [.frankenMarkdownSource, .plainText],
             allowsMultipleSelection: false,
-            onCompletion: importBaseline
+            onCompletion: { [selection = baselineSelection] result in
+                importBaseline(result, selection: selection)
+            }
         )
         .fileImporter(
             isPresented: $showBookImporter,
@@ -171,7 +176,7 @@ struct DocumentLabView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if isWorking {
+            if workIsPending {
                 processingBanner
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
@@ -182,16 +187,29 @@ struct DocumentLabView: View {
             if renderer.analysisIsStale { await refreshAnalysis() }
         }
         .onChange(of: renderer.resourceDocumentOwner) { _, _ in
+            baselineSelection = nil
+            showBaselineImporter = false
+            comparison.resetForDocument()
             bookSelection = nil
             showBookImporter = false
             bookImport.resetForDocument()
+        }
+        .onChange(of: renderer.sourceRevision) { _, _ in
+            comparison.sourceDidChange(to: comparisonIdentity)
         }
         .onDisappear {
             // Presenting the file picker must retain the selection it owns.
             // Leaving the lab cancels a suspended read without replacing the
             // last complete collection or publishing a late error.
             if bookSelection == nil { bookImport.cancelPending() }
+            if baselineSelection == nil { comparison.cancelPending() }
         }
+    }
+
+    private var workIsPending: Bool { isWorking || comparison.isComparing }
+
+    private var comparisonIdentity: MarkdownComparisonSession.SourceIdentity {
+        .init(documentOwner: renderer.resourceDocumentOwner, revision: renderer.sourceRevision)
     }
 
     private func home(width: CGFloat) -> some View {
@@ -263,7 +281,7 @@ struct DocumentLabView: View {
                         )
                 )
 
-            ForgeCoreVisual(active: isWorking)
+            ForgeCoreVisual(active: workIsPending)
                 .allowsHitTesting(false)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -524,7 +542,7 @@ struct DocumentLabView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Lab.emerald)
-                .disabled(isWorking)
+                .disabled(workIsPending)
             }
 
             if let analysis = renderer.analysis {
@@ -563,7 +581,7 @@ struct DocumentLabView: View {
         LabPanel {
             VStack(alignment: .leading, spacing: 12) {
                 LabLabel(text: "One semantic tree · six first-class artifacts")
-                OutputConstellationAnimation(active: isWorking)
+                OutputConstellationAnimation(active: workIsPending)
                     .frame(height: 150)
                 Text("The document is parsed once. Each exporter receives the same structure, so meaning survives every form.")
                     .font(.system(size: Lab.size(11), weight: .medium))
@@ -578,26 +596,48 @@ struct DocumentLabView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(baseline.isEmpty ? "Give the forge a ‘before’" : "Baseline armed")
+                            Text(comparison.baseline == nil ? "Give the forge a ‘before’" : "Baseline armed")
                                 .font(.system(size: Lab.size(18), weight: .black, design: .rounded))
                                 .foregroundStyle(Lab.text)
-                            Text(baseline.isEmpty ? "Import an earlier Markdown file or snapshot the current source." : "\(baseline.utf8.count) bytes ready for structural alignment")
+                            Text(comparison.baseline == nil ? "Import an earlier Markdown file or snapshot the current source." : "\(comparison.baselineByteCount) bytes ready for structural alignment")
                                 .font(.system(size: Lab.size(12), weight: .medium))
                                 .foregroundStyle(Lab.secondary)
                         }
                         Spacer()
-                        Image(systemName: baseline.isEmpty ? "clock.badge.questionmark" : "clock.badge.checkmark.fill")
+                        Image(systemName: comparison.baseline == nil ? "clock.badge.questionmark" : "clock.badge.checkmark.fill")
                             .font(.system(size: 34, weight: .bold))
-                            .foregroundStyle(baseline.isEmpty ? Lab.amber : Lab.emerald)
+                            .foregroundStyle(comparison.baseline == nil ? Lab.amber : Lab.emerald)
                     }
                     ViewThatFits(in: .horizontal) {
                         HStack { comparisonButtons }
                         VStack(alignment: .leading) { comparisonButtons }
                     }
+                    if comparison.isImporting || comparison.isComparing {
+                        HStack {
+                            ProgressView(comparison.isImporting ? "Reading earlier version…" : "Comparing captured versions…")
+                            Spacer()
+                            Button("Cancel") {
+                                baselineSelection = nil
+                                showBaselineImporter = false
+                                comparison.cancelPending()
+                            }
+                        }
+                        .font(.caption)
+                    }
+                    if let failure = comparison.errorMessage {
+                        HStack(alignment: .top) {
+                            Label(failure, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(Lab.amber)
+                            Spacer()
+                            Button("Dismiss") { comparison.clearFailure() }
+                                .font(.caption)
+                        }
+                    }
                 }
             }
 
-            if let diffPreview {
+            if let diffPreview = comparison.preview(for: comparisonIdentity) {
                 diffMetrics(diffPreview.metrics.stats)
                 LabPanel {
                     VStack(alignment: .leading, spacing: 10) {
@@ -615,15 +655,22 @@ struct DocumentLabView: View {
 
     @ViewBuilder
     private var comparisonButtons: some View {
-        Button("Import earlier version") { showBaselineImporter = true }
+        Button("Import earlier version") {
+            baselineSelection = comparison.beginSelection(owner: renderer.resourceDocumentOwner)
+            showBaselineImporter = true
+        }
             .buttonStyle(.borderedProminent)
             .tint(Lab.emerald)
-        Button("Snapshot current") { baseline = renderer.source; diffPreview = nil }
+        Button("Snapshot current") {
+            baselineSelection = nil
+            showBaselineImporter = false
+            comparison.snapshot(renderer.source, owner: renderer.resourceDocumentOwner)
+        }
             .buttonStyle(.bordered)
-        Button("Compare meaning") { Task { await runDiff() } }
+        Button("Compare meaning", action: runDiff)
             .buttonStyle(.borderedProminent)
             .tint(Lab.amber)
-            .disabled(baseline.isEmpty || isWorking)
+            .disabled(comparison.baseline == nil || workIsPending || comparison.isImporting || showBaselineImporter)
     }
 
     private var comparisonEmptyState: some View {
@@ -663,7 +710,7 @@ struct DocumentLabView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Lab.emerald)
-                        .disabled(isWorking)
+                        .disabled(workIsPending)
                     }
 
                     if bookImport.isImporting {
@@ -711,7 +758,7 @@ struct DocumentLabView: View {
                         HStack { collectionButtons }
                         VStack(alignment: .leading) { collectionButtons }
                     }
-                    .disabled(bookImport.files.isEmpty || isWorking || bookImport.isImporting || showBookImporter)
+                    .disabled(bookImport.files.isEmpty || workIsPending || bookImport.isImporting || showBookImporter)
                 }
             }
         }
@@ -1233,7 +1280,7 @@ struct DocumentLabView: View {
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(tint.opacity(0.24)))
         }
         .buttonStyle(.plain)
-        .disabled(isWorking)
+        .disabled(workIsPending)
     }
 
     private func diffMetrics(_ stats: SemanticDiffStats) -> some View {
@@ -1312,7 +1359,7 @@ struct DocumentLabView: View {
     }
 
     private func refreshAnalysis() async {
-        guard !isWorking else { return }
+        guard !workIsPending else { return }
         isWorking = true
         defer { isWorking = false }
         do {
@@ -1323,15 +1370,12 @@ struct DocumentLabView: View {
         }
     }
 
-    private func runDiff() async {
-        guard !baseline.isEmpty, !isWorking else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            diffPreview = try await renderer.semanticDiff(from: baseline)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+    private func runDiff() {
+        guard !workIsPending else { return }
+        comparison.compare(source: renderer.source, identity: comparisonIdentity, currentIdentity: { [renderer] in
+            .init(documentOwner: renderer.resourceDocumentOwner, revision: renderer.sourceRevision)
+        }) { [renderer] baseline, current in
+            try await renderer.semanticDiff(from: baseline, to: current)
         }
     }
 
@@ -1354,7 +1398,7 @@ struct DocumentLabView: View {
     }
 
     private func performArtifactExport(operation: () async throws -> RenderedArtifact) async {
-        guard !isWorking else { return }
+        guard !workIsPending else { return }
         isWorking = true
         defer { isWorking = false }
         do {
@@ -1364,13 +1408,20 @@ struct DocumentLabView: View {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    private func importBaseline(_ result: Result<[URL], Error>) {
-        do {
-            guard let url = try result.get().first else { return }
-            baseline = try readSecurityScopedText(url)
-            diffPreview = nil
-            errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
+    private func importBaseline(
+        _ result: Result<[URL], Error>, selection: MarkdownComparisonSession.Selection?
+    ) {
+        guard let selection, baselineSelection == selection else { return }
+        baselineSelection = nil
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { comparison.cancelPending(); return }
+            comparison.importBaseline(from: url, selection: selection) { [renderer] in
+                renderer.resourceDocumentOwner
+            }
+        case .failure(let error):
+            comparison.selectionFailed(error, selection: selection, currentOwner: renderer.resourceDocumentOwner)
+        }
     }
 
     private func importBookFiles(_ result: Result<[URL], Error>) {
@@ -1394,12 +1445,6 @@ struct DocumentLabView: View {
             renderer.customCSS = try readSecurityScopedStyle(url)
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func readSecurityScopedText(_ url: URL) throws -> String {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        return try String(contentsOf: url, encoding: .utf8)
     }
 
     private func readSecurityScopedStyle(_ url: URL) throws -> String {

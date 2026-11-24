@@ -1173,8 +1173,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         )
     }
 
-    func semanticDiff(from baseline: String) async throws -> SemanticDiffPreview {
-        let current = source
+    func semanticDiff(from baseline: String, to current: String) async throws -> SemanticDiffPreview {
         let operation = try await beginAuxiliaryOperation("Aligning semantic structure...")
         defer { finishAuxiliaryOperation(operation.request, phase: operation.phase) }
         await previewTask?.value

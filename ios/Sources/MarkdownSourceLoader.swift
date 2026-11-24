@@ -721,6 +721,27 @@ enum MarkdownSourceLoader {
         }
     }
 
+    /// Read a comparison snapshot without acquiring persistent file ownership
+    /// or creating a bookmark. The normal coordinated UTF-8 reader retains its
+    /// byte budget, cancellation checkpoints and original newline handling.
+    static func snapshot(
+        from url: URL, maximumBytes: Int = maximumBytes
+    ) async throws -> LoadedSource {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
+            try withSecurityScopedAccess(to: url) {
+                try coordinatedRead(from: url, maximumBytes: maximumBytes)
+            }
+        }
+        return try await withTaskCancellationHandler {
+            let source = try await worker.value
+            try Task.checkCancellation()
+            return source
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
     static func save(
         _ source: String,
         replacing document: MarkdownSourceDocument
@@ -951,16 +972,18 @@ enum MarkdownSourceLoader {
         )
     }
 
-    private static func coordinatedRead(from url: URL) throws -> LoadedSource {
+    private static func coordinatedRead(
+        from url: URL, maximumBytes: Int = maximumBytes
+    ) throws -> LoadedSource {
         let coordinator = NSFileCoordinator()
         var coordinationError: NSError?
         var result: Result<LoadedSource, Error>?
         coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
             result = Result {
-                let size = try checkReadableFile(at: coordinatedURL)
+                let size = try checkReadableFile(at: coordinatedURL, maximumBytes: maximumBytes)
                 let handle = try FileHandle(forReadingFrom: coordinatedURL)
                 defer { try? handle.close() }
-                return try readSource(capacityHint: size) { count in
+                return try readSource(maximumBytes: maximumBytes, capacityHint: size) { count in
                     try handle.read(upToCount: count) ?? Data()
                 }
             }
@@ -1063,7 +1086,8 @@ enum MarkdownSourceLoader {
         )
     }
 
-    private static func checkReadableFile(at url: URL) throws -> Int {
+    private static func checkReadableFile(at url: URL, maximumBytes: Int = maximumBytes) throws -> Int {
+        guard maximumBytes >= 0 else { throw ImportError.tooLarge(maximumBytes: maximumBytes) }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile != false else { throw ImportError.notAFileURL }
         if let size = values.fileSize, size > maximumBytes {

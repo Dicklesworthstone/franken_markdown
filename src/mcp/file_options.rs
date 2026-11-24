@@ -83,6 +83,7 @@ fn supports_output(target: &str, name: &str) -> bool {
             name,
             "markdown"
                 | "font"
+                | "appearance"
                 | "fontScale"
                 | "maxWidthPt"
                 | "toc"

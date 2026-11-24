@@ -111,6 +111,7 @@ fn source_discovery_exposes_only_consumed_fields_and_shared_resource_contracts()
     const SVG_FIELDS: &[&str] = &[
         "markdown",
         "profile",
+        "appearance",
         "font",
         "fontScale",
         "maxWidthPt",
@@ -122,6 +123,7 @@ fn source_discovery_exposes_only_consumed_fields_and_shared_resource_contracts()
     const EPUB_FIELDS: &[&str] = &[
         "markdown",
         "profile",
+        "appearance",
         "font",
         "fontScale",
         "darkMode",

@@ -631,6 +631,7 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--to html\|pdf\|both\|epub\|svg` | Output format(s). Default `html`. `epub` produces a single-file EPUB 3 e-book and `svg` a single-page vector poster. Each single format supports `--out -` |
 | `--out, -o <path>` | Output path, or `-` for one HTML, SVG, PDF or EPUB document on stdout. Without `--out`, HTML/SVG use stdout and PDF/EPUB derive filenames. `--to both` writes two files |
 | `--font sans\|serif` | Override the body font for this render |
+| `--appearance auto\|light\|dark\|charcoal\|high-contrast-light\|high-contrast-dark` | Select the shared HTML/PDF/EPUB/SVG palette. Also available in watch, batch, book and explicit PDF verification; overrides native config. See [appearance presets](docs/APPEARANCE_PRESETS.md). |
 | `--html-font-format woff1\|woff2\|ttf` | Container for embedded HTML fonts: `woff1` (default), `woff2` (clean-room Brotli), or `ttf` (raw TrueType/CFF OpenType data URLs). Independent of the subset/full policy. |
 | `--font-embedding subset\|full` | HTML/EPUB font policy: compact subsets by default; `full` preserves the complete character map and OpenType shaping tables for ligatures, kerning and combining marks, with larger output. Also available for book publishing. |
 | `--microtype off\|protrusion\|expansion` | Microtypography for justified PDF body paragraphs: `protrusion` hangs punctuation into the margin and adds ±1.5% glyph expansion; `expansion` is glyph expansion alone. Default `off` keeps output byte-identical |
@@ -1062,6 +1063,7 @@ Resolution order for the config path:
 | Key | Values | Default |
 |---|---|---|
 | `font` | `sans`, `serif` | `sans` |
+| `appearance` | `auto`, `light`, `dark`, `charcoal`, `high-contrast-light`, `high-contrast-dark` | `auto` |
 | `dark_mode` | `auto`, `disabled` (also `on`/`off`/`true`/`false`/`none`) | `auto` |
 | `custom_css` | path to a stylesheet, or `none` | unset |
 | `page_size` | `letter`, `a4`, `a5`, `legal`, `tabloid`, or `WIDTHxHEIGHT` in points | `letter` |

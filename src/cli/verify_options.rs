@@ -28,6 +28,10 @@ pub(super) struct VerifyLayoutArgs {
     /// Body font family for the PDF layout (default: sans).
     #[arg(long, value_enum)]
     font: Option<FontArg>,
+    /// Explicit publication palette: auto, light, dark, charcoal,
+    /// high-contrast-light, or high-contrast-dark. Config is not inherited.
+    #[arg(long, value_name = "APPEARANCE")]
+    appearance: Option<crate::SystemAppearance>,
     /// Type size preset, percentage or multiplier, as in rendering.
     #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
     font_scale: Option<String>,
@@ -159,7 +163,7 @@ impl VerifyLayoutArgs {
         )
         .map_err(|message| fail_json(64, "usage_error", &message, json))?;
         let scale = super::parse_font_scale_value(self.font_scale.as_deref(), json)?;
-        let mut theme = crate::Theme::default();
+        let mut theme = crate::Theme::for_appearance(self.appearance.unwrap_or_default());
         if let Some(font) = self.font {
             theme = theme.with_font(font.into());
         }

@@ -500,6 +500,7 @@ fn to_theme_overlays_font_dark_mode_and_margins() {
     let cfg = FmdConfig {
         page_size: None,
         font: Some(FontFamily::Serif),
+        appearance: None,
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: None,
         margins: Some(margins),
@@ -522,6 +523,7 @@ fn get_resolved_covers_every_key_and_unknown_returns_none() {
     let cfg = FmdConfig {
         page_size: None,
         font: Some(FontFamily::Serif),
+        appearance: None,
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: Some(PathBuf::from("/x/y.css")),
         margins: Some(PageMargins {
@@ -568,6 +570,7 @@ fn to_file_string_serializes_all_fields_and_round_trips() {
     let cfg = FmdConfig {
         page_size: None,
         font: Some(FontFamily::Serif),
+        appearance: None,
         dark_mode: Some(DarkModePolicy::Disabled),
         custom_css: Some(PathBuf::from("/themes/custom.css")),
         margins: Some(PageMargins {

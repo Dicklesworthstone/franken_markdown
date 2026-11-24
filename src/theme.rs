@@ -195,6 +195,26 @@ impl SystemAppearance {
     }
 }
 
+impl std::str::FromStr for SystemAppearance {
+    type Err = &'static str;
+
+    /// Parse a canonical appearance name used by configuration and native tools.
+    /// The accepted names are the stable spellings returned by [`Self::as_str`].
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "light" => Ok(Self::Light),
+            "dark" => Ok(Self::Dark),
+            "charcoal" => Ok(Self::Charcoal),
+            "high-contrast-light" => Ok(Self::HighContrastLight),
+            "high-contrast-dark" => Ok(Self::HighContrastDark),
+            _ => Err(
+                "appearance must be auto, light, dark, charcoal, high-contrast-light, or high-contrast-dark",
+            ),
+        }
+    }
+}
+
 /// Code ligature policy for source code views and code fences (Plan §13.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CodeLigatures {
@@ -640,6 +660,25 @@ impl Theme {
     #[must_use]
     pub fn serif() -> Self {
         Self::default().with_font(FontFamily::Serif)
+    }
+
+    /// Construct the built-in theme for an appearance, including its palettes.
+    ///
+    /// Apply font, page and spacing customizations after selecting this preset.
+    /// Use [`Self::with_appearance`] to change only the appearance preference
+    /// while retaining a theme's custom palettes. [`SystemAppearance::Auto`]
+    /// preserves the default theme and its output unchanged.
+    #[must_use]
+    pub fn for_appearance(appearance: SystemAppearance) -> Self {
+        match appearance {
+            SystemAppearance::Auto => Self::default(),
+            SystemAppearance::Light | SystemAppearance::Dark => {
+                Self::default().with_appearance(appearance)
+            }
+            SystemAppearance::Charcoal => Self::charcoal(),
+            SystemAppearance::HighContrastLight => Self::high_contrast_light(),
+            SystemAppearance::HighContrastDark => Self::high_contrast_dark(),
+        }
     }
 
     /// Reference-inspired charcoal dark theme (Plan §5.7).

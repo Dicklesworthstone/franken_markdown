@@ -12,6 +12,11 @@ SVG. Paired HTML/PDF output shares the same profiled AST.
 Omitting the option retains the existing extended grammar. Unknown names and
 non-string values fail before the source is read or any output is replaced.
 
+All targets also accept `appearance`: `auto`, `light`, `dark`, `charcoal`,
+`high-contrast-light`, or `high-contrast-dark`. The selected shared palette reaches
+every artifact in paired exports. Font, scale and page options still apply after
+palette selection. See [appearance presets](APPEARANCE_PRESETS.md).
+
 Explicit profiles also work with `interactiveHtml: true`. The self-contained
 HTML editor retains the selected definition-list and page-break grammar through
 offline edits, styled printing, and Save HTML/reopen. Omitting the profile uses
@@ -53,7 +58,7 @@ JSON `outputs` array; single-format output retains its existing text/base64 form
 | `pdf` | The `fmd.render_pdf` options, including author, page numbers, microtype, fit-to-pages, baseline grid, strict pagination and PDF/A |
 | `both` | The union of HTML and PDF options; each renderer consumes its own fields |
 | `epub` | HTML theme, font scale, title, author, language, CSS, font embedding, TOC and TOC depth; no raw-HTML, interactive-HTML or HTML-font-container switches |
-| `svg` | `profile`, `font`, `fontScale`, `maxWidthPt` (144..14400 points), `toc`, `tocDepth`, and explicit resources |
+| `svg` | `profile`, `appearance`, `font`, `fontScale`, `maxWidthPt` (144..14400 points), `toc`, `tocDepth`, and explicit resources |
 
 `images` and `fonts` work for all targets. They contain explicit bytes; destinations
 never authorize ambient file reads or network requests. SVG resolves `fontScale`

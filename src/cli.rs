@@ -36,7 +36,8 @@ use crate::watch::{
 use crate::{
     FontAssetSlot, FontAssets, FontFamily, FontScale, HtmlFontFormat, HtmlOptions, PdfAMode,
     PdfASettings, PdfEmitOptions, PdfImageAsset, PdfOptions, PdfRenderOutput, RenderError,
-    RenderWarning, Theme, render_html_document, render_pdf_document_with_diagnostics,
+    RenderWarning, SystemAppearance, Theme, render_html_document,
+    render_pdf_document_with_diagnostics,
 };
 use host_fonts::{HostFontError, HostFonts};
 
@@ -419,6 +420,10 @@ struct PdfRunningArgs {
 /// so every surface renders a document the same way.
 #[derive(Args, Clone)]
 struct RenderStyleArgs {
+    /// Publication palette: auto, light, dark, charcoal, high-contrast-light,
+    /// or high-contrast-dark. Overrides the configured appearance.
+    #[arg(long, value_name = "APPEARANCE")]
+    appearance: Option<SystemAppearance>,
     /// Document title (defaults to the first heading).
     #[arg(long)]
     title: Option<String>,
@@ -1005,7 +1010,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
     let profile = profile.or(config.render.profile);
-    let mut page_theme = config.to_theme();
+    let mut page_theme = config.to_theme_with_appearance(args.style.appearance);
     if let Err(code) = apply_pdf_page_style(&args.style, args.to, &config, &mut page_theme, json) {
         return code;
     }
@@ -1788,7 +1793,7 @@ fn run_render_with_preview(
         input_paths.push(config_path());
     }
 
-    let mut theme = config.to_theme();
+    let mut theme = config.to_theme_with_appearance(args.style.appearance);
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
     }
@@ -2916,7 +2921,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         input_paths.push(config_path());
     }
     apply_config_render_defaults(&mut args.style, &config.render);
-    let mut theme = config.to_theme();
+    let mut theme = config.to_theme_with_appearance(args.style.appearance);
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
     }

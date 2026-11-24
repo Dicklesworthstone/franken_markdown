@@ -10,7 +10,7 @@ use super::{
 use crate::layout::MicrotypeOptions;
 use crate::{
     BaselineGrid, DarkModePolicy, FontEmbedding, FontFamily, FontScale, HtmlFontFormat,
-    HtmlOptions, PdfAMode, PdfASettings, PdfOptions, Profile, Theme,
+    HtmlOptions, PdfAMode, PdfASettings, PdfOptions, Profile, SystemAppearance, Theme,
 };
 
 #[path = "resources.rs"]
@@ -48,9 +48,15 @@ const AUTHORING_PROFILE: Field = (
     "string",
     "Markdown dialect ('commonmark-gfm' or 'gfm-plus'); omission preserves the default grammar",
 );
+const APPEARANCE: Field = (
+    "appearance",
+    "string",
+    "Publication palette: auto (default), light, dark, charcoal, high-contrast-light, or high-contrast-dark",
+);
 
 const HTML_FIELDS: &[Field] = &[
     AUTHORING_PROFILE,
+    APPEARANCE,
     (
         "images",
         "array",
@@ -109,6 +115,7 @@ const HTML_FIELDS: &[Field] = &[
 ];
 const PDF_FIELDS: &[Field] = &[
     AUTHORING_PROFILE,
+    APPEARANCE,
     (
         "page",
         "object",
@@ -476,6 +483,24 @@ pub fn tools_list_result() -> JsonValue {
                             ),
                         );
                     }
+                    if *name == "appearance" {
+                        property.insert(
+                            "enum".to_string(),
+                            JsonValue::Array(
+                                [
+                                    SystemAppearance::Auto,
+                                    SystemAppearance::Light,
+                                    SystemAppearance::Dark,
+                                    SystemAppearance::Charcoal,
+                                    SystemAppearance::HighContrastLight,
+                                    SystemAppearance::HighContrastDark,
+                                ]
+                                .into_iter()
+                                .map(|value| JsonValue::String(value.as_str().to_string()))
+                                .collect(),
+                            ),
+                        );
+                    }
                     if *name == "format" {
                         property.insert(
                             "enum".to_string(),
@@ -629,8 +654,22 @@ fn authoring_profile(args: &JsonValue) -> Result<Option<Profile>, ToolError> {
     }
 }
 
+fn appearance(args: &JsonValue) -> Result<SystemAppearance, ToolError> {
+    string(args, "appearance")
+        .map(|value| {
+            value.parse().map_err(|message: &str| {
+                invalid_options(
+                    format!("Invalid appearance '{value}': {message}"),
+                    "invalid_appearance",
+                )
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 fn theme(args: &JsonValue) -> Result<Theme, ToolError> {
-    let mut theme = Theme::default();
+    let mut theme = Theme::for_appearance(appearance(args)?);
     if let Some(font) = string(args, "font") {
         theme.font = FontFamily::parse(font)
             .ok_or_else(|| invalid_options(format!("Invalid font '{font}'"), "invalid_font"))?;
@@ -910,6 +949,9 @@ pub fn handle_tool_call(
     // Validate the dialect before source or resource admission. Interactive
     // HTML retains it in an owned manifest for subsequent offline edits.
     let _ = authoring_profile(args)?;
+    // A palette must be admitted before source reads or resource decoding,
+    // including file and multi-format book publication.
+    let _ = appearance(args)?;
     let started = Instant::now();
     let result = execute(name, args, max_input_bytes);
     eprintln!("fmd mcp tool '{name}' completed in {:?}", started.elapsed());

@@ -15,7 +15,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use super::render::site_search;
 use crate::config::FmdConfig;
 use crate::file_write::{OutputFile, write_outputs_staged};
-use crate::{Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions, Profile};
+use crate::{
+    Block, Document, FontFamily, HtmlOptions, Inline, PdfOptions, Profile, SystemAppearance,
+};
 
 #[path = "../cli/book_inputs.rs"]
 mod inputs;
@@ -73,7 +75,7 @@ pub(crate) struct BookArgs {
     #[arg(long, value_enum, default_value_t = BookTarget::Both)]
     to: BookTarget,
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
-    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_faces", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing", "pdf_spacing"])]
+    #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "appearance", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_faces", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing", "pdf_spacing"])]
     check_links: bool,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
@@ -97,6 +99,10 @@ pub(crate) struct BookArgs {
     /// Override the configured body font for HTML/PDF.
     #[arg(long, value_parser = ["sans", "serif"])]
     font: Option<String>,
+    /// Publication palette: auto, light, dark, charcoal, high-contrast-light,
+    /// or high-contrast-dark. Overrides native configuration for every format.
+    #[arg(long, value_name = "APPEARANCE")]
+    appearance: Option<SystemAppearance>,
     /// Host TrueType or CFF1 font as SLOT=PATH, applied to HTML, PDF and EPUB. Repeatable.
     /// Slots: body-regular, body-bold, body-italic, body-bold-italic, mono-regular.
     #[arg(long = "pdf-font", value_name = "SLOT=PATH")]
@@ -315,7 +321,7 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     };
     // The selected grammar owns includes and link checks before publication.
     args.profile = args.profile.or(config.render.profile);
-    let mut theme = config.to_theme();
+    let mut theme = config.to_theme_with_appearance(args.appearance);
     if let Some(font) = args.font.as_deref() {
         theme = theme.with_font(
             FontFamily::parse(font)

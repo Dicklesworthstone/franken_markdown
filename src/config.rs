@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use crate::caret::{CaretStyle, render_caret, span_of_line};
 use crate::file_write::{OutputFile, write_outputs_staged};
 use crate::span::DiagnosticSeverity;
-use crate::{DarkModePolicy, FontFamily, PageMargins, Theme};
+use crate::{DarkModePolicy, FontFamily, PageMargins, SystemAppearance, Theme};
 
 pub(crate) mod page;
 
 /// Supported config keys.
 pub const CONFIG_KEYS: &[&str] = &[
     "font",
+    "appearance",
     "dark_mode",
     "custom_css",
     "page_size",
@@ -276,6 +277,8 @@ fn parse_flag(value: &str) -> Option<bool> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FmdConfig {
     pub font: Option<FontFamily>,
+    /// Shared publication palette. Omission retains automatic appearance.
+    pub appearance: Option<SystemAppearance>,
     pub dark_mode: Option<DarkModePolicy>,
     pub custom_css: Option<PathBuf>,
     /// Validated paper name or `WIDTHxHEIGHT` in points. Keep the dimensions
@@ -420,6 +423,9 @@ impl FmdConfig {
                         .ok_or_else(|| "font must be `sans` or `serif`".to_string())?,
                 );
             }
+            "appearance" => {
+                self.appearance = Some(value.parse().map_err(str::to_string)?);
+            }
             "dark_mode" => {
                 self.dark_mode = Some(parse_dark_mode(value)?);
             }
@@ -467,6 +473,7 @@ impl FmdConfig {
         let theme = self.to_theme();
         match normalize_key(key).as_str() {
             "font" => Some(theme.font.as_str().to_string()),
+            "appearance" => Some(theme.appearance.as_str().to_string()),
             "dark_mode" => Some(theme.dark_mode.as_str().to_string()),
             "custom_css" => Some(
                 self.custom_css
@@ -488,7 +495,13 @@ impl FmdConfig {
     /// Resolve this config into a full theme.
     #[must_use]
     pub fn to_theme(&self) -> Theme {
-        let mut theme = Theme::default();
+        self.to_theme_with_appearance(None)
+    }
+
+    /// Resolve an explicit command-line appearance before applying configured
+    /// typography and paper, so choosing a palette never resets those values.
+    pub(crate) fn to_theme_with_appearance(&self, appearance: Option<SystemAppearance>) -> Theme {
+        let mut theme = Theme::for_appearance(appearance.or(self.appearance).unwrap_or_default());
         if let Some(font) = self.font {
             theme = theme.with_font(font);
         }
@@ -516,10 +529,11 @@ impl FmdConfig {
             .map(|p| format!("\"{}\"", json_escape(&p.display().to_string())))
             .unwrap_or_else(|| "null".to_string());
         format!(
-            "{{\"font\":\"{}\",\"dark_mode\":\"{}\",\"custom_css\":{},\"page_size\":\"{}\",\
+            "{{\"font\":\"{}\",\"appearance\":\"{}\",\"dark_mode\":\"{}\",\"custom_css\":{},\"page_size\":\"{}\",\
              \"margins\":{{\"top_pt\":{},\"right_pt\":{},\"bottom_pt\":{},\"left_pt\":{}}},\
              \"emoji_strategy\":\"{}\",\"render\":{}}}",
             theme.font.as_str(),
+            theme.appearance.as_str(),
             theme.dark_mode.as_str(),
             custom_css,
             self.resolved_page_size(),
@@ -549,6 +563,11 @@ impl FmdConfig {
         if let Some(font) = self.font {
             out.push_str("font=");
             out.push_str(font.as_str());
+            out.push('\n');
+        }
+        if let Some(appearance) = self.appearance {
+            out.push_str("appearance=");
+            out.push_str(appearance.as_str());
             out.push('\n');
         }
         if let Some(dark_mode) = self.dark_mode {

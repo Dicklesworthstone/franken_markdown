@@ -49,8 +49,13 @@ fn ordinary_long_serif_words_fit_their_complete_shaped_width() {
     let measure = (4.0 * scalar + shaped) * 0.5;
     let original = "o".repeat(37);
     let tokens = [token(&original)];
-    let approximate = wrap_cell_styled_unfitted(&tokens, measure, 10.0, &faces, &widths);
-    assert!(approximate.iter().any(|line| line.width > measure + 0.01));
+    let first_pass = wrap_cell_styled_unfitted(&tokens, measure, 10.0, &faces, &widths);
+    assert!(first_pass.iter().all(|line| line.width <= measure));
+    assert_eq!(
+        first_pass.len(),
+        13,
+        "three shaped glyphs fit on each full row"
+    );
     let actual = wrap_cell_styled(&tokens, measure, 10.0, &faces, &widths);
     assert_eq!(source(&actual), original);
     assert!(actual.iter().all(|line| line.width <= measure + 0.01));
@@ -166,5 +171,32 @@ fn fitting_rows_and_unbounded_measurement_keep_their_allocations() {
         assert_eq!(actual.len(), 1);
         assert_eq!(actual[0].runs[0].text.as_ptr(), before);
         assert_eq!(actual[0].width.to_bits(), original_width.to_bits());
+    }
+}
+
+#[test]
+fn overlong_literal_tokens_keep_whitespace_styles_and_notes_on_cluster_boundaries() {
+    let faces = faces();
+    let widths = RefCell::new(WidthCache::default());
+    let mut tok = token("aa  xx\u{0301}xxxxxxxxxxxxxxxxxxxxx");
+    tok.slot = super::super::F_MONO;
+    tok.literal = true;
+    tok.link = Some(9);
+    tok.strike = true;
+    tok.note_spans = note_tags::Spans::whole(&tok.text, note_tags::Mark::Label(4));
+    let measure = text_width_cached("aa  xx", 10.0, tok.slot, &faces, &widths) + 0.01;
+    let original = tok.text.clone();
+    let lines = wrap_cell_styled(&[tok], measure, 10.0, &faces, &widths);
+    assert_eq!(source(&lines), original);
+    assert_eq!(lines[0].runs[0].text, "aa  ");
+    assert!(lines.iter().all(|line| line.width <= measure + 0.01));
+    for run in lines.iter().flat_map(|line| &line.runs) {
+        assert_ne!(run.text.chars().next(), Some('\u{0301}'));
+        assert_eq!(run.link, Some(9));
+        assert!(run.strike);
+        assert!(
+            (0..run.text.len())
+                .all(|byte| run.note_spans.at(byte) == Some(note_tags::Mark::Label(4)))
+        );
     }
 }

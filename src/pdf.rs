@@ -2376,6 +2376,23 @@ struct Tok {
     strike: bool,
 }
 
+impl Tok {
+    /// Copy just this source range, retaining styling and rebasing note spans.
+    fn source_slice(&self, start: usize, end: usize) -> Self {
+        Self {
+            text: self.text[start..end].to_owned(),
+            slot: self.slot,
+            space: self.space,
+            hard_break: self.hard_break,
+            literal: self.literal,
+            list_label: self.list_label,
+            note_spans: self.note_spans.slice(start, end),
+            link: self.link,
+            strike: self.strike,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct LineTok {
     tok: Tok,
@@ -18214,12 +18231,8 @@ fn wrap_cell_styled_unfitted(
             continue;
         }
         let ww = text_width_cached(&t.text, size, t.slot, faces, width_cache);
-        // A single word wider than the whole column is hard-split on character
-        // boundaries so it can never overflow the column (and run off the page);
-        // this preserves the run's style. The leftover tail stays on the current
-        // line so a following word can still pack after it.
-        // Inline objects are never split. Images and formulas have already
-        // been fitted to the actual containing cell, including their ink.
+        // Keep the tail available for the next token, and fit every full
+        // row from the remaining source at its actual shaped width.
         if ww > max_width && max_width > 0.0 && !is_inline_object(t.slot) {
             if !cur.is_empty() {
                 lines.push(build_cell_line_owned(
@@ -18228,130 +18241,12 @@ fn wrap_cell_styled_unfitted(
                     faces,
                     width_cache,
                 ));
-                cur_w = 0.0;
             }
             pending = None;
-            if t.literal || (!t.text.is_ascii() && t.text.chars().any(text_composition::is_mark)) {
-                // Table cells and final literal-code repairs share this path.
-                // Keep source clusters atomic and measure each whole candidate
-                // run so host-font ligatures, composition and kerning agree
-                // with the emitted glyphs.
-                let mut chunk = String::new();
-                let mut chunk_start = 0;
-                let mut chunk_w = 0.0;
-                for cluster in text_composition::source_clusters(&t.text) {
-                    let old_len = chunk.len();
-                    chunk.push_str(cluster);
-                    let candidate_width =
-                        text_width_cached(&chunk, size, t.slot, faces, width_cache);
-                    if old_len > 0 && candidate_width > max_width {
-                        let tail = chunk.split_off(old_len);
-                        let mut tok = t.clone();
-                        tok.note_spans = t.note_spans.slice(chunk_start, chunk_start + chunk.len());
-                        chunk_start += chunk.len();
-                        tok.text = std::mem::take(&mut chunk);
-                        lines.push(build_cell_line_owned(
-                            std::iter::once(tok),
-                            size,
-                            faces,
-                            width_cache,
-                        ));
-                        chunk = tail;
-                        chunk_w = text_width_cached(&chunk, size, t.slot, faces, width_cache);
-                    } else {
-                        chunk_w = candidate_width;
-                    }
-                }
-                if !chunk.is_empty() {
-                    let mut tail = t.clone();
-                    tail.note_spans = t.note_spans.slice(chunk_start, t.text.len());
-                    tail.text = chunk;
-                    cur.push(tail);
-                    cur_w = chunk_w;
-                }
-                continue;
-            }
-            let mut buf = [0u8; 4];
-            let mut chunk = String::new();
-            let mut chunk_start = 0;
-            let mut chunk_w = 0.0;
-            let mut carry = String::new();
-            for ch in t.text.chars() {
-                let cw =
-                    text_width_cached(ch.encode_utf8(&mut buf), size, t.slot, faces, width_cache);
-                if !chunk.is_empty() && chunk_w + cw > max_width {
-                    // Never split a pair UAX #14 forbids breaking: the
-                    // characters that must travel with `ch` (a closing bracket,
-                    // `。`, a small kana) move down to the next line with it.
-                    // Non-CJK pairs are never prohibited, so ASCII/Latin
-                    // splitting is byte-for-byte what it was.
-                    carry.clear();
-                    let mut head = ch;
-                    while let Some(prev) = chunk.chars().next_back() {
-                        if !cjk_break_prohibited(prev, head) {
-                            break;
-                        }
-                        chunk.pop();
-                        carry.push(prev);
-                        head = prev;
-                        if chunk.is_empty() {
-                            break;
-                        }
-                    }
-                    if chunk.is_empty() {
-                        // Every position was prohibited; hard-split anyway
-                        // rather than emit an empty line forever.
-                        chunk.extend(carry.chars().rev());
-                        carry.clear();
-                    }
-                    let spans = t.note_spans.slice(chunk_start, chunk_start + chunk.len());
-                    chunk_start += chunk.len();
-                    let tok = Tok {
-                        text: std::mem::take(&mut chunk),
-                        slot: t.slot,
-                        space: false,
-                        hard_break: false,
-                        literal: t.literal,
-                        list_label: t.list_label,
-                        note_spans: spans,
-                        link: t.link,
-                        strike: t.strike,
-                    };
-                    lines.push(build_cell_line_owned(
-                        std::iter::once(tok),
-                        size,
-                        faces,
-                        width_cache,
-                    ));
-                    chunk_w = 0.0;
-                    for ch in carry.chars().rev() {
-                        chunk.push(ch);
-                        chunk_w += text_width_cached(
-                            ch.encode_utf8(&mut buf),
-                            size,
-                            t.slot,
-                            faces,
-                            width_cache,
-                        );
-                    }
-                }
-                chunk.push(ch);
-                chunk_w += cw;
-            }
-            if !chunk.is_empty() {
-                cur.push(Tok {
-                    text: chunk,
-                    slot: t.slot,
-                    space: false,
-                    hard_break: false,
-                    literal: t.literal,
-                    list_label: t.list_label,
-                    note_spans: t.note_spans.slice(chunk_start, t.text.len()),
-                    link: t.link,
-                    strike: t.strike,
-                });
-                cur_w = chunk_w;
-            }
+            let (tail, width) =
+                cell_fit::wrap_token(t, max_width, size, faces, width_cache, &mut lines);
+            cur.push(tail);
+            cur_w = width;
             continue;
         }
         let sw = pending.as_ref().map_or(0.0, |s| {
@@ -21174,22 +21069,8 @@ impl<'a> PdfWordSplitter<'a> {
                 taken_chars += 1;
                 taken_bytes += ch.len_utf8();
             }
-            if let Some(text) = rest.get(..taken_bytes)
-                && !text.is_empty()
-            {
-                // A literal code span may be large. Copy only this slice,
-                // rather than cloning its full source for every wrapped line.
-                out.push(Tok {
-                    text: text.to_string(),
-                    slot: tok.slot,
-                    space: tok.space,
-                    hard_break: tok.hard_break,
-                    literal: tok.literal,
-                    list_label: tok.list_label,
-                    note_spans: tok.note_spans.slice(self.byte, self.byte + taken_bytes),
-                    link: tok.link,
-                    strike: tok.strike,
-                });
+            if taken_bytes > 0 {
+                out.push(tok.source_slice(self.byte, self.byte + taken_bytes));
             }
             self.cursor += taken_chars;
             self.byte += taken_bytes;

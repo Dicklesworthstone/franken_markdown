@@ -225,6 +225,18 @@ fn serif_table_words_fit_emitted_cell_bounds_with_positive_kerning() {
             assert!(body.len() > 3, "the fixture exercises actual wrapping");
             let recovered: String = body.iter().map(|run| run.text.as_str()).collect();
             assert_eq!(recovered, word);
+            // A run of identical glyphs in a fixed-width column needs the
+            // same number per full row. Repairing estimated rows separately
+            // used to alternate full lines and one-character continuations.
+            let full_row = body[0].text.len();
+            assert!(
+                body[..body.len() - 1]
+                    .iter()
+                    .all(|run| run.text.len() == full_row),
+                "uneven wrapping at measure {measure}: {:?}",
+                body.iter().map(|run| run.text.len()).collect::<Vec<_>>()
+            );
+            assert!(body.last().unwrap().text.len() <= full_row);
             for run in body {
                 assert!(
                     run.x >= header.x - 0.02 && run.x + run.width <= right + 0.03,

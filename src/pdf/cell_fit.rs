@@ -1,11 +1,11 @@
-//! Repair actual overflows after cell/TOC/fallback text runs have been shaped.
+//! Fit cell/TOC/fallback text to its actual shaped measure.
 //!
-//! Scalar widths and separately measured tokens are useful wrapping estimates,
+//! Fit overlong tokens before emitting rows. Separately measured tokens are useful estimates,
 //! but joining them can introduce positive kerning or different ligatures.
-//! Only overfull rows enter this path; ordinary fitted output is unchanged.
+//! Only overlong tokens and overfull merged rows enter these paths.
 
 use super::{
-    CellRun, CellWrapLine, Faces, WidthCache, cjk_break_prohibited, is_breakable_whitespace,
+    CellRun, CellWrapLine, Faces, Tok, WidthCache, cjk_break_prohibited, is_breakable_whitespace,
     is_inline_object, text_composition, text_width_cached,
 };
 use std::cell::RefCell;
@@ -38,6 +38,124 @@ pub(super) fn repair(
         }
     }
     fitted
+}
+
+/// An overlong source token owns all its clusters until every full line is
+/// emitted. Restarting from an approximate row would strand its final few
+/// glyphs on a separate line instead of fitting them alongside the next ones.
+pub(super) fn wrap_token(
+    token: &Tok,
+    max_width: f32,
+    size: f32,
+    faces: &Faces,
+    widths: &RefCell<WidthCache>,
+    completed: &mut Vec<CellWrapLine>,
+) -> (Tok, f32) {
+    let text = token.text.as_str();
+    // ASCII cluster indices are byte indices; long identifiers need no index.
+    let edges = (!text.is_ascii()).then(|| {
+        let mut offsets = vec![0];
+        let mut byte = 0;
+        for cluster in text_composition::source_clusters(text) {
+            byte += cluster.len();
+            offsets.push(byte);
+        }
+        offsets
+    });
+    let last = edges
+        .as_ref()
+        .map_or(text.len(), |offsets| offsets.len() - 1);
+    let byte = |at: usize| edges.as_ref().map_or(at, |offsets| offsets[at]);
+    let mut start = 0;
+    loop {
+        let from = byte(start);
+        let measure =
+            |end| text_width_cached(&text[from..byte(end)], size, token.slot, faces, widths);
+        let end = fitted_end(start, last, max_width, measure, |at| {
+            let offset = byte(at);
+            (
+                text[..offset].chars().next_back(),
+                text[offset..].chars().next(),
+            )
+        });
+        let to = byte(end);
+        let width = measure(end);
+        let piece = token.source_slice(from, to);
+        if end == last {
+            return (piece, width);
+        }
+        completed.push(CellWrapLine {
+            width,
+            runs: vec![CellRun {
+                text: piece.text,
+                slot: piece.slot,
+                link: piece.link,
+                strike: piece.strike,
+                list_label: piece.list_label,
+                note_spans: piece.note_spans,
+                width,
+            }],
+        });
+        start = end;
+    }
+}
+
+fn fitted_end(
+    start: usize,
+    last: usize,
+    max_width: f32,
+    measure: impl Fn(usize) -> f32,
+    neighbours: impl Fn(usize) -> (Option<char>, Option<char>),
+) -> usize {
+    // Start locally and grow exponentially. Repeatedly measuring the
+    // entire remaining suffix would be quadratic for a font whose positive
+    // kerning leaves only a few clusters per row. This search measures at
+    // most O(n log n) source across the repaired row; it never recurses.
+    let mut end = start + 1;
+    if measure(end) <= max_width {
+        let mut step = 1usize;
+        while end < last {
+            step = step.saturating_mul(2);
+            let candidate = start.saturating_add(step).min(last);
+            if measure(candidate) <= max_width {
+                end = candidate;
+                continue;
+            }
+            let mut high = candidate;
+            while end + 1 < high {
+                let middle = end + (high - end) / 2;
+                if measure(middle) <= max_width {
+                    end = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            break;
+        }
+    }
+    // Prefer an existing word boundary, then a legal CJK boundary. Do not
+    // assume shorter source always means narrower glyphs: negative kerns
+    // and ligatures can make a shorter prefix wider, so recheck the choice.
+    if end < last {
+        let word = ((start + 1)..=end).rev().find(|&at| {
+            let (before, _) = neighbours(at);
+            before.is_some_and(is_breakable_whitespace)
+        });
+        let preferred = word.or_else(|| {
+            ((start + 1)..=end).rev().find(|&at| {
+                let (before, after) = neighbours(at);
+                !before
+                    .zip(after)
+                    .is_some_and(|(a, b)| cjk_break_prohibited(a, b))
+            })
+        });
+        if let Some(preferred) = preferred
+            && measure(preferred) <= max_width
+        {
+            end = preferred;
+        }
+    }
+    end
 }
 
 fn split_row(
@@ -76,51 +194,10 @@ fn split_row(
     let mut start = 0;
     while start < last {
         let measure = |end| range_width(line, edges[start], edges[end], size, faces, widths);
-        // Start locally and grow exponentially. Repeatedly measuring the
-        // entire remaining suffix would be quadratic for a font whose positive
-        // kerning leaves only a few clusters per row. This search measures at
-        // most O(n log n) source across the repaired row; it never recurses.
-        let mut end = start + 1;
-        if measure(end) <= max_width {
-            let mut step = 1usize;
-            while end < last {
-                step = step.saturating_mul(2);
-                let candidate = start.saturating_add(step).min(last);
-                if measure(candidate) <= max_width {
-                    end = candidate;
-                    continue;
-                }
-                let mut high = candidate;
-                while end + 1 < high {
-                    let middle = end + (high - end) / 2;
-                    if measure(middle) <= max_width {
-                        end = middle;
-                    } else {
-                        high = middle;
-                    }
-                }
-                break;
-            }
-        }
-        // Prefer an existing word boundary, then a legal CJK boundary. Do not
-        // assume shorter source always means narrower glyphs: negative kerns
-        // and ligatures can make a shorter prefix wider, so recheck the choice.
+        let mut end = fitted_end(start, last, max_width, measure, |at| {
+            neighbours(line, edges[at])
+        });
         if end < last {
-            let word = ((start + 1)..=end).rev().find(|&at| {
-                let (before, _) = neighbours(line, edges[at]);
-                before.is_some_and(is_breakable_whitespace)
-            });
-            let legal = ((start + 1)..=end).rev().find(|&at| {
-                let (before, after) = neighbours(line, edges[at]);
-                !before
-                    .zip(after)
-                    .is_some_and(|(a, b)| cjk_break_prohibited(a, b))
-            });
-            if let Some(preferred) = word.or(legal)
-                && measure(preferred) <= max_width
-            {
-                end = preferred;
-            }
             // A chosen discretionary hyphen is already visible in the run.
             // Keep it beside the preceding whole source cluster when both
             // resulting rows fit, rather than creating a lone '-' continuation.

@@ -648,6 +648,11 @@ fn walk_links(blocks: &mut [Block], visit: &mut impl FnMut(&mut String)) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[path = "../../tests/support/pdf_content.rs"]
+mod pdf_content;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
@@ -767,7 +772,23 @@ mod tests {
             let mut headings = Vec::new();
             collect_headings(&plan.document.blocks, &mut headings);
             assert!(headings.is_empty(), "no generated heading for {source}");
-            assert_eq!(render_plan(plan, &options).unwrap(), expected);
+            // A book always carries chapter bookmarks, including when HTML
+            // lowering removes every candidate link. That metadata differs
+            // from a standalone merged PDF, but must never paint a title or
+            // change page geometry, glyphs, fonts, paths or resource payloads.
+            let actual = render_plan(plan, &options).unwrap();
+            pdf_content::assert_same_paint(&actual, &expected);
+            assert_bound_links(&actual, 0);
+            let pdf = String::from_utf8_lossy(&actual);
+            assert!(pdf.contains("/Outlines "), "chapter metadata for {source}");
+            assert!(
+                pdf.contains("/Title (one)"),
+                "first chapter bookmark for {source}"
+            );
+            assert!(
+                pdf.contains("/Title (two)"),
+                "second chapter bookmark for {source}"
+            );
         }
     }
 
@@ -797,7 +818,18 @@ mod tests {
         ]);
         let options = PdfOptions::default();
         let mut plan = prepare(&book, book_pdf_document(&book), &options).unwrap();
-        assert_eq!(resolved(&mut plan), [Some(2), Some(0)]);
+        let mut targets = Vec::new();
+        walk_links(&mut plan.document.blocks, &mut |dest| {
+            if let Some(target) = plan.targets.get(dest) {
+                targets.push(target.clone());
+            }
+        });
+        // The explicit fragment addresses a source heading; the bare file
+        // link addresses that chapter's actual first painted body line.
+        assert_eq!(
+            targets,
+            [Some(Target::Heading(2)), Some(Target::Chapter(1))]
+        );
         assert_bound_links(&render_plan(plan, &options).unwrap(), 2);
     }
 

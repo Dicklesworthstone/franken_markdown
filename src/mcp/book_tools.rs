@@ -13,7 +13,7 @@ use crate::{HtmlOptions, PdfASettings, PdfOptions};
 use super::{
     AUTHORING_PROFILE, ERROR_INPUT_TOO_LARGE, ERROR_RENDER_FAILED, Field, HTML_FIELDS,
     JsonValue as Json, PDF_FIELDS, ToolError, authoring_profile, base64_encode, boolean,
-    engine_failure, html_options, invalid_options, pdf_options, resources, string,
+    engine_failure, epub_options, html_options, invalid_options, pdf_options, resources, string,
     wrap_text_content,
 };
 
@@ -161,7 +161,10 @@ impl Format {
         match self {
             Self::Pdf => listed(PDF_FIELDS),
             Self::Site => listed(HTML_FIELDS),
-            Self::Epub => listed(HTML_FIELDS) && !matches!(name, "allowRawHtml" | "htmlFontFormat"),
+            Self::Epub => {
+                name == "author"
+                    || listed(HTML_FIELDS) && !matches!(name, "allowRawHtml" | "htmlFontFormat")
+            }
         }
     }
 }
@@ -213,7 +216,9 @@ impl Publication {
             .ok_or_else(|| {
                 invalid_options("maxOutputBytes must be 1..33554432", "invalid_output_limit")
             })?;
-        let html = if formats.iter().any(|format| *format != Format::Pdf) {
+        let html = if formats.contains(&Format::Epub) {
+            epub_options(args)?
+        } else if formats.contains(&Format::Site) {
             html_options(args)?
         } else {
             HtmlOptions::default()
@@ -426,7 +431,12 @@ pub(super) fn render(args: &Json, limit: u64) -> Result<Json, ToolError> {
                     rendered.bytes
                 }),
             Format::Epub => crate::epub::render_book_epub(renderer.book(), &publication.html),
-            Format::Site => render_book_site(renderer.book(), &publication.html),
+            Format::Site => {
+                // The shared resource storage reaches both formats, while
+                // creator metadata belongs to the EPUB option contract only.
+                publication.html.author = None;
+                render_book_site(renderer.book(), &publication.html)
+            }
         }
         .map_err(|error| {
             engine_failure(

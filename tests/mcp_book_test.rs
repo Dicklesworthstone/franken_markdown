@@ -181,6 +181,76 @@ fn every_single_format_and_the_default_pdf_route_are_deterministic() {
 }
 
 #[test]
+fn epub_book_author_preserves_exact_creator_metadata_and_empty_values() {
+    let renderer = core();
+    let uncredited =
+        franken_markdown::epub::render_book_epub(renderer.book(), &HtmlOptions::default()).unwrap();
+    assert_eq!(
+        payload(&outputs(&receipt(args("epub")))[0]),
+        base64_encode(&uncredited)
+    );
+    // The native EPUB metadata tests independently decode dc:creator and its
+    // XML escaping. Byte parity here proves the MCP artifact carries the same
+    // exact author, including whitespace, Unicode and explicit empty metadata.
+    for author in ["  Ada & <Research> \"É中\"\nTeam  ", ""] {
+        let mut request = args("epub");
+        set(&mut request, "author", text(author));
+        let options = HtmlOptions {
+            author: Some(author.into()),
+            ..Default::default()
+        };
+        let expected = franken_markdown::epub::render_book_epub(renderer.book(), &options).unwrap();
+        assert_ne!(expected, uncredited, "author={author:?}");
+        let published = receipt(request.clone());
+        assert_eq!(outputs(&published).len(), 1);
+        assert_eq!(payload(&outputs(&published)[0]), base64_encode(&expected));
+        assert_eq!(published, receipt(request));
+    }
+}
+
+#[test]
+fn complete_book_edition_keeps_pdf_and_epub_authors_without_changing_the_site() {
+    let renderer = core();
+    let baseline = receipt(args("all"));
+    for author in ["Author & Équipe", ""] {
+        let mut request = args("all");
+        set(&mut request, "author", text(author));
+        let published = receipt(request);
+        let rows = outputs(&published);
+        assert_eq!(rows.len(), 3);
+        let pdf = render_book_pdf(
+            renderer.book(),
+            &PdfOptions {
+                author: Some(author.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let epub = franken_markdown::epub::render_book_epub(
+            renderer.book(),
+            &HtmlOptions {
+                author: Some(author.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(payload(&rows[0]), base64_encode(&pdf));
+        assert_eq!(payload(&rows[1]), base64_encode(&epub));
+        assert_eq!(payload(&rows[2]), payload(&outputs(&baseline)[2]));
+    }
+}
+
+#[test]
+fn invalid_epub_creator_metadata_refuses_the_entire_book_publication() {
+    for target in ["epub", "all"] {
+        let mut request = args(target);
+        set(&mut request, "author", text("Author\u{1}name"));
+        let failure = invoke(request, DEFAULT_MAX_INPUT_BYTES).unwrap_err();
+        assert_eq!(failure.2, "render_failed", "{target}: {failure:?}");
+    }
+}
+
+#[test]
 fn pdf_geometry_typography_metadata_and_running_text_reach_book_rendering() {
     let mut request = args("pdf");
     set(&mut request, "title", text("Manual"));
@@ -305,6 +375,8 @@ fn unknown_fields_wrong_types_and_unconsumed_options_are_rejected() {
             text("woff2"),
             "unsupported_target_option",
         ),
+        ("epub", "author", Json::Bool(false), "invalid_params"),
+        ("site", "author", text(""), "unsupported_target_option"),
         (
             "site",
             "metadataEpochSeconds",

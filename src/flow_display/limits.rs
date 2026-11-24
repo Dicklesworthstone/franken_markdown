@@ -382,7 +382,11 @@ impl<'a> Projection<'a> {
             .table_footing
             .len()
             .saturating_mul(std::mem::size_of::<crate::table_format::FootingRule>()))?;
-        add(item.meta.table_decimal_cells.len())?;
+        add(item
+            .meta
+            .table_decimal_anchors
+            .len()
+            .saturating_mul(std::mem::size_of::<Option<usize>>()))?;
         // Count targets per retained run conservatively, even where Arc shares
         // the backing string. Formatting metadata must not bypass admission.
         for run in item

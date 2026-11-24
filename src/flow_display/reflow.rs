@@ -426,20 +426,25 @@ impl ResumableFlowDisplay {
                         let mut text_x = cx + 4.0;
                         let mut text_width = available;
                         if !header
-                            && meta
-                                .table_decimal_cells
-                                .get(column)
-                                .copied()
-                                .unwrap_or(false)
+                            && let Some(anchor) =
+                                meta.table_decimal_anchors.get(column).copied().flatten()
                             && let Some(shared) = table_decimals.get(column)
                             && shared.before + shared.after <= available
-                            && let Some(measured) =
-                                layout.decimal_measure(text, &runs, FlowTextRole::TableCell)?
+                            && let Some(measured) = layout.decimal_measure(
+                                text,
+                                &runs,
+                                FlowTextRole::TableCell,
+                                anchor,
+                            )?
                             && measured.before + measured.after <= available
                         {
-                            let offset = (available - shared.after - measured.before).max(0.0);
+                            // Keep the measured envelope directly. Subtracting
+                            // a large placement offset from the cell width can
+                            // round this just below the complete shaped run,
+                            // needlessly wrapping a final citation character.
+                            text_width = shared.after + measured.before;
+                            let offset = (available - text_width).max(0.0);
                             text_x += offset;
-                            text_width -= offset;
                             layout.alignment = Align::Left;
                         }
                         let used = layout.inline_text(
@@ -737,12 +742,8 @@ where
                 minimum[column] = minimum[column].max(min);
                 preferred[column] = preferred[column].max(ideal);
                 if meta.table_source_row != Some(0)
-                    && meta
-                        .table_decimal_cells
-                        .get(column)
-                        .copied()
-                        .unwrap_or(false)
-                    && let Some(measured) = self.decimal_measure(text, &runs, role)?
+                    && let Some(anchor) = meta.table_decimal_anchors.get(column).copied().flatten()
+                    && let Some(measured) = self.decimal_measure(text, &runs, role, anchor)?
                 {
                     decimals[column].before = decimals[column].before.max(measured.before);
                     decimals[column].after = decimals[column].after.max(measured.after);

@@ -2,7 +2,7 @@
 //! measurements pass through the same per-call and cumulative shape budgets.
 
 use super::{Direction, FlowInlineRun, FlowInlineStyle, FlowLayoutError, FlowTextRole, Reflow};
-use crate::table_format::{FootingRule, decimal_anchor};
+use crate::table_format::FootingRule;
 use crate::text::OwnedTextRun;
 
 #[derive(Clone, Copy, Default)]
@@ -36,6 +36,7 @@ where
         text: &str,
         runs: &[FlowInlineRun],
         role: FlowTextRole,
+        anchor: usize,
     ) -> Result<Option<DecimalMeasure>, FlowLayoutError> {
         // Decimal syntax inside TeX is not a prose numeric anchor. Formula
         // cells retain their declared cell alignment and atomic math layout.
@@ -47,9 +48,12 @@ where
         if text.len() > self.options.max_shape_bytes {
             return Ok(None);
         }
-        let Some(anchor) = decimal_anchor(text) else {
-            return Ok(None);
-        };
+        // This boundary comes from numeric source content, before verified
+        // trailing citations become linked labels. Measure every rendered run,
+        // including those labels, while retaining the number's original anchor.
+        if !text.is_char_boundary(anchor) {
+            return Err(FlowLayoutError::InvalidShapedRun);
+        }
         let plain = runs.is_empty()
             || runs
                 .iter()

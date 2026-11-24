@@ -38,20 +38,20 @@ Decimal columns accept:
 - accounting parentheses and percent or per-mille suffixes;
 - emphasis, bold, strike-through and links around numeric text.
 
-Integers align where their decimal point would be. In PDF, HTML and EPUB,
-amounts can end with one or more defined footnote citations, including inside
-bold or linked text. For example, `**1,234.50[^audit]**` aligns at the decimal
-point and keeps its superscript citation, note numbering and links. Citation
+Integers align where their decimal point would be. In PDF, HTML, EPUB and the
+shaped Flow preview, amounts can end with one or more defined footnote citations,
+including inside bold or linked text. For example, `**1,234.50[^audit]**` aligns at the decimal
+point and keeps its citation, note numbering and links. Citation
 glyphs reserve space to the right of the amount; they do not become digits in
 its numeric value. HTML measurement predicts labels without consuming reference
-anchors, including when note numbers grow to two or more digits.
+anchors, including when note numbers grow to two or more digits. Flow displays
+linked `[n]` labels and measures their complete rendered width.
 
 Decimal commas, scientific notation, arbitrary units and other nonnumeric
 content use right alignment. Code, mathematics, images, unresolved references,
 citations inside a number (`12[^audit].50`) and authored superscript characters
-also use the ordinary cell layout. SVG and Flow currently use ordinary cell
-layout for amounts with citations. The original content remains visible in
-every case.
+also use the ordinary cell layout. SVG currently uses ordinary cell layout
+for amounts with citations. The original content remains visible in every case.
 
 ## Rendering behavior
 
@@ -70,8 +70,13 @@ order. EPUB uses the same table content and inline styles; the reading system
 controls its support for the CSS layout.
 
 The shaped Flow preview uses the host's measured text clusters for decimal
-positions and draws rules on their data rows. The estimate-only preview draws
-rules without claiming font-measured alignment. The separate constrained
+positions and draws rules on their data rows. It resolves numeric anchors from
+the source AST before expanding defined footnotes into linked labels, so
+multi-digit citations remain part of the suffix width without changing the
+numeric anchor. Definition edits invalidate affected rows; source ownership,
+selection, navigation and shaping budgets remain intact. Fitting amounts and
+their complete citation labels stay on the same line. The estimate-only preview
+draws rules without claiming font-measured alignment. The separate constrained
 plain-text table viewport treats `Align::Decimal` as right alignment.
 
 The AST retains all authored rows for source mapping and editing. Marker rows

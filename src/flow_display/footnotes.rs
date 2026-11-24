@@ -97,6 +97,12 @@ impl<'a> Footnotes<'a> {
         format!("fmd:note:{}", self.number(index))
     }
 
+    /// Admit only actual citations whose definitions belong to this document.
+    /// Generated-looking authored links cannot confer citation authority.
+    pub fn is_resolved_reference(&self, inline: &Inline) -> bool {
+        matches!(inline, Inline::FootnoteRef { id } if self.indices.contains_key(id.as_str()))
+    }
+
     pub fn inlines<'s>(&self, inlines: &'s [Inline]) -> Cow<'s, [Inline]> {
         if self.indices.is_empty() || !has_resolved_reference(inlines, &self.indices) {
             return Cow::Borrowed(inlines);

@@ -225,7 +225,9 @@ struct BlockMeta {
     table_alignments: std::sync::Arc<[Align]>,
     // Opt-in table presentation remains attached to real source rows.
     table_footing: Vec<crate::table_format::FootingRule>,
-    table_decimal_cells: Vec<bool>,
+    // Numeric boundary resolved from the source AST before note projection.
+    // Citation labels remain part of the rendered cell and its measured width.
+    table_decimal_anchors: Vec<Option<usize>>,
     table_source_row: Option<usize>,
     image_link: Option<std::sync::Arc<str>>,
     // Images retained as alt text or literal HTML in the live preview still
@@ -1093,7 +1095,7 @@ fn prepare_document(
                             .and_then(|cells| {
                                 cells.checked_mul(
                                     std::mem::size_of::<crate::table_format::FootingRule>()
-                                        + std::mem::size_of::<bool>(),
+                                        + std::mem::size_of::<Option<usize>>(),
                                 )
                             })
                             .filter(|bytes| *bytes <= limits.max_output_bytes)
@@ -1124,16 +1126,21 @@ fn prepare_document(
                             });
                             if index > 0 {
                                 row_meta.table_footing = financial[index - 1].rules.clone();
-                                row_meta.table_decimal_cells = row
+                                row_meta.table_decimal_anchors = row
                                     .iter()
                                     .enumerate()
                                     .map(|(column, cell)| {
-                                        table.align.get(column) == Some(&Align::Decimal)
-                                            && crate::table_format::decimal_cell_text(cell)
+                                        (table.align.get(column) == Some(&Align::Decimal))
+                                            .then(|| {
+                                                crate::table_format::decimal_cell_text_with_footnotes(
+                                                    cell,
+                                                    |inline| notes.is_resolved_reference(inline),
+                                                )
                                                 .and_then(|text| {
                                                     crate::table_format::decimal_anchor(&text)
                                                 })
-                                                .is_some()
+                                            })
+                                            .flatten()
                                     })
                                     .collect();
                             }

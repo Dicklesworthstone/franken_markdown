@@ -1,4 +1,4 @@
-import type { FmdAuthoringProfile, FmdPdfPage, FmdPdfRunning, FmdPdfTypography } from "./franken_markdown.js";
+import type { FmdAuthoringProfile, FmdPdfPage, FmdPdfRunning, FmdPdfTypography, FmdPdfVerificationReport } from "./franken_markdown.js";
 export type FlowAuthoringProfile = FmdAuthoringProfile;
 export type {
   FmdPdfPage as FlowPdfPage,
@@ -442,6 +442,15 @@ export interface FlowSession {
     requests: readonly FlowExportRequest[],
     token: FlowTokenInput,
   ): Promise<readonly FlowExportResult[]>;
+  /** Adapter support; a matching verifyPdfConfigured WASM export is also required. */
+  readonly supportsPdfVerification: boolean;
+  /** Full native PDF layout report for the captured source, grammar and
+   * complete authorized image inventory used by PDF export. Rejects stale
+   * source/layout tokens and shares the physical export slot. Emits no PDF. */
+  verifyPdf(
+    options: FlowPdfVerificationOptions | undefined,
+    token: FlowTokenInput,
+  ): Promise<FlowPdfVerificationResult>;
   /** Idempotent; releases Rust-owned source, display and font-run cache. */
   dispose(): void;
 }
@@ -566,6 +575,24 @@ export interface FlowPdfExportOptions extends FlowExportOptions {
    * Requires greedy pagination; baseline grids are supported with a matching WASM
    * package; unsupported policies and older token parsers fail explicitly. */
   splitFootnotes?: boolean;
+}
+/** PDF publication settings without archival emission. Session font/profile
+ * remain immutable; no ambient resource loading or export-time grammar change. */
+export interface FlowPdfVerificationOptions extends Omit<FlowPdfExportOptions,
+  "pdfA" | "pdfAStrict" | "maxOutputBytes"> {
+  /** Complete report as UTF-8 JSON; default/max 8 MiB. Not a WASM-heap limit. */
+  maxOutputBytes?: number;
+}
+export interface FlowPdfVerificationResult extends FlowToken {
+  readonly schemaVersion: 1;
+  readonly format: "pdf-verification";
+  readonly profile?: FlowAuthoringProfile;
+  readonly font: "sans" | "serif";
+  readonly sourceLengthBytes: number;
+  readonly assetCount: number;
+  readonly assetBytes: number;
+  /** Owned full native report; its canonical digest is retained unchanged. */
+  readonly report: FmdPdfVerificationReport;
 }
 export interface FlowExportOptionsByFormat {
   html: FlowHtmlExportOptions;

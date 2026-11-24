@@ -1,4 +1,4 @@
-import { validateFlowExportBatchResult, validateFlowExportResult } from "./flow_export.mjs";
+import { decodeFlowPdfVerification, encodeFlowPdfVerification, validateFlowExportBatchResult, validateFlowExportResult } from "./flow_export.mjs";
 import { sourceText, validateFlowPage, validateFlowProfile, validateViewportPage } from "./flow_session.mjs";
 import {
   acknowledgedState,
@@ -75,6 +75,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
     let supportsAssetBatches = false;
     let supportsEditBatches = false;
     let supportsExportBatches = false;
+    let supportsPdfVerification = false;
     let supportsCodeHighlighting = false;
     let codeHighlighting = false;
     // One monotonic startup budget covers creation AND optional syntax setup.
@@ -143,6 +144,8 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         ) {
           throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export-batch capability");
         }
+        if (result?.supportsPdfVerification !== undefined && typeof result.supportsPdfVerification !== "boolean")
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid PDF-verification capability");
         if (
           (result?.supportsCodeHighlighting !== undefined &&
             typeof result.supportsCodeHighlighting !== "boolean") ||
@@ -156,6 +159,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         codeHighlighting = supportsCodeHighlighting && result.codeHighlighting;
         supportsEditBatches = result?.supportsEditBatches === true;
         supportsExportBatches = result?.supportsExportBatches === true;
+        supportsPdfVerification = result?.supportsPdfVerification === true;
         supportsViewportDeltas = result?.supportsViewportDeltas === true;
         supportsSnapshotDeltas = result?.supportsSnapshotDeltas === true;
         supportsAssetBatches = result?.supportsAssetBatches === true;
@@ -245,7 +249,7 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         codeHighlighting = result.codeHighlighting;
       }
       if (["snapshot", "viewport", "readingOrder", "pendingAssets", "hitTest", "selectText",
-        "exportDocument"].includes(method))
+        "exportDocument", "verifyPdf"].includes(method))
         validateFlowProfile(result, initial[1].profile, "WORKER_PROTOCOL_ERROR");
       if (method === "exportDocument") validateFlowExportResult(result, next.token);
       if (method === "exportDocuments") {
@@ -296,6 +300,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
             "this worker does not expose atomic multi-format document export",
           );
         }
+        if (method === "verifyPdf" && !supportsPdfVerification)
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE",
+            "this worker does not expose configured PDF verification");
         if (method === "setCodeHighlighting" && !supportsCodeHighlighting) {
           throw new FlowWorkerError(
             "UNSUPPORTED_WASM_PACKAGE",
@@ -314,7 +321,18 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
           : method === "viewport" && supportsViewportDeltas ? "viewportDelta" : method;
         const wireArgs = wireMethod !== method
           ? [normalized[0], snapshotDeltas.baseId] : normalized;
-        const validate = method === "reflow" ? (value) => {
+        const validate = method === "verifyPdf" ? (value, result) => {
+          const next = acknowledgedState(value), expected = normalized[1];
+          const decoded = decodeFlowPdfVerification(result, expected, normalized[0].maxOutputBytes, initial[1].profile);
+          if (next.token.revision !== expected.revision || next.token.layoutRevision !== expected.layoutRevision
+              || decoded.font !== initial[1].font
+              || Object.keys(next.layout).some(key => next.layout[key] !== state.layout[key]))
+            throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "verification changed the session state");
+          // Decode and validate before committing the worker acknowledgment or
+          // pumping a queued edit. The internal transfer buffer is not public.
+          delete result.json;
+          Object.defineProperties(result, Object.getOwnPropertyDescriptors(decoded));
+        } : method === "reflow" ? (value) => {
           const next = acknowledgedState(value), expected = normalized[1];
           const layout = { ...state.layout, ...normalized[0] };
           if (expected.revision !== state.token.revision ||
@@ -431,6 +449,10 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         alive();
         return supportsExportBatches;
       },
+      get supportsPdfVerification() {
+        alive();
+        return supportsPdfVerification;
+      },
       get supportsCodeHighlighting() {
         alive();
         return supportsCodeHighlighting;
@@ -471,6 +493,9 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
       },
       exportDocuments(requests, token, control) {
         return call("exportDocuments", [requests, token], control);
+      },
+      verifyPdf(options, token, control) {
+        return call("verifyPdf", [options, token], control).then(result => Object.freeze(result));
       },
       edit(start, end, replacement, options, control) {
         return call("edit", [start, end, replacement, options], control);
@@ -613,6 +638,7 @@ export function installFlowWorker(endpoint, createSession) {
           supportsAssetBatches: session.supportsAssetBatches === true,
           supportsEditBatches: session.supportsEditBatches === true && typeof session.editMany === "function",
           supportsExportBatches: typeof session.exportDocuments === "function",
+          supportsPdfVerification: session.supportsPdfVerification === true && typeof session.verifyPdf === "function",
           supportsSnapshotDeltas: true,
           supportsViewportDeltas: session.supportsViewport === true,
           ...(profile === undefined ? {} : { profile }),
@@ -641,6 +667,9 @@ export function installFlowWorker(endpoint, createSession) {
             "this native session does not support atomic multi-format document export",
           );
         }
+        if (method === "verifyPdf" && (session.supportsPdfVerification !== true || typeof session.verifyPdf !== "function"))
+          throw new FlowWorkerError("UNSUPPORTED_WASM_PACKAGE",
+            "this native session does not expose configured PDF verification");
         if (method === "setCodeHighlighting" && (
           session.supportsCodeHighlighting !== true ||
           typeof session.setCodeHighlighting !== "function"
@@ -676,7 +705,12 @@ export function installFlowWorker(endpoint, createSession) {
       }
       const state = { token: session.token, layout: session.layoutOptions };
       let transfer = [];
-      if (method === "exportDocument") {
+      if (method === "verifyPdf") {
+        if (state.token.revision !== normalized[1].revision || state.token.layoutRevision !== normalized[1].layoutRevision)
+          throw new FlowWorkerError("INVALID_WASM_RESPONSE", "verification result mismatched the current session");
+        value = encodeFlowPdfVerification(value, normalized[1], normalized[0].maxOutputBytes, profile);
+        transfer = [value.json.buffer];
+      } else if (method === "exportDocument") {
         validateFlowProfile(value, profile);
         validateFlowExportResult(value, state.token, normalized[1].maxOutputBytes, normalized[1]);
         if (

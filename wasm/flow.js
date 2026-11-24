@@ -63,6 +63,7 @@ export async function createFlowSession(markdown, options = {}) {
       {
         html: renderHtml, pdf: renderPdf,
         epub: publicationRenderers.renderEpub, svg: publicationRenderers.renderSvg,
+        verifyPdf: publicationRenderers.verifyPdf,
       },
       prepared.font,
       (expected, offset, limit) => {

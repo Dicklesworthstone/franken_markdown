@@ -9,6 +9,8 @@ import type {
   FlowExportOptionsByFormat,
   FlowExportRequest,
   FlowExportResult,
+  FlowPdfVerificationOptions,
+  FlowPdfVerificationResult,
   FlowGlyphOutlines,
   FlowHit,
   FlowIdentity,
@@ -38,6 +40,8 @@ export type {
   FlowExportOptionsByFormat,
   FlowExportRequest,
   FlowExportResult,
+  FlowPdfVerificationOptions,
+  FlowPdfVerificationResult,
   FlowGlyphOutlines,
   FlowHit,
   FlowHtmlExportOptions,
@@ -109,6 +113,8 @@ export interface WorkerFlowSession {
   readonly supportsEditBatches: boolean;
   /** True only when the worker can execute one multi-format publication RPC. */
   readonly supportsExportBatches: boolean;
+  /** False for older worker adapters; matching generated WASM is also required. */
+  readonly supportsPdfVerification: boolean;
   /** False for legacy workers/native packages; enabling has no plain-text fallback. */
   readonly supportsCodeHighlighting: boolean;
   /** Last acknowledged mode, preserved across edits, reflows and asset completion. */
@@ -230,6 +236,13 @@ export interface WorkerFlowSession {
     token: FlowTokenInput,
     control?: FlowWorkerControl,
   ): Promise<readonly FlowExportResult[]>;
+  /** Full configured PDF verification with retained session grammar/resources.
+   * Queued cancellation preserves the session; in-flight cancellation closes it. */
+  verifyPdf(
+    options: FlowPdfVerificationOptions | undefined,
+    token: FlowTokenInput,
+    control?: FlowWorkerControl,
+  ): Promise<FlowPdfVerificationResult>;
   /** Immediate, idempotent termination. Rejects all outstanding operations. */
   dispose(): void;
 }

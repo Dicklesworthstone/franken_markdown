@@ -3,7 +3,7 @@
 // shared with the synchronous facade rather than delegated to UTF-8 coercion.
 
 import { normalizeAssetBatch } from "./flow_asset_batch.mjs";
-import { normalizeFlowExport, normalizeFlowExportBatch } from "./flow_export.mjs";
+import { normalizeFlowExport, normalizeFlowExportBatch, normalizeFlowPdfVerification } from "./flow_export.mjs";
 import { outlineGlyphIds } from "./flow_outlines.mjs";
 import {
   FLOW_ASSET_LIMIT,
@@ -44,6 +44,7 @@ const ARITIES = Object.freeze({
   glyphOutlines: 2,
   exportDocument: 3,
   exportDocuments: 2,
+  verifyPdf: 2,
 });
 
 export function fields(value, allowed, name) {
@@ -148,6 +149,8 @@ export function normalizeFlowRequest(method, args) {
       return normalizeFlowExport(args[0], args[1], args[2]);
     case "exportDocuments":
       return normalizeFlowExportBatch(args[0], args[1]);
+    case "verifyPdf":
+      return normalizeFlowPdfVerification(args[0], args[1], false);
     case "edit":
     case "editBytes":
       range(args[0], args[1]);
@@ -219,6 +222,11 @@ export function requestWeight(args) {
   return 128 + size(args);
 }
 export function snapshotArguments(method, normalized) {
+  if (method === "verifyPdf") {
+    // Resource views were charged during admission; copy their exact ranges
+    // only after reserving the queue slot, before returning to the caller.
+    return { args: normalizeFlowPdfVerification(normalized[0], normalized[1]) };
+  }
   if (method === "provideAssets") {
     const transfer = [];
     const results = normalized[0].map((result) => {

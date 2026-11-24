@@ -3,7 +3,7 @@
 // are fixed imports in flow.js; neither code nor URLs come from worker messages.
 import { normalizePdfPage } from "./pdf_page.mjs";
 import { normalizePdfRunning } from "./pdf_running.mjs";
-import { authoringProfileReceipt, isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, pdfArchivalReceipt, validateBaselineGridFit } from "./render_typography.mjs";
+import { authoringProfileReceipt, isPdfPaginationError, normalizeBaselineGridPt, normalizeFontEmbedding, normalizeHtmlFontFormat, normalizeMicrotype, normalizePdfArchival, normalizePdfPaginationError, normalizePdfTypography, PDF_VERIFICATION_REPORT_LIMIT, pdfArchivalReceipt, validateBaselineGridFit, validatePdfVerificationReport } from "./render_typography.mjs";
 import {
   FLOW_ASSET_LIMIT,
   FLOW_SOURCE_LIMIT,
@@ -95,7 +95,7 @@ function runningRecord(value, allowed, name) {
 // Explicit export-only assets let a host supply a running logo without adding
 // it to Markdown or granting ambient loading. Validate the complete inventory
 // before copying, including exact views and the aggregate byte budget.
-function exportImages(value) {
+function exportImages(value, capture = true) {
   if (!Array.isArray(value) || value.length > IMAGE_COUNT)
     fail("INVALID_OPTIONS", "pdfImages must contain at most 1024 image assets");
   const images = [];
@@ -116,13 +116,13 @@ function exportImages(value) {
     images.push({ destination, bytes });
   }
   return Object.freeze(images.map(image => Object.freeze({
-    destination: image.destination, bytes: new Uint8Array(image.bytes),
+    destination: image.destination, bytes: capture ? new Uint8Array(image.bytes) : image.bytes,
   })));
 }
 
 // Data-only options; called on both sides of the worker boundary. Nested print
 // settings are copied here; no caller buffers or ambient asset loaders enter it.
-export function normalizeFlowExport(format, options = {}, expectedToken) {
+export function normalizeFlowExport(format, options = {}, expectedToken, captureAssets = true) {
   if (typeof format !== "string" || !Object.hasOwn(MIME, format))
     fail("INVALID_OPTIONS", "export format must be html, pdf, epub or svg");
   if (!options || typeof options !== "object" || Array.isArray(options))
@@ -218,7 +218,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
       try { result.running = normalizePdfRunning(running); }
       catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
     }
-    if (pdfImages !== undefined) result.pdfImages = exportImages(pdfImages);
+    if (pdfImages !== undefined) result.pdfImages = exportImages(pdfImages, captureAssets);
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(
       options.metadataEpochSeconds ?? 0,
@@ -249,6 +249,124 @@ export function normalizeFlowExport(format, options = {}, expectedToken) {
     }
   }
   return [format, Object.freeze(result), token(expectedToken)];
+}
+
+// Verification uses exactly the session's PDF publication settings and asset
+// policy. It does not emit an archival file or allow changing the session grammar.
+export function normalizeFlowPdfVerification(options = {}, expectedToken, captureAssets = true) {
+  const admitted = runningRecord(options,
+    [...COMMON, ...PDF.filter(key => key !== "pdfA" && key !== "pdfAStrict")],
+    "PDF verification options");
+  admitted.maxOutputBytes = uint(admitted.maxOutputBytes ?? PDF_VERIFICATION_REPORT_LIMIT,
+    "maxOutputBytes", 1, PDF_VERIFICATION_REPORT_LIMIT);
+  const [, normalized, expected] = normalizeFlowExport("pdf", admitted, expectedToken, captureAssets);
+  return [normalized, expected];
+}
+
+function verificationMetadata(value, expected, profile) {
+  if (!value || value.schemaVersion !== 1 || value.format !== "pdf-verification"
+      || value.revision !== expected.revision || value.layoutRevision !== expected.layoutRevision
+      || !["sans", "serif"].includes(value.font)
+      || !Number.isSafeInteger(value.sourceLengthBytes) || value.sourceLengthBytes < 0
+      || value.sourceLengthBytes > FLOW_SOURCE_LIMIT
+      || !Number.isSafeInteger(value.assetCount) || value.assetCount < 0 || value.assetCount > IMAGE_COUNT
+      || !Number.isSafeInteger(value.assetBytes) || value.assetBytes < 0 || value.assetBytes > IMAGE_BYTES)
+    fail("INVALID_WASM_RESPONSE", "inconsistent PDF verification response");
+  identity(value.revision); identity(value.layoutRevision);
+  validateFlowProfile(value, profile);
+  return { schemaVersion: 1, format: "pdf-verification", ...expected, font: value.font,
+    ...(profile === undefined ? {} : { profile }), sourceLengthBytes: value.sourceLengthBytes,
+    assetCount: value.assetCount, assetBytes: value.assetBytes };
+}
+
+function verificationReport(report, profile) {
+  try {
+    validatePdfVerificationReport(report);
+    authoringProfileReceipt(report, profile);
+  } catch (error) { throw new FlowError(error.code ?? "INVALID_WASM_RESPONSE", error.message, { cause: error }); }
+  return report;
+}
+
+function verificationJson(report, maximum) {
+  let remaining = maximum;
+  const active = new Set(), parts = [];
+  const charge = size => {
+    remaining -= size;
+    if (remaining < 0) fail("BUDGET_EXCEEDED", "PDF verification report exceeds its output limit");
+  };
+  const emit = value => { charge(value.length); parts.push(value); };
+  const quote = value => {
+    charge(2);
+    if (value.length > remaining) fail("BUDGET_EXCEEDED", "PDF verification report exceeds its output limit");
+    for (const character of value) {
+      const cp = character.codePointAt(0);
+      if (cp >= 0xd800 && cp <= 0xdfff) fail("INVALID_WASM_RESPONSE", "invalid PDF verification report Unicode");
+      charge(cp === 34 || cp === 92 || [8, 9, 10, 12, 13].includes(cp) ? 2
+        : cp < 32 ? 6 : cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4);
+    }
+    parts.push(JSON.stringify(value));
+  };
+  const visit = (value, depth) => {
+    if (depth > 64) fail("BUDGET_EXCEEDED", "PDF verification report structure exceeds its depth limit");
+    if (value === null) { emit("null"); return; }
+    if (typeof value === "string") { quote(value); return; }
+    if (typeof value === "boolean") { emit(String(value)); return; }
+    if (typeof value === "number" && Number.isFinite(value)) { emit(JSON.stringify(value)); return; }
+    const array = Array.isArray(value);
+    if (!value || typeof value !== "object" || active.has(value)
+        || (array ? Object.getPrototypeOf(value) !== Array.prototype
+          : ![Object.prototype, null].includes(Object.getPrototypeOf(value))))
+      fail("INVALID_WASM_RESPONSE", "PDF verification must contain acyclic plain JSON data");
+    if (array && value.length > remaining)
+      fail("BUDGET_EXCEEDED", "PDF verification report exceeds its output limit");
+    const keys = Reflect.ownKeys(value);
+    if (array && (keys.length !== value.length + 1 || keys.some(key => key !== "length"
+        && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))))
+      fail("INVALID_WASM_RESPONSE", "PDF verification arrays must be dense data");
+    emit(array ? "[" : "{"); active.add(value);
+    let count = 0;
+    for (const key of keys) {
+      if (array && key === "length") continue;
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (typeof key !== "string" || !field?.enumerable || !Object.hasOwn(field, "value"))
+        fail("INVALID_WASM_RESPONSE", "PDF verification cannot contain accessors or hidden fields");
+      if (count++) emit(",");
+      if (!array) { quote(key); emit(":"); }
+      visit(field.value, depth + 1);
+    }
+    emit(array ? "]" : "}"); active.delete(value);
+  };
+  visit(report, 0);
+  return parts.join("");
+}
+
+// Reports travel as one bounded UTF-8 buffer, never an unbounded worker object
+// graph. Retain additive native fields and its canonical digest unchanged.
+export function encodeFlowPdfVerification(value, expected, max = PDF_VERIFICATION_REPORT_LIMIT, profile) {
+  const metadata = verificationMetadata(value, expected, profile);
+  const field = Object.getOwnPropertyDescriptor(value, "report");
+  if (!field || !Object.hasOwn(field, "value"))
+    fail("INVALID_WASM_RESPONSE", "PDF verification report must be a data property");
+  const report = field.value, limit = Math.min(max, PDF_VERIFICATION_REPORT_LIMIT);
+  // Admit plain JSON and escaped UTF-8 before semantic validation can iterate
+  // arrays, or serialization can invoke accessors/toJSON or allocate output.
+  const json = verificationJson(report, limit);
+  verificationReport(report, profile);
+  return { ...metadata, json: new TextEncoder().encode(json) };
+}
+
+export function decodeFlowPdfVerification(value, expected, max = PDF_VERIFICATION_REPORT_LIMIT, profile) {
+  const metadata = verificationMetadata(value, expected, profile);
+  const bytes = byteView(value.json, Math.min(max, PDF_VERIFICATION_REPORT_LIMIT));
+  let size;
+  try { size = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get.call(bytes.buffer); }
+  catch { fail("INVALID_WASM_RESPONSE", "PDF verification report bytes must not be shared"); }
+  if (!size || bytes.byteOffset !== 0 || bytes.byteLength !== size)
+    fail("INVALID_WASM_RESPONSE", "PDF verification requires an exact owned report buffer");
+  let report;
+  try { report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { fail("INVALID_WASM_RESPONSE", "invalid PDF verification JSON"); }
+  return Object.freeze({ ...metadata, report: Object.freeze(verificationReport(report, profile)) });
 }
 
 // A batch is one immutable publication request over one source/layout token.
@@ -555,6 +673,13 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
       { cause: error },
     );
   };
+  const capture = (expected) => {
+    const source = sourceText(session.source);
+    const sourceLengthBytes = new TextEncoder().encode(source).length;
+    const assets = collectImages(session, expected, readInventory);
+    fence(session, expected);
+    return { source, sourceLengthBytes, assets };
+  };
   const run = async (requests, expected) => {
     fence(session, expected);
     validateFlowProfile(session, profile);
@@ -567,10 +692,8 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
     });
     busy = true;
     try {
-      const source = sourceText(session.source);
-      const sourceLengthBytes = new TextEncoder().encode(source).length;
+      const { source, sourceLengthBytes, assets: baseAssets } = capture(expected);
       const pdf = jobs.find((job) => job.format === "pdf");
-      const baseAssets = collectImages(session, expected, readInventory);
       const pdfAssets = pdf ? mergeExplicitImages(baseAssets, pdf.options.pdfImages) : baseAssets;
       fence(session, expected);
       const results = [];
@@ -642,6 +765,42 @@ export function withFlowExports(session, renderers, font = "sans", readInventory
     }
   };
   Object.defineProperties(api, {
+    supportsPdfVerification: {
+      enumerable: true,
+      get() { return typeof renderers.verifyPdf === "function"; },
+    },
+    verifyPdf: {
+      enumerable: true,
+      async value(options, expectedToken) {
+        const [normalized, expected] = normalizeFlowPdfVerification(options, expectedToken);
+        fence(session, expected);
+        validateFlowProfile(session, profile);
+        if (busy) fail("EXPORT_BUSY", "one physical document export or verification is already in progress");
+        if (typeof renderers.verifyPdf !== "function")
+          fail("UNSUPPORTED_WASM_PACKAGE", "this session does not expose configured PDF verification");
+        busy = true;
+        try {
+          const { source, sourceLengthBytes, assets: captured } = capture(expected);
+          const assets = mergeExplicitImages(captured, normalized.pdfImages);
+          const { maxOutputBytes, ...settings } = normalized;
+          fence(session, expected);
+          const report = await renderers.verifyPdf(source, { ...settings, font,
+            ...(profile === undefined ? {} : { profile }), allowRawHtml: false, pdfImages: assets.pdfImages });
+          fence(session, expected);
+          validateFlowProfile(session, profile);
+          const result = { schemaVersion: 1, format: "pdf-verification", ...expected, font,
+            ...(profile === undefined ? {} : { profile }), sourceLengthBytes,
+            assetCount: assets.pdfImages.length, assetBytes: assets.assetBytes, report };
+          // Own the complete report even when an embedding supplies a backend
+          // that reuses result storage on its next render or verification call.
+          const wire = encodeFlowPdfVerification(result, expected, maxOutputBytes, profile);
+          fence(session, expected);
+          validateFlowProfile(session, profile);
+          return decodeFlowPdfVerification(wire, expected, maxOutputBytes, profile);
+        } catch (error) { throw convertError(error); }
+        finally { busy = false; }
+      },
+    },
     exportDocument: {
       enumerable: true,
       async value(format, options, expectedToken) {

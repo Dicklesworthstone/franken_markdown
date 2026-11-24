@@ -195,6 +195,10 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
             "mutation acknowledgment does not match worker state",
           );
         }
+      } else if (state && (next.token.revision !== state.token.revision ||
+          next.token.layoutRevision !== state.token.layoutRevision ||
+          Object.keys(state.layout).some(key => next.layout[key] !== state.layout[key]))) {
+        throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "read-only worker operation changed the session state");
       }
       if (
         ["snapshot", "viewport", "readingOrder", "pendingAssets", "hitTest", "selectText"].includes(
@@ -249,15 +253,17 @@ export async function createWorkerFlowSessionWith(factory, source, options = {},
         codeHighlighting = result.codeHighlighting;
       }
       if (["snapshot", "viewport", "readingOrder", "pendingAssets", "hitTest", "selectText",
-        "exportDocument", "verifyPdf"].includes(method))
+        "verifyPdf"].includes(method))
         validateFlowProfile(result, initial[1].profile, "WORKER_PROTOCOL_ERROR");
-      if (method === "exportDocument") validateFlowExportResult(result, next.token);
-      if (method === "exportDocuments") {
-        if (!Array.isArray(result) || result.length < 1 || result.length > 4)
-          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export-batch acknowledgment");
-        for (const output of result) {
+      if (method === "exportDocument" || method === "exportDocuments") {
+        const outputs = method === "exportDocument" ? [result] : result;
+        if (!Array.isArray(outputs) || outputs.length < 1 || outputs.length > 4)
+          throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "invalid export acknowledgment");
+        for (const output of outputs) {
           validateFlowProfile(output, initial[1].profile, "WORKER_PROTOCOL_ERROR");
           validateFlowExportResult(output, next.token);
+          if (output.font !== initial[1].font)
+            throw new FlowWorkerError("WORKER_PROTOCOL_ERROR", "export did not acknowledge the session font");
         }
       }
       if (method === "getSource") sourceText(result);

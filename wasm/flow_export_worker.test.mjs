@@ -5,7 +5,7 @@ import { createWorkerFlowSessionWith } from "./flow_worker_session.mjs";
 
 const code = (expected) => (error) => error.code === expected;
 const decode = (result) => JSON.parse(new TextDecoder().decode(result.bytes));
-function endpoint(data) {
+function endpoint(data, alterReply) {
   const worker = new Worker(new URL("./tests/flow_export_worker_fixture.mjs", import.meta.url), {
     workerData: data,
   });
@@ -18,7 +18,10 @@ function endpoint(data) {
       return worker.terminate();
     },
     addEventListener(kind, fn) {
-      const listener = (value) => fn(kind === "message" ? { data: value } : value);
+      const listener = (value) => {
+        if (kind === "message" && value.ok) alterReply?.(value);
+        fn(kind === "message" ? { data: value } : value);
+      };
       listeners.set(fn, listener);
       worker.on(kind, listener);
     },
@@ -28,9 +31,9 @@ function endpoint(data) {
     },
   };
 }
-async function setup(t, data = {}, runtime = {}) {
+async function setup(t, data = {}, runtime = {}, alterReply) {
   const session = await createWorkerFlowSessionWith(
-    () => endpoint(data),
+    () => endpoint(data, alterReply),
     "# Source 😀",
     { font: "serif" },
     { timeoutMs: 5000, ...runtime },
@@ -358,3 +361,33 @@ test("legacy native inventory refusal crosses the worker boundary without disabl
   assert.equal(session.disposed, false);
   assert.equal(session.pendingOperations, 0);
 });
+
+for (const [label, read, change] of [
+  ["source read advances revision", api => api.getSource(),
+    msg => { msg.state.token.revision = String(BigInt(msg.state.token.revision) + 1n); }],
+  ["source read advances layout revision", api => api.getSource(),
+    msg => { msg.state.token.layoutRevision = String(BigInt(msg.state.token.layoutRevision) + 1n); }],
+  ["single PDF changes page width", api => api.exportDocument("pdf", {}, api.token),
+    msg => { msg.state.layout.viewportWidth += 20; }],
+  ["single PDF changes session font", api => api.exportDocument("pdf", {}, api.token),
+    msg => { msg.value.font = "sans"; }],
+  ["batch changes the second output's font", api => api.exportDocuments(
+    [{ format: "html" }, { format: "pdf" }], api.token), msg => { msg.value[1].font = "sans"; }],
+]) {
+  test(`worker refuses a read acknowledgment where ${label} before dispatching a queued edit`, async t => {
+    let armed = false;
+    const session = await setup(t, {}, {}, msg => {
+      if (armed) { armed = false; change(msg); }
+    });
+    armed = true;
+    const reading = read(session);
+    const editing = session.replaceSource("must not replay", { expectedRevision: session.revision });
+    await Promise.all([
+      assert.rejects(reading, code("WORKER_PROTOCOL_ERROR")),
+      assert.rejects(editing, code("SESSION_LOST")),
+    ]);
+    assert.equal(session.disposed, true);
+    assert.equal(session.pendingBytes, 0);
+    assert.equal(session.pendingOperations, 0);
+  });
+}

@@ -108,8 +108,14 @@ fn each_font_slot_selects_its_own_face_in_a_multiformat_book() {
             (
                 "chapters".to_owned(),
                 Json::Array(vec![
-                    object([("path", text("one.md")), ("markdown", text("# AB\n\nAB **AB**."))]),
-                    object([("path", text("two.md")), ("markdown", text("# BA\n\nBA **BA**."))]),
+                    object([
+                        ("path", text("one.md")),
+                        ("markdown", text("# AB\n\nAB **AB**.")),
+                    ]),
+                    object([
+                        ("path", text("two.md")),
+                        ("markdown", text("# BA\n\nBA **BA**.")),
+                    ]),
                 ]),
             ),
             ("to".to_owned(), text("all")),
@@ -157,11 +163,7 @@ fn collection_and_standalone_selection_errors_remain_actionable() {
         (OTC, Some(1023.0), "InvalidFaceIndex"),
         (b"ttcf".as_slice(), Some(0.0), "Malformed"),
     ] {
-        let failure = call(
-            "fmd.render_pdf",
-            args(bytes, index.map(Json::Number)),
-        )
-        .unwrap_err();
+        let failure = call("fmd.render_pdf", args(bytes, index.map(Json::Number))).unwrap_err();
         assert_eq!(failure.0, ERROR_INVALID_OPTIONS);
         assert_eq!(failure.2, "invalid_resources");
         assert!(failure.1.contains("body-regular"), "{failure:?}");

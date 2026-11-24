@@ -1302,7 +1302,11 @@ function parseMarkdownClient(source, imageAssets, profile) {
     let rawBrackets, bareParens, maybeBare = false;
     const bareParenEnd = start => (bareParens ??= bareParenthesisPairs(text)).get(start);
     const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
-    function indexFrom(start) {
+    function indexFrom(start, root = -1, depth = 0) {
+      if (depth > MAX_DEPTH) exhausted('inline nesting');
+      // Probes return only their root atom. Failed probes cannot claim source
+      // outside an opaque citation; winning labels are indexed when rendered.
+      const record = root < 0 ? remember : () => {};
       const stack = [];
       let math;
       for (let i = start; i < text.length;) {
@@ -1312,7 +1316,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
         if (ch === '\\' && (escapable(text[i + 1]) || text[i + 1] === '\n')) { i += 2; continue; }
         if (ch === '`') {
           const code = codeExtent(text, i);
-          if (code.kind) remember(i, code);
+          if (code.kind) record(i, code);
           i = code.end; continue;
         }
         if (ch === '$') {
@@ -1321,26 +1325,36 @@ function parseMarkdownClient(source, imageAssets, profile) {
           // last double/single suffix. Skip the literal prefix in one step.
           if (width > 2) { i += width - 2; continue; }
           const end = (math ??= mathDelimiters(text))(i, width);
-          if (end >= 0) { remember(i, {kind: 'math', end}); i = end; continue; }
+          if (end >= 0) { record(i, {kind: 'math', end}); i = end; continue; }
         }
         if (ch === '<') {
           const link = autolinkAt(text, i);
           if (link) {
-            remember(i, link);
+            record(i, link);
             if (stack.length) stack.at(-1).containsLink = true;
             i = link.end; continue;
           }
           const end = inlineHtmlEnd(text, i);
-          if (end >= 0) { remember(i, {kind: 'html', end}); i = end; continue; }
+          if (end >= 0) { record(i, {kind: 'html', end}); i = end; continue; }
         }
         const image = ch === '!' && text[i + 1] === '[';
         if (image || ch === '[') {
-          if (!image && text[i + 1] === '^' && notes.size) {
+          if (!image && root !== i && text[i + 1] === '^' && notes.size) {
             const close = (rawBrackets ??= rawBracketPairs(text)).get(i);
             const label = close === undefined ? null : text.slice(i + 2, close);
             if (label !== null && notes.has(noteKey(label))) {
-              remember(i, {kind: 'note', label, end: close + 1});
-              i = close + 1; continue;
+              // Explicit links take precedence, using the same grammar as
+              // every other label. Only a rejected link becomes a citation.
+              const link = indexFrom(i, i, depth + 1);
+              if (link) {
+                record(i, link);
+                if (stack.length) stack.at(-1).containsLink = true;
+                i = link.end;
+              } else {
+                record(i, {kind: 'note', label, end: close + 1});
+                i = close + 1;
+              }
+              continue;
             }
           }
           allocate();
@@ -1350,8 +1364,10 @@ function parseMarkdownClient(source, imageAssets, profile) {
         if (ch === ']' && stack.length) {
           const open = stack.pop();
           const target = open.image || !open.containsLink ? targetAfter(text, open.open, i, bareParenEnd) : null;
-          if (target) {
-            remember(open.start, {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target});
+          const atom = target ? {kind: open.image ? 'image' : 'link', labelStart: open.open + 1, labelEnd: i, ...target} : null;
+          if (open.start === root) return atom;
+          if (atom) {
+            record(open.start, atom);
             if (!open.image && stack.length) stack.at(-1).containsLink = true;
             i = target.end; continue;
           }
@@ -1361,6 +1377,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
         }
         i++;
       }
+      return null;
     }
     indexFrom(0);
     if (!bareLinks || !maybeBare) return atoms;

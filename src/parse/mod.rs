@@ -5458,22 +5458,6 @@ fn parse_inlines_chars_with_refs_profiled(
                     i += 1;
                 }
             }
-            '[' if bytes.get(i + 1) == Some(&'^') => {
-                // GFM footnote reference: [^id] where id has no spaces or
-                // brackets. Emits FootnoteRef; the renderer numbers it and
-                // drops refs whose id has no definition (post-parse pass).
-                match parse_footnote_ref_id(bytes, i + 2) {
-                    Some((id, next)) => {
-                        flush(&mut buf, &mut els);
-                        els.push(InlineEl::Node(Inline::FootnoteRef { id }));
-                        i = next;
-                    }
-                    None => {
-                        buf.push(c);
-                        i += 1;
-                    }
-                }
-            }
             '[' => {
                 // CommonMark forbids links inside links at any nesting level (an
                 // inner link wins; the outer brackets stay literal). Images are
@@ -5515,6 +5499,16 @@ fn parse_inlines_chars_with_refs_profiled(
                         title,
                         content,
                     }));
+                    i = next;
+                } else if bytes.get(i + 1) == Some(&'^')
+                    && let Some((id, next)) = parse_footnote_ref_id(bytes, i + 2)
+                {
+                    // Explicit inline/reference targets own caret-prefixed
+                    // labels too. Only a failed link candidate can become a
+                    // citation; undefined notes remain visible literal text
+                    // during rendering, as before.
+                    flush(&mut buf, &mut els);
+                    els.push(InlineEl::Node(Inline::FootnoteRef { id }));
                     i = next;
                 } else if let Some((html, next)) =
                     parse_inline_html(bytes, i, &mut profiler.inline_work)
@@ -7526,7 +7520,7 @@ impl BracketPairs {
 /// generic loop, including the allocation-free single-candidate representation.
 trait PairTable {
     fn unpaired(len: usize) -> Self;
-    fn record(&mut self, open: usize, close: usize);
+    fn record(&mut self, open: usize, close: usize, contains_link: bool);
     #[cfg(test)]
     fn partner(&self, open: usize) -> Option<usize>;
 }
@@ -7542,7 +7536,7 @@ impl PairTable for CompactTable {
     fn unpaired(len: usize) -> Self {
         CompactTable(vec![UNPAIRED_BRACKET; len])
     }
-    fn record(&mut self, open: usize, close: usize) {
+    fn record(&mut self, open: usize, close: usize, _contains_link: bool) {
         // Lossless: close < len <= u32::MAX on this arm.
         self.0[open] = close as u32;
     }
@@ -7559,7 +7553,7 @@ impl PairTable for WideTable {
     fn unpaired(len: usize) -> Self {
         WideTable(vec![None; len])
     }
-    fn record(&mut self, open: usize, close: usize) {
+    fn record(&mut self, open: usize, close: usize, _contains_link: bool) {
         self.0[open] = Some(close);
     }
     #[cfg(test)]
@@ -7570,20 +7564,20 @@ impl PairTable for WideTable {
 
 /// A prose probe needs only its root pair. Nested pairs are overwritten, and
 /// the scanner stops as soon as it records the requested root's closing bracket.
-struct SinglePair(Option<(usize, usize)>);
+struct SinglePair(Option<(usize, usize, bool)>);
 
 impl PairTable for SinglePair {
     fn unpaired(_len: usize) -> Self {
         SinglePair(None)
     }
-    fn record(&mut self, open: usize, close: usize) {
-        self.0 = Some((open, close));
+    fn record(&mut self, open: usize, close: usize, contains_link: bool) {
+        self.0 = Some((open, close, contains_link));
     }
     #[cfg(test)]
     fn partner(&self, open: usize) -> Option<usize> {
         self.0
-            .filter(|&(index, _)| index == open)
-            .map(|(_, close)| close)
+            .filter(|&(index, _, _)| index == open)
+            .map(|(_, close, _)| close)
     }
 }
 
@@ -7599,14 +7593,44 @@ fn find_link_label_close(
 ) -> Option<usize> {
     compute_bracket_pairs_in::<SinglePair>(chars, refs, work, start, Some(open))
         .0
-        .filter(|&(index, _)| index == open)
-        .map(|(_, close)| close)
+        .filter(|&(index, _, _)| index == open)
+        .map(|(_, close, _)| close)
+}
+
+/// Determine whether an otherwise valid citation has a real Markdown target.
+/// Use the same opaque-atom and nested-link grammar as ordinary parsing. If no
+/// target survives, the citation keeps its original bounded, literal ID, even
+/// when that ID contains punctuation resembling code or HTML.
+///
+/// This lookahead can encounter another caret opener after an opaque atom has
+/// crossed the apparent note boundary. Share both depth and work limits with
+/// the tokenizer so speculative ownership never creates unbounded recursion.
+fn link_before_footnote(
+    chars: &[char],
+    open: usize,
+    refs: &ReferenceMap,
+    work: &mut InlineWorkBudget,
+) -> Option<(usize, usize)> {
+    if work.depth >= MAX_INLINE_PARSE_RECURSION {
+        work.exhaust(InlineLimit::Depth);
+        return None;
+    }
+    work.depth += 1;
+    let pair = compute_bracket_pairs_in::<SinglePair>(chars, refs, work, open, Some(open)).0;
+    work.depth -= 1;
+    let (_, close, contains_link) = pair.filter(|&(index, _, _)| index == open)?;
+    if contains_link {
+        return None;
+    }
+    let next = parse_inline_link_target(chars, close, work)
+        .map(|target| target.next)
+        .or_else(|| reference_link_target(chars, open, close, refs, work).map(|(_, next)| next))?;
+    Some((close, next))
 }
 
 struct OpenBracket {
     index: usize,
     image: bool,
-    may_form_link: bool,
     contains_link: bool,
 }
 
@@ -7665,30 +7689,40 @@ fn compute_bracket_pairs_in<S: PairTable>(
                 open_stack.push(OpenBracket {
                     index: i,
                     image: true,
-                    may_form_link: true,
                     contains_link: false,
                 });
             }
             '[' => {
-                let footnote = chars.get(i + 1) == Some(&'^');
-                if footnote && let Some((_, next)) = parse_footnote_ref_id(chars, i + 2) {
-                    i = next - 1;
+                if root != Some(i)
+                    && chars.get(i + 1) == Some(&'^')
+                    && let Some((_, note_next)) = parse_footnote_ref_id(chars, i + 2)
+                {
+                    if let Some((close, next)) = link_before_footnote(chars, i, refs, work) {
+                        pairs.record(i, close, false);
+                        if let Some(parent) = open_stack.last_mut() {
+                            parent.contains_link = true;
+                        }
+                        i = next - 1;
+                    } else {
+                        // An actual citation is opaque. Its punctuation must
+                        // not steal the enclosing link's closing bracket.
+                        i = note_next - 1;
+                    }
                 } else {
                     open_stack.push(OpenBracket {
                         index: i,
                         image: false,
-                        may_form_link: !footnote,
                         contains_link: false,
                     });
                 }
             }
             ']' => {
                 if let Some(open) = open_stack.pop() {
-                    pairs.record(open.index, i);
+                    pairs.record(open.index, i, open.contains_link);
                     if root == Some(open.index) {
                         break;
                     }
-                    let next = if open.may_form_link && (open.image || !open.contains_link) {
+                    let next = if open.image || !open.contains_link {
                         parse_inline_link_target(chars, i, work)
                             .map(|target| target.next)
                             .or_else(|| {

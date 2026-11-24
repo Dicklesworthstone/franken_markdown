@@ -121,9 +121,7 @@ pub(crate) fn parse(args: &JsonValue) -> Result<Resources, ToolError> {
                         .as_u64()
                         .filter(|index| *index < u64::from(MAX_COLLECTION_FACES))
                         .and_then(|index| u32::try_from(index).ok())
-                        .ok_or_else(|| {
-                            invalid("Font faceIndex must be an integer in 0..=1023")
-                        })
+                        .ok_or_else(|| invalid("Font faceIndex must be an integer in 0..=1023"))
                 })
                 .transpose()?;
             let bytes = string(item, "base64")?;

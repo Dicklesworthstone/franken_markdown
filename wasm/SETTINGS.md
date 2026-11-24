@@ -116,6 +116,20 @@ The engine's diagnostics remain visible in export status. Blank switches preserv
 defaults and explicit Off is retained. Older renderer packages that lack a
 requested capability reject it with a rebuild explanation.
 
+For long documents, **PDF note numbers link back to their citations** enables
+return navigation, and **Continue long PDF footnotes across page feet** keeps
+eligible long notes at page feet instead of moving the entire note to the end.
+Continuation requires standard page layout: turn off optimal and strict
+pagination. Baseline grids are supported. Oversized indivisible note content
+retains the engine's documented endnote fallback.
+
+The panel also exposes measured PDF body line height (1–4 times the body font
+size) and horizontal/vertical table-cell padding (0–8 em). These values affect
+PDF layout, including pagination, rather than the flowing Canvas preview.
+Explicit numeric values enable theme spacing; **Use theme spacing in PDF** can
+remain at its default or be On. Explicit Off with numeric spacing is rejected.
+Zero table padding is valid, and clearing the numbers restores engine defaults.
+
 All paper and typography settings are applied atomically. Invalid margins,
 custom dimensions or grid/fit combinations retain the previous applied settings
 and every editable field, so the draft can be corrected or discarded.

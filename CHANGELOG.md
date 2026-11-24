@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Browser Flow and standalone document settings now expose PDF footnote return
+  links, continued footnotes, measured body leading and table-cell padding.
+  Settings retain explicit Off and zero padding, preserve unchanged defaults,
+  and reject incompatible continued-note pagination before applying the draft.
+  Standalone Save HTML retains the selected controls on reopening.
+
 ## [0.8.1] - 2026-11-23
 
 A maintenance and reliability release (21 commits since 0.8.0) shipping

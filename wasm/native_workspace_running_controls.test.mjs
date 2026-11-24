@@ -157,6 +157,65 @@ test('running settings controls preserve defaults and exact unedited templates',
   }
 });
 
+test('long-document settings reach native PDF and preserve saved state on reopen', () => {
+  const f = setup(), images = f.payload.images;
+  f.open();
+  f.edit('footnoteBacklinks', true); f.edit('splitFootnotes', true);
+  f.edit('themeSpacing', true); f.edit('lineHeight', '2');
+  f.edit('tableCellPaddingXEm', '0'); f.edit('tableCellPaddingYEm', '1.25');
+  f.apply();
+  assert.equal(f.dialog.open, false);
+  assert.equal(f.renderer.settings.footnoteBacklinks, true);
+  assert.equal(f.renderer.settings.splitFootnotes, true);
+  assert.deepEqual(f.renderer.settings.typography, {
+    themeSpacing: true, lineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 1.25,
+  });
+  f.renderer.pdf('Current');
+  const {name, args} = f.calls.at(-1);
+  assert.equal(name, 'renderPdfConfiguredMulti');
+  assert.equal(args[27], 'theme-spacing,line-height=2,table-padding-x=0,table-padding-y=1.25,footnote-backlinks,split-footnotes');
+  assert.equal(f.payload.images, images); assert.deepEqual(args[8], ['logo.png']);
+  f.open(); assert.equal(f.field('splitFootnotes').checked, true);
+  assert.equal(f.field('tableCellPaddingYEm').value, '1.25');
+  const before = f.renderer.settings;
+  f.apply(); assert.equal(f.renderer.settings, before);
+  f.open(); f.edit('footnoteBacklinks', false); f.edit('splitFootnotes', false);
+  for (const key of ['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm']) f.edit(key, '');
+  f.edit('themeSpacing', false); f.apply();
+  assert.deepEqual(f.renderer.settings.typography, {themeSpacing: false});
+  f.renderer.pdf('Current'); assert.equal(f.calls.at(-1).args.length, 27);
+});
+
+test('continued-note conflicts and disabled spacing preserve committed settings', () => {
+  for (const pagination of ['optimal', 'strict']) {
+    const f = setup(), before = f.renderer.settings;
+    f.open(); f.edit('splitFootnotes', true); f.edit('pagination', pagination); f.apply();
+    assert.equal(f.renderer.settings, before); assert.equal(f.patches.length, 0);
+    assert.equal(f.dialog.open, true); assert.match(f.status, /require Standard/);
+    f.cancel(); assert.equal(f.renderer.settings, before);
+  }
+  const f = setup({typography: {themeSpacing: false}}), before = f.renderer.settings;
+  f.open(); f.edit('lineHeight', '2'); f.apply();
+  assert.equal(f.renderer.settings, before); assert.equal(f.dialog.open, true);
+  assert.match(f.status, /require themeSpacing/);
+  f.edit('themeSpacing', true); f.apply();
+  assert.equal(f.dialog.open, false);
+  assert.deepEqual(f.renderer.settings.typography, {themeSpacing: true, lineHeight: 2});
+});
+
+test('late asynchronous footnote settings cannot replace a corrected draft', async () => {
+  const f = setup({}, {async: true}), before = f.renderer.settings;
+  f.open(); f.edit('splitFootnotes', true); f.edit('lineHeight', '2'); f.apply();
+  const first = f.jobs[0];
+  f.edit('lineHeight', '2.25'); f.finish(first);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(f.renderer.settings, before); assert.equal(f.dialog.open, true);
+  f.apply(); f.finish(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(f.renderer.settings.splitFootnotes, true);
+  assert.equal(f.renderer.settings.typography.lineHeight, 2.25);
+  assert.equal(f.dialog.open, false);
+});
+
 test('running authoring commits text, rules, image placement and first-page omission together', () => {
   const f = setup(); f.open();
   for (const [name, value] of Object.entries({headerLeft: '{chapter}', headerRight: '{section}', headerRule: true,

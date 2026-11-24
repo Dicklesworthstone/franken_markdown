@@ -33,9 +33,15 @@ const DEFAULTS = Object.freeze({
   baselineGridPt: null,
   optimalPagination: null,
   strictPagination: null,
+  footnoteBacklinks: null,
+  splitFootnotes: null,
   typographyHomogeneous: null,
   typographyAntiriver: null,
   typographyPareto: null,
+  typographyThemeSpacing: null,
+  pdfLineHeight: null,
+  tableCellPaddingXEm: null,
+  tableCellPaddingYEm: null,
   microtype: null,
   darkMode: "auto",
 });
@@ -59,6 +65,8 @@ const pdfOnly = [
   "baselineGridPt",
   "optimalPagination",
   "strictPagination",
+  "footnoteBacklinks",
+  "splitFootnotes",
   "microtype",
 ];
 const PAGE_SIDES = Object.freeze({
@@ -71,6 +79,12 @@ const TYPOGRAPHY_FIELDS = Object.freeze({
   typographyHomogeneous: "homogeneous",
   typographyAntiriver: "antiriver",
   typographyPareto: "pareto",
+  typographyThemeSpacing: "themeSpacing",
+});
+const TYPOGRAPHY_SPACING = Object.freeze({
+  pdfLineHeight: "lineHeight",
+  tableCellPaddingXEm: "tableCellPaddingXEm",
+  tableCellPaddingYEm: "tableCellPaddingYEm",
 });
 const optionalSelects = ["profile", "microtype", "pageSize", "pageOrientation"];
 const equal = (a, b) => Object.keys(DEFAULTS).every((key) => a.values[key] === b.values[key]);
@@ -124,6 +138,7 @@ export function normalizeRenderSettings(input = {}) {
   // not replace an omitted engine default with a guessed application default.
   for (const key of [
     "toc", "pageNumbers", "codeLineNumbers", "optimalPagination", "strictPagination",
+    "footnoteBacklinks", "splitFootnotes",
     ...Object.keys(TYPOGRAPHY_FIELDS),
   ]) {
     if (values[key] !== null && typeof values[key] !== "boolean")
@@ -132,6 +147,7 @@ export function normalizeRenderSettings(input = {}) {
   for (const key of [
     "tocDepth", "svgWidthPt", "baseFontSize", "headingScale", "tableFontSize", "fitToPages",
     "baselineGridPt", "pageWidthPt", "pageHeightPt", ...Object.keys(PAGE_SIDES),
+    ...Object.keys(TYPOGRAPHY_SPACING),
   ]) {
     if (values[key] !== null && typeof values[key] !== "number")
       fail(`${key} must be numeric or null.`);
@@ -142,6 +158,8 @@ export function normalizeRenderSettings(input = {}) {
     fail("Choose a supported PDF paper size.");
   if (![null, "portrait", "landscape"].includes(values.pageOrientation))
     fail("Choose portrait, landscape or the default PDF orientation.");
+  if (values.splitFootnotes && (values.optimalPagination || values.strictPagination))
+    fail("Continued PDF footnotes require standard page layout; turn off optimal and strict pagination.");
   // Keep the editable fields primitive for document reset and remount. The
   // export normalizer below owns geometry and validates the native f32 bounds.
   const page = {};
@@ -158,7 +176,7 @@ export function normalizeRenderSettings(input = {}) {
   const margins = Object.fromEntries(Object.entries(PAGE_SIDES)
     .filter(([key]) => values[key] !== null).map(([key, side]) => [side, values[key]]));
   if (Object.keys(margins).length) page.margins = margins;
-  const typography = Object.fromEntries(Object.entries(TYPOGRAPHY_FIELDS)
+  const typography = Object.fromEntries(Object.entries({ ...TYPOGRAPHY_FIELDS, ...TYPOGRAPHY_SPACING })
     .filter(([key]) => values[key] !== null).map(([key, mode]) => [mode, values[key]]));
   const selected = (keys) =>
     Object.fromEntries(
@@ -252,9 +270,15 @@ const FIELDS = [
   ["baselineGridPt", "PDF baseline grid (points, 0 disables; 1–144 enables)", "number", 0, 144],
   ["optimalPagination", "PDF optimal pagination", "boolean", booleanChoices],
   ["strictPagination", "Require exact PDF pagination (refuse fallback)", "boolean", booleanChoices],
+  ["footnoteBacklinks", "PDF note numbers link back to their citations", "boolean", booleanChoices],
+  ["splitFootnotes", "Continue long PDF footnotes across page feet", "boolean", booleanChoices],
   ["typographyHomogeneous", "PDF homogeneous paragraph spacing", "boolean", booleanChoices],
   ["typographyAntiriver", "PDF reduce spacing rivers", "boolean", booleanChoices],
   ["typographyPareto", "PDF paragraph alternatives", "boolean", booleanChoices],
+  ["typographyThemeSpacing", "Use theme spacing in PDF", "boolean", booleanChoices],
+  ["pdfLineHeight", "PDF body line height (1–4 times the font size)", "number", 1, 4],
+  ["tableCellPaddingXEm", "PDF horizontal table padding (0–8 em)", "number", 0, 8],
+  ["tableCellPaddingYEm", "PDF vertical table padding (0–8 em)", "number", 0, 8],
   [
     "microtype",
     "PDF microtypography",
@@ -367,7 +391,7 @@ function mount(root) {
       presets,
       make(
         "p",
-        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults. Paper dimensions and margins use points (72 per inch); margins must leave at least 72 points of content on each axis. A target page count is a fit request, not a guarantee, and cannot be combined with a fixed baseline grid.",
+        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults. Paper dimensions and margins use points (72 per inch); margins must leave at least 72 points of content on each axis. A target page count is a fit request, not a guarantee, and cannot be combined with a fixed baseline grid. Continued footnotes use standard page layout and can use a baseline grid. Explicit line height or table padding enables PDF theme spacing; leave that switch at default or turn it on.",
       ),
     );
     const actions = make("p");

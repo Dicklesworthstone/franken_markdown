@@ -130,6 +130,15 @@ explicitly instead of silently selecting the lightweight parser.
 ## Change Markdown dialect, typography and publishing in the editor
 
 Native workspaces expose **Document settings** after engine initialization.
+
+The PDF typesetting section exposes footnote return links, continued long
+footnotes, theme spacing, body line height (1–4 times the font size), and
+horizontal/vertical table padding (0–8 em). Continued notes require Standard
+page layout and support baseline grids. Turn on theme spacing when supplying
+explicit leading or padding; zero padding is valid. Blank numeric fields retain
+renderer defaults. These settings use the existing measured PDF engine and are
+retained by Save HTML and reopening. They do not change source Markdown or
+grant access to new resources. Incompatible settings remain an editable draft.
 Choose sans/serif, a document type scale, automatic/light document color mode,
 title, author and language. Enable a table of contents with depth 1..6, PDF page
 numbers or PDF code line numbers. Existing embedded font assets and weight pins

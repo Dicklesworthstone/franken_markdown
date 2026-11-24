@@ -598,14 +598,20 @@ function fmdReadAuthoringProfile(doc) {
         <div data-grid>
           <label>PDF format<select name="pdfProfile"><option value="off">Standard PDF</option><option value="2b">PDF/A-2b archival</option><option value="2b-strict">PDF/A-2b archival, strict</option></select></label>
           <label>Page layout<select name="pagination"><option value="default">Standard</option><option value="optimal">Optimize page breaks</option><option value="strict">Require exact page breaks</option></select></label>
+          <label><input name="footnoteBacklinks" type="checkbox"> Link PDF note numbers back to their citations</label>
+          <label><input name="splitFootnotes" type="checkbox"> Continue long footnotes across page feet</label>
           <label>Microtypography<select name="microtype"><option value="disabled">Off</option><option value="expansion">Glyph expansion</option><option value="protrusion">Optical margins and glyph expansion</option></select></label>
           <label><input name="homogeneous" type="checkbox"> Smooth spacing between adjacent lines</label>
           <label><input name="antiriver" type="checkbox"> Reduce rivers of whitespace</label>
           <label><input name="pareto" type="checkbox"> Try more line-break alternatives</label>
+          <label><input name="themeSpacing" type="checkbox"> Use theme spacing in PDF</label>
+          <label>PDF body line height (blank = default)<input name="lineHeight" type="number" min="1" max="4" step="any" placeholder="1–4 times the font size"></label>
+          <label>Horizontal table padding (em, blank = default)<input name="tableCellPaddingXEm" type="number" min="0" max="8" step="any" placeholder="0–8 em"></label>
+          <label>Vertical table padding (em, blank = default)<input name="tableCellPaddingYEm" type="number" min="0" max="8" step="any" placeholder="0–8 em"></label>
           <label>Baseline grid (pt, blank = off)<input name="baselineGridPt" type="number" min="1" max="144" step="any" placeholder="Off" aria-describedby="fmd-typesetting-fit-help"></label>
           <label>Fit to pages (blank = no target)<input name="fitToPages" type="number" min="1" max="4294967295" step="1" placeholder="No target" aria-describedby="fmd-typesetting-fit-help"></label>
         </div>
-        <p id="fmd-typesetting-fit-help">A baseline grid uses fixed spacing from 1 to 144 points. Page fitting adjusts type size and margins to reach a page-count target. Choose one; they cannot be combined.</p>
+        <p id="fmd-typesetting-fit-help">A baseline grid uses fixed spacing from 1 to 144 points. Page fitting adjusts type size and margins to reach a page-count target. Choose one; they cannot be combined. Continued footnotes require Standard page layout and support a baseline grid. Explicit line height or table padding uses theme spacing; enable it when changing those values.</p>
       </fieldset>
       <p data-status role="status" aria-live="polite" tabindex="-1"></p>
       <div style="display:flex;gap:12px;justify-content:flex-end"><button class="fmd-btn" type="button" data-cancel>Cancel</button><button class="fmd-btn fmd-btn-primary" type="submit">Apply settings</button></div>
@@ -615,12 +621,13 @@ function fmdReadAuthoringProfile(doc) {
     for (const input of dialog.querySelectorAll('select,input:not([type="checkbox"])')) input.style.cssText = 'display:block;width:100%;min-width:0;box-sizing:border-box;font:inherit;padding:6px;margin-top:4px';
     const form = dialog.querySelector('form'), status = form.querySelector('[data-status]');
     const field = name => form.elements.namedItem(name);
-    const flags = ['toc', 'pageNumbers', 'codeLineNumbers'];
+    const flags = ['toc', 'pageNumbers', 'codeLineNumbers', 'footnoteBacklinks', 'splitFootnotes'];
     const numbers = ['fontScale', 'tocDepth'];
     const texts = ['font', 'darkMode', 'title', 'author', 'lang', 'profile'];
     const settingsFields = [...flags, ...numbers, ...texts];
-    const typographyFlags = ['homogeneous', 'antiriver', 'pareto'];
-    const pdfFields = ['pdfProfile', 'pagination', 'microtype', ...typographyFlags, 'baselineGridPt', 'fitToPages'];
+    const typographyFlags = ['homogeneous', 'antiriver', 'pareto', 'themeSpacing'];
+    const typographyNumbers = ['lineHeight', 'tableCellPaddingXEm', 'tableCellPaddingYEm'];
+    const pdfFields = ['pdfProfile', 'pagination', 'microtype', ...typographyFlags, ...typographyNumbers, 'baselineGridPt', 'fitToPages'];
     const runningBands = ['header', 'footer'], runningSlots = ['Left', 'Center', 'Right'];
     const runningFlags = ['headerRule', 'footerRule', 'skipFirstPage'];
     const runningFields = [...runningBands.flatMap(band =>
@@ -696,6 +703,7 @@ function fmdReadAuthoringProfile(doc) {
       for (const name of numbers) field(name).value = opened[name] ?? (name === 'tocDepth' ? 3 : 1);
       for (const name of texts) field(name).value = opened[name] ?? '';
       for (const name of typographyFlags) field(name).checked = opened.typography?.[name] === true;
+      for (const name of typographyNumbers) field(name).value = opened.typography?.[name] ?? '';
       field('pdfProfile').value = opened.pdfA === '2b' ? opened.pdfAStrict ? '2b-strict' : '2b' : 'off';
       field('pagination').value = opened.strictPagination ? 'strict' : opened.optimalPagination ? 'optimal' : 'default';
       // The expansion token is applied after the legacy protrusion scalar by
@@ -783,6 +791,11 @@ function fmdReadAuthoringProfile(doc) {
           patch.typography ??= {...opened.typography};
           patch.typography[name] = raw(name);
         }
+        for (const name of typographyNumbers) if (raw(name) !== initial[name]) {
+          patch.typography ??= {...opened.typography};
+          if (raw(name) === '') delete patch.typography[name];
+          else patch.typography[name] = field(name).valueAsNumber;
+        }
         if (raw('pdfProfile') !== initial.pdfProfile) {
           const profile = raw('pdfProfile');
           if (!['off', '2b', '2b-strict'].includes(profile)) throw Error('Choose a supported PDF format');
@@ -804,6 +817,9 @@ function fmdReadAuthoringProfile(doc) {
         }
         if (raw('baselineGridPt') !== '' && raw('fitToPages') !== '') {
           throw Error('A fixed baseline grid and a page-count target cannot be combined. Clear one value before applying settings.');
+        }
+        if (raw('splitFootnotes') && raw('pagination') !== 'default') {
+          throw Error('Continued footnotes require Standard page layout. Choose Standard or turn off continued footnotes before applying settings.');
         }
         if (runningFields.some(name => raw(name) !== initial[name])) {
           const running = {...opened.running};

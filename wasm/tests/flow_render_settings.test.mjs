@@ -495,9 +495,15 @@ test("applied settings pass through real export and adapter validation without c
     baselineGridPt: 12,
     strictPagination: true,
     optimalPagination: true,
+    footnoteBacklinks: true,
+    splitFootnotes: false,
     typographyHomogeneous: true,
     typographyAntiriver: false,
     typographyPareto: true,
+    typographyThemeSpacing: true,
+    pdfLineHeight: 1.85,
+    tableCellPaddingXEm: 0,
+    tableCellPaddingYEm: 1.25,
     microtype: "expansion",
   });
   const session = withFlowExports(
@@ -528,10 +534,80 @@ test("applied settings pass through real export and adapter validation without c
   assert.equal(calls[1].options.baselineGridPt, 12);
   assert.equal(calls[1].options.strictPagination, true);
   assert.equal(calls[1].options.optimalPagination, true);
+  assert.equal(calls[1].options.footnoteBacklinks, true);
+  assert.equal(calls[1].options.splitFootnotes, false);
   assert.equal(calls[1].options.microtype, "expansion");
-  assert.deepEqual(calls[1].options.typography, { homogeneous: true, antiriver: false, pareto: true });
+  assert.deepEqual(calls[1].options.typography, {
+    homogeneous: true, antiriver: false, pareto: true, themeSpacing: true,
+    lineHeight: 1.85, tableCellPaddingXEm: 0, tableCellPaddingYEm: 1.25,
+  });
   assert.equal(session.source, source);
   session.dispose();
+});
+
+test("long-document PDF controls preserve other formats and carry exact spacing", () => {
+  const defaults = normalizeRenderSettings();
+  const settings = normalizeRenderSettings({
+    footnoteBacklinks: true, splitFootnotes: true, baselineGridPt: 12,
+    optimalPagination: false, strictPagination: false,
+    pdfLineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.75,
+  });
+  assert.equal(settings.pdf.footnoteBacklinks, true);
+  assert.equal(settings.pdf.splitFootnotes, true);
+  assert.equal(settings.pdf.baselineGridPt, 12);
+  assert.deepEqual(settings.pdf.typography, {
+    lineHeight: 2, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.75,
+  });
+  for (const name of ["preview", "html", "epub", "svg"])
+    assert.deepEqual(settings[name], defaults[name]);
+  assert.deepEqual(normalizeRenderSettings(settings.values), settings);
+  assert.ok(Object.isFrozen(settings.pdf.typography));
+  const disabled = normalizeRenderSettings({
+    footnoteBacklinks: false, splitFootnotes: false, typographyThemeSpacing: false,
+  });
+  assert.equal(disabled.pdf.footnoteBacklinks, false);
+  assert.equal(disabled.pdf.splitFootnotes, false);
+  assert.deepEqual(disabled.pdf.typography, { themeSpacing: false });
+});
+
+for (const values of [
+  { footnoteBacklinks: "true" }, { splitFootnotes: 1 },
+  { splitFootnotes: true, optimalPagination: true },
+  { splitFootnotes: true, strictPagination: true },
+  { typographyThemeSpacing: "true" }, { pdfLineHeight: "2" },
+  { pdfLineHeight: 0.99 }, { pdfLineHeight: 4.01 }, { pdfLineHeight: NaN },
+  { tableCellPaddingXEm: -0.01 }, { tableCellPaddingYEm: 8.01 },
+  { tableCellPaddingYEm: Infinity },
+  { typographyThemeSpacing: false, pdfLineHeight: 2 },
+  { typographyThemeSpacing: false, tableCellPaddingXEm: 0 },
+]) {
+  test(`long-document settings reject ${JSON.stringify(values)} before publication`, () => {
+    assert.throws(() => normalizeRenderSettings(values), { code: "INVALID_OPTIONS" });
+  });
+}
+
+test("long-document drafts apply atomically, survive remount and reset", (t) => {
+  const f = fixture(); t.after(() => f.controls.dispose());
+  const before = f.controls.settings;
+  f.set("footnoteBacklinks", "true"); f.set("splitFootnotes", "true");
+  f.set("strictPagination", "true"); f.set("pdfLineHeight", "2.1"); f.submit();
+  assert.equal(f.controls.settings, before);
+  assert.match(f.el("render-settings-status").textContent, /footnotes.*standard/i);
+  assert.equal(f.el("render-pdfLineHeight").value, "2.1");
+  f.set("strictPagination", "false"); f.set("baselineGridPt", "12");
+  f.set("tableCellPaddingYEm", "0"); f.submit();
+  assert.equal(f.applied.length, 1);
+  assert.equal(f.applied[0].change.previewChanged, false);
+  assert.equal(f.controls.exportOptions("pdf").splitFootnotes, true);
+  assert.equal(f.controls.exportOptions("pdf").typography.lineHeight, 2.1);
+  assert.equal(f.controls.exportOptions("pdf").typography.tableCellPaddingYEm, 0);
+  f.remount(f.controls.settings.values);
+  assert.equal(f.el("render-footnoteBacklinks").value, "true");
+  assert.equal(f.el("render-tableCellPaddingYEm").value, "0");
+  f.el("render-settings-reset").click();
+  assert.equal(f.controls.exportOptions("pdf").splitFootnotes, undefined);
+  assert.equal(f.controls.exportOptions("pdf").typography, undefined);
+  assert.equal(f.sourceEditor.value, "# Original Markdown"); assert.equal(f.inputEvents, 0);
 });
 
 test("paper and independent margins configure PDF without changing the flowing preview or HTML", () => {

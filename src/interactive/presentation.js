@@ -58,7 +58,10 @@ function fmdCreateStyledPresentation(config, doc) {
 }
 
 (function() {
-  if (document.querySelector('body > script#fmd-native-runtime[type="application/json"]')) return;
+  const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
+  if (document.querySelector('body > script#fmd-native-runtime[type="application/json"]')
+      || (candidate?.version === 1 && typeof candidate.render === 'function'
+        && typeof candidate.pdf === 'function')) return;
   const data = document.querySelector('body > script#fmd-presentation[type="application/json"]');
   const styled = fmdCreateStyledPresentation(JSON.parse(data.textContent), document);
   const preview = document.getElementById('fmd-content'), editor = document.getElementById('fmd-editor');
@@ -67,13 +70,17 @@ function fmdCreateStyledPresentation(config, doc) {
   const initialFragment = template.content.querySelector('main.fmd').innerHTML;
   const initialSource = JSON.parse(document.querySelector('body > script#fmd-raw-source[type="application/json"]').textContent);
   const originalParse = parseMarkdownClient;
+  const authoringProfile = (() => {
+    try { return Object.freeze({value: fmdReadAuthoringProfile(document), error: null}); }
+    catch (error) { return Object.freeze({value: undefined, error}); }
+  })();
   let fragment = initialFragment, observedFrame = null, resize = null, printRevision = 0;
   let composing = false, suspended = false;
   const display = () => ({scale: parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16,
     theme: document.body.classList.contains('theme-dark') ? 'dark'
       : document.body.classList.contains('theme-light') ? 'light' : undefined});
-  parseMarkdownClient = function(source, assets) {
-    fragment = styled.withContents(originalParse(source, assets));
+  parseMarkdownClient = function(source, assets, profile) {
+    fragment = styled.withContents(originalParse(source, assets, profile));
     return styled.frame(fragment, display());
   };
   function measure(frame) {
@@ -141,6 +148,7 @@ function fmdCreateStyledPresentation(config, doc) {
   }
   async function printCurrent() {
     if (composing || suspended) throw Error('Finish editing before printing');
+    if (authoringProfile.error) throw authoringProfile.error;
     const source = editor.value, revision = ++printRevision;
     // Flush the controller's pending debounce before preparing a print frame.
     // Otherwise its later render can replace this frame while fonts load.
@@ -150,7 +158,7 @@ function fmdCreateStyledPresentation(config, doc) {
       const assets = new Map();
       const imageData = document.querySelector('body > script#fmd-image-assets[type="application/json"]');
       for (const [key, bytes] of imageData ? JSON.parse(imageData.textContent) : []) if (!assets.has(key)) assets.set(key, bytes);
-      fragment = styled.withContents(originalParse(source, assets));
+      fragment = styled.withContents(originalParse(source, assets, authoringProfile.value));
     }
     preview.innerHTML = styled.frame(fragment, display()); observeFrame();
     const frame = observedFrame;

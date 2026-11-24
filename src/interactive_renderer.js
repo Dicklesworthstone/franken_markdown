@@ -652,8 +652,17 @@ zwnj=200c
 }));
 // END GENERATED HTML ENTITIES
 
-function parseMarkdownClient(source, imageAssets) {
+function parseMarkdownClient(source, imageAssets, profile) {
   'use strict';
+  // Authoring syntax is selected before observing source or asset bindings.
+  // Omitted/null matches the native default; explicit names are never coerced.
+  if (profile !== undefined && profile !== null
+      && profile !== 'commonmark-gfm' && profile !== 'gfm-plus') {
+    const error = new TypeError('Invalid authoring profile: expected commonmark-gfm or gfm-plus.');
+    error.code = 'FMD_INVALID_PROFILE';
+    throw error;
+  }
+  const extensions = profile !== 'commonmark-gfm';
   const limits = FMD_CLIENT_RENDER_LIMITS;
   let work = limits.workUnits, structures = limits.structures;
   function exhausted(limit) {
@@ -1725,6 +1734,37 @@ function parseMarkdownClient(source, imageAssets) {
   const markerInterrupts = marker => marker && !blankLine(marker.text) && (!marker.ordered || marker.start === 1);
   const startsBlock = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line) || htmlBlockKind(line);
   const interruptsParagraph = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line)) || htmlInterruptsParagraph(line);
+  const definitionMarker = line => /^ {0,3}:(?:[ \t]|$)/.test(line);
+  function trimSpaceTab(text) {
+    let start = 0, end = text.length;
+    while (start < end && (text[start] === ' ' || text[start] === '\t')) { charge(); start++; }
+    while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t')) { charge(); end--; }
+    return text.slice(start, end);
+  }
+  function definitionSource(lines) {
+    // Native plain definitions join prose with spaces. Syntax-bearing bodies
+    // retain their physical lines: code, links and hard breaks own those bytes.
+    let physical = false;
+    if (lines.length > 1) {
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index]; charge(line.length + 1);
+        if (/[\\`!\[<&~*_@$]|https?:\/\/|www\./i.test(line)
+            || index + 1 < lines.length && line.endsWith('  ')) {
+          physical = true; break;
+        }
+      }
+    }
+    if (physical) {
+      const start = blankLine(lines[0]) ? 1 : 0;
+      return paragraphSource(start ? lines.slice(start) : lines);
+    }
+    let text = lines[0];
+    for (let index = 1; index < lines.length; index++) {
+      charge(lines[index].length + 1);
+      text += (text ? ' ' : '') + trimSpaceTab(lines[index]);
+    }
+    return text;
+  }
   // Short GFM body rows need no pipe: missing cells are empty. Keep block
   // openers and the established unpiped reference-definition boundary out of
   // the table; a pipe-bearing reference-shaped row remains literal cell text.
@@ -2137,6 +2177,22 @@ function parseMarkdownClient(source, imageAssets) {
       return out;
     }
     let i = 0, paddingFallback = false, afterDefinition = false;
+    // Reuse an examined interval rather than searching every remaining suffix.
+    // Queries advance through this container; all starts before one marker
+    // share its answer, and a blank/interrupt closes every probe in that span.
+    let termStart = -1, termEnd = -1, termMarker = -1;
+    function definitionTermEnd(start) {
+      if (start >= termStart && start <= termEnd) {
+        return termMarker > start ? termMarker : -1;
+      }
+      termStart = start; termMarker = -1;
+      for (termEnd = start; termEnd < lines.length; termEnd++) {
+        const line = lines[termEnd]; charge(line.length + 1);
+        if (interruptsParagraph(line)) break;
+        if (definitionMarker(line)) { termMarker = termEnd; break; }
+      }
+      return termMarker > start ? termMarker : -1;
+    }
     while (i < lines.length) {
       const line = lines[i];
       // Removing a leading reference does not close its paragraph. Preserve
@@ -2189,7 +2245,11 @@ function parseMarkdownClient(source, imageAssets) {
           let ended = htmlBlockEnded(htmlKind, line);
           while (i < lines.length && !ended) ended = htmlBlockEnded(htmlKind, lines[i++]);
         }
-        push({kind: 'html', text: lines.slice(start, i).join('\n')}); continue;
+        const text = lines.slice(start, i).join('\n');
+        // Promote only a complete parser-owned comment block. Inline HTML,
+        // surrounding raw HTML, code, tables and mathematics remain opaque.
+        push(extensions && /^ {0,3}<!-- pagebreak -->[ \t]*$/.test(text)
+          ? {kind: 'pagebreak'} : {kind: 'html', text}); continue;
       }
       // Only block starts and still-leading reference prefixes own definitions:
       // visible paragraph continuation and table/code leaves cannot define one.
@@ -2320,6 +2380,42 @@ function parseMarkdownClient(source, imageAssets) {
         }
         push({kind: 'table', aligns, head, rows}); continue;
       }
+      let term = extensions && !paragraphOnly && !lazyPadding.get(lines)?.has(i)
+        ? definitionTermEnd(i) : -1;
+      if (term >= 0) {
+        const items = [];
+        while (term >= 0) {
+          const terms = [], bodies = [];
+          while (i < term) {
+            allocate(); terms.push(trimSpaceTab(lines[i++]));
+          }
+          while (i < lines.length && definitionMarker(lines[i])) {
+            const first = lines[i++].replace(/^ {0,3}:(?:[ \t]|$)/, '');
+            const body = [first];
+            while (i < lines.length && !interruptsParagraph(lines[i])
+                && !definitionMarker(lines[i])
+                && !(i + 1 < lines.length && definitionMarker(lines[i + 1]))) {
+              charge(lines[i].length + 1); allocate();
+              body.push(lines[i++].replace(/^[ \t]+/, ''));
+            }
+            allocate(); bodies.push(definitionSource(body));
+          }
+          allocate(); items.push({terms, bodies});
+          let next = i;
+          if (next < lines.length && blankLine(lines[next])) {
+            while (next < lines.length && blankLine(lines[next])) {
+              charge(lines[next].length + 1); next++;
+            }
+            // Native reference collection removes real block-start prefixes
+            // before list parsing. Let our shared block path collect them too;
+            // a reference-shaped term without this blank remains literal.
+            if (next < lines.length && referenceDefinition(lines, next)) break;
+          }
+          term = definitionTermEnd(next);
+          if (term >= 0) i = next;
+        }
+        push({kind: 'definition-list', items}); continue;
+      }
       const paragraph = [];
       pushSourceLine(paragraph, line, lines, i); i++;
       let underline = 0;
@@ -2350,6 +2446,12 @@ function parseMarkdownClient(source, imageAssets) {
           node.headingId = uniqueId(headingSlug(inline(node.title))); break;
         case 'paragraph':
           inline(node.text); break;
+        case 'definition-list':
+          for (const item of node.items) {
+            for (const term of item.terms) inline(term);
+            for (const body of item.bodies) inline(body);
+          }
+          break;
         case 'callout':
           inline(node.label);
           planNoteAnchors(node.children); break;
@@ -2386,6 +2488,8 @@ function parseMarkdownClient(source, imageAssets) {
           // inert. Its literal body must never pass through Markdown inlining,
           // definition collection, image resolution, or heading-ID allocation.
           out = append(out, '<p>' + escape(node.text) + '</p>\n'); break;
+        case 'pagebreak':
+          out = append(out, '<div class="fmd-pagebreak" style="break-after: page;"></div>\n'); break;
         case 'math':
           out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
@@ -2412,6 +2516,15 @@ function parseMarkdownClient(source, imageAssets) {
           }
           out = append(out, '</' + tag + '>\n'); break;
         }
+        case 'definition-list':
+          out = append(out, '<dl>\n');
+          for (const item of node.items) {
+            for (const term of item.terms)
+              out = append(out, '<dt>' + inline(term, 0, true, footnotes) + '</dt>\n');
+            for (const body of item.bodies)
+              out = append(out, '<dd>' + inline(body, 0, true, footnotes) + '</dd>\n');
+          }
+          out = append(out, '</dl>\n'); break;
         case 'table': {
           const row = (cells, tag) => {
             let html = '<tr>';

@@ -1,3 +1,28 @@
+// The renderer, optional presentation adapter and controller share one script.
+// A declaration (rather than initialization-time global state) keeps this
+// available to the presentation adapter earlier in that same bundle.
+function fmdReadAuthoringProfile(doc) {
+  const selector = 'body > script#fmd-authoring-profile';
+  const node = doc.querySelector(selector);
+  if (!node) return undefined; // Legacy files retain the native-default dialect.
+  const invalid = reason => {
+    throw Object.assign(Error('Invalid saved authoring profile: ' + reason
+      + '. Markdown remains editable and downloadable.'), {code: 'FMD_INVALID_PROFILE'});
+  };
+  if (doc.querySelectorAll(selector).length !== 1) invalid('duplicate manifests');
+  if (node.getAttribute('type') !== 'application/json') invalid('expected JSON metadata');
+  if (typeof node.textContent !== 'string' || node.textContent.length > 4096) invalid('metadata exceeds its limit');
+  let value;
+  try { value = JSON.parse(node.textContent); }
+  catch { invalid('malformed JSON'); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'version')
+      || !Object.hasOwn(value, 'profile')) invalid('expected version and profile');
+  if (value.version !== 1) invalid('unsupported version');
+  if (value.profile !== 'commonmark-gfm' && value.profile !== 'gfm-plus') invalid('unknown profile');
+  return value.profile;
+}
+
 (function() {
   const editor = document.getElementById('fmd-editor');
   const originalSource = JSON.parse(document.querySelector('body > script#fmd-raw-source[type="application/json"]').textContent);
@@ -28,6 +53,13 @@
   const candidate = Object.getOwnPropertyDescriptor(window, '__fmdNativeRuntime')?.value;
   const native = candidate?.version === 1 && typeof candidate.render === 'function'
     && typeof candidate.pdf === 'function' ? candidate : null;
+  // Capture once: source edits and DOM replacement cannot change the grammar.
+  // A native workspace owns its dialect in its separate runtime payload.
+  const authoringProfile = (() => {
+    if (native || nativePayload) return Object.freeze({value: undefined, error: null});
+    try { return Object.freeze({value: fmdReadAuthoringProfile(document), error: null}); }
+    catch (error) { return Object.freeze({value: undefined, error}); }
+  })();
   const lineCountBadge = document.getElementById('source-line-count');
   const statsDrawer = document.querySelector('body > #stats-drawer');
 
@@ -106,6 +138,7 @@
     clearTimeout(debounceTimer); debounceTimer = null;
     updateStats();
     if (previewSuspended || previewComposing) return false;
+    if (authoringProfile.error) throw authoringProfile.error;
     const source = currentSource(), display = displaySettings(), settings = native?.settings;
     const view = JSON.stringify(display);
     if (pendingRender?.source === source && pendingRender.view === view && pendingRender.settings === settings) {
@@ -124,7 +157,7 @@
     };
     if (!native) {
       if (nativePayload) throw Error('Embedded native renderer is unavailable; the reduced parser will not be used');
-      preview.innerHTML = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets);
+      preview.innerHTML = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets, authoringProfile.value);
       return complete(true);
     }
     const result = native.render(source, preview, display, current);
@@ -242,7 +275,7 @@
       if (notice) saveStatus.textContent += ' — ' + notice;
     } else {
       if (nativePayload) throw Error('Embedded native renderer is unavailable; browser print is not a native PDF export');
-      renderCurrent();
+      if (renderCurrent() !== true) throw Error('Finish editing or return to the document before printing');
       window.print();
     }
   }
@@ -303,6 +336,21 @@
     data.textContent = JSON.stringify(source).replace(/</g, '\\u003c')
       .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     textarea.textContent = source;
+    if (!native && !nativePayload) {
+      // Preserve the captured dialect, including legacy absence, even if live
+      // markup was replaced after opening. Document content is never metadata.
+      const selector = 'body > script#fmd-authoring-profile';
+      const first = copy.querySelector(selector);
+      const manifests = copy.querySelectorAll ? copy.querySelectorAll(selector) : first ? [first] : [];
+      for (const manifest of manifests) manifest.remove();
+      if (authoringProfile.value !== undefined) {
+        const manifest = document.createElement('script');
+        manifest.id = 'fmd-authoring-profile'; manifest.setAttribute('type', 'application/json');
+        manifest.textContent = JSON.stringify({version: 1, profile: authoringProfile.value});
+        // The metadata must precede the executable bundle when this file opens.
+        copy.querySelector('body').insertBefore(manifest, data);
+      }
+    }
     if (nativePayload) {
       // Do not parse or rebuild a damaged payload. Escape HTML tokenizer tokens
       // even if a host supplied unescaped JSON through textContent. For valid
@@ -356,7 +404,7 @@
   document.addEventListener('keydown', event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing || previewComposing) return;
     const key = event.key.toLowerCase();
-    if ((native || nativePayload) && key === 'p') {
+    if ((native || nativePayload || authoringProfile.error) && key === 'p') {
       event.preventDefault();
       if (!event.repeat) attempt(exportPdf);
       return;
@@ -1453,6 +1501,8 @@
     ready: () => !previewSuspended && !previewComposing,
   });
 
-  // Initial stats calculation
+  // Invalid metadata never prevents editing or a lossless Markdown download.
+  // Report it on open too, before an unchanged-source cache hit could hide it.
   updateStats();
+  if (authoringProfile.error) attempt(() => { throw authoringProfile.error; });
 })();

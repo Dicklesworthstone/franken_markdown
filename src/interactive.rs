@@ -204,6 +204,14 @@ fn render_workspace(
     push_source_json(markdown_src, &mut out);
     out.push_str("</script>\n");
 
+    // Capture explicit authoring grammar as owned data, independently of the
+    // source and presentation. Local edits and saved copies retain this choice.
+    if let Some(profile) = opts.profile {
+        out.push_str("<script type=\"application/json\" id=\"fmd-authoring-profile\">{\"version\":1,\"profile\":");
+        push_source_json(profile.as_str(), &mut out);
+        out.push_str("}</script>\n");
+    }
+
     // The same explicit image bytes must survive editing and save/reopen.
     assets::push_manifest(opts, &mut out);
 
@@ -463,6 +471,10 @@ html, body {
 .fmd-content th { background: var(--bg-secondary); }
 .fmd-content ul, .fmd-content ol { padding-left: 2em; margin: 0 0 1em; }
 .fmd-content li { margin: 0.25em 0; }
+.fmd-content dl { margin: 0 0 1.2em; }
+.fmd-content dt { font-weight: 650; margin-top: 0.6em; }
+.fmd-content dt:first-child { margin-top: 0; }
+.fmd-content dd { margin-left: 1.5em; margin-bottom: 0.5em; }
 .fmd-content img { max-width: 100%; height: auto; }
 .fmd-content .table-wrap { overflow-x: auto; }
 .fmd-content .footnotes { font-size: 0.9em; margin-top: 2em; }

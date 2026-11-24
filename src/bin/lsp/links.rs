@@ -33,6 +33,7 @@ type Failure = (i32, &'static str);
 struct Token {
     start: usize,
     end: usize,
+    // First source byte after the decoded fragment separator.
     fragment: Option<usize>,
     angle: bool,
 }
@@ -64,7 +65,7 @@ fn candidate(source: &str, span: SourceSpan, offset: usize) -> Option<Token> {
     if raw.len() > MAX_DESTINATION_BYTES {
         return None;
     }
-    let fragment = raw.find('#').map(|index| start + index);
+    let fragment = raw.find('#').map(|index| start + index + 1);
     let angle = start > span.start && bytes[start - 1] == b'<';
     let mut prefix = start - usize::from(angle);
     while prefix > span.start && matches!(bytes[prefix - 1], b' ' | b'\t') {
@@ -91,14 +92,22 @@ fn parsed_candidate(
     source: &str,
     span: SourceSpan,
     offset: usize,
+    completing: bool,
 ) -> Option<Token> {
-    if let Some(token) = candidate(source, span, offset) {
+    if let Some(token) = candidate(source, span, offset)
+        // A numeric entity may contain a non-semantic '#', and the named
+        // entity for '#' has no literal hash. Let the parser position both.
+        && !source[token.start..token.end].contains("&#")
+        && !source[token.start..token.end].contains("&num;")
+    {
         let complete_token = match source.as_bytes().get(token.end) {
             Some(b'>') if token.angle => true,
             Some(b')' | b' ' | b'\t' | b'\r' | b'\n') if !token.angle => true,
             _ => false,
         };
-        if complete_token {
+        // An unfinished simple URL at the end of the block can still be
+        // completed by the synthetic closer in probe_document.
+        if complete_token || (completing && source[token.end..span.end].trim().is_empty()) {
             return Some(token);
         }
     }
@@ -120,10 +129,16 @@ fn parsed_candidate(
         if end - start > MAX_DESTINATION_BYTES || selected.is_some() {
             return None;
         }
+        let fragment = destination.fragment_range(source).map(|range| range.start);
+        // Path completion has its own single-line spelling and edit contract.
+        // Use complex Markdown source only for an already-parsed fragment.
+        if completing && fragment.is_none_or(|start| offset < start) {
+            return None;
+        }
         selected = Some(Token {
             start,
             end,
-            fragment: None,
+            fragment,
             angle,
         });
     }
@@ -310,11 +325,7 @@ fn request_resolving<'a>(
     if span.len() > MAX_BLOCK_BYTES {
         return Err((-32803, "enclosing block exceeds the link navigation budget"));
     }
-    let token = if completing {
-        candidate(source, span, offset)
-    } else {
-        parsed_candidate(parser, source, span, offset)
-    };
+    let token = parsed_candidate(parser, source, span, offset, completing);
     let (spans, blocks): (Vec<_>, Vec<_>) = document
         .blocks
         .into_iter()
@@ -343,7 +354,6 @@ fn request_resolving<'a>(
     }
     // Both path and fragment completions require the same parser ownership
     // proof. A lexical filename is no more authoritative than a lexical '#'.
-    let fragment = token.fragment.unwrap_or(token.end);
     let Some((mut probed, probe)) =
         probe_document(parser, source, span, token, &original, owner, completing)
     else {
@@ -377,9 +387,9 @@ fn request_resolving<'a>(
             None => Ok(Json::Null),
         };
     }
-    if token.fragment.is_none() || offset <= fragment {
+    let Some(fragment) = token.fragment.filter(|start| offset >= *start) else {
         return Ok(complete_paths(token, offset, &index));
-    }
+    };
     // Existing links use the parser-decoded destination (including entities).
     // An unfinished completion has only its verified lexical URL available.
     let address = destination
@@ -401,12 +411,16 @@ fn request_resolving<'a>(
             )
         })?;
     }
-    let Some(prefix) = prefix_text(&source[fragment + 1..offset]) else {
+    let Some(prefix) = prefix_text(&source[fragment..offset]) else {
         return Ok(completion_list(Vec::new(), true));
     };
     let mut items = Vec::new();
     let mut incomplete = false;
-    let edit_range = range(&index, source, SourceSpan::new(fragment, token.end));
+    // Keep the long-standing '#slug' edit for literal hashes. An entity such
+    // as '&#35;' or '&num;' owns the entire separator; edit only its suffix.
+    let literal_hash = source.as_bytes()[fragment - 1] == b'#';
+    let edit_start = fragment - usize::from(literal_hash);
+    let edit_range = range(&index, source, SourceSpan::new(edit_start, token.end));
     for anchor in analysis.anchors {
         if anchor.kind != AnchorKind::Heading
             || anchor.occurrences != 1
@@ -424,7 +438,7 @@ fn request_resolving<'a>(
         // contains percent escapes; the server already filtered decoded IDs.
         let filter = format!(
             "{}{}",
-            &source[fragment..offset],
+            &source[edit_start..offset],
             &anchor.id[prefix.len()..]
         );
         items.push(object([
@@ -435,7 +449,13 @@ fn request_resolving<'a>(
             ("insertTextFormat", number(1)),
             (
                 "textEdit",
-                object([("range", edit_range.clone()), ("newText", string(&label))]),
+                object([
+                    ("range", edit_range.clone()),
+                    (
+                        "newText",
+                        string(if literal_hash { &label } else { &anchor.id }),
+                    ),
+                ]),
             ),
         ]));
     }

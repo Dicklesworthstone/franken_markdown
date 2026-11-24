@@ -354,3 +354,43 @@ fn server_dispatch_requires_current_source_and_keeps_completion_queries_read_onl
         Err((-32801, _))
     ));
 }
+
+#[test]
+fn heading_edits_preserve_the_authored_path_query_separator_and_title() {
+    let docs = buffers(&["file:///docs/Guide%20%281%29.md", "file:///docs/guide.md"]);
+    for marked in [
+        "[go](<Guide (1).md#cha¦-old> \"title\")",
+        "[go](guide.md?kind=(c<d)#cha¦-old 'title')",
+        r"[go](guide.md?kind=\(c\)\#cha¦-old)",
+        "[go](guide.md?edition=&#49;&#35;cha¦-old)",
+        "[go](guide.md&num;cha¦-old)",
+        "[go](\r\n guide.md#cha¦-old\r\n 'title')",
+    ] {
+        let (source, result) = call_in(ORIGIN, marked, &docs);
+        assert_eq!(labels(&result), ["#chapter"], "{marked}");
+        assert_eq!(
+            apply(&source, &items(&result)[0]),
+            source.replace("cha-old", "chapter"),
+            "{marked}"
+        );
+    }
+}
+
+#[test]
+fn entity_syntax_and_non_link_contexts_cannot_supply_heading_edits() {
+    let docs = buffers(&["file:///docs/guide.md", "file:///docs/guide1.md"]);
+    for marked in [
+        "[go](guide&#4¦9;.md)",
+        "[go](guide.md?edition=&#4¦9;)",
+        "[go](guide.md&#3¦5;cha-old)",
+        "![go](guide.md&#35;cha¦-old)",
+        "`[go](guide.md&#35;cha¦-old)`",
+        "[go](guide.md \"title ](guide.md&#35;cha¦-old)\")",
+        "[go](https://example.org/guide.md&num;cha¦-old)",
+    ] {
+        assert!(
+            items(&call_in(ORIGIN, marked, &docs).1).is_empty(),
+            "{marked}"
+        );
+    }
+}

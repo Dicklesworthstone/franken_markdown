@@ -19,9 +19,12 @@ when the destination ends the enclosing top-level block or container. Accepting
 `#installation` midway through `#inst-old` replaces the complete fragment and
 leaves no stale suffix.
 
-Queries and titles are preserved: `[label](?view=read#inst "Guide")` changes only
-`#inst`. Angle delimiters and container prefixes remain intact. Positions and
-edits use UTF-16, including text after astral characters and CRLF line endings.
+In `[label](<Guide (1).md#inst> "Guide")`, accepting a heading edits only the
+fragment. Completed links support balanced parentheses, escaped punctuation,
+paths with spaces inside angle delimiters, and continuation lines. Queries,
+titles and the original spelling of a separator such as `\#`, `&#35;` or
+`&num;` survive the edit. Positions and edits use UTF-16, including text after
+astral characters and CRLF line endings.
 Reference labels are not fragment destinations. A separate
 [label completion provider](LSP_LABEL_COMPLETION.md) offers reference definitions
 and footnote labels without inserting heading IDs into those labels.
@@ -74,8 +77,8 @@ references, highlights, and versioned rename through a separate document-local
 provider; see [LSP_FOOTNOTES.md](LSP_FOOTNOTES.md). This includes unresolved
 references and definitions in unreferenced note bodies.
 
-Fragment and path completion retain their conservative single-line authoring
-syntax; the extended destination forms above are for definition navigation.
+Unfinished fragment destinations and file-path completions use the original
+single-line authoring syntax.
 Definitions and full/collapsed/shortcut references support separate [reference-label rename](LSP_REFERENCE_RENAME.md), preserving visible
 text, destinations and titles through parser-owned edits.
 

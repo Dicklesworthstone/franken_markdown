@@ -105,3 +105,30 @@ test('containers and repeated links retain link ownership', () => {
   assert.equal((repeated.match(/href="\/chosen"/g) || []).length, 4096);
   assert.equal(countNotes(repeated), 0);
 });
+
+test('invalid note names retain ordinary paragraph and continuation text', () => {
+  for (const name of ['two words', 'two\u00a0words', 'two\u0085words', 'a\u007fb', 'a[b', '🙂'.repeat(33)]) {
+    const marker = '[^' + name + ']:';
+    const html = render(marker + ' preserve the **whole** paragraph\n    continuation\n\nAfter');
+    assert.ok(html.includes('<p>' + marker + ' preserve the <strong>whole</strong> paragraph\ncontinuation</p>'), html);
+    assert.equal(countNotes(html), 0);
+    assert.ok(html.endsWith('<p>After</p>\n'));
+  }
+});
+
+test('a caret label outside note grammar can still define an ordinary Markdown link', () => {
+  for (const name of ['two words', 'a\u00a0b', '🙂'.repeat(33)]) {
+    const label = '^' + name;
+    const html = render('> [' + label + ']: /guide "Title"\n\n[' + label + '] [manual][' + label + ']');
+    assert.ok(html.includes('<a href="/guide" title="Title">' + label + '</a> <a href="/guide" title="Title">manual</a>'), html);
+    assert.equal(countNotes(html), 0);
+  }
+});
+
+test('literal backslash and exact UTF-8 byte boundary still produce real notes', () => {
+  for (const name of ['a\\', '🙂'.repeat(32), 'é'.repeat(64), 'a'.repeat(128)]) {
+    const html = render('Cite [^' + name + '].\n\n[^' + name + ']: Kept body.');
+    assert.equal(countNotes(html), 1, name);
+    assert.ok(html.includes('<li id="fn-' + name + '"><p>Kept body.</p>'), html);
+  }
+});

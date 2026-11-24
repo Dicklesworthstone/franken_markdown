@@ -952,19 +952,22 @@ function parseMarkdownClient(source, imageAssets, profile) {
     }
     return pairs;
   }
-  // Raw footnote identifiers keep their existing exact-source semantics. Link
-  // labels use the contextual index below instead of this lexical pairing.
-  function rawBracketPairs(text) {
-    charge(text.length);
-    const stack = [], pairs = new Map();
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === '\\') { i++; continue; }
-      if (text[i] === '[') { allocate(); stack.push(i); }
-      else if (text[i] === ']' && stack.length) {
-        allocate(); pairs.set(stack.pop(), i);
-      }
+  // Native note names contain at most 128 UTF-8 bytes. The first literal ']'
+  // ends a name even after a backslash; inline Markdown and reference-label
+  // escape rules apply only if a link wins the separate target probe.
+  function footnoteLabelEnd(text, start) {
+    let bytes = 0;
+    for (let i = start; i < text.length;) {
+      charge();
+      const cp = text.codePointAt(i);
+      if (cp === 93) return i > start ? i : -1;
+      const width = cp > 0xffff ? 2 : 1;
+      if (cp === 91 || cp < 32 || cp === 127 || /\p{White_Space}/u.test(text.slice(i, i + width))) return -1;
+      bytes += cp < 128 ? 1 : cp < 2048 ? 2 : width === 1 ? 3 : 4;
+      if (bytes > 128) return -1;
+      i += width;
     }
-    return pairs;
+    return -1;
   }
   function uniqueId(slug) {
     let id = slug, suffix = headings.get(slug) || 1;
@@ -1294,7 +1297,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
   }
   function inlineIndex(text, bareLinks = true) {
     const atoms = new Map();
-    let rawBrackets, bareParens, maybeBare = false;
+    let bareParens, maybeBare = false;
     const bareParenEnd = start => (bareParens ??= bareParenthesisPairs(text)).get(start);
     const remember = (start, atom) => { allocate(); atoms.set(start, atom); };
     function indexFrom(start, root = -1, depth = 0) {
@@ -1335,8 +1338,8 @@ function parseMarkdownClient(source, imageAssets, profile) {
         const image = ch === '!' && text[i + 1] === '[';
         if (image || ch === '[') {
           if (!image && root !== i && text[i + 1] === '^' && notes.size) {
-            const close = (rawBrackets ??= rawBracketPairs(text)).get(i);
-            const label = close === undefined ? null : text.slice(i + 2, close);
+            const close = footnoteLabelEnd(text, i + 2);
+            const label = close < 0 ? null : text.slice(i + 2, close);
             if (label !== null && notes.has(noteKey(label))) {
               // Explicit links take precedence, using the same grammar as
               // every other label. Only a rejected link becomes a citation.
@@ -1691,7 +1694,12 @@ function parseMarkdownClient(source, imageAssets, profile) {
   // separators belong to the payload, so dot captures must retain them.
   const headingMarker = line => line.match(/^ {0,3}(#{1,6})([ \t].*|$)/s);
   const setextLevel = line => /^ {0,3}=+[ \t]*$/.test(line) ? 1 : /^ {0,3}-+[ \t]*$/.test(line) ? 2 : 0;
-  const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/s);
+  function footnoteMarker(line) {
+    const prefix = /^ {0,3}\[\^/.exec(line);
+    if (!prefix) return null;
+    const start = prefix[0].length, close = footnoteLabelEnd(line, start);
+    return close >= 0 && line[close + 1] === ':' ? {start, close} : null;
+  }
   function indentation(line, startColumn = 0) {
     let end = 0, column = startColumn;
     while (line[end] === ' ' || line[end] === '\t') {
@@ -1888,7 +1896,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
     // genuine block boundary, four columns still belong to indented code.
     if (inParagraph) column = indentation(lines[line]).end;
     else while (lines[line][column] === ' ' && column < 3) column++;
-    if (lines[line][column] !== '[' || lines[line][column + 1] === '^') return null;
+    if (lines[line][column] !== '[') return null;
     column++;
     let label = '', characters = 0;
     while (line < lines.length) {
@@ -2278,7 +2286,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
       // visible paragraph continuation and table/code leaves cannot define one.
       const foot = footnoteMarker(line);
       if (foot) {
-        const content = [foot[2]]; i++;
+        const content = [line.slice(foot.close + 2).replace(/^[ \t]+/, '')]; i++;
         while (i < lines.length) {
           if (blankLine(lines[i])) {
             let next = i;
@@ -2292,7 +2300,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
           } else if (indentation(lines[i]).width >= 4) content.push(stripIndent(lines[i++], 4));
           else break;
         }
-        const key = noteKey(foot[1]);
+        const key = noteKey(line.slice(foot.start, foot.close));
         if (!notes.has(key)) {
           allocate();
           // Reserve before descending: a nested duplicate cannot take the

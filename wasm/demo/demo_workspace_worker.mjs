@@ -135,6 +135,17 @@ export function createDemoWorkspaceWorker(options = {}) {
         if (starting) fail("WORKER_STARTING", "workerFactory cannot reenter workspace preparation.");
         if (controls?.signal?.aborted) fail("ABORTED", "Workspace preparation was cancelled before dispatch.");
         const captured = input(source, options);
+        const preparePayload = () => {
+          const transfer = [], images = captured.options.pdfImages.map(image => {
+            const bytes = byteView(image.bytes, DEMO_WORKSPACE_LIMITS.imageBytes).slice();
+            transfer.push(bytes.buffer);
+            return { destination: image.destination, bytes };
+          });
+          return { args: [captured.source, { ...captured.options, pdfImages: images }, maximum], transfer };
+        };
+        // Ingress is validated and the first queue is empty. Capture selected
+        // image ranges before startup callbacks can change or detach them.
+        const initialPayload = rpc ? null : preparePayload();
         if (!rpc) {
           let worker;
           starting = true;
@@ -153,14 +164,7 @@ export function createDemoWorkspaceWorker(options = {}) {
           rpc.dispose();
           fail("SESSION_DISPOSED", "Workspace worker was disposed during initialization.");
         }
-        return rpc.request("prepare-workspace", captured.charge, () => {
-          const transfer = [], images = captured.options.pdfImages.map(image => {
-            const bytes = byteView(image.bytes, DEMO_WORKSPACE_LIMITS.imageBytes).slice();
-            transfer.push(bytes.buffer);
-            return { destination: image.destination, bytes };
-          });
-          return { args: [captured.source, { ...captured.options, pdfImages: images }, maximum], transfer };
-        }, controls, (state, value) => {
+        return rpc.request("prepare-workspace", captured.charge, () => initialPayload ?? preparePayload(), controls, (state, value) => {
           if (state !== null) fail("WORKER_PROTOCOL_ERROR", "Unexpected workspace worker state.");
           output(value, captured.sourceLength, maximum);
         }).then(value => Object.freeze({ ...value,

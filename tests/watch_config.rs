@@ -339,3 +339,81 @@ fn no_config_neither_reads_nor_watches_the_configured_path() {
     watch.event("\"event\":\"wrote\"");
     wait_matches(&dir.path("doc.html"), &dir.render("doc.md", &extra));
 }
+
+#[test]
+fn inherited_profile_changes_refresh_dependencies_without_source_edits() {
+    const LITERAL: &str = "`Example\n: code\n{{#include missing.txt}}\ntail`\n";
+    for (input, output, page) in [
+        ("sources/doc.md", "doc.html", "doc.html"),
+        ("sources", "site", "site/doc.html"),
+    ] {
+        let dir = Directory::new();
+        dir.write("sources/doc.md", LITERAL);
+        dir.write("explicit.css", "body { color: #123456; }\n");
+        dir.write("config", "profile=commonmark-gfm\n");
+        std::fs::create_dir(dir.path("site")).unwrap();
+        // An explicit stylesheet must not disable inheritance of the grammar.
+        let extra = ["--css", "explicit.css"];
+        let original = dir.render("sources/doc.md", &extra);
+        let watch = Watch::start(&dir, input, output, &extra);
+        wait_matches(&dir.path(page), &original);
+
+        // The source bytes are unchanged. Reusing a dependency snapshot keyed
+        // only by their fingerprint would miss this newly active include.
+        dir.replace_config("profile=gfm-plus\n");
+        watch.event("\"code\":\"input_error\"");
+        assert_eq!(std::fs::read(dir.path(page)).unwrap(), original);
+        dir.write("sources/missing.txt", "Recovered **fragment**.\n");
+        watch.event("\"event\":\"wrote\"");
+        let extended = dir.render("sources/doc.md", &extra);
+        assert_ne!(original, extended);
+        wait_matches(&dir.path(page), &extended);
+
+        // Invalid config keeps both the last publication and its dependencies.
+        dir.replace_config("profile=invalid\n");
+        watch.event("\"code\":\"config_error\"");
+        dir.write("sources/missing.txt", "Changed active fragment.\n");
+        watch.event("\"code\":\"config_error\"");
+        assert_eq!(std::fs::read(dir.path(page)).unwrap(), extended);
+
+        dir.replace_config("profile=commonmark-gfm\n");
+        watch.event("\"event\":\"wrote\"");
+        if dir.path(input).is_dir() {
+            // Directory completion follows the per-file write. Consume it
+            // before checking that a retired include causes no new rebuild.
+            watch.event("\"event\":\"watched_rebuild\"");
+        }
+        wait_matches(&dir.path(page), &original);
+        dir.write("sources/missing.txt", "This include is literal again.\n");
+        watch.assert_no_rebuild();
+        assert_eq!(std::fs::read(dir.path(page)).unwrap(), original);
+        assert_eq!(
+            std::fs::read_to_string(dir.path("sources/doc.md")).unwrap(),
+            LITERAL
+        );
+    }
+}
+
+#[test]
+fn an_explicit_watch_profile_stays_authoritative_over_configuration_changes() {
+    let dir = Directory::new();
+    let source = "`Example\n: code\n{{#include missing.txt}}\ntail`\n";
+    dir.write("doc.md", source);
+    dir.write("config", "profile=gfm-plus\n");
+    let extra = ["--profile", "commonmark-gfm"];
+    let original = dir.render("doc.md", &extra);
+    let watch = Watch::start(&dir, "doc.md", "doc.html", &extra);
+    wait_matches(&dir.path("doc.html"), &original);
+
+    for config in ["profile=commonmark-gfm\n", "profile=gfm-plus\n"] {
+        dir.replace_config(config);
+        watch.event("\"event\":\"wrote\"");
+        wait_matches(&dir.path("doc.html"), &original);
+    }
+    dir.write(
+        "missing.txt",
+        "Not an active include under the explicit grammar.\n",
+    );
+    watch.assert_no_rebuild();
+    assert_eq!(std::fs::read(dir.path("doc.html")).unwrap(), original);
+}

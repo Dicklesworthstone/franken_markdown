@@ -179,6 +179,7 @@ pub(super) struct Graph {
 }
 
 struct Snapshot {
+    profile: Option<crate::Profile>,
     fingerprint: super::Fingerprint,
     paths: Vec<PathBuf>,
     /// Images and included sources, excluding navigational link targets.
@@ -197,6 +198,14 @@ impl Graph {
             roots: roots.iter().cloned().collect(),
             ..Self::default()
         }
+    }
+
+    pub(super) fn set_profile(&mut self, profile: Option<crate::Profile>) -> bool {
+        if self.profile == profile {
+            return false;
+        }
+        self.profile = profile;
+        true
     }
 
     pub(super) fn add_root(&mut self, path: PathBuf) {
@@ -263,7 +272,8 @@ impl Graph {
                 continue;
             };
             if old.is_some_and(|old| {
-                old.fingerprint == expected
+                old.profile == self.profile
+                    && old.fingerprint == expected
                     && old
                         .includes
                         .iter()
@@ -322,6 +332,7 @@ impl Graph {
             self.documents.insert(
                 root.clone(),
                 Snapshot {
+                    profile: self.profile,
                     fingerprint: expected,
                     paths,
                     inputs,

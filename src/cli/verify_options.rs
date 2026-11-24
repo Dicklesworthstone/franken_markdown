@@ -1,5 +1,6 @@
-//! Explicit, reproducible PDF inputs for native verification. Ambient config
-//! and network image loading never participate in the verification baseline.
+//! Explicit, reproducible PDF inputs for native verification. Presentation
+//! config and network image loading never supply the verification layout;
+//! the caller resolves the authoring grammar before admitting these options.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -19,7 +20,7 @@ pub(super) struct VerifyLayoutArgs {
     /// Type size preset, percentage or multiplier, as in rendering.
     #[arg(long, value_name = "SCALE|PRESET", visible_alias = "type-size")]
     font_scale: Option<String>,
-    /// Explicit hyphenation language; no machine config is loaded.
+    /// Explicit hyphenation language; configured language is not inherited.
     #[arg(long)]
     lang: Option<String>,
     /// PDF paper: letter, a4, a5, legal, tabloid, or WIDTHxHEIGHT in points.

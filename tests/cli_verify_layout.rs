@@ -1,5 +1,5 @@
 //! Native verification can measure the same explicit layout and local bytes
-//! as publication, without making config or network access implicit.
+//! as publication. Presentation defaults and network assets remain explicit.
 #![cfg(feature = "cli")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -101,12 +101,15 @@ fn refused(output: Output, code: i32, detail: &str) {
 }
 
 #[test]
-fn default_report_is_unchanged_and_ignores_config_frontmatter_and_local_images() {
+fn default_layout_ignores_presentation_config_frontmatter_and_local_images() {
     let workspace = Workspace::new();
     let source = "---\nlang: de\ntoc: true\n---\n# Report\n\n![Figure](plot.svg)\n";
     workspace.write("document.md", source);
     workspace.write("plot.svg", SVG);
-    workspace.write("config", "not-a-valid-config-line");
+    workspace.write(
+        "config",
+        "font=serif\nfont_scale=125%\npage_size=a4\ncustom_css=missing.css\n",
+    );
     let baseline = report(
         workspace.verify(&["document.md"], None),
         source,
@@ -117,6 +120,12 @@ fn default_report_is_unchanged_and_ignores_config_frontmatter_and_local_images()
             .findings
             .iter()
             .any(|f| f.code == "unresolved_image")
+    );
+    workspace.write("config", "not-a-valid-config-line");
+    report(
+        workspace.verify(&["document.md", "--no-config"], None),
+        source,
+        &PdfOptions::default(),
     );
 }
 

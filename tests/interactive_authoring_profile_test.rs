@@ -69,9 +69,7 @@ fn styled_workspaces_retain_profile_outside_the_preview_frame() {
         assert!(workspace.contains("<iframe data-fmd-styled-preview"));
         assert!(workspace.contains("id=\"fmd-presentation\""));
         assert_eq!(workspace.matches(MANIFEST).count(), 1);
-        assert!(
-            workspace.find(MANIFEST).unwrap() > workspace.find("</div>\n  </main>").unwrap()
-        );
+        assert!(workspace.find(MANIFEST).unwrap() > workspace.find("</div>\n  </main>").unwrap());
         let expected = format!("{{\"version\":1,\"profile\":\"{}\"}}", profile.as_str());
         assert_eq!(manifest(&workspace), Some(expected.as_str()));
     }

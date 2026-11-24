@@ -127,8 +127,8 @@ impl<C: Clock> PollWatcher<C> {
     }
 
     /// Prime source and dependency fingerprints using the publication's
-    /// authoring grammar for includes, links and images. The profile remains
-    /// fixed for this watch session; source changes retain ordinary debounce.
+    /// authoring grammar for includes, links and images. Source changes retain
+    /// ordinary debounce; the native shell may refresh an inherited grammar.
     #[must_use]
     pub fn new_with_profile(
         paths: Vec<PathBuf>,
@@ -184,6 +184,15 @@ impl<C: Clock> PollWatcher<C> {
             }
         }
         self.refresh_dependencies(self.clock.now());
+    }
+
+    /// Refresh dependency ownership after an inherited config dialect changes.
+    /// Retain fingerprints and pending edits; unreadable sources keep their
+    /// previous graph until a stable read can establish the new grammar.
+    pub(crate) fn set_profile(&mut self, profile: Option<crate::Profile>) {
+        if self.dependencies.set_profile(profile) {
+            self.refresh_dependencies(self.clock.now());
+        }
     }
 
     /// Explicit Markdown roots whose source or expanded dependencies changed.

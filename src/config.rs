@@ -31,6 +31,7 @@ pub const CONFIG_KEYS: &[&str] = &[
     "emoji_strategy",
     // Render defaults. A command-line flag wins, then document frontmatter
     // (lang/toc/toc_depth), then these keys.
+    "profile",
     "lang",
     "toc",
     "toc_depth",
@@ -54,6 +55,8 @@ pub const CONFIG_KEYS: &[&str] = &[
 /// is unset and the built-in default applies.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RenderDefaults {
+    /// Native authoring grammar. `None` preserves the legacy omitted profile.
+    pub profile: Option<crate::Profile>,
     pub lang: Option<String>,
     pub toc: Option<bool>,
     pub toc_depth: Option<u8>,
@@ -103,6 +106,10 @@ impl RenderDefaults {
     fn entries(&self) -> Vec<(&'static str, String)> {
         let flag = |value: Option<bool>| value.map(|on| on.to_string());
         [
+            (
+                "profile",
+                self.profile.map(|profile| profile.as_str().to_string()),
+            ),
             ("lang", self.lang.clone()),
             ("toc", flag(self.toc)),
             ("toc_depth", self.toc_depth.map(|depth| depth.to_string())),
@@ -144,6 +151,17 @@ impl RenderDefaults {
             }
         };
         let result = match key {
+            "profile" => match value.to_ascii_lowercase().as_str() {
+                "commonmark-gfm" => {
+                    self.profile = Some(crate::Profile::CommonMarkGfm);
+                    Ok(())
+                }
+                "gfm-plus" => {
+                    self.profile = Some(crate::Profile::GfmPlus);
+                    Ok(())
+                }
+                _ => Err("profile must be `commonmark-gfm` or `gfm-plus`".to_string()),
+            },
             "lang" => {
                 if value.is_empty()
                     || value.len() > 35
@@ -197,6 +215,7 @@ impl RenderDefaults {
         }
         Some(
             match key {
+                "profile" => "legacy",
                 "lang" => "",
                 "toc_depth" => "3",
                 "font_scale" => "md",
@@ -221,7 +240,7 @@ impl RenderDefaults {
     }
 
     fn to_json(&self) -> String {
-        let fields: Vec<String> = self
+        let mut fields: Vec<String> = self
             .entries()
             .into_iter()
             .map(|(key, value)| {
@@ -235,6 +254,11 @@ impl RenderDefaults {
                 }
             })
             .collect();
+        if self.profile.is_none() {
+            // Omission has legacy analysis semantics as well as the extended
+            // source grammar. Do not report it as an explicit dialect choice.
+            fields.insert(0, "\"profile\":null".to_string());
+        }
         format!("{{{}}}", fields.join(","))
     }
 }

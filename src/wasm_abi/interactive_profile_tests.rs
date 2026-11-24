@@ -60,9 +60,7 @@ fn profiled_workspace_uses_native_source_grammar_and_retains_its_manifest() {
             profile.as_str()
         )));
         if profile == Profile::CommonMarkGfm {
-            assert!(output.contains(
-                "&lt;p&gt;&lt;em&gt;Term\n: definition&lt;/em&gt;&lt;/p&gt;"
-            ));
+            assert!(output.contains("&lt;p&gt;&lt;em&gt;Term\n: definition&lt;/em&gt;&lt;/p&gt;"));
             assert!(!output.contains("&lt;dl&gt;"));
             assert!(!output.contains("&lt;div class=&quot;fmd-pagebreak&quot;"));
         } else {
@@ -106,8 +104,7 @@ fn omitted_profile_preserves_advanced_bytes_and_existing_binding_signatures() {
     assert!(!output.contains(MANIFEST));
     assert!(output.contains("&lt;dl&gt;"));
 
-    let simple =
-        render_interactive_html_configured(SOURCE, None, None, None, None, None).unwrap();
+    let simple = render_interactive_html_configured(SOURCE, None, None, None, None, None).unwrap();
     let expected = crate::interactive::render_interactive_html_checked(
         &crate::parse_markdown(SOURCE),
         SOURCE,
@@ -171,7 +168,9 @@ fn profiled_workspace_keeps_styles_navigation_and_explicit_image_bindings() {
         assert_eq!(output, expected);
         assert!(output.contains("<html lang=\"fr\">"));
         assert!(output.contains("<title>  Profile &lt;owner&gt;  </title>"));
-        assert!(output.contains("id=\"fmd-image-assets\">[[\"plot.svg\",\"data:image/svg+xml;base64,"));
+        assert!(
+            output.contains("id=\"fmd-image-assets\">[[\"plot.svg\",\"data:image/svg+xml;base64,")
+        );
         assert!(output.contains("\"toc\":true,\"tocDepth\":2"));
         assert!(output.contains(css));
         assert_eq!(result.source_length(), source.len());

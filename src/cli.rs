@@ -124,6 +124,7 @@ struct DiffArgs {
     #[arg(long)]
     json: bool,
     /// Authoring dialect for both revisions: commonmark-gfm or gfm-plus.
+    /// Omission inherits the native profile configuration.
     #[arg(long, value_name = "PROFILE")]
     profile: Option<String>,
     /// Maximum Markdown input bytes accepted before parsing (default 64 MiB).
@@ -143,6 +144,7 @@ struct StatsArgs {
     #[arg(long)]
     json: bool,
     /// Authoring dialect to analyze: commonmark-gfm or gfm-plus.
+    /// Omission inherits the native profile configuration.
     #[arg(long, value_name = "PROFILE")]
     profile: Option<String>,
     /// Maximum Markdown input bytes accepted before parsing (default 64 MiB).
@@ -225,7 +227,7 @@ struct VerifyArgs {
     #[arg(long)]
     json: bool,
     /// Markdown dialect, shared with rendering and include expansion:
-    /// commonmark-gfm or gfm-plus. Omission retains the default grammar.
+    /// commonmark-gfm or gfm-plus. Omission inherits native configuration.
     #[arg(long)]
     profile: Option<String>,
     /// Explicit PDF layout and local resources for this verification report.
@@ -361,9 +363,8 @@ struct RenderStyleArgs {
     /// Document language tag for hyphenation and HTML lang attribute (e.g. "en", "de", "fr", "es", "nl").
     #[arg(long)]
     lang: Option<String>,
-    /// Markdown dialect: "commonmark-gfm" renders exactly what GitHub renders
-    /// (definition lists stay literal text); "gfm-plus" (and the default) also
-    /// renders definition lists.
+    /// Markdown dialect: "commonmark-gfm" leaves definition lists as text;
+    /// "gfm-plus" supports extended syntax. Omission inherits native config.
     #[arg(long)]
     profile: Option<String>,
     /// Pass raw HTML in the source through instead of escaping it.
@@ -816,14 +817,14 @@ pub fn main() -> ExitCode {
         }
         Some(Command::Doctor(args)) => run_doctor(args, json),
         Some(Command::Config(args)) => run_config(args, json, no_config),
-        Some(Command::Stats(args)) => run_stats(args, json),
+        Some(Command::Stats(args)) => run_stats(args, json, no_config),
         Some(Command::Diff(args)) => run_diff(args, json, no_config),
         Some(Command::Book(args)) => crate::book::native::dispatch(args, json, no_config),
         #[cfg(feature = "batch")]
         Some(Command::Batch(args)) => run_batch(args, json, no_config),
         #[cfg(feature = "mcp")]
         Some(Command::Mcp(args)) => run_mcp(args),
-        Some(Command::Verify(args)) => run_verify(args, json, no_color),
+        Some(Command::Verify(args)) => run_verify(args, json, no_color, no_config),
         Some(Command::Watch(args)) => run_watch(args, json, no_config),
         None => {
             let mut cmd = Cli::command();
@@ -887,6 +888,8 @@ struct WatchPresentationInputs {
     config: Option<PathBuf>,
     configured_css: Option<PathBuf>,
     inherit_css: bool,
+    profile: Option<crate::Profile>,
+    inherit_profile: bool,
 }
 
 impl WatchPresentationInputs {
@@ -917,7 +920,7 @@ impl WatchPresentationInputs {
     }
 
     fn synchronize(&mut self) -> bool {
-        let Some(path) = self.config.as_deref().filter(|_| self.inherit_css) else {
+        let Some(path) = self.config.as_deref() else {
             return false;
         };
         // The ordinary renderer emits the load error and keeps the previous
@@ -932,11 +935,15 @@ impl WatchPresentationInputs {
         let Ok(config) = config else {
             return false;
         };
-        if config.custom_css == self.configured_css {
-            return false;
+        let css_changed = self.inherit_css && config.custom_css != self.configured_css;
+        let profile_changed = self.inherit_profile && config.render.profile != self.profile;
+        if css_changed {
+            self.configured_css = config.custom_css;
         }
-        self.configured_css = config.custom_css;
-        true
+        if profile_changed {
+            self.profile = config.render.profile;
+        }
+        css_changed || profile_changed
     }
 }
 
@@ -982,6 +989,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         Ok(config) => config,
         Err(e) => return fail_json(66, "config_error", &format!("reading config: {e}"), json),
     };
+    let profile = profile.or(config.render.profile);
     let mut page_theme = config.to_theme();
     if let Err(code) = apply_pdf_page_style(&args.style, args.to, &config, &mut page_theme, json) {
         return code;
@@ -1012,6 +1020,8 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
         config: (!no_config).then(config_path),
         configured_css: args.css.is_none().then_some(config.custom_css).flatten(),
         inherit_css: args.css.is_none(),
+        profile,
+        inherit_profile: args.style.profile.is_none(),
     };
     // xjld: a directory input expands to every `*.md` file under it.
     // A directory with no `*.md` is a usage error (silent no-watch
@@ -1050,6 +1060,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     // must not leave the initial render watching the previous stylesheet.
     // Retain the primed config fingerprint: a later save still emits an event.
     if presentation.synchronize() {
+        watcher.set_profile(presentation.profile);
         watcher.replace_paths(collect_watch_paths(&args.input, &presentation.paths()));
     }
     let (_, initial_html) = render_watched_file(&args, json, no_config);
@@ -1079,6 +1090,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
             no_config,
             samples,
             &mut watcher,
+            &mut presentation,
             preview.as_ref(),
         );
     }
@@ -1089,6 +1101,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
             continue;
         }
         if presentation.refresh(&events) {
+            watcher.set_profile(presentation.profile);
             watcher.replace_paths(collect_watch_paths(&args.input, &presentation.paths()));
         }
         if json {
@@ -1163,6 +1176,7 @@ fn run_watch_directory(
         .collect();
     let mut watcher = PollWatcher::new_with_profile(paths, interval, SystemClock, profile);
     if presentation.synchronize() {
+        watcher.set_profile(presentation.profile);
         watcher.replace_paths(
             md_files
                 .iter()
@@ -1231,6 +1245,7 @@ fn run_watch_directory(
         // in the tree. A config change must not release source protection or
         // replace a stylesheet with another document's generated page.
         if presentation.refresh(&events) {
+            watcher.set_profile(presentation.profile);
             watcher.replace_paths(
                 md_files
                     .iter()
@@ -1466,6 +1481,7 @@ fn run_watch_measure(
     no_config: bool,
     samples: u32,
     watcher: &mut PollWatcher<SystemClock>,
+    presentation: &mut WatchPresentationInputs,
     preview: Option<&WatchPreview>,
 ) -> ExitCode {
     let mut totals = Vec::with_capacity(samples as usize);
@@ -1490,6 +1506,10 @@ fn run_watch_measure(
                 );
             }
         };
+        if presentation.synchronize() {
+            watcher.set_profile(presentation.profile);
+            watcher.replace_paths(collect_watch_paths(&args.input, &presentation.paths()));
+        }
         let t_render = Instant::now();
         let mut html = None;
         let status = run_render_with_preview(
@@ -2699,13 +2719,13 @@ fn collect_external_links(doc: &crate::Document) -> Vec<String> {
     out
 }
 
-fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
+fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool, no_config: bool) -> ExitCode {
     // Agent/CI pipes get JSON without `--json` (VERIFY_RECIPE, `> report.json`).
     // A TTY without `--json` gets the caret report. `--json` / global `--json`
     // always force the schema.
     let json = global_json || args.json || !std::io::stdout().is_terminal();
-    let profile = match parse_profile_value(args.profile.as_deref(), json) {
-        Ok(profile) => profile,
+    let (_, profile) = match load_profile_config(args.profile.as_deref(), no_config, json) {
+        Ok(configured) => configured,
         Err(code) => return code,
     };
     let mut layout = match args.layout.admit(&args.input, profile, json) {
@@ -2729,8 +2749,12 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
             Ok(prepared) => prepared,
             Err((code, kind, message)) => return fail_json(code, kind, &message, json),
         };
+    if !no_config {
+        prepared.inputs.insert(&config_path());
+    }
     // Link checking may write a cache, but verification must preserve the
-    // document it just read. Admit the destination before rendering or making
+    // document and active grammar configuration it just read. Admit the
+    // destination before rendering or making
     // network requests, with the same alias-aware protection as publications.
     // Without --links no cache is read or written. Stdin can still authorize
     // explicit image/font inputs, which acquire the same protection below.
@@ -2766,7 +2790,7 @@ fn run_verify(args: VerifyArgs, global_json: bool, no_color: bool) -> ExitCode {
         return code;
     }
     // Explicit options/assets reproduce the selected PDF layout. Omission
-    // keeps the historical default report, independent of ambient config.
+    // keeps the historical default layout; only the grammar inherits config.
     let opts = layout.options;
     let report = match crate::verify::verify_pdf_result(&doc, &opts) {
         Ok(report) => crate::verify::with_extra_findings(report, parse_findings),
@@ -4128,6 +4152,9 @@ fn apply_config_render_defaults(
     style: &mut RenderStyleArgs,
     defaults: &crate::config::RenderDefaults,
 ) {
+    if style.profile.is_none() {
+        style.profile = defaults.profile.map(|profile| profile.as_str().to_string());
+    }
     if style.font_scale.is_none() {
         style.font_scale.clone_from(&defaults.font_scale);
     }
@@ -4181,6 +4208,26 @@ fn parse_profile_value(
             json,
         )
     })
+}
+
+/// Select one grammar before native analysis reads or expands any source.
+/// Keep the same config snapshot for diff presentation as for its ASTs.
+fn load_profile_config(
+    value: Option<&str>,
+    no_config: bool,
+    json: bool,
+) -> std::result::Result<(FmdConfig, Option<crate::Profile>), ExitCode> {
+    let explicit = parse_profile_value(value, json)?;
+    let config = load_config(no_config).map_err(|error| {
+        fail_json(
+            66,
+            "config_error",
+            &format!("reading config: {error}"),
+            json,
+        )
+    })?;
+    let profile = explicit.or(config.render.profile);
+    Ok((config, profile))
 }
 
 fn pdf_running_content(style: &RenderStyleArgs) -> crate::PdfRunningContent {
@@ -4391,10 +4438,10 @@ fn run_doctor_health(json: bool) -> ExitCode {
     emit_stdout(&out)
 }
 
-fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
+fn run_stats(args: StatsArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = args.json || global_json;
-    let profile = match parse_profile_value(args.profile.as_deref(), json) {
-        Ok(profile) => profile,
+    let (_, profile) = match load_profile_config(args.profile.as_deref(), no_config, json) {
+        Ok(configured) => configured,
         Err(code) => return code,
     };
     let input_path = args.input.display().to_string();
@@ -4435,8 +4482,8 @@ fn run_stats(args: StatsArgs, global_json: bool) -> ExitCode {
 
 fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
     let json = args.json || global_json;
-    let profile = match parse_profile_value(args.profile.as_deref(), json) {
-        Ok(profile) => profile,
+    let (config, profile) = match load_profile_config(args.profile.as_deref(), no_config, json) {
+        Ok(configured) => configured,
         Err(code) => return code,
     };
     let old_path = args.old_file.display().to_string();
@@ -4500,14 +4547,7 @@ fn run_diff(args: DiffArgs, global_json: bool, no_config: bool) -> ExitCode {
         }
     }
 
-    let theme = if no_config {
-        Theme::default()
-    } else {
-        match load_config(false) {
-            Ok(c) => c.to_theme(),
-            Err(_) => Theme::default(),
-        }
-    };
+    let theme = config.to_theme();
 
     let html_out = diff.to_html_with_options(&HtmlOptions {
         theme,
@@ -4912,6 +4952,8 @@ mod helper_tests {
             config: Some(config.clone()),
             configured_css: Some(old_css.clone()),
             inherit_css: true,
+            profile: None,
+            inherit_profile: true,
         };
 
         // The initial config load selected old.css, but a save lands before

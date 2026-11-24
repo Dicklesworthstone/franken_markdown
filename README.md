@@ -647,7 +647,7 @@ options, never to their text values; `--` protects option-shaped input filenames
 | `--pdf-font-face INDEX\|SLOT=INDEX` | Explicit zero-based face from a mapped TTC/OTC collection; bare index selects body regular. Available for render, watch, batch and book. See [font collections](docs/FONT_COLLECTIONS.md) |
 | `--pdf-a 2b`, `--pdf-a-strict` | Emit PDF/A-2b identification (XMP + sRGB OutputIntent); `--pdf-a-strict` fails closed on constructs PDF/A-2b cannot carry |
 | `--lang <tag>` | Document language for hyphenation patterns and the HTML `lang` attribute (`en`, `de`, `fr`, `es`, `nl`, ...) |
-| `--profile gfm-plus\|commonmark-gfm` | Markdown dialect. Default `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` renders the GitHub dialect only |
+| `--profile gfm-plus\|commonmark-gfm` | Override the configured Markdown dialect. `gfm-plus` adds definition lists and other extensions; `commonmark-gfm` uses CommonMark/GFM syntax. With neither a flag nor config, historical extended behavior is preserved |
 | `--interactive-html` | Self-hosting single-file HTML workspace with live editor, preview and client-side PDF export (alias `--self-hosting`) |
 | `--search-index <path>` | Also write a deterministic full-content JSON search index: headings, prose, code, tables, definitions, mathematics and referenced notes, with the selected authoring grammar and actual HTML anchors (schema `fmd-search-index-v1`; see [search sidecars](docs/NATIVE_SEARCH_INDEX.md)) |
 | `--css <file>` | Replace the default stylesheet entirely with your CSS (HTML) |
@@ -837,8 +837,9 @@ profile to both revisions and its HTML report. Explicit GFM-Plus analysis also
 recognizes standalone page-break comments, so harmless indentation changes to
 the same page-break marker do not appear as semantic changes.
 
-Omitting `--profile` retains the historical reports, including their treatment
-of page-break comments. `stats` accepts a file, `-` for stdin, or `--text`;
+Omitting `--profile` inherits the native `profile` config key. With neither a
+flag nor configured profile, historical reports are preserved, including their
+treatment of page-break comments. `stats` accepts a file, `-` for stdin, or `--text`;
 `diff` accepts `-` for either revision. Both commands inspect the supplied text
 without expanding includes or loading publication resources. Invalid profiles
 exit 64 before input is read, and `--max-input-bytes` still bounds each input.
@@ -936,7 +937,9 @@ and [`docs/BATCH_WORKER_BUDGET.md`](docs/BATCH_WORKER_BUDGET.md).
 
 `fmd verify report.md --json` checks the expanded document, including nested
 `{{#include ...}}` sources and selected snippets. `--profile commonmark-gfm`
-or `--profile gfm-plus` selects the same grammar for expansion and verification.
+or `--profile gfm-plus` selects the same grammar for expansion and verification;
+omission inherits the native `profile` config key. `--no-config` disables that
+inheritance. Invalid config fails before verification reads the source.
 The default remains an offline audit with fixed PDF options. Supply `--page-size`,
 margins, `--font-scale`, typography or pagination flags to check a selected PDF
 layout. `--load-local-images` resolves source-relative images; `--pdf-image` and
@@ -1057,6 +1060,7 @@ Resolution order for the config path:
 | `margin_right_pt` | non-negative points | `72` |
 | `margin_bottom_pt` | non-negative points | `72` |
 | `margin_left_pt` | non-negative points | `72` |
+| `profile` | `commonmark-gfm`, `gfm-plus` | unset (`legacy` in human reports, `null` in JSON) |
 | `lang` | language tag such as `en`, `de`, `pt-BR` | unset |
 | `toc`, `toc_depth` | `true`/`false`; heading level `1`..`6` | `false`, `3` |
 | `font_scale` | as `--font-scale` (`lg`, `125%`, `1.2`, ...) | `md` |
@@ -1077,6 +1081,30 @@ them for a run. Strict pagination and theme spacing also support explicit
 The numeric `pdf_baseline_grid_pt`
 setting also applies to `book`; an explicit `--pdf-baseline-grid-pt 0` disables
 it for one invocation.
+
+The `profile` key applies to `render`, `watch`, `batch`, `book` (including
+`--check-links`), `stats`, `verify`, and `diff`. Select it once to keep publication,
+include expansion, navigation checks, and analysis on the same authoring grammar:
+
+```sh
+fmd config set profile commonmark-gfm
+fmd report.md --out report.html
+fmd stats report.md --json
+fmd report.md --profile gfm-plus --out extended.html
+```
+
+An explicit `--profile` wins over config, and `--no-config` ignores the file
+entirely. Both config values are validated before input is read. Remove the
+`profile` line to restore historical omission behavior; `legacy` describes that
+state and is not a value accepted by `config set`. Omission remains distinct
+from an explicit `gfm-plus` choice for analysis of page-break comments.
+Verification inherits only the grammar, keeping PDF layout and resource choices
+explicit. Browser/WASM and protocol callers continue to supply their own profile.
+
+Watch sessions reload an inherited profile when the config changes and rebuild
+their include/image dependencies under the new grammar. An explicit profile
+remains fixed for the session. Invalid config keeps the previous publication and
+known dependencies until the config is repaired.
 
 Paper and margin flags apply to PDF output from `render`, `watch`, `batch`, and
 `book`. Each flag overrides its configured value; omitted margin sides keep

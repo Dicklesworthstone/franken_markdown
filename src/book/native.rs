@@ -87,7 +87,8 @@ pub(crate) struct BookArgs {
     /// Default language; chapter frontmatter may override HTML/EPUB language.
     #[arg(long)]
     lang: Option<String>,
-    /// Markdown authoring profile: commonmark-gfm or gfm-plus (all extensions by default).
+    /// Markdown authoring profile: commonmark-gfm or gfm-plus. Omission inherits
+    /// native config, with all extensions enabled when no profile is configured.
     #[arg(long, value_name = "PROFILE", value_parser = options::parse_authoring_profile)]
     profile: Option<Profile>,
     /// Complete replacement stylesheet for HTML/EPUB.
@@ -218,8 +219,17 @@ pub fn main() -> ExitCode {
 
 /// Runs a parsed `fmd book` invocation. The general CLI parser reaches this
 /// too when global flags it alone understands precede `book`.
-pub(crate) fn dispatch(args: BookArgs, json: bool, no_config: bool) -> ExitCode {
+pub(crate) fn dispatch(mut args: BookArgs, json: bool, no_config: bool) -> ExitCode {
     if args.check_links {
+        let config = if no_config {
+            FmdConfig::default()
+        } else {
+            match FmdConfig::load_default() {
+                Ok(config) => config,
+                Err(error) => return failure(66, "config_error", &error.to_string(), json),
+            }
+        };
+        args.profile = args.profile.or(config.render.profile);
         return preflight::run(&args, json);
     }
     match run(args, no_config) {
@@ -275,7 +285,7 @@ struct Receipt {
     warnings: Vec<String>,
 }
 
-fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
+fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     if args
         .out
         .as_ref()
@@ -303,6 +313,8 @@ fn run(args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     } else {
         FmdConfig::load_default().map_err(|e| error(66, "config_error", e))?
     };
+    // The selected grammar owns includes and link checks before publication.
+    args.profile = args.profile.or(config.render.profile);
     let mut theme = config.to_theme();
     if let Some(font) = args.font.as_deref() {
         theme = theme.with_font(

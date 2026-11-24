@@ -703,6 +703,8 @@ function parseMarkdownClient(source, imageAssets) {
   allocate(lineCount);
   if (!imageAssets) imageAssets = new Map();
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
+  const reservedNoteIds = new Set(), assignedNoteIds = new Set();
+  let planningNotes = false;
   const MAX_DEPTH = 64;
   // A lazy continuation may need protective indentation while containers are
   // reparsed. Track its own line identity, never its text: an identical authored
@@ -966,6 +968,21 @@ function parseMarkdownClient(source, imageAssets) {
     headings.set(slug, suffix); headings.set(id, 0);
     return id;
   }
+  function reserveNoteId(id) {
+    if (!reservedNoteIds.has(id)) { allocate(); reservedNoteIds.add(id); }
+  }
+  function noteId(base) {
+    let id = base, suffix = 2;
+    // Every note owns its legacy source destination unless a heading already
+    // owns it. Fallbacks must skip even the destinations of later citations.
+    if (headings.has(id) || assignedNoteIds.has(id)) {
+      do { charge(base.length + 1); id = base + '-' + suffix++; }
+      while (reservedNoteIds.has(id));
+    }
+    reserveNoteId(id);
+    allocate(); assignedNoteIds.add(id);
+    return id;
+  }
   function noteFragment(id) {
     let fragment = '';
     for (const scalar of id) {
@@ -988,20 +1005,22 @@ function parseMarkdownClient(source, imageAssets) {
     if (!note.number) {
       note.number = usedNotes.length + 1;
       // Public note destinations use exact source identity, independently of
-      // citation order. Keep the existing collision guard shared with headings.
+      // citation order. Plan their identities before allocating any anchors.
       // DOM/URL identifiers need Unicode scalars. Keep the exact logical key,
       // but normalize lone UTF-16 surrogates before collision allocation so
       // two malformed names and an authored U+FFFD cannot share a destination.
       charge(key.length);
-      note.id = uniqueId('fn-' + key.replace(/[\ud800-\udfff]/gu, '\ufffd'));
-      note.fragment = noteFragment(note.id);
-      note.referenceIds = [];
+      note.baseId = 'fn-' + key.replace(/[\ud800-\udfff]/gu, '\ufffd');
       usedNotes.push(note);
     }
+    // Planning follows the same inline grammar, including opaque atoms, image
+    // descriptions and depth limits. Citation marks do not enter heading IDs.
+    if (planningNotes) return '';
     allocate(); charge();
     note.references++;
-    const id = uniqueId('fnref-' + note.number + (note.references > 1 ? '-' + note.references : ''));
-    note.referenceIds.push(id);
+    const id = note.references === 1 ? note.referenceIds[0]
+      : noteId('fnref-' + note.number + '-' + note.references);
+    if (note.references > 1) note.referenceIds.push(id);
     const content = linked ? '<a href="#' + note.fragment + '" role="doc-noteref">' + note.number + '</a>' : String(note.number);
     return '<sup class="footnote-ref" id="' + id + '">' + content + '</sup>';
   }
@@ -2310,6 +2329,42 @@ function parseMarkdownClient(source, imageAssets) {
     }
     return out;
   }
+  function headingSlug(content) {
+    // Native heading identity omits citation marks. Remove only our generated
+    // superscripts; escaped/code source remains visible text.
+    charge(content.length);
+    const title = content.replace(/<sup class="footnote-ref" id="[^"]*">(?:<a href="[^"]*" role="doc-noteref">)?[0-9]+(?:<\/a>)?<\/sup>/g, '');
+    return decode(title.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
+  }
+  function planNoteAnchors(nodes) {
+    for (const node of nodes) {
+      charge();
+      switch (node.kind) {
+        case 'heading':
+          node.headingId = uniqueId(headingSlug(inline(node.title))); break;
+        case 'paragraph':
+          inline(node.text); break;
+        case 'callout':
+          inline(node.label);
+          planNoteAnchors(node.children); break;
+        case 'quote':
+          planNoteAnchors(node.children); break;
+        case 'list':
+          for (const item of node.items) planNoteAnchors(item.children);
+          break;
+        case 'table': {
+          const row = cells => {
+            // Extra source cells are not rendered and cannot activate notes.
+            for (let index = 0; index < node.aligns.length; index++)
+              inline(cells[index] || '', 0, true, true, true, true);
+          };
+          row(node.head);
+          for (const cells of node.rows) row(cells);
+          break;
+        }
+      }
+    }
+  }
   function renderBlocks(nodes, tight = false, footnotes = true) {
     let out = '';
     for (const node of nodes) {
@@ -2329,12 +2384,8 @@ function parseMarkdownClient(source, imageAssets) {
           out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
           const content = inline(node.title, 0, true, footnotes);
-          // Native heading identity omits citation marks. Remove only our
-          // generated superscripts; escaped/code source remains visible text.
-          charge(content.length);
-          const title = content.replace(/<sup class="footnote-ref" id="[^"]*">(?:<a href="[^"]*" role="doc-noteref">)?[0-9]+(?:<\/a>)?<\/sup>/g, '');
-          const slug = decode(title.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
-          out = append(out, '<h' + node.level + ' id="' + escape(uniqueId(slug)) + '">' + content + '</h' + node.level + '>\n'); break;
+          const id = node.headingId || uniqueId(headingSlug(content));
+          out = append(out, '<h' + node.level + ' id="' + escape(id) + '">' + content + '</h' + node.level + '>\n'); break;
         }
         case 'rule': out = append(out, '<hr>\n'); break;
         case 'callout':
@@ -2439,10 +2490,31 @@ function parseMarkdownClient(source, imageAssets) {
   }
   const lines = documentBody(source).replace(/\r\n?/g, '\n').replace(/\0/g, '\ufffd').split('\n');
   if (lines.at(-1) === '') { allocate(); terminalEmptyLine.set(lines, lines.length - 1); }
-  const body = renderBlocks(parseBlocks(lines));
+  const blocks = parseBlocks(lines);
+  if (notes.size) {
+    // Headings retain their identities even when a citation precedes them.
+    // Visit only emitted content: body first, then the growing first-reference
+    // note queue. Unused/duplicate definitions contribute no heading anchors;
+    // cycles append references, never repeat note bodies.
+    planningNotes = true;
+    planNoteAnchors(blocks);
+    for (let index = 0; index < usedNotes.length; index++) planNoteAnchors(usedNotes[index].content);
+    planningNotes = false;
+    for (const id of headings.keys()) reserveNoteId(id);
+    for (const note of usedNotes) {
+      reserveNoteId(note.baseId);
+      reserveNoteId('fnref-' + note.number);
+    }
+    for (const note of usedNotes) {
+      note.id = noteId(note.baseId);
+      note.fragment = noteFragment(note.id);
+      allocate(); note.referenceIds = [noteId('fnref-' + note.number)];
+    }
+  }
+  const body = renderBlocks(blocks);
   if (!usedNotes.length) return body;
-  // Render the growing work queue once per note, then emit all backlinks.
-  // Nested notes can append work; cycles only append references, never work.
+  // Render each planned note once, then emit all backlinks after nested and
+  // cyclic citations have added their return anchors.
   const renderedNotes = [];
   for (let index = 0; index < usedNotes.length; index++) renderedNotes.push(renderBlocks(usedNotes[index].content));
   let footer = '<section class="footnotes" role="doc-endnotes"><hr><ol>\n';

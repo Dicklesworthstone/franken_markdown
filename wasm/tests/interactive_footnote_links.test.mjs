@@ -219,3 +219,80 @@ test('heading fragments ignore generated note numbers without changing literal c
   assertNoNestedAnchors(literal);
   assertFragmentTargets(literal);
 });
+
+test('citations cannot rename later headings or their authored fragment links', () => {
+  const headings = '# fn-note\n\n# fnref-1\n\n';
+  const citation = 'Claim[^note].\n\n';
+  for (const source of [headings + citation, citation + headings]) {
+    const html = render(source + '[Heading](#fn-note) [Other heading](#fnref-1)\n\n[^note]: Evidence.');
+    assert.ok(html.includes('<h1 id="fn-note">fn-note</h1>'));
+    assert.ok(html.includes('<h1 id="fnref-1">fnref-1</h1>'));
+    assert.ok(html.includes('<li id="fn-note-2"><p>Evidence.</p>'));
+    assert.ok(html.includes('<sup class="footnote-ref" id="fnref-1-2"><a href="#fn-note-2" role="doc-noteref">1</a></sup>'));
+    assert.ok(html.includes('<a href="#fn-note">Heading</a>'));
+    assert.ok(html.includes('<a href="#fnref-1">Other heading</a>'));
+    assertNoNestedAnchors(html);
+    assertFragmentTargets(html);
+  }
+});
+
+test('collision suffixes cannot consume a later source note identity', () => {
+  const html = render('First[^note] second[^note-2] third[^note-3].\n\n'
+    + '# fn-note\n\n# fn-note-4\n\n# fnref-1\n\n# fnref-1-2\n\n'
+    + '[Second](#fn-note-2) [Third](#fn-note-3)\n\n'
+    + '[^note-3]: Third body.\n[^note-2]: Second body.\n[^note]: First body.');
+  assert.ok(html.includes('<li id="fn-note-5"><p>First body.</p>'));
+  assert.ok(html.includes('<li id="fn-note-2"><p>Second body.</p>'));
+  assert.ok(html.includes('<li id="fn-note-3"><p>Third body.</p>'));
+  assert.ok(html.includes('<sup class="footnote-ref" id="fnref-1-3"><a href="#fn-note-5" role="doc-noteref">1</a></sup>'));
+  assertNoNestedAnchors(html);
+  assertFragmentTargets(html);
+});
+
+test('reachable note headings reserve anchors before any citation is rendered', () => {
+  const html = render('Start[^outer].\n\n'
+    + '[^unused]: # fn-note-2\n\n'
+    + '[^outer]: # fn-note\n\n    Continue[^inner].\n\n'
+    + '[^inner]: # fnref-1\n\n    Back[^outer] and evidence[^note].\n\n'
+    + '[^outer]: # fn-note-3\n\n'
+    + '[^note]: Kept evidence.');
+  assert.ok(html.includes('<h1 id="fn-note">fn-note</h1>'));
+  assert.ok(html.includes('<h1 id="fnref-1">fnref-1</h1>'));
+  assert.ok(html.includes('<li id="fn-note-2"><p>Kept evidence.</p>'));
+  assert.ok(html.includes('id="fnref-1-2"><a href="#fn-outer" role="doc-noteref">1</a>'));
+  assert.ok(html.includes('id="fnref-1-2-2"><a href="#fn-outer" role="doc-noteref">1</a>'));
+  assert.equal((html.match(/<li id="fn-outer">/g) || []).length, 1);
+  assert.equal((html.match(/<li id="fn-inner">/g) || []).length, 1);
+  assert.equal((html.match(/class="footnote-backref"/g) || []).length, 4);
+  assert.doesNotMatch(html, /<h1 id="fn-note-[23]">|id="fn-unused"/);
+  assertNoNestedAnchors(html);
+  assertFragmentTargets(html);
+});
+
+test('heading allocation follows body and referenced-note order rather than definition order', () => {
+  const definitions = '[^a]: # Same\n\n[^b]: # Same\n\n[^hidden]: # Same\n';
+  const html = render('Use[^b] then[^a].\n\n# Same\n\n' + definitions);
+  assert.ok(html.includes('<h1 id="same">Same</h1>'));
+  assert.ok(html.includes('<li id="fn-b"><h1 id="same-1">Same</h1>'));
+  assert.ok(html.includes('<li id="fn-a"><h1 id="same-2">Same</h1>'));
+  assert.doesNotMatch(html, /same-3|id="fn-hidden"/);
+  assertFragmentTargets(html);
+});
+
+test('discarded table cells cannot activate notes or reserve their headings', () => {
+  const html = render('Claim[^shown].\n\n| H |\n| --- |\n| kept | discarded[^hidden] |\n\n'
+    + '[^shown]: Evidence.\n\n[^hidden]: # fn-shown');
+  assert.ok(html.includes('<li id="fn-shown"><p>Evidence.</p>'));
+  assert.doesNotMatch(html, /discarded|<h1|fn-hidden|fn-shown-2/);
+  assertFragmentTargets(html);
+});
+
+test('noncolliding repeated citations retain their existing complete output', () => {
+  assert.equal(render('Evidence[^a] again[^a].\n\n[^a]: A note.'),
+    '<p>Evidence<sup class="footnote-ref" id="fnref-1"><a href="#fn-a" role="doc-noteref">1</a></sup> '
+    + 'again<sup class="footnote-ref" id="fnref-1-2"><a href="#fn-a" role="doc-noteref">1</a></sup>.</p>\n'
+    + '<section class="footnotes" role="doc-endnotes"><hr><ol>\n<li id="fn-a"><p>A note.</p>\n'
+    + ' <a href="#fnref-1" class="footnote-backref" role="doc-backlink" aria-label="Back to reference 1">↩</a>'
+    + ' <a href="#fnref-1-2" class="footnote-backref" role="doc-backlink" aria-label="Back to reference 1-2">↩</a>'
+    + '</li>\n</ol></section>\n');
+});

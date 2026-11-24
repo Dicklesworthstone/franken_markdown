@@ -181,9 +181,15 @@ rebuild explanation survive the worker boundary; the worker closes and queued
 requests are not replayed. Options are never silently downgraded to fit an older
 binary. The synchronous renderer APIs themselves are unchanged.
 
-Input image/font views are copied only after queue admission, and only those owned
-copies are transferred. Caller buffers are never detached; edits to options or
-bytes after enqueue cannot change a queued request. Shared/detached buffers,
+Input image/font views are copied only after ingress-budget admission, and only
+those owned copies are transferred. The first request captures them before
+`workerFactory` and endpoint listener registration run, so startup callbacks
+cannot replace the selected image/font bytes or invalidate the request by
+detaching the caller's buffers. Multi-format publications still share one copy
+for each identical byte range and preserve distinct overlapping ranges.
+Later requests capture their resources during the existing queue admission.
+Caller buffers are never detached by the renderer; edits to options or bytes
+after enqueue cannot change a queued request. Shared/detached buffers,
 duplicate asset destinations/slots and malformed Unicode are rejected. Defaults
 allow 32 active-plus-queued requests and 16 MiB of charged input (maximum 128
 requests and 64 MiB). Images are at most 8 MiB each and 1,024 per request; fonts
@@ -210,7 +216,7 @@ flow/book APIs remain unchanged. Both package assemblers include this entry and
 its dependencies without changing WASM size budgets.
 
 ```sh
-node --test wasm/document_worker.test.mjs wasm/demo_worker.test.mjs
+node --test wasm/document_worker.test.mjs wasm/document_worker_ownership.test.mjs wasm/demo_worker.test.mjs
 node wasm/document_worker_smoke.mjs <assembled-package> <generated.wasm>
 # With TypeScript installed: validate accepted and rejected public option shapes.
 tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext \
@@ -222,8 +228,10 @@ transfers with an explicitly identified native renderer double, plus production
 demo lifecycle code with DOM/renderer doubles. Worker regressions cover geometry,
 running bands and logos, EPUB publication settings, exact-view resource ownership,
 queue budgets, cancellation, diagnostic metadata and package-mismatch errors.
-They do not prove typography or browser
-acceptance. The separate smoke gate loads the production worker entry and actual
+The ownership suite separately exercises startup callbacks through a recording
+endpoint, including changed/detached buffers, exact-range publication sharing,
+startup failure/retry and disposal. It does not execute a worker or native
+renderer. These tests do not prove typography or browser acceptance. The separate smoke gate loads the production worker entry and actual
 generated WASM and compares all five formats against the existing direct API,
 including supplied images for HTML/PDF/SVG/EPUB, named/custom PDF geometry, running
 text/logos and first-page suppression, EPUB CSS/navigation, and document-scoped

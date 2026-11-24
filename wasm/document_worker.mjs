@@ -545,11 +545,17 @@ export function createWorkerRenderer(options = {}) {
       if (controls?.signal?.aborted) fail("ABORTED", "document render was aborted before dispatch");
       const input = prepareInput();
       if (input.charge > limits.maxPendingBytes) fail("WORKER_QUEUE_FULL", "document exceeds worker ingress budget");
+      const prepare = () => {
+        if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
+        if (format === "publish") return publicationSnapshot(input, maxOutputBytes);
+        return snapshot(input, maxOutputBytes);
+      };
       // The first request has passed its ingress budget and has no queued
-      // competitors. Own its verification assets before workerFactory can call
-      // host code that mutates the selected buffers. Later requests snapshot
-      // inside the transport's synchronous queue admission as usual.
-      const initialVerification = format === "verify" && !rpc ? snapshot(input, maxOutputBytes) : null;
+      // competitors. Own every selected resource before workerFactory or endpoint
+      // listener registration can mutate or detach caller buffers. Publications
+      // keep their exact-range deduplication. Later requests still snapshot only
+      // inside the transport's synchronous queue admission.
+      const initialPayload = rpc ? null : prepare();
       // Reuse the existing owned transport's admission, deadlines and termination
       // protocol, rather than implementing a second cancellation mechanism.
       if (!rpc) {
@@ -580,13 +586,7 @@ export function createWorkerRenderer(options = {}) {
             ...normalizePdfArchival(target.options.pdfA, target.options.pdfAStrict), profile: target.options.profile,
           })) }
         : input.sourceLength;
-      const prepare = () => {
-        if (initialVerification) return initialVerification;
-        if (format === "compare") return { args: [input.oldMarkdown, input.newMarkdown, input.options, maxOutputBytes] };
-        if (format === "publish") return publicationSnapshot(input, maxOutputBytes);
-        return snapshot(input, maxOutputBytes);
-      };
-      return rpc.request(format, input.charge, prepare, controls).then(value => {
+      return rpc.request(format, input.charge, () => initialPayload ?? prepare(), controls).then(value => {
         try {
           if (format === "publish") return publicationHelpers(value, maxOutputBytes, expected);
           if (format === "verify") return verificationHelpers(value, maxOutputBytes, expected);

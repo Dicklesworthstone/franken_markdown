@@ -127,7 +127,7 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
     ["pdf", { title: "\ud800" }],
     ["pdf", { toc: 1 }],
     ["pdf", { title: "a".repeat(4097) }],
-    ["html", { author: "ignored" }],
+    ["html", { author: 2 }],
     ["pdf", { allowRawHtml: true }],
     ["pdf", { customCss: "p { color: red; }" }],
     ["html", { pdfImages: [] }],
@@ -155,6 +155,9 @@ test("rejects unknown/coerced settings, unsafe HTML/font/asset injection, and in
     { revision: 18446744073709551615n, layoutRevision: 0n },
   );
   assert.equal(normalized[2].revision, "18446744073709551615");
+  // The HTML renderer accepts author metadata and preserves the supplied text.
+  await f.api.exportDocument("html", { author: " É. Chen " }, f.session.token);
+  assert.equal(f.calls[0].options.author, " É. Chen ");
 });
 
 test("PDF typography is deeply owned and HTML font selection reaches the existing renderers", async () => {

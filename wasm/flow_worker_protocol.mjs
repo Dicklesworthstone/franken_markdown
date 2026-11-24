@@ -3,7 +3,7 @@
 // shared with the synchronous facade rather than delegated to UTF-8 coercion.
 
 import { normalizeAssetBatch } from "./flow_asset_batch.mjs";
-import { normalizeFlowExport, normalizeFlowExportBatch, normalizeFlowPdfVerification } from "./flow_export.mjs";
+import { normalizeFlowExport, normalizeFlowExportBatch, normalizeFlowExportImages, normalizeFlowPdfVerification } from "./flow_export.mjs";
 import { outlineGlyphIds } from "./flow_outlines.mjs";
 import {
   FLOW_ASSET_LIMIT,
@@ -146,9 +146,9 @@ export function normalizeFlowRequest(method, args) {
     case "getSource":
       return [];
     case "exportDocument":
-      return normalizeFlowExport(args[0], args[1], args[2]);
+      return normalizeFlowExport(args[0], args[1], args[2], false);
     case "exportDocuments":
-      return normalizeFlowExportBatch(args[0], args[1]);
+      return normalizeFlowExportBatch(args[0], args[1], false);
     case "verifyPdf":
       return normalizeFlowPdfVerification(args[0], args[1], false);
     case "edit":
@@ -222,10 +222,24 @@ export function requestWeight(args) {
   return 128 + size(args);
 }
 export function snapshotArguments(method, normalized) {
-  if (method === "verifyPdf") {
-    // Resource views were charged during admission; copy their exact ranges
-    // only after reserving the queue slot, before returning to the caller.
-    return { args: normalizeFlowPdfVerification(normalized[0], normalized[1]) };
+  if (method === "verifyPdf" || method === "exportDocument" || method === "exportDocuments") {
+    const transfer = [];
+    const capture = options => {
+      if (!options.pdfImages?.length) return options;
+      const pdfImages = normalizeFlowExportImages(options.pdfImages);
+      for (const image of pdfImages) transfer.push(image.bytes.buffer);
+      return { ...options, pdfImages };
+    };
+    // Admission used exact views of caller storage. Replace those views in
+    // our private arguments now, so queued validators do not keep the caller's
+    // backing buffers alive. Only the newly owned ranges may be transferred.
+    if (method === "exportDocuments") {
+      normalized[0] = normalized[0].map(job => ({ format: job.format, options: capture(job.options) }));
+    } else {
+      const index = method === "exportDocument" ? 1 : 0;
+      normalized[index] = capture(normalized[index]);
+    }
+    return { args: normalized, transfer };
   }
   if (method === "provideAssets") {
     const transfer = [];

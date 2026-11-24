@@ -95,7 +95,7 @@ function runningRecord(value, allowed, name) {
 // Explicit export-only assets let a host supply a running logo without adding
 // it to Markdown or granting ambient loading. Validate the complete inventory
 // before copying, including exact views and the aggregate byte budget.
-function exportImages(value, capture = true) {
+export function normalizeFlowExportImages(value, capture = true) {
   if (!Array.isArray(value) || value.length > IMAGE_COUNT)
     fail("INVALID_OPTIONS", "pdfImages must contain at most 1024 image assets");
   const images = [];
@@ -218,7 +218,7 @@ export function normalizeFlowExport(format, options = {}, expectedToken, capture
       try { result.running = normalizePdfRunning(running); }
       catch (error) { throw new FlowError(error.code, error.message, { cause: error }); }
     }
-    if (pdfImages !== undefined) result.pdfImages = exportImages(pdfImages, captureAssets);
+    if (pdfImages !== undefined) result.pdfImages = normalizeFlowExportImages(pdfImages, captureAssets);
     // Deterministic by default. A host can supply a chosen timestamp explicitly.
     result.metadataEpochSeconds = uint(
       options.metadataEpochSeconds ?? 0,
@@ -372,7 +372,7 @@ export function decodeFlowPdfVerification(value, expected, max = PDF_VERIFICATIO
 // A batch is one immutable publication request over one source/layout token.
 // Each format appears at most once so renderer-specific options and output
 // identity remain unambiguous. Plain-data records prevent accessor execution.
-export function normalizeFlowExportBatch(requests, expectedToken) {
+export function normalizeFlowExportBatch(requests, expectedToken, captureAssets = true) {
   if (!Array.isArray(requests) || requests.length < 1 || requests.length > 4)
     fail("INVALID_OPTIONS", "export batch must contain 1..4 format requests");
   const expected = token(expectedToken), seen = new Set(), normalized = [];
@@ -408,7 +408,7 @@ export function normalizeFlowExportBatch(requests, expectedToken) {
         fail("INVALID_OPTIONS", "export batch options cannot contain accessors or symbols");
       data[key] = field.value;
     }
-    const [format, value] = normalizeFlowExport(owned.format, data, expected);
+    const [format, value] = normalizeFlowExport(owned.format, data, expected, captureAssets);
     normalized.push(Object.freeze({ format, options: value }));
   }
   return [Object.freeze(normalized), expected];

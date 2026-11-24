@@ -331,7 +331,7 @@ struct RenderArgs {
     to: Target,
     /// Output path, or `-` to write one document to stdout (including PDF/EPUB).
     /// Without a path, HTML/SVG use stdout and PDF/EPUB derive a filename.
-    /// For `both`, the extension is swapped per format; stdout is unavailable.
+    /// Combined exports swap the extension per format and never use stdout.
     #[arg(long, short)]
     out: Option<PathBuf>,
     /// Override the configured/default body font.
@@ -342,6 +342,7 @@ struct RenderArgs {
     css: Option<PathBuf>,
     /// Generate an interactive, self-hosting single-file HTML workspace with live editor,
     /// real-time preview, document statistics, and client-side PDF export.
+    /// With PDF, EPUB, or SVG, write a sibling HTML file alongside that format.
     #[arg(long, visible_alias = "self-hosting")]
     interactive_html: bool,
     /// Write a deterministic full-content JSON search index (headings, prose,
@@ -1878,7 +1879,10 @@ fn run_render_with_preview(
     let want_pdf = matches!(args.to, Target::Pdf | Target::Both);
     let want_epub = matches!(args.to, Target::Epub);
     let want_svg = matches!(args.to, Target::Svg);
-    let single = !matches!(args.to, Target::Both);
+    // The interactive companion is a real second output, just like --to both.
+    // Give every artifact its own extension and keep combined publications off
+    // stdout even when --out is omitted (HTML plus SVG would otherwise mix).
+    let single = !(want_html && (want_pdf || want_epub || want_svg));
 
     // Refuse to overwrite the input file. `read_input` already slurped the
     // source into memory, so writing an output onto the same path would
@@ -3887,6 +3891,7 @@ fn source_date_epoch() -> std::result::Result<Option<u64>, String> {
 
 /// Compute the output path, or `None` for stdout. Every single format supports
 /// explicit `--out -`; HTML/SVG also default to stdout when `--out` is omitted.
+/// Combined exports always use sibling files, including interactive companions.
 fn out_path(args: &RenderArgs, single: bool, ext: &str) -> Option<PathBuf> {
     if let Some(p) = &args.out {
         if single && is_stdout_path(p) {

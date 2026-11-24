@@ -126,8 +126,8 @@ alternative paragraph shapes.
 
 `--pdf-split-footnotes` can be combined with optimal or strict pagination and an
 optional baseline grid. For documents containing actual continued notes, the
-planner retains baseline paragraph shapes and searches body boundaries while
-carrying the remaining note fragments as part of its state. Different pending
+planner searches body boundaries while carrying the remaining note fragments
+as part of its state. Different pending
 fragments at the same body position can lead to different later pages, so their
 costs and physical-page continuations remain distinct during the search.
 
@@ -155,11 +155,32 @@ existing typed pagination failure: strict mode returns it, while best-effort
 optimal mode reports it and uses note-aware greedy continuation. Default greedy
 continuation retains its existing behavior.
 
-The paragraph report uses `PdfParagraphVariantStatus::ContinuedFootnotes` when
-actual continued notes require baseline shapes. Diagnostic exports surface
-`paragraph_pagination_limited`, even if the body-boundary report is successful
-`ExactHeight`. Enabling the option without actual continued notes does not
-disable otherwise eligible paragraph alternatives. See
+The same eligible body paragraph alternatives participate in a bounded exact
+selection. Each complete combination is flattened with the unchanged measured
+note region, then first citations are rescanned and the continuation planner
+evaluates the complete physical pages. Selection minimizes the sum of paragraph
+line-breaking demerits and page costs, including note-only tails. No whole-note
+reservation approximation is used. Citations cannot disappear, reorder or
+change targets, and finalized alternatives retain inline objects, nested list
+and quotation ownership, explicit breaks, and grid clearance.
+
+The selector preflights at most 1,024 complete combinations and 1,000,000 total
+materialized rows. Searches share aggregate limits of 8,000,000 work operations,
+1,000,000 nodes, and 1,000,000 retained ranges; an infeasible candidate consumes
+its measured budget too. `Planned` means every admitted combination was
+evaluated. A limit, invalid plan or unsuccessful complete search retains the
+original measured layout atomically and reports `Rejected` with its typed
+failure. `paragraph_pagination_limited` then describes that optional restriction,
+even when the final body-boundary report is successful `ExactHeight`. This does
+not weaken strict page-boundary guarantees. No candidate is installed merely
+because it was the best among an unfinished prefix of the search.
+
+The chosen flattened layout is already the input to the certified physical
+planner; final counting, painting and verification use that same deterministic
+planner without translating a separate paragraph-fragment plan. Note bodies
+keep their measured shapes, and the fixed note-allocation policy still defines
+the exactness scope. Enabling continuation without actual continued notes uses
+the existing mixed-height joint planner. See
 [PDF footnotes](PDF_FOOTNOTES.md) for supported note blocks and fallback rules.
 
 ### Pagination reports and fallback diagnostics

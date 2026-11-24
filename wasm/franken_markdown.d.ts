@@ -208,8 +208,9 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
   footnoteBacklinks?: boolean;
   /** Continue long text notes across page feet. Default false.
    * Supports optimal/strict pagination and baseline grids. Exactness covers body
-   * boundaries under the fixed note-allocation policy; continued notes retain
-   * baseline paragraph shapes. Requires a matching WASM package; older token
+   * boundaries and admitted paragraph shapes under the fixed note-allocation
+   * policy; bounded search failures retain baseline shapes with diagnostics.
+   * Requires a matching WASM package; older token
    * parsers fail explicitly. */
   splitFootnotes?: boolean;
   /** Opt-in PDF body baseline spacing in points, 1..144 (rounded to 0.001 pt).

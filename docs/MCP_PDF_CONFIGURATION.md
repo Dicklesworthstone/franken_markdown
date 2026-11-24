@@ -169,9 +169,11 @@ share when the complete page fits. Strict mode preserves hard body widow/orphan
 and keep rules and refuses infeasible or exhausted searches. Notes retain their
 semantic-unit rules, without a new two-line widow/orphan guarantee for note prose.
 
-Actual continued notes retain baseline paragraph shapes, so diagnostic PDF
-exports can return `paragraph_pagination_limited` even when page boundaries are
-exact. Verification and rendering use the same physical pages, including
+Body paragraph alternatives participate in bounded complete selection with
+continued notes. Diagnostic PDF exports return `paragraph_pagination_limited`
+if an optional search limit or failure retains baseline shapes; exact final
+page boundaries remain separately reported. Verification and rendering use the
+same physical pages, including
 note-only tails. See [PDF footnotes](PDF_FOOTNOTES.md) and
 [joint pagination](JOINT_PAGINATION.md) for allocation, fallback and report scope.
 

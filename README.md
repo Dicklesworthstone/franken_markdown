@@ -1320,8 +1320,10 @@ Honest about what the renderer does not do yet.
   pending notes in FIFO order; note-only tails can use the full page. Mandatory
   first fragments may exceed the preferred share when the complete page fits.
   Strict mode keeps hard body widow/orphan and keep rules; continued notes keep
-  their semantic-unit rules. Actual continued notes retain baseline paragraph
-  shapes and report that limitation. Unreferenced notes stay in the Notes section. See
+  their semantic-unit rules. Body paragraph alternatives participate in a bounded
+  complete search that includes note-only page costs; an exhausted optional
+  search retains baseline shapes and reports that limitation. Unreferenced notes
+  stay in the Notes section. See
   [PDF footnotes](docs/PDF_FOOTNOTES.md).
 - **PDF mathematics.** Display and inline equations use real math glyphs and
   geometry. Inline formulas remain whole and scale down only when needed to fit

@@ -99,6 +99,16 @@ pub(crate) struct Plan {
     pub search_work: usize,
 }
 
+/// Work consumed by an attempted search, including an infeasible or refused
+/// one. Optional callers must not reset their document budget between layouts.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Usage {
+    pub search_nodes: usize,
+    pub search_work: usize,
+    /// High-water mark of live frontier keys and retained note allocations.
+    pub retained_ranges: usize,
+}
+
 /// (note index, first unpainted unit), always in first-citation order.
 type Pending = Vec<(usize, usize)>;
 type Key = (usize, Pending);
@@ -125,6 +135,7 @@ struct Search {
     options: Options,
     work: usize,
     retained_ranges: usize,
+    peak_retained_ranges: usize,
     nodes: Vec<Node>,
 }
 
@@ -148,6 +159,7 @@ impl Search {
         if self.retained_ranges > self.options.limits.max_retained_ranges {
             return Err(Error::Budget("continuation ranges"));
         }
+        self.peak_retained_ranges = self.peak_retained_ranges.max(self.retained_ranges);
         Ok(())
     }
 
@@ -419,14 +431,31 @@ impl<'a> Measured<'a> {
 /// so only their least-cost predecessor survives. Body edges strictly advance;
 /// deterministic note-only tails are drained separately, avoiding an invalid
 /// lexicographic ordering assumption about pending note indices.
+#[cfg(test)]
 pub(crate) fn plan(input: &Input, options: Options) -> Result<Plan, Error> {
-    let measured = Measured::new(input, options)?;
+    plan_with_usage(input, options).0
+}
+
+pub(crate) fn plan_with_usage(input: &Input, options: Options) -> (Result<Plan, Error>, Usage) {
     let mut search = Search {
         options,
         work: 0,
         retained_ranges: 0,
+        peak_retained_ranges: 0,
         nodes: Vec::new(),
     };
+    let result = search_plan(input, &mut search);
+    let usage = Usage {
+        search_nodes: search.nodes.len(),
+        search_work: search.work,
+        retained_ranges: search.peak_retained_ranges,
+    };
+    (result, usage)
+}
+
+fn search_plan(input: &Input, search: &mut Search) -> Result<Plan, Error> {
+    let options = search.options;
+    let measured = Measured::new(input, options)?;
     let mut frontier = BTreeMap::<Key, State>::new();
     let initial = State {
         cost: 0,
@@ -446,7 +475,7 @@ pub(crate) fn plan(input: &Input, options: Options) -> Result<Plan, Error> {
             let mut pending = pending;
             while !pending.is_empty() {
                 let (fragments, remaining, reserve) =
-                    measured.allocate(&pending, count..count, options.capacity, &mut search)?;
+                    measured.allocate(&pending, count..count, options.capacity, search)?;
                 if fragments.is_empty() || reserve > options.capacity {
                     // Another body partition may have consumed this unit
                     // inside an earlier fragment with a different prefix.
@@ -469,7 +498,14 @@ pub(crate) fn plan(input: &Input, options: Options) -> Result<Plan, Error> {
             }
             continue;
         }
-        for end in (start + 1)..=measured.next_forced[start] {
+        for (end, boundary) in input
+            .break_costs
+            .iter()
+            .copied()
+            .enumerate()
+            .take(measured.next_forced[start] + 1)
+            .skip(start + 1)
+        {
             search.charge(1)?;
             let height = measured.body_height(start, end)?;
             if height > options.capacity {
@@ -481,13 +517,13 @@ pub(crate) fn plan(input: &Input, options: Options) -> Result<Plan, Error> {
             let preferred_share = options.capacity / 5 * 2 + options.capacity % 5 * 2 / 5;
             let preferred = preferred_share.min(options.capacity - height);
             let (fragments, remaining, reserve) =
-                measured.allocate(&pending, start..end, preferred, &mut search)?;
+                measured.allocate(&pending, start..end, preferred, search)?;
             let used = height_sum(height, reserve)?;
             if used > options.capacity {
                 continue;
             }
             let final_page = end == count && remaining.is_empty();
-            let cost = search.page_cost(used, final_page, input.break_costs[end].unwrap_or(0))?;
+            let cost = search.page_cost(used, final_page, boundary.unwrap_or(0))?;
             let rank = (
                 state.cost.checked_add(cost).ok_or(Error::CostOverflow)?,
                 state.pages.checked_add(1).ok_or(Error::CostOverflow)?,

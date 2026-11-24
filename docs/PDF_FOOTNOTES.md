@@ -180,13 +180,21 @@ returns a typed error for an impossible layout or an exhausted search budget.
 Best-effort optimal mode reports that failure before using its note-aware greedy
 fallback. Default greedy continuation keeps its existing behavior.
 
-Documents with actual continued notes retain their measured baseline paragraph
-shapes. The pagination report records this restriction as
-`PdfParagraphVariantStatus::ContinuedFootnotes`, and diagnostic exports include
-`paragraph_pagination_limited`. A successful `ExactHeight` page report therefore
-certifies the supported body-boundary plan under the policy above, while making
-the paragraph-search limitation visible. Merely enabling continuation on a
-document without continued notes does not introduce that restriction.
+Documents with continued notes also participate in bounded joint paragraph and
+page selection. The planner evaluates every admitted combination of measured
+body paragraph shapes with the same continuation policy, including the cost of
+note-only tails, then minimizes page costs plus paragraph line-breaking
+demerits. Alternative shapes must preserve the complete citation sequence,
+inline objects, list/quotation ownership and baseline-grid clearance. Note
+bodies retain their measured shapes.
+
+This optional search admits at most 1,024 complete shape combinations and
+1,000,000 materialized rows across those combinations. All attempts, including
+infeasible ones, share the existing solver work, node and retained-range budgets.
+It reports `PdfParagraphVariantStatus::Planned` only after completing the search;
+a refusal retains the original body shapes and reports `Rejected` with
+`paragraph_pagination_limited`. Strict mode still requires exact page boundaries
+for those final shapes. No partial search is presented as an optimal selection.
 See [joint pagination](JOINT_PAGINATION.md) for the typed report and strict-mode
 contract.
 

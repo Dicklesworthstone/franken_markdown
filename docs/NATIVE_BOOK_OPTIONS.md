@@ -165,8 +165,9 @@ pending notes continue in FIFO order, and note-only tails can use the full page.
 The preferred share is capped by body space; mandatory first fragments may
 exceed it when the complete page fits. Strict mode preserves hard body keeps and
 two-line widow/orphan minima, and refuses infeasible or exhausted searches.
-Note fragments retain their semantic-unit rules. Actual continued notes retain
-baseline paragraph shapes and report that limitation. Chapter destinations,
+Note fragments retain their semantic-unit rules. Body paragraph alternatives
+participate in bounded complete selection with continued notes; a refused
+optional search retains baseline shapes and reports that limitation. Chapter destinations,
 printed contents and running page totals use the resulting physical pages. See
 [PDF footnotes](PDF_FOOTNOTES.md) for supported blocks, fallback and navigation.
 

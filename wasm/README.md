@@ -673,9 +673,10 @@ two-line widow/orphan minima and keeps, and refuses infeasible or exhausted
 searches. Note fragments retain their semantic-unit rules without a new
 two-line widow/orphan guarantee for note prose.
 
-Actual continued notes retain baseline paragraph shapes and surface
-`paragraph_pagination_limited` in diagnostic exports even when body boundaries
-are exact. Tables continue at complete rows with repeated headers; headings
+Body paragraph alternatives participate in bounded complete selection with
+continued notes. A refused optional search retains baseline shapes and surfaces
+`paragraph_pagination_limited` even when final body boundaries are exact.
+Tables continue at complete rows with repeated headers; headings
 retain their first content row.
 Indivisible objects or mandatory groups that cannot fit keep the complete
 endnote fallback. Unreferenced notes remain in the trailing Notes section. Use a matching

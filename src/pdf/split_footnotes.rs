@@ -9,14 +9,16 @@ use std::ops::Range;
 
 use super::*;
 
-mod exact;
+pub(super) mod exact;
 
 pub(super) fn plan(
     lines: &[Line],
     notes: &PageNotes,
     page: PageGeom,
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
-    exact::plan(lines, notes, page)
+    exact::evaluate(lines, notes, page, None)
+        .result
+        .map(|evaluated| evaluated.plan)
 }
 
 /// Immutable physical allocations; each consumer owns its own replay cursor.

@@ -652,3 +652,33 @@ fn cost_overflow_is_an_error_instead_of_a_wrapped_minimum() {
     };
     assert_eq!(plan(&input, options).unwrap_err(), Error::CostOverflow);
 }
+
+#[test]
+fn failed_candidates_consume_the_shared_search_budget() {
+    // No body partition can place this mandatory first note unit, but finding
+    // that out costs work. A caller trying another paragraph shape must charge
+    // this failed attempt rather than resetting its document allowance.
+    let impossible = input(&[8, 8, 8], &[(0, &[50])]);
+    let (result, usage) = plan_with_usage(&impossible, options(20));
+    assert!(matches!(result, Err(Error::Infeasible { .. })));
+    assert!(usage.search_work > 1);
+
+    let remaining = usage.search_work - 1;
+    let mut bounded = options(20);
+    bounded.limits.max_work = remaining;
+    let (result, refused) = plan_with_usage(&impossible, bounded);
+    assert_eq!(result.unwrap_err(), Error::Budget("continuation work"));
+    assert!(refused.search_work > remaining);
+
+    // Successful candidates expose the same complete plan and cost together
+    // with their live-range high-water mark, including pending note tails.
+    let feasible = input(&[8, 8, 8], &[(0, &[5, 5, 5, 5])]);
+    let (result, usage) = plan_with_usage(&feasible, options(20));
+    let result = result.unwrap();
+    let ordinary = plan(&feasible, options(20)).unwrap();
+    assert_eq!(result.pages, ordinary.pages);
+    assert_eq!(result.total_demerits, ordinary.total_demerits);
+    assert_eq!(usage.search_nodes, result.search_nodes);
+    assert_eq!(usage.search_work, result.search_work);
+    assert!(usage.retained_ranges > 0);
+}

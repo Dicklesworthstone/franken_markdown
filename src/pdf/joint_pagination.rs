@@ -16,6 +16,8 @@ use crate::pagination::height::{
     plan_blocks_with_reservation_prefix,
 };
 
+mod continued;
+
 /// The counted KP search already has a state-cell bound. Bound its input here
 /// too, because its predecessor scan is quadratic in the number of breakpoints.
 const MAX_PARAGRAPH_ITEMS: usize = 1024;
@@ -530,16 +532,9 @@ fn select_reported(
     report: &mut PdfParagraphVariantReport,
 ) -> std::result::Result<Option<Vec<Line>>, PdfPaginationFailure> {
     let notes = PageNotes::scan(lines);
-    if notes
+    let continued_notes = notes
         .as_ref()
-        .is_some_and(|notes| notes.continuation.is_some())
-    {
-        // Whole-note reservations cannot select paragraph alternatives for a
-        // continuation-aware physical page plan. Keep their baseline shapes
-        // and report the restriction; exact body-page planning still runs.
-        report.status = PdfParagraphVariantStatus::ContinuedFootnotes;
-        return Ok(None);
-    }
+        .is_some_and(|notes| notes.continuation.is_some());
     let body_end = notes.as_ref().map_or(lines.len(), |notes| notes.body_end);
     let body = &lines[..body_end];
     let mut choices = Vec::<Choices>::new();
@@ -555,9 +550,13 @@ fn select_reported(
             ));
         }
         let mut variants = vec![block_variant(body, start, end, 0, |line| {
-            notes
-                .as_ref()
-                .map_or(0.0, |notes| notes.line_reserve(lines, line))
+            if continued_notes {
+                0.0
+            } else {
+                notes
+                    .as_ref()
+                    .map_or(0.0, |notes| notes.line_reserve(lines, line))
+            }
         })];
         let mut alternatives = Vec::new();
         if let Some(paragraph) = candidates.paragraphs.get(&body[start].flow.group)
@@ -585,7 +584,16 @@ fn select_reported(
                 {
                     continue;
                 }
-                let reservations = if let Some(notes) = &notes {
+                let reservations = if continued_notes {
+                    // Continuation re-anchors every first citation in the
+                    // complete candidate layout and prices its actual pending
+                    // fragments. Whole-note heights would be a different
+                    // objective, but the source citation sequence is invariant.
+                    if !note_references(&body[start..end]).eq(note_references(&shape)) {
+                        continue;
+                    }
+                    Vec::new()
+                } else if let Some(notes) = &notes {
                     let Some(reservations) =
                         shape_note_reservations(lines, notes, start, end, &shape)
                     else {
@@ -635,6 +643,9 @@ fn select_reported(
     }
     if !any_alternatives {
         return Ok(None);
+    }
+    if continued_notes {
+        return continued::select(lines, page, body_end, &choices, &blocks, report);
     }
     let prefix = notes
         .as_ref()

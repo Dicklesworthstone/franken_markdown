@@ -4,6 +4,17 @@ use super::*;
 use crate::pagination::continuation as solver;
 use crate::pagination::height::HeightPaginationError;
 
+pub(in crate::pdf) struct Evaluated {
+    pub plan: PageBreakPlan,
+    pub total_demerits: i128,
+    pub page_count: usize,
+}
+
+pub(in crate::pdf) struct Evaluation {
+    pub result: std::result::Result<Evaluated, PdfPaginationFailure>,
+    pub usage: solver::Usage,
+}
+
 fn measured(points: f32) -> std::result::Result<i64, PdfPaginationFailure> {
     if !points.is_finite() || points < 0.0 {
         return Err(PdfPaginationFailure::InvalidPlan(
@@ -30,14 +41,35 @@ fn sum_rows(lines: &[Line]) -> std::result::Result<i64, PdfPaginationFailure> {
     })
 }
 
-pub(super) fn plan(
+pub(in crate::pdf) fn evaluate(
     lines: &[Line],
     notes: &PageNotes,
     page: PageGeom,
-) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
+    limits_override: Option<solver::Limits>,
+) -> Evaluation {
+    let mut usage = solver::Usage::default();
+    let result = evaluate_measured(lines, notes, page, limits_override, &mut usage);
+    Evaluation { result, usage }
+}
+
+fn evaluate_measured(
+    lines: &[Line],
+    notes: &PageNotes,
+    page: PageGeom,
+    limits_override: Option<solver::Limits>,
+    usage: &mut solver::Usage,
+) -> std::result::Result<Evaluated, PdfPaginationFailure> {
     let options = joint_pagination::options(page);
-    let limits = options.limits;
-    if lines.len() > limits.max_candidate_fragments {
+    let defaults = options.limits;
+    let limits = limits_override.unwrap_or(solver::Limits {
+        max_blocks: defaults.max_blocks,
+        max_fragments: defaults.max_candidate_fragments,
+        max_capacity: defaults.max_page_capacity_mpt as i64,
+        max_nodes: defaults.max_nodes,
+        max_work: defaults.max_transitions,
+        max_retained_ranges: defaults.max_candidate_fragments,
+    });
+    if lines.len() > limits.max_fragments {
         return Err(PdfPaginationFailure::Planner(
             HeightPaginationError::BudgetExceeded("continuation measured rows"),
         ));
@@ -80,13 +112,18 @@ pub(super) fn plan(
         } else {
             Some(policy.break_before_cost)
         };
-        for candidate in (start + 1)..end {
-            input.break_costs[candidate] =
-                if policy.keep_together || pdf_split_is_hard_forbidden(body, candidate) {
-                    None
-                } else {
-                    Some(break_penalty(body, candidate).round() as i64)
-                };
+        for (candidate, cost) in input
+            .break_costs
+            .iter_mut()
+            .enumerate()
+            .take(end)
+            .skip(start + 1)
+        {
+            *cost = if policy.keep_together || pdf_split_is_hard_forbidden(body, candidate) {
+                None
+            } else {
+                Some(break_penalty(body, candidate).round() as i64)
+            };
         }
         for (index, line) in body.iter().enumerate().take(end).skip(start) {
             // Charge the complete source-owned header. The greedy painter can
@@ -132,23 +169,17 @@ pub(super) fn plan(
         ranges.push(source);
     }
 
-    let plan = solver::plan(
+    let (planned, consumed) = solver::plan_with_usage(
         &input,
         solver::Options {
             capacity: i64::from(options.page_capacity.milli_points()),
             page_cost: options.page_cost,
             unused_height_cost: options.unused_height_cost,
-            limits: solver::Limits {
-                max_blocks: limits.max_blocks,
-                max_fragments: limits.max_candidate_fragments,
-                max_capacity: limits.max_page_capacity_mpt as i64,
-                max_nodes: limits.max_nodes,
-                max_work: limits.max_transitions,
-                max_retained_ranges: limits.max_candidate_fragments,
-            },
+            limits,
         },
-    )
-    .map_err(|error| {
+    );
+    *usage = consumed;
+    let plan = planned.map_err(|error| {
         PdfPaginationFailure::Planner(match error {
             solver::Error::Invalid(reason) => HeightPaginationError::InvalidOptions(reason),
             solver::Error::Budget(reason) => HeightPaginationError::BudgetExceeded(reason),
@@ -218,8 +249,12 @@ pub(super) fn plan(
             },
         });
     }
-    Ok(PageBreakPlan {
-        ends,
-        continuation: Some(Plan { pages }),
+    Ok(Evaluated {
+        total_demerits: plan.total_demerits,
+        page_count: pages.len(),
+        plan: PageBreakPlan {
+            ends,
+            continuation: Some(Plan { pages }),
+        },
     })
 }

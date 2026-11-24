@@ -15,8 +15,8 @@ export interface DocumentOutput<K extends DocumentFormat = DocumentFormat> {
   readonly extension: K extends "pdf" ? "pdf" : K extends "svg" ? "svg" : K extends "epub" ? "epub" : "html";
   readonly sourceLength: number;
   /** Acknowledged by the renderer and checked against this request's dialect.
-   * Omitted when no profile was selected; interactive HTML has no profile. */
-  readonly profile?: K extends "interactive-html" ? never : FmdAuthoringProfile;
+   * Omitted when no profile was selected, including editable HTML. */
+  readonly profile?: FmdAuthoringProfile;
   readonly bytes: Uint8Array;
   /** Source-byte findings and optional document scope/reason codes are preserved. */
   readonly diagnostics: FmdDiagnostic[];

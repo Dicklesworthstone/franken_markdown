@@ -19,8 +19,9 @@ const documents = createWorkerRenderer();
 const documentProfile: FmdAuthoringProfile | undefined = (await documents.renderPdf(source, { profile: "gfm-plus" })).profile;
 const outputs = (await documents.publish(source, [{ format: "svg", options: { profile: "commonmark-gfm" } }])).outputs;
 const publicationProfile: FmdAuthoringProfile | undefined = outputs[0]?.profile;
-const interactiveProfile: undefined = (await documents.renderInteractiveHtml(source)).profile;
-void [directProfile, documentProfile, publicationProfile, interactiveProfile];
+const interactiveProfile: FmdAuthoringProfile | undefined = (await documents.renderInteractiveHtml(source, {profile: "commonmark-gfm"})).profile;
+const lightweightProfile: FmdAuthoringProfile | undefined = (await renderer.renderInteractiveHtml(source, {profile: "gfm-plus"})).profile;
+void [directProfile, documentProfile, publicationProfile, interactiveProfile, lightweightProfile];
 documents.dispose();
 for await (const _receipt of renderDocumentBatch([
   { format: "html", source, options: { profile: "commonmark-gfm" } },
@@ -30,8 +31,11 @@ for await (const _receipt of renderDocumentBatch([
 await renderHtml(source, { profile: "gfm" });
 // @ts-expect-error Profile admission does not coerce booleans.
 await renderPdf(source, { profile: true });
-// @ts-expect-error Lightweight interactive editing does not retain profiles.
 await renderInteractiveHtml(source, { profile: "commonmark-gfm" });
+// @ts-expect-error Lightweight authoring profiles use the same canonical names.
+await renderInteractiveHtml(source, { profile: "gfm" });
+// @ts-expect-error A worker cannot silently reinterpret an unknown dialect.
+await documents.renderInteractiveHtml(source, { profile: "commonmark" });
 await renderBookPdf([{ path: "one.md", source }], { profile: "gfm-plus" });
 await renderBookSite([{ path: "one.md", source }], { profile: "commonmark-gfm" });
 

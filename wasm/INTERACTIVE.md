@@ -17,6 +17,43 @@ cannot upgrade an old binary; the exporter rejects it with
 `wasm-bindgen --target web` output from that same build. A mismatched runtime
 fails visibly rather than silently falling back.
 
+## Authoring profiles in lightweight saved documents
+
+The package's `renderInteractiveHtml` API accepts the same canonical grammar
+names as its native renderers:
+
+```js
+import {renderInteractiveHtml} from '@franken-suite/franken-markdown';
+
+const workspace = await renderInteractiveHtml(markdown, {
+  profile: 'commonmark-gfm',
+  title: 'Editing notes',
+  toc: true,
+});
+```
+
+`commonmark-gfm` keeps definition-list-shaped text and page-break comments as
+ordinary source. `gfm-plus` enables definition lists and standalone
+`<!-- pagebreak -->` markers in the lightweight editor. The initial native
+render selects the grammar before parsing; edits and browser printing retain
+that selection, including configured styles, fonts and navigation. Save HTML
+and reopening retain it too. The editor remains the documented JavaScript
+subset for other syntax; it does not embed the native WASM runtime.
+
+An explicit profile requires a matching
+`renderInteractiveHtmlConfiguredProfiled` generated binding. Missing or
+incompatible bindings fail with `UNSUPPORTED_WASM_PACKAGE` before source
+coercion, initialization or resource snapshots. A native refusal is returned
+without retrying another grammar. Successful explicit requests include the
+same `result.profile` receipt as other profiled render APIs.
+
+Omitting `profile` preserves the previous default dialect and six- or
+twenty-argument ABI. Unknown names, aliases, whitespace-padded values and
+`null` are invalid; only the two exact strings are accepted. Damaged saved
+profile metadata leaves Markdown editable and downloadable, while regeneration,
+Save HTML and toolbar printing report the failure. A workspace with an embedded
+native runtime continues to use that runtime's own settings.
+
 ## Character references in lightweight saved documents
 
 The lightweight `renderInteractiveHtml` editor shares the native parser's

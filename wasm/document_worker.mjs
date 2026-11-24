@@ -23,7 +23,7 @@ const SETTINGS = {
   pdf: [...SHARED, "profile", "title", "author", "metadataEpochSeconds", "allowRawHtml", "codeLineNumbers", "pageNumbers", "baseFontSize", "headingScale", "tableFontSize", "lang", "toc", "tocDepth", "fitToPages", "microtype", "microtypeProtrusion", "typography", "optimalPagination", "strictPagination", "footnoteBacklinks", "splitFootnotes", "pdfImages", "fontAssets", "page", "running", "baselineGridPt", "pdfA", "pdfAStrict"],
   svg: [...SHARED, "profile", "maxWidthPt", "pdfImages", "fontAssets", "toc", "tocDepth"],
   epub: [...SHARED, "profile", "title", "author", "lang", "customCss", "toc", "tocDepth", "pdfImages", "fontAssets", "fontEmbedding"],
-  "interactive-html": [...SHARED, "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
+  "interactive-html": [...SHARED, "profile", "title", "lang", "customCss", "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"],
 };
 const SLOTS = ["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"];
 const fail = (code, message) => { throw new FlowWorkerError(code, message); };

@@ -394,8 +394,14 @@ Native editable workspaces also accept `profile` in `renderOfflineWorkspace`,
 HTML/PDF/EPUB/SVG publication and Document Lab analysis, and survives Save HTML
 and source-project reopening. Clearing the choice preserves omitted legacy
 behavior. See [native workspace dialects](NATIVE_WORKSPACE.md#change-markdown-dialect-typography-and-publishing-in-the-editor).
-The smaller JavaScript-only `renderInteractiveHtml` workspace does not accept
-this option.
+The smaller `renderInteractiveHtml` workspace also accepts an explicit
+`profile`. Its native initial render selects that grammar before parsing, and
+the saved editor retains the choice through edits, Save HTML, reopening and
+browser printing. This requires the matching
+`renderInteractiveHtmlConfiguredProfiled` binding; an older package reports
+`UNSUPPORTED_WASM_PACKAGE` before initialization or resource copies. Omission
+preserves the existing legacy ABI and default dialect. See
+[lightweight authoring profiles](./INTERACTIVE.md#authoring-profiles-in-lightweight-saved-documents).
 
 With generated bindings built from matching source, `renderHtml`, `renderPdf`
 (including PDF/A) and `renderEpub` inherit omitted `title`, `author`, `lang`, `toc`

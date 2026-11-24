@@ -45,8 +45,12 @@ renderOfflineWorkspace('source',runtime,{footnoteBacklinks:'true'});
 renderOfflineWorkspace('source',runtime,{splitFootnotes:'true'});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF continuation.
 renderInteractiveHtml('source',{splitFootnotes:true});
-// @ts-expect-error Only the native offline workspace retains an explicit authoring profile.
 renderInteractiveHtml('source',{profile:'commonmark-gfm'});
+renderInteractiveHtml('source',{profile:'gfm-plus',customCss:'body {}',toc:true});
+// @ts-expect-error Lightweight authoring profiles reject aliases.
+renderInteractiveHtml('source',{profile:'gfm'});
+// @ts-expect-error Omission, not null, selects the default dialect.
+renderInteractiveHtml('source',{profile:null});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF backlinks.
 renderInteractiveHtml('source',{footnoteBacklinks:true});
 // @ts-expect-error The lightweight HTML-only API cannot retain PDF archival policy.

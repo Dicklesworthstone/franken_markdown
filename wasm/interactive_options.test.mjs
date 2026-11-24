@@ -5,7 +5,7 @@ import {test} from 'node:test';
 import {readFile} from 'node:fs/promises';
 import {SourceTextModule, SyntheticModule} from 'node:vm';
 const source = await readFile(new URL('./franken_markdown.js', import.meta.url), 'utf8');
-async function fixture({advanced = true, gate, failure} = {}) {
+async function fixture({advanced = true, profiled = true, legacy = true, metadata, gate, failure} = {}) {
   const calls = []; let inits = 0, frees = 0;
   function output(args) {
     if (failure) throw failure;
@@ -15,8 +15,14 @@ async function fixture({advanced = true, gate, failure} = {}) {
   }
   const bindings = {default: async () => {inits++; await gate;}, capabilities() {},
     renderHtmlConfiguredAdvanced() {}, renderPdfConfiguredMulti() {}, renderEpubConfigured() {}, renderSvgConfigured() {},
-    accessibilityAudit() {}, documentStats() {}, searchIndex() {}, semanticDiff() {}, renderSemanticDiffHtml() {},
-    renderInteractiveHtmlConfigured(...args) {calls.push({kind: 'legacy', args}); return output(args);}};
+    accessibilityAudit() {}, documentStats() {}, searchIndex() {}, semanticDiff() {}, renderSemanticDiffHtml() {}};
+  if (legacy) bindings.renderInteractiveHtmlConfigured = (...args) => {calls.push({kind: 'legacy', args}); return output(args);};
+  if (metadata) bindings.sourceMetadata = metadata;
+  if (profiled) {
+    const render = (...args) => {calls.push({kind: 'profiled', args}); return output(args);};
+    Object.defineProperty(render, 'length', {value: typeof profiled === 'number' ? profiled : 21});
+    bindings.renderInteractiveHtmlConfiguredProfiled = render;
+  }
   if (advanced) {
     const render = (...args) => {calls.push({kind: 'advanced', args}); return output(args);};
     Object.defineProperty(render, 'length', {value: typeof advanced === 'number' ? advanced : 20});
@@ -130,4 +136,115 @@ test('advanced native refusals propagate unchanged without producing a weaker wo
   const failure = Error('font decoding refused'), f = await fixture({failure});
   await assert.rejects(f.api.renderInteractiveHtml('x', {toc: true}), error => error === failure);
   assert.deepEqual(f.calls.map(call => call.kind), ['advanced']); assert.equal(f.frees, 0);
+});
+
+
+test('explicit lightweight dialects use only the full profiled ABI and acknowledge native success', async () => {
+  const f = await fixture({advanced: false, legacy: false});
+  for (const profile of ['commonmark-gfm', 'gfm-plus']) {
+    const result = await f.api.renderInteractiveHtml('\ufeffTerm\r\n: Definition\r\n', {profile});
+    const call = f.calls.at(-1);
+    assert.equal(call.kind, 'profiled'); assert.equal(call.args.length, 21);
+    assert.equal(call.args[0], '\ufeffTerm\r\n: Definition\r\n'); assert.equal(call.args[20], profile);
+    assert.equal(result.profile, profile); assert.equal(Object.isFrozen(result), true);
+  }
+  assert.equal(f.frees, 2);
+});
+
+test('profiled configured resources, source and grammar are captured before initialization yields', async () => {
+  let release; const gate = new Promise(resolve => {release = resolve;});
+  const f = await fixture({gate, advanced: false, legacy: false});
+  const image = Uint8Array.of(9, 1, 2, 9), font = Uint8Array.of(8, 3, 4, 8);
+  let source = '\ufeff# Before\r\n';
+  const options = {profile: 'commonmark-gfm', title: 'Before', customCss: 'main {color:purple}', toc: true,
+    tocDepth: 2, font: 'serif', htmlFontFormat: 'woff2',
+    pdfImages: [{destination: 'chart.png', bytes: new DataView(image.buffer, 1, 2)}],
+    fontAssets: [{slot: 'body-regular', weight: 555, bytes: font.subarray(1, 3)}]};
+  const pending = f.api.renderInteractiveHtml({toString: () => source}, options);
+  source = 'Later'; options.profile = 'gfm-plus'; options.title = 'Later'; options.tocDepth = 5;
+  options.pdfImages[0].destination = 'later.png'; image.fill(0); font.fill(0);
+  release(); const result = await pending, {args, kind} = f.calls[0];
+  assert.equal(kind, 'profiled'); assert.equal(args.length, 21);
+  assert.equal(args[0], '\ufeff# Before\r\n'); assert.equal(args[3], 'Before');
+  assert.equal(args[4], 'main {color:purple}'); assert.equal(args[20], 'commonmark-gfm');
+  assert.deepEqual([...args[7]], [3, 4]); assert.deepEqual([...args[12]], [555, 0, 0, 0, 0]);
+  assert.deepEqual(args[13], ['chart.png']); assert.deepEqual([...args[14]], [1, 2]);
+  assert.deepEqual(args.slice(17, 20), [true, 2, 'woff2']);
+  assert.equal(result.profile, 'commonmark-gfm'); assert.equal(f.frees, 1);
+});
+
+test('profile capability refusal precedes source coercion and resource inspection without fallback', async () => {
+  for (const profiled of [false, 20]) {
+    const f = await fixture({profiled}); let reads = 0;
+    const unread = () => {reads++; throw Error('input read before capability admission');};
+    const resources = new Proxy([], {get: unread, ownKeys: unread});
+    for (const profile of ['commonmark-gfm', 'gfm-plus']) {
+      await assert.rejects(f.api.renderInteractiveHtml({toString: unread},
+        {profile, pdfImages: resources, fontAssets: resources}), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    }
+    assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);
+  }
+});
+
+test('lightweight profile admission is canonical and does not coerce source or profile objects', async () => {
+  const f = await fixture(); let reads = 0;
+  const unread = () => {reads++; throw Error('coercion before profile admission');};
+  const resources = new Proxy([], {get: unread, ownKeys: unread});
+  for (const profile of [null, '', 'gfm', 'CommonMark-GFM', ' gfm-plus ', 1, false, [], {toString: unread}]) {
+    await assert.rejects(f.api.renderInteractiveHtml({toString: unread}, {profile, pdfImages: resources}),
+      {code: 'INVALID_OPTIONS'});
+  }
+  const getter = {}; Object.defineProperty(getter, 'profile', {get: unread});
+  await assert.rejects(f.api.renderInteractiveHtml({toString: unread}, getter), /field or accessor/);
+  await assert.rejects(f.api.renderInteractiveHtml('source', {profile: 'gfm-plus', unknown: true}), /field or accessor/);
+  assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);
+});
+
+test('undefined profiles preserve both legacy interactive call shapes and omit the receipt', async () => {
+  const f = await fixture();
+  for (const options of [{}, {toc: true, htmlFontFormat: 'woff2'}]) {
+    const original = await f.api.renderInteractiveHtml('source', options);
+    const call = f.calls.at(-1);
+    const explicitUndefined = await f.api.renderInteractiveHtml('source', {...options, profile: undefined});
+    assert.deepEqual(f.calls.at(-1), call);
+    assert.equal(call.kind, options.toc ? 'advanced' : 'legacy');
+    assert.equal(call.args.length, options.toc ? 20 : 6);
+    assert.equal(Object.hasOwn(original, 'profile'), false);
+    assert.equal(Object.hasOwn(explicitUndefined, 'profile'), false);
+  }
+});
+
+test('inherited navigation stays on the selected profiled binding while explicit settings win', async () => {
+  const sources = [], f = await fixture({advanced: false, legacy: false,
+    metadata(source) {sources.push(source); return '{"title":"From source","lang":"fr","toc":true,"tocDepth":3}';}});
+  await f.api.renderInteractiveHtml('---\ntitle: From source\n---\nBody', {profile: 'gfm-plus'});
+  assert.equal(f.calls[0].kind, 'profiled');
+  assert.equal(f.calls[0].args[3], 'From source'); assert.deepEqual(f.calls[0].args.slice(16), ['fr', true, 3, undefined, 'gfm-plus']);
+  await f.api.renderInteractiveHtml('Other source', {profile: 'commonmark-gfm', title: 'Explicit', lang: 'en', toc: false, tocDepth: 1});
+  assert.equal(f.calls[1].kind, 'profiled'); assert.equal(f.calls[1].args[3], 'Explicit');
+  assert.deepEqual(f.calls[1].args.slice(16), ['en', false, 1, undefined, 'commonmark-gfm']);
+  assert.deepEqual(sources, ['---\ntitle: From source\n---\nBody']);
+});
+
+test('concurrent dialects keep separate requests and native refusals never retry a legacy binding', async () => {
+  let release; const gate = new Promise(resolve => {release = resolve;});
+  const f = await fixture({gate});
+  const a = f.api.renderInteractiveHtml('first', {profile: 'commonmark-gfm'});
+  const b = f.api.renderInteractiveHtml('second', {profile: 'gfm-plus'});
+  release(); const results = await Promise.all([a, b]);
+  assert.deepEqual(f.calls.map(({kind, args}) => [kind, args[0], args[20]]),
+    [['profiled', 'first', 'commonmark-gfm'], ['profiled', 'second', 'gfm-plus']]);
+  assert.deepEqual(results.map(result => result.profile), ['commonmark-gfm', 'gfm-plus']);
+  const failure = Error('native profile refusal'), failed = await fixture({failure});
+  await assert.rejects(failed.api.renderInteractiveHtml('source', {profile: 'commonmark-gfm'}), error => error === failure);
+  assert.deepEqual(failed.calls.map(call => call.kind), ['profiled']); assert.equal(failed.frees, 0);
+});
+
+
+test('packages without any interactive export refuse before even inspecting option objects', async () => {
+  const f = await fixture({advanced: false, profiled: false, legacy: false}); let reads = 0;
+  const unread = () => {reads++; throw Error('options inspected without an interactive capability');};
+  const options = new Proxy({}, {get: unread, ownKeys: unread, getPrototypeOf: unread, getOwnPropertyDescriptor: unread});
+  await assert.rejects(f.api.renderInteractiveHtml({toString: unread}, options), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+  assert.equal(reads, 0); assert.equal(f.inits, 0); assert.equal(f.calls.length, 0);
 });

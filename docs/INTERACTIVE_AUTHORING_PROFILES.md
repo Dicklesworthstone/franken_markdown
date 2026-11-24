@@ -53,6 +53,36 @@ An omitted or null third argument uses the extended default. An invalid explicit
 value throws an error with code `FMD_INVALID_PROFILE` before reading or coercing
 the source or image assets.
 
+## Public browser API
+
+The browser package also accepts an authoring profile when generating a new
+editable file:
+
+```javascript
+import { renderInteractiveHtml } from './franken_markdown.js';
+
+const workspace = await renderInteractiveHtml(source, {
+  profile: 'commonmark-gfm',
+  title: 'Editable report',
+});
+```
+
+The selected native binding parses the source under that dialect before
+rendering the initial preview and saving its profile metadata. The public
+facade returns `workspace.profile` only after that profiled binding succeeds.
+Configured styles, explicit images and fonts, and inherited source metadata use
+the same path.
+The document worker accepts the same option for `interactive-html` jobs and
+requires the renderer to acknowledge the selected profile before publication.
+
+An explicit profile requires a matching `wasm-workspace` or `wasm-full` package
+exporting `renderInteractiveHtmlConfiguredProfiled`. Older or incompatible
+packages fail with `UNSUPPORTED_WASM_PACKAGE` before source coercion or resource
+copying. Omitting the profile keeps the existing legacy bindings and result
+shape. The public browser API follows the shared authoring-option contract:
+`undefined` means omitted; explicit `null`, aliases, wrong types, and padded or
+case-varied names are invalid.
+
 ## Definition lists and page breaks
 
 Under `gfm-plus`, one or more term lines followed by a colon definition form a

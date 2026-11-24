@@ -224,9 +224,11 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
  * navigation survive edits and Save HTML; Markdown editing uses its documented
  * JavaScript subset. Raw passthrough and PDF-only options are rejected.
  * Non-default presentation requires matching configured-workspace bindings.
+ * An explicit authoring profile requires the matching profiled binding and is
+ * retained across edits, Save HTML, reopening and browser printing.
  */
 export interface FmdInteractiveRenderOptions extends Pick<FmdRenderOptions,
-  "font" | "darkMode" | "title" | "lang" | "fontScale" | "typeSize" | "customCss" |
+  "profile" | "font" | "darkMode" | "title" | "lang" | "fontScale" | "typeSize" | "customCss" |
   "toc" | "tocDepth" | "pdfImages" | "fontAssets" | "htmlFontFormat"> {
   allowRawHtml?: false;
 }

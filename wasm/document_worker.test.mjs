@@ -73,6 +73,15 @@ if (!isMainThread) {
           ...(options.profile === undefined ? {} : { profile: options.profile }),
           sourceLength: new TextEncoder().encode(source).length, diagnostics: [],
           text() { return "not cloneable"; } };
+        // Exercise the receipt boundary independently of cooperative capability
+        // errors: old facades can accept options but silently omit a dialect.
+        if (format === "interactive-html") {
+          if (workerData.interactiveProfileReceipt === "missing") delete result.profile;
+          if (workerData.interactiveProfileReceipt === "wrong") result.profile = "gfm-plus";
+          if (workerData.interactiveProfileReceipt === "accessor") Object.defineProperty(result, "profile", {
+            get() { throw new Error("profile receipt accessor must not run"); },
+          });
+        }
         if (source === "wrong-format") result.format = "unrecognized";
         if (source === "wrong-source") result.sourceLength++;
         if (source === "wrong-mime") result.mimeType = "application/javascript";
@@ -743,11 +752,12 @@ if (!isMainThread) {
     await rejects(api.renderInteractiveHtml("x", { allowRawHtml: true }), "INVALID_OPTIONS");
     assert.equal(api.pendingOperations, 0);
     assert.equal(api.pendingBytes, 0);
-    const interactive = {customCss: 'main{color:red}', toc: true, tocDepth: 2,
+    const interactive = {profile: 'gfm-plus', customCss: 'main{color:red}', toc: true, tocDepth: 2,
       htmlFontFormat: 'woff2', pdfImages: [{destination: 'chart.png', bytes: Uint8Array.of(1, 2)}],
       fontAssets: [{slot: 'body-regular', weight: 550, bytes: Uint8Array.of(3, 4)}]};
     const html = await api.renderInteractiveHtml('Current', interactive);
     const captured = JSON.parse(html.text()).options;
+    assert.equal(html.profile, 'gfm-plus'); assert.equal(captured.profile, 'gfm-plus');
     assert.equal(captured.customCss, interactive.customCss); assert.equal(captured.tocDepth, 2);
     assert.equal(captured.htmlFontFormat, 'woff2'); assert.equal(captured.fontAssets[0].weight, 550);
     assert.deepEqual(captured.pdfImages[0].bytes, [1, 2]);
@@ -865,23 +875,23 @@ if (!isMainThread) {
     const api = renderer(t);
     const active = api.renderHtml("slow");
     const options = { profile: "commonmark-gfm" };
-    const outputs = ["html", "pdf", "svg", "epub"].map(format => api.render(format, "Term\n: Definition", options));
+    const outputs = ["html", "pdf", "svg", "epub", "interactive-html"].map(format => api.render(format, "Term\n: Definition", options));
     options.profile = "gfm-plus";
     await active;
     for (const output of await Promise.all(outputs)) {
       assert.equal(JSON.parse(output.text()).options.profile, "commonmark-gfm");
       assert.equal(output.profile, "commonmark-gfm");
     }
-    const targets = ["html", "pdf", "svg", "epub"].map((format, index) => ({
+    const targets = ["html", "pdf", "svg", "epub", "interactive-html"].map((format, index) => ({
       format, options: { profile: index % 2 ? "gfm-plus" : "commonmark-gfm" },
     }));
     const pending = api.publish("publication", targets);
     for (const target of targets) target.options.profile = "invalid-after-admission";
     const publication = await pending;
     assert.deepEqual(publication.outputs.map(output => JSON.parse(output.text()).options.profile),
-      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus"]);
+      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus", "commonmark-gfm"]);
     assert.deepEqual(publication.outputs.map(output => output.profile),
-      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus"]);
+      ["commonmark-gfm", "gfm-plus", "commonmark-gfm", "gfm-plus", "commonmark-gfm"]);
     assert.equal(api.pendingBytes, 0);
   });
 
@@ -890,15 +900,14 @@ if (!isMainThread) {
     const api = createWorkerRenderer({ workerFactory() { starts++; assert.fail("unexpected worker"); } });
     const accessor = Object.defineProperty({}, "profile", { get() { reads++; return "gfm-plus"; } });
     try {
-      for (const format of ["html", "pdf", "svg", "epub"]) {
+      for (const format of ["html", "pdf", "svg", "epub", "interactive-html"]) {
         for (const profile of [null, "", "gfm", "GFM-PLUS", " gfm-plus ", 1, true, {}])
           await rejects(api.render(format, "x", { profile, pdfImages: [null] }), "INVALID_OPTIONS");
         await rejects(api.render(format, "x", accessor), "INVALID_OPTIONS");
       }
-      for (const profile of ["commonmark-gfm", "gfm-plus"])
-        await rejects(api.renderInteractiveHtml("x", { profile }), "INVALID_OPTIONS");
-      await rejects(api.publish("x", [{ format: "html" }, { format: "pdf", options: { profile: "unknown" } }]),
-        "INVALID_OPTIONS");
+      for (const format of ["pdf", "interactive-html"])
+        await rejects(api.publish("x", [{ format: "html" }, { format, options: { profile: "unknown" } }]),
+          "INVALID_OPTIONS");
       assert.equal(starts, 0); assert.equal(reads, 0); assert.equal(api.pendingBytes, 0);
     } finally { api.dispose(); }
   });
@@ -918,7 +927,7 @@ if (!isMainThread) {
   test("worker-side authoring profiles reject malformed raw RPC before loading native code", async t => {
     const rpc = new OwnedWorkerRpc(new NodeEndpoint({ loadFailure: true }), { timeoutMs: 5000 });
     t.after(() => rpc.dispose());
-    for (const format of ["html", "pdf", "svg", "epub"])
+    for (const format of ["html", "pdf", "svg", "epub", "interactive-html"])
       await rejects(rpc.request(format, 512, () => ({ args: [format, "x", { profile: "gfm" }, 4096] })), "INVALID_OPTIONS");
     await rejects(rpc.request("publish", 512, () => ({ args: ["publish", "x", [
       { format: "html" }, { format: "pdf", options: { profile: "" } },
@@ -930,7 +939,7 @@ if (!isMainThread) {
   });
 
   test("unsupported authoring profiles retain the stale-package error and never replay work", async t => {
-    for (const format of ["html", "pdf", "svg", "epub"]) {
+    for (const format of ["html", "pdf", "svg", "epub", "interactive-html"]) {
       const api = renderer(t, {}, { profileSupport: false });
       await api.render(format, "ordinary");
       const refused = rejects(api.render(format, "profiled", { profile: "commonmark-gfm" }), "UNSUPPORTED_WASM_PACKAGE");
@@ -938,10 +947,51 @@ if (!isMainThread) {
       await Promise.all([refused, queued]);
       assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
     }
-    const api = renderer(t, {}, { profileSupport: false });
-    await rejects(api.publish("publication", [{ format: "html" }, { format: "epub", options: { profile: "gfm-plus" } }]),
-      "UNSUPPORTED_WASM_PACKAGE");
-    assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
+    for (const format of ["epub", "interactive-html"]) {
+      const api = renderer(t, {}, { profileSupport: false });
+      await rejects(api.publish("publication", [{ format: "html" }, { format, options: { profile: "gfm-plus" } }]),
+        "UNSUPPORTED_WASM_PACKAGE");
+      assert.equal(api.disposed, true); assert.equal(api.pendingBytes, 0);
+    }
+  });
+
+  test("editable HTML keeps omitted profiles absent through renders and publications", async t => {
+    const api = renderer(t);
+    for (const options of [{}, { profile: undefined }]) {
+      const output = await api.renderInteractiveHtml("Term\n: Definition", options);
+      assert.equal(Object.hasOwn(output, "profile"), false);
+      assert.equal(Object.hasOwn(JSON.parse(output.text()).options, "profile"), false);
+      const publication = await api.publish("Term\n: Definition", [
+        { format: "html", options: { profile: "commonmark-gfm" } },
+        { format: "interactive-html", options },
+      ]);
+      assert.equal(publication.outputs[0].profile, "commonmark-gfm");
+      assert.equal(Object.hasOwn(publication.outputs[1], "profile"), false);
+      assert.equal(Object.hasOwn(JSON.parse(publication.outputs[1].text()).options, "profile"), false);
+    }
+    assert.equal(api.pendingOperations, 0); assert.equal(api.pendingBytes, 0);
+  });
+
+  test("editable HTML requires matching data-valued profile receipts before publishing bytes", async t => {
+    for (const [receipt, options] of [
+      ["missing", { profile: "commonmark-gfm" }],
+      ["wrong", { profile: "commonmark-gfm" }],
+      ["wrong", {}],
+      ["accessor", { profile: "commonmark-gfm" }],
+    ]) for (const publication of [false, true]) {
+      const api = renderer(t, {}, { interactiveProfileReceipt: receipt });
+      const pending = publication
+        ? api.publish("profiled", [
+          { format: "html" },
+          { format: "interactive-html", options },
+        ])
+        : api.renderInteractiveHtml("profiled", options);
+      const refused = rejects(pending, "UNSUPPORTED_WASM_PACKAGE");
+      const queued = rejects(api.renderHtml("must not replay"), "SESSION_LOST");
+      await Promise.all([refused, queued]);
+      assert.equal(api.disposed, true);
+      assert.equal(api.pendingOperations, 0); assert.equal(api.pendingBytes, 0);
+    }
   });
 
 }

@@ -40,6 +40,9 @@ mod font_embedding_tests;
 #[cfg(test)]
 mod authoring_profile_tests;
 
+#[cfg(test)]
+mod interactive_profile_tests;
+
 mod analysis_profiles;
 pub use analysis_profiles::{
     render_semantic_diff_html_profiled, search_index_profiled, semantic_diff_profiled,
@@ -383,6 +386,72 @@ pub fn render_interactive_html_configured_advanced(
     toc_depth: Option<u32>,
     html_font_format: Option<String>,
 ) -> std::result::Result<FmdRenderResult, JsValue> {
+    render_interactive_html_configured_profiled(
+        markdown,
+        font,
+        dark_mode,
+        title,
+        custom_css,
+        allow_raw_html,
+        font_scale,
+        body_regular,
+        body_bold,
+        body_italic,
+        body_bold_italic,
+        mono_regular,
+        font_weights,
+        image_destinations,
+        image_bytes_flat,
+        image_bytes_lengths,
+        lang,
+        toc,
+        toc_depth,
+        html_font_format,
+        None,
+    )
+}
+
+/// Render a self-contained editable workspace with an explicit authoring
+/// grammar. The native preview and saved offline editor receive the same
+/// profile before parsing; styles, resources and safe-HTML limits are retained.
+///
+/// The original six- and twenty-argument bindings keep their signatures and
+/// extension-enabled default. An absent profile produces the same bytes as
+/// the advanced binding, including its isolated styled preview.
+///
+/// # Errors
+/// Rejects an unknown authoring profile before resource admission, then the
+/// same invalid options, resources and limits as the advanced binding.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(
+    feature = "wasm-workspace",
+    wasm_bindgen(js_name = renderInteractiveHtmlConfiguredProfiled)
+)]
+pub fn render_interactive_html_configured_profiled(
+    markdown: &str,
+    font: Option<String>,
+    dark_mode: Option<String>,
+    title: Option<String>,
+    custom_css: Option<String>,
+    allow_raw_html: bool,
+    font_scale: Option<f64>,
+    body_regular: Vec<u8>,
+    body_bold: Vec<u8>,
+    body_italic: Vec<u8>,
+    body_bold_italic: Vec<u8>,
+    mono_regular: Vec<u8>,
+    font_weights: Vec<u32>,
+    image_destinations: Vec<String>,
+    image_bytes_flat: Vec<u8>,
+    image_bytes_lengths: Vec<u32>,
+    lang: Option<String>,
+    toc: bool,
+    toc_depth: Option<u32>,
+    html_font_format: Option<String>,
+    authoring_profile: Option<String>,
+) -> std::result::Result<FmdRenderResult, JsValue> {
+    let authoring_profile =
+        parse_authoring_profile(authoring_profile.as_deref()).map_err(JsValue::from_str)?;
     if allow_raw_html {
         return Err(JsValue::from_str(
             "Interactive workspaces require safe Markdown; allowRawHtml must be false",
@@ -420,6 +489,7 @@ pub fn render_interactive_html_configured_advanced(
         ));
     }
     let mut options = options_with_font_and_dark_mode(font, dark_mode)?;
+    options.profile = authoring_profile;
     options.title = nonempty_verbatim(title);
     options.custom_css = nonempty_verbatim(custom_css);
     options.font_scale = positive_f32(font_scale, "fontScale")?;
@@ -447,7 +517,7 @@ pub fn render_interactive_html_configured_advanced(
         mono_regular,
     )?;
     apply_font_weights(&mut options, &font_weights)?;
-    let document = parse_markdown(markdown);
+    let document = crate::parse_markdown_with_profile(markdown, options.profile);
     let html_options = options.html_options();
     html_options
         .font_assets

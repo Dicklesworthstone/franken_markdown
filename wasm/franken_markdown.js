@@ -810,12 +810,15 @@ function epubTextBytes(text, maximum, label) {
 }
 
 export async function renderInteractiveHtml(markdown, options = {}) {
-  if (typeof wasmBindings.renderInteractiveHtmlConfiguredAdvanced !== "function")
+  if (typeof wasmBindings.renderInteractiveHtmlConfiguredAdvanced !== "function"
+      && typeof wasmBindings.renderInteractiveHtmlConfiguredProfiled !== "function")
     requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
   const prepared = interactiveHtmlArguments(markdown, options);
-  let render = requireBrowserBinding(prepared.advanced
+  let render = requireBrowserBinding(prepared.profile !== undefined
+    ? "renderInteractiveHtmlConfiguredProfiled" : prepared.advanced
     ? "renderInteractiveHtmlConfiguredAdvanced" : "renderInteractiveHtmlConfigured", "wasm-workspace");
-  if (prepared.advanced) requireBindingArguments(render, 20, "Configured interactive HTML");
+  if (prepared.profile !== undefined) requireBindingArguments(render, 21, "Interactive Markdown authoring profiles");
+  else if (prepared.advanced) requireBindingArguments(render, 20, "Configured interactive HTML");
   await init();
   const args = prepared.args;
   applySourceMetadata(args, { title: 3, lang: 16, toc: 17, tocDepth: 18 }, prepared.inheritToc);
@@ -829,8 +832,9 @@ export async function renderInteractiveHtml(markdown, options = {}) {
   }
   // A narrow legacy binding can still carry title/language defaults, but must
   // never silently discard inherited navigation. Keep its original ABI shape.
-  return normalizeResult(render(...(prepared.advanced
-    ? args : [args[0], args[1], args[2], args[3], args[16], args[6]])));
+  return normalizeResult(render(...(prepared.profile !== undefined
+    ? [...args, prepared.profile] : prepared.advanced
+    ? args : [args[0], args[1], args[2], args[3], args[16], args[6]])), prepared.profile);
 }
 
 function interactiveTextBytes(value, maximum, label) {
@@ -847,7 +851,7 @@ function interactiveTextBytes(value, maximum, label) {
 
 function interactiveHtmlArguments(markdown, input) {
   const fields = ["font", "darkMode", "title", "lang", "fontScale", "typeSize", "customCss",
-    "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat"];
+    "allowRawHtml", "toc", "tocDepth", "pdfImages", "fontAssets", "htmlFontFormat", "profile"];
   function data(value, keys, label) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be a data object`);
     const prototype = Object.getPrototypeOf(value);
@@ -860,7 +864,18 @@ function interactiveHtmlArguments(markdown, input) {
     }
     return result;
   }
-  const options = data(input, fields, "interactive HTML option"), source = String(markdown);
+  const options = data(input, fields, "interactive HTML option");
+  const profile = normalizeAuthoringProfile(Object.getOwnPropertyDescriptor(options, "profile")?.value);
+  // The selected grammar must exist before source coercion or asset snapshots.
+  // Adding only saved metadata around an unprofiled render would parse the
+  // initial document differently from its later edits.
+  if (profile !== undefined) {
+    const binding = requireBrowserBinding("renderInteractiveHtmlConfiguredProfiled", "interactive Markdown authoring profiles");
+    requireBindingArguments(binding, 21, "Interactive Markdown authoring profiles");
+  } else if (typeof wasmBindings.renderInteractiveHtmlConfiguredAdvanced !== "function") {
+    requireBrowserBinding("renderInteractiveHtmlConfigured", "wasm-workspace");
+  }
+  const source = String(markdown);
   interactiveTextBytes(source, 32 * 1024 * 1024, "source");
   for (const [key, limit] of [["title", 65536], ["lang", 1024], ["customCss", 1024 * 1024]])
     if (options[key] !== undefined && options[key] !== null) interactiveTextBytes(options[key], limit, key);
@@ -891,20 +906,22 @@ function interactiveHtmlArguments(markdown, input) {
     return result;
   }
   const rawImages = assets(options.pdfImages, false), rawFonts = assets(options.fontAssets, true);
-  const advanced = font === "serif" || dark === "disabled" || (scale !== undefined && scale !== 1)
+  const advanced = profile !== undefined || font === "serif" || dark === "disabled" || (scale !== undefined && scale !== 1)
     || css !== undefined || Boolean(options.toc) || depth !== undefined || format !== undefined
     || rawImages.length > 0 || rawFonts.length > 0;
   const inheritToc = options.toc === undefined;
   // Keep one argument layout while resolving metadata; collapse only at the
   // final legacy call. These empty resources have no caller-owned backing.
-  if (!advanced) return {advanced, inheritToc, args: [
+  if (!advanced) return {advanced, inheritToc, profile, args: [
     source, font, dark, title, undefined, false, scale,
     new Uint8Array(), new Uint8Array(), new Uint8Array(), new Uint8Array(), new Uint8Array(),
     new Uint32Array(5), [], new Uint8Array(), new Uint32Array(),
     lang, false, undefined, undefined,
   ]};
-  const binding = requireBrowserBinding("renderInteractiveHtmlConfiguredAdvanced", "wasm-workspace with configured HTML");
-  requireBindingArguments(binding, 20, "Configured interactive HTML");
+  if (profile === undefined) {
+    const binding = requireBrowserBinding("renderInteractiveHtmlConfiguredAdvanced", "wasm-workspace with configured HTML");
+    requireBindingArguments(binding, 20, "Configured interactive HTML");
+  }
   // Read the built-in byte-view slots, never caller-overridden .buffer or
   // .byteLength properties. Accept cross-realm views and exact DataView slices.
   const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
@@ -949,7 +966,7 @@ function interactiveHtmlArguments(markdown, input) {
   let offset = 0;
   for (const image of images) {flat.set(image.bytes, offset); offset += image.bytes.byteLength;}
   const ownedFonts = fonts.map(asset => ({...asset, bytes: new Uint8Array(asset.bytes)}));
-  return {advanced, inheritToc, args: [source, font, dark, title, css, false, scale,
+  return {advanced, inheritToc, profile, args: [source, font, dark, title, css, false, scale,
     ...["body-regular", "body-bold", "body-italic", "body-bold-italic", "mono-regular"].map(slot => fontBytesForSlot(ownedFonts, slot)),
     fontWeightsForSlots(ownedFonts), images.map(image => image.destination), flat, lengths,
     lang, Boolean(options.toc), depth, format]};

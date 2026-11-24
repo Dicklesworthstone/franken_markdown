@@ -361,6 +361,127 @@ fn selected_geometry_typography_contents_and_note_policy_match_pdf_publication()
 }
 
 #[test]
+fn running_band_verification_matches_publication_with_a_logo_outside_the_body() {
+    let workspace = Workspace::new();
+    let source = format!("# Report\n\n{}", PROSE.repeat(16));
+    workspace.write("report.md", &source);
+    workspace.write("brand=logo.svg", SVG);
+    let flags = [
+        "--pdf-header-left",
+        "{title}",
+        "--title",
+        "Typeset manual",
+        "--pdf-header-right",
+        "{author}",
+        "--author",
+        "Éditrice",
+        "--pdf-footer-left",
+        "{date}",
+        "--pdf-footer-right",
+        "{section}",
+        "--pdf-page-numbers",
+        "--pdf-header-rule",
+        "--pdf-footer-rule",
+        "--pdf-running-skip-first",
+        "--pdf-header-image",
+        "brand?v=1",
+        "--pdf-header-image-position",
+        "right",
+        "--pdf-header-image-height-pt",
+        "16",
+        "--pdf-image",
+        "brand?v=1=brand=logo.svg",
+    ];
+    let mut args = vec!["report.md"];
+    args.extend(flags);
+    args.extend(["--metadata-epoch-seconds", "1700000000"]);
+    let checked = workspace.verify(&args, None);
+    assert!(checked.status.success(), "{checked:?}");
+    let emitted = workspace
+        .command()
+        .args(["report.md", "--to", "pdf", "--out", "report.pdf"])
+        .args(flags)
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output()
+        .unwrap();
+    assert!(emitted.status.success(), "{emitted:?}");
+    let bytes = fs::read(workspace.0.join("report.pdf")).unwrap();
+    let pages = bytes
+        .windows(b"/Type /Page ".len())
+        .filter(|w| *w == b"/Type /Page ")
+        .count();
+    assert!(pages > 1);
+    assert!(
+        String::from_utf8(checked.stdout)
+            .unwrap()
+            .contains(&format!("\"page_count\":{pages},"))
+    );
+}
+
+#[test]
+fn running_band_failures_and_logo_aliases_refuse_a_verification_report() {
+    let workspace = Workspace::new();
+    workspace.write("file.md", "# Title\n");
+    workspace.write("brand.svg", SVG);
+    refused(
+        workspace.verify(
+            &[
+                "file.md",
+                "--load-local-images",
+                "--pdf-header-image",
+                "brand.svg",
+            ],
+            None,
+        ),
+        70,
+        "pdf_running_image_missing",
+    );
+    for (token, flag, value) in [
+        ("{date}", "--metadata-epoch-seconds", "0"),
+        ("{author}", "--author", "Contributor"),
+        ("{title}", "--title", "Title"),
+    ] {
+        refused(
+            workspace.verify(
+                &[
+                    "-",
+                    "--margin-top-pt",
+                    "2",
+                    "--pdf-header-left",
+                    token,
+                    flag,
+                    value,
+                ],
+                Some("Body."),
+            ),
+            70,
+            "pdf_running_header_does_not_fit",
+        );
+    }
+    refused(
+        workspace.verify(
+            &[
+                "-",
+                "--pdf-footer-image",
+                "asset=x",
+                "--pdf-image",
+                "asset=x=brand.svg",
+                "--links",
+                "--links-cache",
+                "brand.svg",
+            ],
+            Some("Body."),
+        ),
+        64,
+        "refusing to overwrite verify input",
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.0.join("brand.svg")).unwrap(),
+        SVG
+    );
+}
+
+#[test]
 fn strict_layout_refusal_occurs_before_report_or_link_cache() {
     let workspace = Workspace::new();
     workspace.write("document.md", "A  \nB  \nC");

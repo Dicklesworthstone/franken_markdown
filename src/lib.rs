@@ -980,7 +980,8 @@ pub struct PdfOptions {
 /// | `{date}` | [`PdfOptions::metadata_epoch_seconds`] as `YYYY-MM-DD` (UTC), else empty |
 ///
 /// `{date}` never reads the clock: library and WASM callers pass the epoch
-/// explicitly and the CLI populates it only from `SOURCE_DATE_EPOCH`.
+/// explicitly, native publication reads `SOURCE_DATE_EPOCH`, and native
+/// verification accepts `--metadata-epoch-seconds`.
 ///
 /// Chapter and section titles come from the final paginated body. Later headings
 /// on a page take effect on the next page; continuation pages retain the last

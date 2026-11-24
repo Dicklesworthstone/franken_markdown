@@ -359,6 +359,61 @@ struct RenderArgs {
     style: RenderStyleArgs,
 }
 
+/// Running PDF content uses the same options in publication and verification.
+#[derive(Args, Clone)]
+struct PdfRunningArgs {
+    /// Render running page numbers in the bottom margin of PDF pages.
+    /// Sugar for `--pdf-footer-center '{page}'`; an explicit footer center wins.
+    #[arg(long)]
+    pdf_page_numbers: bool,
+    /// PDF running header, left slot. Tokens: {page} {pages} {title} {chapter} {section} {author} {date}.
+    #[arg(long, value_name = "TEXT")]
+    pdf_header_left: Option<String>,
+    /// PDF running header, center slot (same tokens as --pdf-header-left).
+    #[arg(long, value_name = "TEXT")]
+    pdf_header_center: Option<String>,
+    /// PDF running header, right slot (same tokens as --pdf-header-left).
+    #[arg(long, value_name = "TEXT")]
+    pdf_header_right: Option<String>,
+    /// PDF running footer, left slot (same tokens as --pdf-header-left).
+    #[arg(long, value_name = "TEXT")]
+    pdf_footer_left: Option<String>,
+    /// PDF running footer, center slot (same tokens as --pdf-header-left).
+    #[arg(long, value_name = "TEXT")]
+    pdf_footer_center: Option<String>,
+    /// PDF running footer, right slot (same tokens as --pdf-header-left).
+    #[arg(long, value_name = "TEXT")]
+    pdf_footer_right: Option<String>,
+    /// Decorative header image destination supplied with --pdf-image DEST=PATH.
+    /// The image does not need to appear in the Markdown source.
+    #[arg(long, value_name = "DEST", value_parser = parse_running_image_destination)]
+    pdf_header_image: Option<String>,
+    /// Header image placement (default: left). Requires --pdf-header-image.
+    #[arg(long, value_enum, value_name = "SIDE", requires = "pdf_header_image")]
+    pdf_header_image_position: Option<RunningImagePositionArg>,
+    /// Requested header image height in points; reduced to fit the margin.
+    #[arg(long, value_name = "POINTS", requires = "pdf_header_image", value_parser = clap::value_parser!(u16).range(1..))]
+    pdf_header_image_height_pt: Option<u16>,
+    /// Decorative footer image destination supplied with --pdf-image DEST=PATH.
+    #[arg(long, value_name = "DEST", value_parser = parse_running_image_destination)]
+    pdf_footer_image: Option<String>,
+    /// Footer image placement (default: left). Requires --pdf-footer-image.
+    #[arg(long, value_enum, value_name = "SIDE", requires = "pdf_footer_image")]
+    pdf_footer_image_position: Option<RunningImagePositionArg>,
+    /// Requested footer image height in points; reduced to fit the margin.
+    #[arg(long, value_name = "POINTS", requires = "pdf_footer_image", value_parser = clap::value_parser!(u16).range(1..))]
+    pdf_footer_image_height_pt: Option<u16>,
+    /// Draw a hairline under the PDF running header.
+    #[arg(long)]
+    pdf_header_rule: bool,
+    /// Draw a hairline over the PDF running footer.
+    #[arg(long)]
+    pdf_footer_rule: bool,
+    /// Leave PDF page 1 without running header, footer, rules or page number.
+    #[arg(long)]
+    pdf_running_skip_first: bool,
+}
+
 /// Rendering style flags shared by `fmd render`, `fmd watch` and `fmd batch`,
 /// so every surface renders a document the same way.
 #[derive(Args, Clone)]
@@ -482,56 +537,8 @@ struct RenderStyleArgs {
     /// Supported by both ordinary rendering and --to svg batch jobs.
     #[arg(long = "svg-width-pt", value_name = "POINTS")]
     svg_width_pt: Option<f32>,
-    /// Render running page numbers in the bottom margin of PDF pages.
-    /// Sugar for `--pdf-footer-center '{page}'`; an explicit footer center wins.
-    #[arg(long)]
-    pdf_page_numbers: bool,
-    /// PDF running header, left slot. Tokens: {page} {pages} {title} {chapter} {section} {author} {date}.
-    #[arg(long, value_name = "TEXT")]
-    pdf_header_left: Option<String>,
-    /// PDF running header, center slot (same tokens as --pdf-header-left).
-    #[arg(long, value_name = "TEXT")]
-    pdf_header_center: Option<String>,
-    /// PDF running header, right slot (same tokens as --pdf-header-left).
-    #[arg(long, value_name = "TEXT")]
-    pdf_header_right: Option<String>,
-    /// PDF running footer, left slot (same tokens as --pdf-header-left).
-    #[arg(long, value_name = "TEXT")]
-    pdf_footer_left: Option<String>,
-    /// PDF running footer, center slot (same tokens as --pdf-header-left).
-    #[arg(long, value_name = "TEXT")]
-    pdf_footer_center: Option<String>,
-    /// PDF running footer, right slot (same tokens as --pdf-header-left).
-    #[arg(long, value_name = "TEXT")]
-    pdf_footer_right: Option<String>,
-    /// Decorative header image destination supplied with --pdf-image DEST=PATH.
-    /// The image does not need to appear in the Markdown source.
-    #[arg(long, value_name = "DEST", value_parser = parse_running_image_destination)]
-    pdf_header_image: Option<String>,
-    /// Header image placement (default: left). Requires --pdf-header-image.
-    #[arg(long, value_enum, value_name = "SIDE", requires = "pdf_header_image")]
-    pdf_header_image_position: Option<RunningImagePositionArg>,
-    /// Requested header image height in points; reduced to fit the margin.
-    #[arg(long, value_name = "POINTS", requires = "pdf_header_image", value_parser = clap::value_parser!(u16).range(1..))]
-    pdf_header_image_height_pt: Option<u16>,
-    /// Decorative footer image destination supplied with --pdf-image DEST=PATH.
-    #[arg(long, value_name = "DEST", value_parser = parse_running_image_destination)]
-    pdf_footer_image: Option<String>,
-    /// Footer image placement (default: left). Requires --pdf-footer-image.
-    #[arg(long, value_enum, value_name = "SIDE", requires = "pdf_footer_image")]
-    pdf_footer_image_position: Option<RunningImagePositionArg>,
-    /// Requested footer image height in points; reduced to fit the margin.
-    #[arg(long, value_name = "POINTS", requires = "pdf_footer_image", value_parser = clap::value_parser!(u16).range(1..))]
-    pdf_footer_image_height_pt: Option<u16>,
-    /// Draw a hairline under the PDF running header.
-    #[arg(long)]
-    pdf_header_rule: bool,
-    /// Draw a hairline over the PDF running footer.
-    #[arg(long)]
-    pdf_footer_rule: bool,
-    /// Leave PDF page 1 without running header, footer, rules or page number.
-    #[arg(long)]
-    pdf_running_skip_first: bool,
+    #[command(flatten)]
+    running: PdfRunningArgs,
     /// Base body font size override in points (clamped to [6, 24]).
     #[arg(long)]
     pdf_base_font_size: Option<f32>,
@@ -1012,7 +1019,7 @@ fn run_watch(args: WatchArgs, global_json: bool, no_config: bool) -> ExitCode {
     // Explicit mappings can point somewhere other than the source's image
     // destination (or supply a logo absent from Markdown). Watch every mapped
     // file so replacing the supplied bytes rebuilds all selected outputs.
-    let logo_destinations = running_image_destinations(&args.style);
+    let logo_destinations = running_image_destinations(&args.style.running);
     for spec in &args.style.pdf_images {
         let (_, path) = match parse_pdf_image_spec(spec, &logo_destinations) {
             Ok(asset) => asset,
@@ -1971,7 +1978,7 @@ fn run_render_with_preview(
     // Explicit logo keys also disambiguate DEST=PATH mappings whose key
     // contains '='. Keep them out of Markdown's automatic/remote loading.
     let mut explicit_image_destinations = image_destinations.clone();
-    explicit_image_destinations.extend(running_image_destinations(&args.style));
+    explicit_image_destinations.extend(running_image_destinations(&args.style.running));
     let base_image_dir = auto_pdf_image_base_dir(args.input.as_deref(), args.text.as_deref());
     // Every admitted local image path remains source material, even when it
     // is missing, a dangling alias, or superseded by explicitly supplied bytes.
@@ -2155,7 +2162,7 @@ fn run_render_with_preview(
             metadata_epoch_seconds: pdf_metadata_epoch,
             allow_raw_html: args.style.allow_html,
             code_line_numbers: args.style.pdf_line_numbers,
-            page_numbers: args.style.pdf_page_numbers,
+            page_numbers: args.style.running.pdf_page_numbers,
             footnote_backlinks: args
                 .style
                 .pdf_footnote_backlinks
@@ -2171,7 +2178,7 @@ fn run_render_with_preview(
                 .pdf_theme_spacing
                 .or(config.render.pdf_theme_spacing)
                 .unwrap_or(false),
-            running: pdf_running_content(&args.style),
+            running: pdf_running_content(&args.style.running),
             base_font_size: args
                 .style
                 .pdf_base_font_size
@@ -3031,7 +3038,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     let explicit_images = match read_pdf_image_assets_recording(
         &style.pdf_images,
         style.max_pdf_image_bytes,
-        &running_image_destinations(style),
+        &running_image_destinations(&style.running),
         &mut input_paths,
     ) {
         Ok(assets) => assets,
@@ -3068,7 +3075,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
         metadata_epoch_seconds: pdf_epoch,
         allow_raw_html: style.allow_html,
         code_line_numbers: style.pdf_line_numbers,
-        page_numbers: style.pdf_page_numbers,
+        page_numbers: style.running.pdf_page_numbers,
         footnote_backlinks: style
             .pdf_footnote_backlinks
             .or(config.render.pdf_footnote_backlinks)
@@ -3081,7 +3088,7 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
             .pdf_theme_spacing
             .or(config.render.pdf_theme_spacing)
             .unwrap_or(false),
-        running: pdf_running_content(style),
+        running: pdf_running_content(&style.running),
         base_font_size: style
             .pdf_base_font_size
             .or_else(|| font_scale.map(|s| s.pdf_base_pt())),
@@ -4189,7 +4196,7 @@ fn apply_config_render_defaults(
             .as_deref()
             .and_then(|value| MicrotypeArg::from_str(value, true).ok());
     }
-    style.pdf_page_numbers |= defaults.pdf_page_numbers.unwrap_or(false);
+    style.running.pdf_page_numbers |= defaults.pdf_page_numbers.unwrap_or(false);
     style.typography_homogeneous |= defaults.typography_homogeneous.unwrap_or(false);
     style.typography_antiriver |= defaults.typography_antiriver.unwrap_or(false);
     style.typography_pareto |= defaults.typography_pareto.unwrap_or(false);
@@ -4243,7 +4250,7 @@ fn load_profile_config(
     Ok((config, profile))
 }
 
-fn pdf_running_content(style: &RenderStyleArgs) -> crate::PdfRunningContent {
+fn pdf_running_content(style: &PdfRunningArgs) -> crate::PdfRunningContent {
     crate::PdfRunningContent {
         header: crate::PdfRunningBand {
             left: style.pdf_header_left.clone(),
@@ -4289,7 +4296,7 @@ fn parse_running_image_destination(value: &str) -> std::result::Result<String, S
     }
 }
 
-fn running_image_destinations(style: &RenderStyleArgs) -> Vec<&str> {
+fn running_image_destinations(style: &PdfRunningArgs) -> Vec<&str> {
     [
         style.pdf_header_image.as_deref(),
         style.pdf_footer_image.as_deref(),
@@ -4306,6 +4313,7 @@ fn validate_running_image_target(
     target: Target,
     json: bool,
 ) -> std::result::Result<(), ExitCode> {
+    let style = &style.running;
     let requested = style.pdf_header_image.is_some()
         || style.pdf_footer_image.is_some()
         || style.pdf_header_image_position.is_some()

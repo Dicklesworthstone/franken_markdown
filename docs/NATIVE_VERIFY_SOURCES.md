@@ -62,6 +62,7 @@ publication:
 | Typography | `--font`, `--font-scale` / `--type-size`, `--lang`, `--pdf-base-font-size`, `--pdf-heading-scale`, `--pdf-table-font-size` |
 | Paragraph and page layout | `--microtype`, `--typography-homogeneous`, `--typography-antiriver`, `--typography-pareto`, `--pdf-optimal-pagination`, `--pdf-strict-pagination`, `--pdf-baseline-grid-pt`, `--fit-to-pages` / `--target-pages` |
 | Contents, code and notes | `--toc`, `--toc-depth`, `--pdf-line-numbers`, `--pdf-footnote-backlinks`, `--pdf-split-footnotes`, `--pdf-theme-spacing` |
+| Running headers and footers | The same six text slots, rules, page numbers, skip-first setting and logo destination, position and height options as PDF publication. Supply template values with `--title`, `--author` and `--metadata-epoch-seconds` |
 | Explicit images | Repeat `--pdf-image DEST=PATH`; `DEST` is the exact parsed/rebased destination, including extensionless keys and URLs |
 | Source-relative images | `--load-local-images` enables the renderer's sandboxed local PNG/JPEG/GIF/SVG discovery |
 | Host fonts | Repeat `--pdf-font SLOT=PATH`, with the renderer's `--pdf-font-face` collection selectors and `--pdf-font-weight` pins |
@@ -88,9 +89,20 @@ budget also fails with `page_budget_unmet` after fitting, before external link
 checking or cache writes. A failed layout cannot be reported as clean merely
 because `--a11y` was selected.
 
-This is a body-layout and authoring audit. Running headers/footers, archival
-metadata, PDF serialization and PDF/A or PDF/UA certification remain outside
-the native verification flags. The version-1 report and digest describe measured
+Running bands are checked against the final page geometry, including logo
+decoding and the space available for positioned text and rules. A decorative
+logo needs an explicit `--pdf-image DEST=PATH` binding unless the document body
+already supplies that resource through local loading.
+
+```sh
+fmd verify report.md --pdf-header-left '{title}' --pdf-footer-right '{page}/{pages}' \
+  --pdf-header-image brand --pdf-image brand=branding/logo.svg --json
+```
+
+The report lists body text runs. Running content lives in the margins and can
+cause a render error even when the body fits. Set `--metadata-epoch-seconds`
+to the publication's `SOURCE_DATE_EPOCH` when verifying a `{date}` template.
+PDF serialization and PDF/A or PDF/UA certification are separate from this audit. The version-1 report and digest describe measured
 content and findings; they are not a cryptographic manifest of option or asset
 bytes. Different image pixels with identical dimensions can yield the same
 report.

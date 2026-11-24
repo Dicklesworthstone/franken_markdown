@@ -14,6 +14,17 @@ use crate::{Document, PdfOptions, Profile};
 
 #[derive(Args)]
 pub(super) struct VerifyLayoutArgs {
+    #[command(flatten)]
+    running: super::PdfRunningArgs,
+    /// Explicit document title for the {title} running-content token.
+    #[arg(long)]
+    title: Option<String>,
+    /// Explicit author for the {author} running-content token.
+    #[arg(long)]
+    author: Option<String>,
+    /// UTC Unix timestamp for {date}. Verification ignores SOURCE_DATE_EPOCH.
+    #[arg(long, value_name = "SECONDS")]
+    metadata_epoch_seconds: Option<u64>,
     /// Body font family for the PDF layout (default: sans).
     #[arg(long, value_enum)]
     font: Option<FontArg>,
@@ -176,6 +187,11 @@ impl VerifyLayoutArgs {
         let options = PdfOptions {
             theme,
             profile,
+            title: self.title.clone(),
+            author: self.author.clone(),
+            metadata_epoch_seconds: self.metadata_epoch_seconds,
+            page_numbers: self.running.pdf_page_numbers,
+            running: super::pdf_running_content(&self.running),
             lang: self.lang.clone(),
             base_font_size: self.pdf_base_font_size.or(scale.map(|s| s.pdf_base_pt())),
             heading_scale: self.pdf_heading_scale,
@@ -213,6 +229,10 @@ impl VerifyLayoutArgs {
         let lowered = crate::safe_html::lower(doc);
         let mut destinations = Vec::new();
         super::collect_image_destinations(&lowered.blocks, &mut destinations);
+        // Running logo keys may contain '=' and need not occur in Markdown.
+        // Only body destinations authorize automatic local reads.
+        let mut explicit_destinations = destinations.clone();
+        explicit_destinations.extend(super::running_image_destinations(&self.running));
         let base = self
             .load_local_images
             .then(|| super::auto_pdf_image_base_dir(input.to_str(), None))
@@ -223,7 +243,7 @@ impl VerifyLayoutArgs {
             .map(Path::to_path_buf)
             .collect::<Vec<_>>();
         for spec in &self.pdf_images {
-            let (_, path) = super::parse_pdf_image_spec(spec, &destinations)
+            let (_, path) = super::parse_pdf_image_spec(spec, &explicit_destinations)
                 .map_err(|message| fail_json(64, "usage_error", &message, json))?;
             paths.push(path);
         }
@@ -248,7 +268,7 @@ impl VerifyLayoutArgs {
         admitted.options.image_assets = super::read_pdf_image_assets_recording(
             &self.pdf_images,
             self.max_pdf_image_bytes,
-            &destinations,
+            &explicit_destinations,
             &mut paths,
         )
         .map_err(|error| {

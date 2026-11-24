@@ -158,8 +158,6 @@ export function normalizeRenderSettings(input = {}) {
     fail("Choose a supported PDF paper size.");
   if (![null, "portrait", "landscape"].includes(values.pageOrientation))
     fail("Choose portrait, landscape or the default PDF orientation.");
-  if (values.splitFootnotes && (values.optimalPagination || values.strictPagination))
-    fail("Continued PDF footnotes require standard page layout; turn off optimal and strict pagination.");
   // Keep the editable fields primitive for document reset and remount. The
   // export normalizer below owns geometry and validates the native f32 bounds.
   const page = {};
@@ -391,7 +389,7 @@ function mount(root) {
       presets,
       make(
         "p",
-        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults. Paper dimensions and margins use points (72 per inch); margins must leave at least 72 points of content on each axis. A target page count is a fit request, not a guarantee, and cannot be combined with a fixed baseline grid. Continued footnotes use standard page layout and can use a baseline grid. Explicit line height or table padding enables PDF theme spacing; leave that switch at default or turn it on.",
+        "Presets change only the preview draft fields, including the shared font. Click Apply to use them. Blank optional fields preserve renderer defaults. Paper dimensions and margins use points (72 per inch); margins must leave at least 72 points of content on each axis. A target page count is a fit request, not a guarantee, and cannot be combined with a fixed baseline grid. Continued footnotes support standard, optimal and strict pagination, including baseline grids. Strict pagination reports an error when the engine cannot honor an exact plan. Explicit line height or table padding enables PDF theme spacing; leave that switch at default or turn it on.",
       ),
     );
     const actions = make("p");

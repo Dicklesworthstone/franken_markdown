@@ -572,8 +572,6 @@ test("long-document PDF controls preserve other formats and carry exact spacing"
 
 for (const values of [
   { footnoteBacklinks: "true" }, { splitFootnotes: 1 },
-  { splitFootnotes: true, optimalPagination: true },
-  { splitFootnotes: true, strictPagination: true },
   { typographyThemeSpacing: "true" }, { pdfLineHeight: "2" },
   { pdfLineHeight: 0.99 }, { pdfLineHeight: 4.01 }, { pdfLineHeight: NaN },
   { tableCellPaddingXEm: -0.01 }, { tableCellPaddingYEm: 8.01 },
@@ -590,19 +588,28 @@ test("long-document drafts apply atomically, survive remount and reset", (t) => 
   const f = fixture(); t.after(() => f.controls.dispose());
   const before = f.controls.settings;
   f.set("footnoteBacklinks", "true"); f.set("splitFootnotes", "true");
-  f.set("strictPagination", "true"); f.set("pdfLineHeight", "2.1"); f.submit();
+  f.set("strictPagination", "true"); f.set("pdfLineHeight", "2.1");
+  f.set("baselineGridPt", "12"); f.set("fitToPages", "2"); f.submit();
   assert.equal(f.controls.settings, before);
-  assert.match(f.el("render-settings-status").textContent, /footnotes.*standard/i);
+  assert.match(f.el("render-settings-status").textContent, /baseline grids.*fitToPages/i);
   assert.equal(f.el("render-pdfLineHeight").value, "2.1");
-  f.set("strictPagination", "false"); f.set("baselineGridPt", "12");
+  assert.equal(f.el("render-fitToPages").value, "2");
+  assert.equal(f.applied.length, 0);
+  assert.throws(() => f.controls.exportOptions("pdf"), /Apply or discard/);
+  f.set("fitToPages", "");
   f.set("tableCellPaddingYEm", "0"); f.submit();
   assert.equal(f.applied.length, 1);
   assert.equal(f.applied[0].change.previewChanged, false);
   assert.equal(f.controls.exportOptions("pdf").splitFootnotes, true);
+  assert.equal(f.controls.exportOptions("pdf").strictPagination, true);
+  assert.equal(f.controls.exportOptions("pdf").baselineGridPt, 12);
   assert.equal(f.controls.exportOptions("pdf").typography.lineHeight, 2.1);
   assert.equal(f.controls.exportOptions("pdf").typography.tableCellPaddingYEm, 0);
   f.remount(f.controls.settings.values);
   assert.equal(f.el("render-footnoteBacklinks").value, "true");
+  assert.equal(f.el("render-splitFootnotes").value, "true");
+  assert.equal(f.el("render-strictPagination").value, "true");
+  assert.equal(f.el("render-baselineGridPt").value, "12");
   assert.equal(f.el("render-tableCellPaddingYEm").value, "0");
   f.el("render-settings-reset").click();
   assert.equal(f.controls.exportOptions("pdf").splitFootnotes, undefined);

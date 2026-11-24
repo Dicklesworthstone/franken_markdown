@@ -119,9 +119,11 @@ requested capability reject it with a rebuild explanation.
 For long documents, **PDF note numbers link back to their citations** enables
 return navigation, and **Continue long PDF footnotes across page feet** keeps
 eligible long notes at page feet instead of moving the entire note to the end.
-Continuation requires standard page layout: turn off optimal and strict
-pagination. Baseline grids are supported. Oversized indivisible note content
-retains the engine's documented endnote fallback.
+Continuation supports standard, optimal and strict pagination, including
+baseline grids. Optimal pagination plans body boundaries together with pending
+note fragments; strict pagination reports the engine's typed refusal if that
+exact plan cannot honor the document's constraints. Oversized indivisible note
+content retains the engine's documented endnote fallback.
 
 The panel also exposes measured PDF body line height (1–4 times the body font
 size) and horizontal/vertical table-cell padding (0–8 em). These values affect

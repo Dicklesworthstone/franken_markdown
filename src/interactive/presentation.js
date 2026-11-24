@@ -1,6 +1,6 @@
 // Included only for configured lightweight workspaces. The native WASM editor
 // owns its own preview and never installs this adapter. Source remains data.
-function fmdCreateStyledPresentation(config, doc) {
+function fmdCreateStyledPresentation(config) {
   if (config?.version !== 1 || typeof config.css !== 'string'
       || config.css.length > 192 * 1024 * 1024 || typeof config.title !== 'string'
       || typeof config.lang !== 'string' || typeof config.toc !== 'boolean'
@@ -9,26 +9,12 @@ function fmdCreateStyledPresentation(config, doc) {
   }
   const escape = value => String(value).replace(/[&<>"']/g, ch =>
     ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
-  function withContents(fragment) {
-    if (!config.toc) return fragment;
-    // Template contents are inert: collecting heading labels does not load
-    // images, activate links or execute source markup in the application DOM.
-    const template = doc.createElement('template'); template.innerHTML = fragment;
-    const headings = Array.from(template.content.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-      .filter(heading => Number(heading.tagName.slice(1)) <= config.tocDepth);
-    if (headings.length > 4096) throw Error('Table of contents exceeds 4096 headings');
-    if (!headings.length) return fragment;
-    const nav = doc.createElement('nav'); nav.className = 'toc';
-    nav.setAttribute('aria-label', 'Table of contents');
-    const list = doc.createElement('ul'); nav.appendChild(list);
-    for (const heading of headings) {
-      const item = doc.createElement('li'), link = doc.createElement('a');
-      link.setAttribute('href', '#' + heading.id); link.textContent = heading.textContent;
-      item.style.marginLeft = (Number(heading.tagName.slice(1)) - 1) + 'em';
-      item.appendChild(link); list.appendChild(item);
-    }
-    headings[0].before(nav);
-    return template.innerHTML;
+  // Navigation belongs to the document parser: it knows authored marker
+  // placement, real heading labels/IDs and which headings live in notes.
+  // Capture settings once so edited and printed fragments use the same policy.
+  const contents = Object.freeze({toc: config.toc, tocDepth: config.tocDepth});
+  function render(parser, source, assets, profile) {
+    return parser(source, assets, profile, contents);
   }
   function documentHtml(fragment, display = {}) {
     if (typeof fragment !== 'string' || fragment.length > 32 * 1024 * 1024) throw Error('Preview exceeds its output limit');
@@ -54,7 +40,7 @@ function fmdCreateStyledPresentation(config, doc) {
       + 'referrerpolicy="no-referrer" style="display:block;width:100%;border:0;min-height:320px;height:100vh" srcdoc="'
       + escape(documentHtml(fragment, display)) + '"></iframe>';
   }
-  return Object.freeze({withContents, documentHtml, displayKey, frame});
+  return Object.freeze({render, documentHtml, displayKey, frame});
 }
 
 (function() {
@@ -63,7 +49,7 @@ function fmdCreateStyledPresentation(config, doc) {
       || (candidate?.version === 1 && typeof candidate.render === 'function'
         && typeof candidate.pdf === 'function')) return;
   const data = document.querySelector('body > script#fmd-presentation[type="application/json"]');
-  const styled = fmdCreateStyledPresentation(JSON.parse(data.textContent), document);
+  const styled = fmdCreateStyledPresentation(JSON.parse(data.textContent));
   const preview = document.getElementById('fmd-content'), editor = document.getElementById('fmd-editor');
   const template = document.createElement('template');
   template.innerHTML = preview.querySelector('iframe[data-fmd-styled-preview]').getAttribute('srcdoc');
@@ -80,7 +66,7 @@ function fmdCreateStyledPresentation(config, doc) {
     theme: document.body.classList.contains('theme-dark') ? 'dark'
       : document.body.classList.contains('theme-light') ? 'light' : undefined});
   parseMarkdownClient = function(source, assets, profile) {
-    fragment = styled.withContents(originalParse(source, assets, profile));
+    fragment = styled.render(originalParse, source, assets, profile);
     return styled.frame(fragment, display());
   };
   function measure(frame) {
@@ -158,7 +144,7 @@ function fmdCreateStyledPresentation(config, doc) {
       const assets = new Map();
       const imageData = document.querySelector('body > script#fmd-image-assets[type="application/json"]');
       for (const [key, bytes] of imageData ? JSON.parse(imageData.textContent) : []) if (!assets.has(key)) assets.set(key, bytes);
-      fragment = styled.withContents(originalParse(source, assets, authoringProfile.value));
+      fragment = styled.render(originalParse, source, assets, authoringProfile.value);
     }
     preview.innerHTML = styled.frame(fragment, display()); observeFrame();
     const frame = observedFrame;

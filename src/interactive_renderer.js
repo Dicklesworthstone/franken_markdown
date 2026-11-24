@@ -652,7 +652,7 @@ zwnj=200c
 }));
 // END GENERATED HTML ENTITIES
 
-function parseMarkdownClient(source, imageAssets, profile) {
+function parseMarkdownClient(source, imageAssets, profile, contents) {
   'use strict';
   // Authoring syntax is selected before observing source or asset bindings.
   // Omitted/null matches the native default; explicit names are never coerced.
@@ -660,6 +660,16 @@ function parseMarkdownClient(source, imageAssets, profile) {
       && profile !== 'commonmark-gfm' && profile !== 'gfm-plus') {
     const error = new TypeError('Invalid authoring profile: expected commonmark-gfm or gfm-plus.');
     error.code = 'FMD_INVALID_PROFILE';
+    throw error;
+  }
+  // The styled workspace forwards its captured document navigation policy.
+  // Keep it independent of source metadata and authoring dialect selection.
+  if (contents != null && (typeof contents !== 'object' || Array.isArray(contents))
+      || contents?.toc != null && typeof contents.toc !== 'boolean'
+      || contents?.tocDepth != null && (!Number.isInteger(contents.tocDepth)
+        || contents.tocDepth < 1 || contents.tocDepth > 6)) {
+    const error = new TypeError('Invalid table of contents options.');
+    error.code = 'FMD_INVALID_TOC_OPTIONS';
     throw error;
   }
   const extensions = profile !== 'commonmark-gfm';
@@ -714,7 +724,8 @@ function parseMarkdownClient(source, imageAssets, profile) {
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
   const reservedNoteIds = new Set(), assignedNoteIds = new Set();
   const nextNoteSuffix = new Map();
-  let planningNotes = false;
+  let planningNotes = false, automaticToc = contents?.toc === true, needsToc = automaticToc;
+  const defaultTocDepth = contents?.tocDepth ?? 6, tocEntries = [], tocCache = new Map();
   const MAX_DEPTH = 64;
   // A lazy continuation may need protective indentation while containers are
   // reparsed. Track its own line identity, never its text: an identical authored
@@ -1346,7 +1357,10 @@ function parseMarkdownClient(source, imageAssets, profile) {
               const link = indexFrom(i, i, depth + 1);
               if (link) {
                 record(i, link);
-                if (stack.length) stack.at(-1).containsLink = true;
+                if (stack.length) {
+                  stack.at(-1).containsLink = true;
+                  stack.at(-1).containsBracketLink = true;
+                }
                 i = link.end;
               } else {
                 record(i, {kind: 'note', label, end: close + 1});
@@ -1356,7 +1370,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
             }
           }
           allocate();
-          stack.push({start: i, open: i + (image ? 1 : 0), image, containsLink: false});
+          stack.push({start: i, open: i + (image ? 1 : 0), image, containsLink: false, containsBracketLink: false});
           i += image ? 2 : 1; continue;
         }
         if (ch === ']' && stack.length) {
@@ -1366,12 +1380,20 @@ function parseMarkdownClient(source, imageAssets, profile) {
           if (open.start === root) return atom;
           if (atom) {
             record(open.start, atom);
-            if (!open.image && stack.length) stack.at(-1).containsLink = true;
+            // A bracket link retires earlier ordinary link openers even when
+            // an intervening image flattens it into alt text. Angle autolinks
+            // remain local to an accepted image description.
+            if (stack.length && (!open.image || open.containsBracketLink)) {
+              stack.at(-1).containsLink = true;
+              stack.at(-1).containsBracketLink = true;
+            }
             i = target.end; continue;
           }
-          // An accepted image contains its child links as alt text. A rejected
-          // label propagates them, preventing an enclosing anchor from nesting.
-          if (open.containsLink && stack.length) stack.at(-1).containsLink = true;
+          // Rejected labels retain their children as ordinary inline content.
+          if (stack.length) {
+            if (open.containsLink) stack.at(-1).containsLink = true;
+            if (open.containsBracketLink) stack.at(-1).containsBracketLink = true;
+          }
         }
         i++;
       }
@@ -1495,8 +1517,11 @@ function parseMarkdownClient(source, imageAssets, profile) {
     charge(text.length + 1);
     // A heading collects semantic text during its existing inline walk. Link targets,
     // image bindings, generated tags and citation numbers never enter the anchor.
-    const visible = value => {
-      if (heading) heading.text = append(heading.text, value);
+    const visible = (value, label = value) => {
+      if (heading) {
+        heading.text = append(heading.text, value);
+        if (heading.label !== null) heading.label = append(heading.label, label);
+      }
       return value;
     };
     if (depth > MAX_DEPTH) return escape(visible(text));
@@ -1531,11 +1556,15 @@ function parseMarkdownClient(source, imageAssets, profile) {
           out = append(out, '<code>' + escape(visible(code)) + '</code>');
         } else if (atom.kind === 'html' || atom.kind === 'math') {
           const literal = text.slice(i, atom.end);
-          if (heading && (atom.kind === 'math' || (images && headingRetainsHtml(literal)))) visible(literal);
+          if (heading && (atom.kind === 'math' || (images && headingRetainsHtml(literal)))) {
+            const width = literal.startsWith('$$') ? 2 : 1;
+            visible(literal, atom.kind === 'math' ? literal.slice(width, -width) : literal);
+          }
           out = append(out, escape(literal));
         } else if (atom.kind === 'note') {
           // The native image alt text retains a literal citation label.
           if (!images) visible(text.slice(i, atom.end));
+          else if (heading && heading.label !== null) heading.label = append(heading.label, text.slice(i, atom.end));
           out = append(out, footnotes ? noteReference(atom.label, noteLinks) : escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'autolink') {
           visible(atom.label);
@@ -2488,18 +2517,117 @@ function parseMarkdownClient(source, imageAssets, profile) {
     }
     return slug || 'section';
   }
-  function renderHeading(node, footnotes = true) {
-    const heading = node.headingId ? null : {text: ''};
+  // Recognize the native whole-paragraph TOC syntax after inline ownership.
+  // A code span, resolved reference or nested style cannot turn into a marker.
+  // Escapes and character references still contribute ordinary text, as they
+  // do to the native AST. Source line breaks remain distinct inline nodes.
+  function tocMarkerDepth(text) {
+    // Most paragraphs cannot begin a marker. Do not decode or index their
+    // entire content just to discover that first ordinary character.
+    let first = 0;
+    while (first < text.length && /\p{White_Space}/u.test(text[first])) { charge(); first++; }
+    if (text[first] !== '[' && text[first] !== '&' && text[first] !== '\\') return undefined;
+    charge(text.length + 1);
+    if (text.includes('\n')) return undefined;
+    const trim = value => {
+      let start = 0, end = value.length;
+      while (start < end && /\p{White_Space}/u.test(value[start])) { charge(); start++; }
+      while (end > start && /\p{White_Space}/u.test(value[end - 1])) { charge(); end--; }
+      return value.slice(start, end);
+    };
+    const decoded = trim(unescape(text));
+    if (decoded[0] !== '[' || decoded.at(-1) !== ']') return undefined;
+    const atoms = inlineIndex(text);
+    if (atoms.size) return undefined;
+    const emphasis = emphasisIndex(text, atoms);
+    let inner;
+    if (!emphasis.size) {
+      inner = decoded.startsWith('[[') && decoded.endsWith(']]')
+        ? decoded.slice(2, -2) : decoded.slice(1, -1);
+    } else {
+      if (emphasis.size !== 2) return undefined;
+      const events = Array.from(emphasis.entries());
+      const opening = events.find(([, event]) => event.open), closing = events.find(([, event]) => !event.open);
+      if (!opening || !closing || !['em', 'strong'].includes(opening[1].tag)) return undefined;
+      const before = trim(unescape(text.slice(0, opening[0]))), after = trim(unescape(text.slice(closing[1].end)));
+      if (!(before === '[' && after === ']' || before === '[[' && after === ']]')) return undefined;
+      inner = unescape(text.slice(opening[1].end, closing[0]));
+    }
+    charge(inner.length + 1);
+    let start = 0, end = inner.length;
+    while (inner[start] === '_') start++;
+    while (end > start && inner[end - 1] === '_') end--;
+    inner = inner.slice(start, end);
+    if (!/^[tT][oO][cC]/.test(inner)) return undefined;
+    inner = inner.slice(3);
+    if (!inner.length) return null;
+    if (inner[0] !== ':') return undefined;
+    const depth = trim(inner.slice(1));
+    // Rust's u8 parser permits a leading plus and leading zeroes.
+    if (!/^\+?[0-9]+$/.test(depth)) return undefined;
+    const value = Number(depth);
+    return value >= 1 && value <= 255 ? value : undefined;
+  }
+  function prepareToc(nodes, inNote = false) {
+    for (const node of nodes) {
+      charge();
+      if (node.kind === 'paragraph') {
+        node.tocDepth = tocMarkerDepth(node.text);
+        if (node.tocDepth !== undefined) {
+          needsToc = true;
+          if (!inNote) automaticToc = false;
+        }
+      } else if (node.kind === 'quote' || node.kind === 'callout') {
+        prepareToc(node.children, inNote);
+      } else if (node.kind === 'list') {
+        for (const item of node.items) prepareToc(item.children, inNote);
+      }
+    }
+  }
+  function renderToc(depth) {
+    const maximum = Math.min(6, depth);
+    if (tocCache.has(maximum)) return tocCache.get(maximum);
+    let out = '', previous = 0, lists = 1, openItem = false;
+    for (const entry of tocEntries) {
+      charge();
+      if (entry.level > maximum) continue;
+      if (!out) { out = '<nav class="toc"><ul>\n'; previous = entry.level; }
+      if (openItem && entry.level <= previous) { out = append(out, '</li>\n'); openItem = false; }
+      while (lists > 1 && previous > entry.level) {
+        out = append(out, '</ul></li>\n'); lists--; previous--;
+      }
+      while (previous < entry.level) {
+        if (!openItem) out = append(out, '<li>\n');
+        out = append(out, '<ul>\n'); lists++; previous++; openItem = false;
+      }
+      out = append(out, '<li><a href="#' + escape(entry.id) + '">' + escape(entry.text) + '</a>');
+      openItem = true; previous = entry.level;
+    }
+    if (out) {
+      if (openItem) out = append(out, '</li>\n');
+      while (lists-- > 1) out = append(out, '</ul></li>\n');
+      out = append(out, '</ul></nav>\n');
+    }
+    allocate(); tocCache.set(maximum, out);
+    return out;
+  }
+  function renderHeading(node, footnotes = true, outline = false) {
+    const heading = node.headingId ? null : {text: '', label: outline ? '' : null};
     const content = inline(node.title, 0, true, footnotes, true, false, true, heading);
-    if (heading) node.headingId = uniqueId(headingSlug(heading.text));
+    if (heading) {
+      node.headingId = uniqueId(headingSlug(heading.text));
+      if (outline) node.headingLabel = heading.label;
+    }
     return content;
   }
-  function planNoteAnchors(nodes) {
+  function planNoteAnchors(nodes, outline = false) {
     for (const node of nodes) {
       charge();
       switch (node.kind) {
         case 'heading':
-          renderHeading(node); break;
+          renderHeading(node, true, outline);
+          if (outline) { allocate(); tocEntries.push({level: node.level, id: node.headingId, text: node.headingLabel}); }
+          break;
         case 'paragraph':
           inline(node.text); break;
         case 'definition-list':
@@ -2510,11 +2638,11 @@ function parseMarkdownClient(source, imageAssets, profile) {
           break;
         case 'callout':
           inline(node.label);
-          planNoteAnchors(node.children); break;
+          planNoteAnchors(node.children, outline); break;
         case 'quote':
-          planNoteAnchors(node.children); break;
+          planNoteAnchors(node.children, outline); break;
         case 'list':
-          for (const item of node.items) planNoteAnchors(item.children);
+          for (const item of node.items) planNoteAnchors(item.children, outline);
           break;
         case 'table': {
           const row = cells => {
@@ -2549,6 +2677,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
         case 'math':
           out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
+          if (automaticToc) { automaticToc = false; out = append(out, renderToc(defaultTocDepth)); }
           const content = renderHeading(node, footnotes);
           const id = node.headingId;
           out = append(out, '<h' + node.level + ' id="' + escape(id) + '">' + content + '</h' + node.level + '>\n'); break;
@@ -2597,6 +2726,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
           out = append(out, '</tbody>\n</table></div>\n'); break;
         }
         case 'paragraph': {
+          if (node.tocDepth !== undefined) { out = append(out, renderToc(node.tocDepth ?? defaultTocDepth)); break; }
           const content = inline(node.text, 0, true, footnotes);
           out = append(out, tight ? content + '\n' : '<p>' + content + '</p>\n'); break;
         }
@@ -2666,13 +2796,15 @@ function parseMarkdownClient(source, imageAssets, profile) {
   const lines = documentBody(source).replace(/\r\n?/g, '\n').replace(/\0/g, '\ufffd').split('\n');
   if (lines.at(-1) === '') { allocate(); terminalEmptyLine.set(lines, lines.length - 1); }
   const blocks = parseBlocks(lines);
-  if (notes.size) {
+  prepareToc(blocks);
+  for (const note of notes.values()) prepareToc(note.content, true);
+  if (notes.size || needsToc) {
     // Headings retain their identities even when a citation precedes them.
     // Visit only emitted content: body first, then the growing first-reference
     // note queue. Unused/duplicate definitions contribute no heading anchors;
     // cycles append references, never repeat note bodies.
     planningNotes = true;
-    planNoteAnchors(blocks);
+    planNoteAnchors(blocks, needsToc);
     for (let index = 0; index < usedNotes.length; index++) planNoteAnchors(usedNotes[index].content);
     planningNotes = false;
     for (const id of headings.keys()) reserveNoteId(id);

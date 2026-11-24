@@ -84,9 +84,11 @@ test('accepted child links defeat an outer link while rejected tails remain sour
   }
 });
 
-test('images flatten child links and image alt text without disabling their outer link', () => {
+test('images flatten child links while preserving earlier bracket-link precedence', () => {
+  // CommonMark 0.31.2's link/image algorithm retires earlier ordinary '['
+  // openers when a bracket link is accepted, including across image labels.
   assert.equal(render('[![before [inner](/inside "`x") after](image].png)](/outer)'),
-    '<p><a href="/outer"><img src="image].png" alt="before inner after"></a></p>\n');
+    '<p>[<img src="image].png" alt="before inner after">](/outer)</p>\n');
   assert.equal(render('![before ![child](child.png) after](parent.png)'),
     '<p><img src="parent.png" alt="before child after"></p>\n');
   const assets = {has: url => { assert.notEqual(url, 'child.png'); return false; }};
@@ -217,7 +219,11 @@ test('nested bare destinations retain escape rules and cannot cross URL boundari
     ['[x](/a(b\\)c)d)', '<a href="/a(b)c)d">x</a>'],
     ['[x](/a(b\\(c)d)', '<a href="/a(b(c)d">x</a>'],
     ['[x](/a(\\<b))', '<a href="/a(&lt;b)">x</a>'],
-    ['[x](/a(<b))', '[x](/a(&lt;b))'],
+    // A bare destination may contain '<' after its first character; an
+    // angle-delimited destination cannot contain an unescaped interior '<'.
+    // https://spec.commonmark.org/0.31.2/#link-destination
+    ['[x](/a(<b))', '<a href="/a(&lt;b)">x</a>'],
+    ['[x](<a(<b)>)', '[x](&lt;a(&lt;b)&gt;)'],
     ['[x](/a(b c))', '[x](/a(b c))'],
     ['[x](/a(b\tc))', '[x](/a(b\tc))'],
   ]) assert.equal(render(syntax), '<p>' + expected + '</p>\n', syntax);

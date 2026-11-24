@@ -114,6 +114,27 @@ Code blocks, inline code, and larger HTML blocks retain ownership of their
 contents; text resembling a directive inside those constructs is not promoted
 to a page break. Browser print pagination determines the final paper layout.
 
+## Tables of contents during editing
+
+Authored whole-paragraph markers such as `[TOC]`, `[[TOC]]`, `[[_TOC_]]` and
+`[TOC:2]` retain their navigation after local edits, print preparation, and
+Save HTML and reopen. A marker's depth selects the greatest source heading
+level to include. Code, prose containing a marker, and resolved Markdown links
+keep their ordinary meaning.
+
+The outline uses the actual body heading IDs, including Unicode and duplicate
+suffixes. Labels preserve readable link text, image descriptions, code, and
+literal footnote labels; generating the outline does not create extra note
+references. Headings inside quotes, callouts, and lists participate. Note
+headings retain their own anchors without becoming entries in the body outline.
+
+Configured automatic tables of contents appear once before the first body
+heading. Any authored body marker selects its own placement instead. Markers
+inside notes can show the body outline without suppressing its automatic
+table of contents. Marker depth overrides the configured default depth.
+These decisions use the same parser for the edited preview and styled print
+fragment, so a second table of contents is not synthesized from rendered HTML.
+
 ## Retention and recovery
 
 Explicit selections are stored in a direct child of the document body:

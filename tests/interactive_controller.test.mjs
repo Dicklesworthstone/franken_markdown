@@ -51,6 +51,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
   const absent = new Set([
     'body > script#fmd-image-assets[type="application/json"]',
     'body > script#fmd-native-runtime[type="application/json"]',
+    'body > script#fmd-authoring-profile',
     'body > dialog#fmd-document-settings',
   ]);
   const header = {...element(),
@@ -480,3 +481,28 @@ if (process.argv.includes('--native-image-workspace')) {
     await verifyImageSaveCycles(readImageWorkspace(html), actualImageRenderer(script.slice(0, end)));
   });
 }
+
+test('authored TOC survives actual controller edit, print, HTML save and repeated reopen', async () => {
+  const source = '[TOC:1]\n\n# Guide\n\n## Details\n\nRead[^n].\n\n[^n]: # Note';
+  let fixture = {source, imageAssets: null,
+    initialPreview: '<nav class="toc"><ul><li><a href="#guide">Guide</a></li></ul></nav><h1 id="guide">Guide</h1>'};
+  const actualRenderer = actualImageRenderer();
+  for (let generation = 1; generation <= 3; generation++) {
+    const page = setup({...fixture, actualRenderer});
+    const edited = fixture.source + '\n\nUnrelated edit ' + generation + '.';
+    page.edit(edited);
+    page.click('btn-export-pdf');
+    const preview = page.printed[0];
+    assert.equal((preview.match(/<nav class="toc">/g) || []).length, 1);
+    const nav = preview.match(/<nav class="toc">[\s\S]*?<\/nav>/)[0];
+    assert.match(nav, /href="#guide">Guide<\/a>/);
+    assert.doesNotMatch(nav, /href="#(?:details|note)"/);
+    assert.match(preview, /<h1 id="guide">Guide<\/h1>/);
+    assert.match(preview, /<h1 id="note">Note<\/h1>/);
+    page.click('btn-save-html');
+    fixture = readImageWorkspace(await page.downloads[0].blob.text());
+    assert.equal(fixture.source, edited);
+    assert.equal(fixture.initialPreview, preview);
+    assert.doesNotMatch(fixture.initialPreview, /<p>\[TOC:1\]<\/p>/);
+  }
+});

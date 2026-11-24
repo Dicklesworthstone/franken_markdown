@@ -35,15 +35,28 @@ pub(crate) struct Unit {
     pub prefix: i64,
     pub suffix: i64,
     /// Required consecutive units when a fragment starts at this unit.
-    /// Source paragraph edges and inseparable content are already grouped;
+    /// Source paragraph edges and inseparable content may already be grouped;
     /// this additionally protects interior continuation-page fragments.
     pub minimum_units: usize,
+}
+
+/// Optional constraints over physical note rows. The caller keeps semantic
+/// boundaries (headings, table rows, labels) and supplies complete paragraph
+/// ranges; one-row paragraphs are legal, while split prose requires two rows
+/// on each side and in each intermediate fragment.
+#[derive(Clone, Debug)]
+pub(crate) struct NoteConstraints {
+    /// One entry per unit, permitting a fragment to end after that row.
+    pub break_after: Vec<bool>,
+    /// Ordered, disjoint, complete source paragraphs in physical-row units.
+    pub paragraphs: Vec<Range<usize>>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Note {
     pub first_reference: usize,
     pub units: Vec<Unit>,
+    pub constraints: Option<NoteConstraints>,
 }
 
 #[derive(Clone, Debug)]
@@ -277,6 +290,23 @@ impl<'a> Measured<'a> {
             {
                 return Err(Error::Invalid("invalid first-citation note order"));
             }
+            if let Some(constraints) = &note.constraints {
+                if constraints.break_after.len() != note.units.len()
+                    || constraints.break_after.last() != Some(&true)
+                {
+                    return Err(Error::Invalid("invalid note break boundaries"));
+                }
+                let mut previous_end = 0;
+                for paragraph in &constraints.paragraphs {
+                    if paragraph.start < previous_end
+                        || paragraph.end <= paragraph.start
+                        || paragraph.end > note.units.len()
+                    {
+                        return Err(Error::Invalid("invalid note paragraph ranges"));
+                    }
+                    previous_end = paragraph.end;
+                }
+            }
             previous_reference = note.first_reference;
             let mut heights = Vec::with_capacity(note.units.len() + 1);
             heights.push(0);
@@ -330,19 +360,87 @@ impl<'a> Measured<'a> {
         end >= last.range.end || end - start.max(last.range.start) >= last.min_before_break
     }
 
-    fn note_height(&self, fragment: &Fragment) -> Result<i64, Error> {
+    /// Rows plus the fixed starting prefix grow monotonically. The ending
+    /// suffix may shrink, so a temporarily over-budget complete height is not
+    /// by itself a reason to stop looking at later legal boundaries.
+    fn note_base_height(&self, fragment: &Fragment) -> Result<i64, Error> {
         if fragment.start == fragment.end {
             return Ok(0);
         }
         let note = &self.input.notes[fragment.note];
         let prefix = &self.note_heights[fragment.note];
         height_sum(
-            height_sum(
-                prefix[fragment.end] - prefix[fragment.start],
-                note.units[fragment.start].prefix,
-            )?,
-            note.units[fragment.end - 1].suffix,
+            prefix[fragment.end] - prefix[fragment.start],
+            note.units[fragment.start].prefix,
         )
+    }
+
+    fn note_height(&self, fragment: &Fragment) -> Result<i64, Error> {
+        if fragment.start == fragment.end {
+            return Ok(0);
+        }
+        height_sum(
+            self.note_base_height(fragment)?,
+            self.input.notes[fragment.note].units[fragment.end - 1].suffix,
+        )
+    }
+
+    fn legal_note_fragment(&self, fragment: &Fragment) -> bool {
+        let note = &self.input.notes[fragment.note];
+        let start = fragment.start;
+        let end = fragment.end;
+        if start >= end || end > note.units.len() || end - start < note.units[start].minimum_units {
+            return false;
+        }
+        let Some(constraints) = &note.constraints else {
+            return true;
+        };
+        if !constraints.break_after[end - 1] || (start > 0 && !constraints.break_after[start - 1]) {
+            return false;
+        }
+        let paragraphs = &constraints.paragraphs;
+        let first = paragraphs.partition_point(|paragraph| paragraph.end <= start);
+        if let Some(paragraph) = paragraphs.get(first)
+            && paragraph.start < start
+            && start < paragraph.end
+            && end.min(paragraph.end) - start < 2
+        {
+            return false;
+        }
+        let after_last = paragraphs.partition_point(|paragraph| paragraph.start < end);
+        if let Some(last) = after_last.checked_sub(1)
+            && let Some(paragraph) = paragraphs.get(last)
+            && end < paragraph.end
+        {
+            // Check this fragment's local count, not just its distance from
+            // the paragraph's original start. Also protect the future tail:
+            // the deterministic allocator cannot backtrack to an earlier cut.
+            if end - start.max(paragraph.start) < 2 || paragraph.end - end < 2 {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn first_note_fragment(&self, note: usize, search: &mut Search) -> Result<Fragment, Error> {
+        let mut fragment = Fragment {
+            note,
+            start: 0,
+            end: self.input.notes[note].units[0].minimum_units,
+        };
+        if self.input.notes[note].constraints.is_none() {
+            return Ok(fragment);
+        }
+        loop {
+            search.charge(1)?;
+            if self.legal_note_fragment(&fragment) {
+                return Ok(fragment);
+            }
+            if fragment.end == self.input.notes[note].units.len() {
+                return Err(Error::Invalid("note has no legal mandatory fragment"));
+            }
+            fragment.end += 1;
+        }
     }
 
     fn extend(
@@ -351,29 +449,15 @@ impl<'a> Measured<'a> {
         budget: i64,
         search: &mut Search,
     ) -> Result<(), Error> {
-        let units = &self.input.notes[fragment.note].units;
-        if fragment.start == fragment.end && fragment.end < units.len() {
-            let minimum = units[fragment.start].minimum_units;
-            search.charge(minimum)?;
-            let candidate = Fragment {
-                end: fragment.start + minimum,
-                ..*fragment
-            };
-            if self.note_height(&candidate)? > budget {
-                return Ok(());
-            }
-            fragment.end = candidate.end;
-        }
-        while fragment.end < units.len() {
+        for end in (fragment.end + 1)..=self.input.notes[fragment.note].units.len() {
             search.charge(1)?;
-            let candidate = Fragment {
-                end: fragment.end + 1,
-                ..*fragment
-            };
-            if self.note_height(&candidate)? > budget {
+            let candidate = Fragment { end, ..*fragment };
+            if self.note_base_height(&candidate)? > budget {
                 break;
             }
-            fragment.end += 1;
+            if self.legal_note_fragment(&candidate) && self.note_height(&candidate)? <= budget {
+                fragment.end = end;
+            }
         }
         Ok(())
     }
@@ -395,12 +479,8 @@ impl<'a> Measured<'a> {
         search.charge(pending.len().saturating_add(to - from))?;
         let mut fresh = Vec::with_capacity(to - from);
         let mut used = 0;
-        for (note, source) in notes.iter().enumerate().take(to).skip(from) {
-            let fragment = Fragment {
-                note,
-                start: 0,
-                end: source.units[0].minimum_units,
-            };
+        for note in from..to {
+            let fragment = self.first_note_fragment(note, search)?;
             used = height_sum(used, self.note_height(&fragment)?)?;
             fresh.push(fragment);
         }

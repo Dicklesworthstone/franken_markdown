@@ -210,6 +210,8 @@ export interface FmdPdfRenderOptions extends FmdRenderOptions {
    * Supports optimal/strict pagination and baseline grids. Exactness covers body
    * boundaries and admitted paragraph shapes under the fixed note-allocation
    * policy; bounded search failures retain baseline shapes with diagnostics.
+   * Exact note-prose splits retain at least two measured rows in each fragment
+   * and its remaining tail; whole one-line paragraphs remain legal.
    * Requires a matching WASM package; older token
    * parsers fail explicitly. */
   splitFootnotes?: boolean;

@@ -871,10 +871,14 @@ pub struct PdfOptions {
     /// prefer 40% of usable page height, capped by space left after the body;
     /// reserve new first fragments before extending pending notes in FIFO order.
     /// Mandatory first fragments may exceed that share if the complete page fits.
-    /// Note-only tails use the full usable page height. Strict pagination retains
-    /// hard body widow/orphan and keep rules; note fragments retain the semantic
-    /// keeps above. Actual continued notes retain baseline paragraph shapes,
-    /// reported as `PdfParagraphVariantStatus::ContinuedFootnotes`.
+    /// Note-only tails use the full usable page height. Exact planning retains
+    /// hard body and semantic note keeps, and requires two measured rows in
+    /// every split note-prose fragment and its remaining tail. Whole one-line
+    /// paragraphs remain legal; three-line paragraphs stay together. Greedy
+    /// continuation also retains note-prose minima and semantic keeps. Body
+    /// paragraph alternatives participate in a
+    /// bounded complete selection; a refused optional search retains baseline
+    /// shapes and reports its limitation separately from final page boundaries.
     pub split_footnotes: bool,
     /// Optional base body size override, in points (clamped to [6, 24]).
     ///
@@ -931,7 +935,7 @@ pub struct PdfOptions {
     /// `docs/JOINT_PAGINATION.md` for admission limits. Default false.
     pub optimal_pagination: bool,
     /// Require the exact page planner's hard constraints for the final measured
-    /// body lines. Implies [`Self::optimal_pagination`]; failure returns
+    /// body lines and continued-note prose. Implies [`Self::optimal_pagination`]; failure returns
     /// [`RenderError::Pagination`] before PDF emission instead of using a weaker
     /// fallback. Default false preserves best-effort rendering.
     ///
@@ -942,6 +946,9 @@ pub struct PdfOptions {
     /// fragment, forced breaks and forbidden table/hyphen splits. Inferred
     /// caption keeps cover complete 1–3-line paragraphs in the same quote/list
     /// item; they may enter a child list and never override an explicit break.
+    /// With [`Self::split_footnotes`], every split note-prose fragment and its
+    /// remaining paragraph tail contain at least two measured rows; whole
+    /// one-line paragraphs remain legal and existing semantic keeps still apply.
     /// It does not require exhaustive paragraph alternatives, enforce every soft
     /// layout preference, or guarantee universal glyph-ink containment. Limited
     /// optional paragraph alternatives are allowed when the final fixed-layout

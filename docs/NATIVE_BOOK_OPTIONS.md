@@ -165,7 +165,10 @@ pending notes continue in FIFO order, and note-only tails can use the full page.
 The preferred share is capped by body space; mandatory first fragments may
 exceed it when the complete page fits. Strict mode preserves hard body keeps and
 two-line widow/orphan minima, and refuses infeasible or exhausted searches.
-Note fragments retain their semantic-unit rules. Body paragraph alternatives
+Exact note fragments retain their semantic keeps and require two measured rows
+of split prose on each page, including intermediate and final fragments. Whole
+one-line paragraphs remain legal; three-line paragraphs stay together.
+Greedy continuation also retains note-prose minima and semantic keeps. Body paragraph alternatives
 participate in bounded complete selection with continued notes; a refused
 optional search retains baseline shapes and reports that limitation. Chapter destinations,
 printed contents and running page totals use the resulting physical pages. See

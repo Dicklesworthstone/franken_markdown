@@ -157,6 +157,13 @@ or a required label-and-content group that cannot fit on a note-only page also
 sends its complete note to that fallback. The same complete fallback applies
 when the first group and its citing body line cannot fit together.
 
+The continued-note pager also reserves the final body row's painted depth,
+including full-size fallback endnotes that share the document with admitted
+page-foot notes. Citation admission, repeated-header replay, exact planning and
+painting use the same body-ink guard, including inline formula and image depth.
+Font sizes and real note destinations are preserved; grid endnotes retain their
+existing shared clearance.
+
 Continuation supports greedy, optimal and strict pagination with an optional
 baseline grid, for example:
 
@@ -178,7 +185,8 @@ exactness is defined over a fixed note-allocation policy:
 
 - The preferred note-region budget is 40% of usable page height, capped by the
   space remaining after the candidate body fragment.
-- Every newly cited note receives its mandatory first fragment on that page.
+- Every newly cited note receives its first legal mandatory fragment on that page,
+  satisfying both semantic keeps and paragraph split minima.
   These first fragments may exceed the preferred share when the body and complete
   note region still fit together.
 - Remaining space extends older pending notes in first-in, first-out order,
@@ -190,8 +198,22 @@ exactness is defined over a fixed note-allocation policy:
 The search optimizes body boundaries under this policy; it does not explore all
 possible allocations of note lines to pages. Exact planning retains the hard
 body rules, including two-line widow/orphan minima and heading, caption, list,
-definition-term and table keeps. Continued notes retain their semantic-unit
-keeps, two-row prose minima and protected hyphen breaks described above.
+definition-term and table keeps. Continued-note prose also obeys two-line
+widow/orphan minima: a split paragraph contributes at least two measured rows
+on each page, including intermediate fragments, and leaves at least two rows
+for its final fragment. Whole one-line paragraphs remain legal; a three-line
+paragraph stays together. Existing semantic keeps and intra-word hyphen bonds
+still apply, including headings, labels, definition terms and complete table
+rows. The exact bridge validates each complete source paragraph's row ownership
+before searching; incomplete topology produces a typed failure.
+
+The allocator chooses the longest legal fragment that fits its current budget;
+odd splits such as 3 + 2 or 3 + 3 remain available. It never commits a four-row
+fragment from a five-row remainder and strands the final row. When a growing
+fragment crosses a decorated seam, a smaller ending clearance can make a later
+legal endpoint fit even if an earlier endpoint was too tall. The search accounts
+for that changing clearance rather than stopping at a temporary overflow.
+These rules cover note-only tails and baseline grids.
 `--pdf-strict-pagination` requires a successful exact plan and
 returns a typed error for an impossible layout or an exhausted search budget.
 Best-effort optimal mode reports that failure before using its note-aware greedy
@@ -292,8 +314,9 @@ moves to a page foot or to the trailing Notes section.
 - With `--pdf-split-footnotes`, exact planning instead carries pending fragments
   across physical pages under the fixed allocation policy above. Its bounded
   search can report infeasibility or resource exhaustion; strict mode refuses
-  either outcome. Paragraph alternatives remain at their baseline shapes when
-  continued notes are present.
+  either outcome. Admitted body paragraph alternatives participate in bounded
+  complete selection with continued notes; a refused optional search retains
+  baseline shapes and reports its limitation.
 - By default, notes placed at a page foot are indivisible. Notes that exceed
   the available space print as endnotes, where ordinary block pagination can span pages.
   Their complete text, block structure, numbering, and link destinations are

@@ -1319,8 +1319,10 @@ Honest about what the renderer does not do yet.
   share capped by body space, reserve mandatory first fragments, then extend
   pending notes in FIFO order; note-only tails can use the full page. Mandatory
   first fragments may exceed the preferred share when the complete page fits.
-  Strict mode keeps hard body widow/orphan and keep rules; continued notes keep
-  their semantic-unit rules. Body paragraph alternatives participate in a bounded
+  Exact plans keep hard body rules and enforce two-line minima in every split
+  note-prose fragment, alongside note semantic keeps. Whole short paragraphs
+  remain legal; greedy continuation also preserves note-prose minima. Body paragraph
+  alternatives participate in a bounded
   complete search that includes note-only page costs; an exhausted optional
   search retains baseline shapes and reports that limitation. Unreferenced notes
   stay in the Notes section. See

@@ -143,16 +143,22 @@ boundaries under that policy.
 
 Hard body constraints, including two-line widow/orphan minima, heading and
 caption keeps, definition-term keeps, table-row atomicity and explicit breaks,
-remain in force. Note fragments retain their existing semantic-unit keeps,
-including complete table rows and repeated headers. Continued prose also keeps
-two measured rows in every fragment of a multi-row paragraph, including the
-first citation-page fragment and intermediate note-only pages. Two- and
-three-row paragraphs stay whole. Actual intra-word hyphen breaks cannot split
-across pages. Single-row source paragraphs retain their own boundaries.
-The emitted PDF, verification,
-book contents, running totals and both emission modes replay the same physical
-page plan. An optional baseline grid still shares its phase between body and
-note text.
+remain in force. Continued-note prose also requires two measured rows on each
+side of a split and in every intermediate fragment; a cut must leave at least
+two rows for the remaining paragraph tail. Complete one-line paragraphs stay
+legal, and three-line paragraphs stay whole. Existing note keeps, including
+headings and their subjects, definition introductions, complete table rows,
+repeated headers and intra-word hyphen bonds, remain in force.
+
+The exact bridge retains complete source paragraph ranges and validates their
+row ownership alongside semantic break boundaries and continuation-start
+minima. Mandatory first fragments advance to the first legal endpoint; extension
+chooses the longest legal fit under the fixed budget, including later endpoints
+whose ending clearance is smaller. The emitted PDF, verification, book contents,
+running totals and both emission modes replay the same physical page plan. An
+optional baseline grid still shares its phase between body and note text. The
+greedy continuation path also preserves the published note-prose minima and
+semantic keeps; exact planning additionally enforces its hard body constraints.
 
 The search is bounded. An impossible plan or exhausted budget produces the
 existing typed pagination failure: strict mode returns it, while best-effort

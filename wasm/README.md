@@ -670,8 +670,11 @@ first fragments, then extend pending notes in FIFO order. Mandatory first
 fragments may exceed the preferred share when the complete page fits. Note-only
 tails can use the full usable page height. Strict mode preserves hard body
 two-line widow/orphan minima and keeps, and refuses infeasible or exhausted
-searches. Note fragments retain their semantic-unit rules without a new
-two-line widow/orphan guarantee for note prose.
+searches. Exact note fragments also retain at least two measured rows of each
+split prose paragraph on every page, including intermediate and final fragments,
+alongside semantic keeps. Whole one-line paragraphs remain legal; three-line
+paragraphs stay together. Greedy continuation also retains note-prose minima
+and semantic keeps; exact planning additionally protects body constraints.
 
 Body paragraph alternatives participate in bounded complete selection with
 continued notes. A refused optional search retains baseline shapes and surfaces

@@ -166,8 +166,11 @@ prefer a 40% note share capped by space left after the body, reserve new first
 fragments before pending continuations in FIFO order, and allow note-only tails
 the full usable page height. Mandatory first fragments may exceed the preferred
 share when the complete page fits. Strict mode preserves hard body widow/orphan
-and keep rules and refuses infeasible or exhausted searches. Notes retain their
-semantic-unit rules, without a new two-line widow/orphan guarantee for note prose.
+and keep rules and refuses infeasible or exhausted searches. Exact continued-note
+prose obeys two-line minima in every split fragment and its remaining tail,
+alongside existing semantic keeps. Whole one-line paragraphs remain legal;
+three-line paragraphs stay together. Greedy continuation also retains note-prose
+minima and semantic keeps; exact planning additionally protects body constraints.
 
 Body paragraph alternatives participate in bounded complete selection with
 continued notes. Diagnostic PDF exports return `paragraph_pagination_limited`

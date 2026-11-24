@@ -830,16 +830,51 @@ fn oversubscribed_first_fragments_keep_complete_notes_and_real_destinations() {
         ));
         source.push('\n');
     }
-    let mut options = options();
-    options.theme.page.size.height_pt = 192.0;
-    for strict in [false, true] {
+    // Keep the original crowded fixture in both greedy and strict modes, then
+    // exercise tight and loose explicit leading. The joint case also gives
+    // the final fallback note an eligible paragraph alternative, so selection
+    // and painting must account for the same shared ink guards.
+    let prose = ["The old stone bridge stood beside the river while the town woke slowly. \
+         A small boat crossed the clear water and a child watched from the steps. \
+         The morning light reached the houses along the bank and the shop doors opened. \
+         People walked to work, shared news with friends, and stopped to hear the birds. \
+         By noon the market was full of fresh bread, bright fruit, and flowers from the hills.";
+        3]
+        .join(" ");
+    for (leading, strict, joint) in [
+        (None, false, false),
+        (None, true, false),
+        (Some(1.0), false, false),
+        (Some(1.7), false, false),
+        (None, true, true),
+    ] {
+        let mut options = options();
+        options.theme.page.size.height_pt = 192.0;
         options.strict_pagination = strict;
+        if let Some(leading) = leading {
+            options.use_theme_spacing = true;
+            options.theme.spacing.line_height = leading;
+        }
+        let source = if joint {
+            options.theme.page.size.width_pt = 512.0;
+            format!("{source}    {prose}\n")
+        } else {
+            source.clone()
+        };
+        let document = parse_markdown(&source);
         let rendered = render_pdf_reported(&source, &options).unwrap();
         if strict {
             assert!(rendered.pagination.page_breaks.is_exact());
         }
-        let bytes = rendered.bytes;
-        let pages = painted_pages(&bytes);
+        if joint {
+            assert_eq!(
+                rendered.pagination.paragraph_variants.status,
+                franken_markdown::PdfParagraphVariantStatus::Planned
+            );
+            assert!(rendered.pagination.paragraph_variants.offered_paragraphs > 0);
+        }
+        let bytes = &rendered.bytes;
+        let pages = painted_pages(bytes);
         let citing_page = locate(&pages, "CROWDCLAIM").0;
         let mut continued = 0;
         let mut fallback = 0;
@@ -852,19 +887,77 @@ fn oversubscribed_first_fragments_keep_complete_notes_and_real_destinations() {
                 assert_eq!(page, citing_page, "admitted first fragment {marker}");
             } else {
                 fallback += 1;
+                assert!((run.size - 11.0).abs() < PRECISION);
+                assert!(
+                    (locate(&pages, &format!("EDGE{index}ROW007")).1.size - 11.0).abs() < PRECISION,
+                    "the final fallback row retains its full body font size"
+                );
             }
         }
         assert!(
             continued > 0 && fallback > 0,
-            "fixture must cross first-fragment admission: {continued}/{fallback}"
+            "leading={leading:?}, strict={strict}, joint={joint}: fixture must cross first-fragment admission: {continued}/{fallback}"
         );
         assert!(text(&pages).contains("Notes"));
         assert_geometry(&pages, &options);
         let target_refs: Vec<_> = targets.iter().map(String::as_str).collect();
-        assert_destinations(&bytes, &pages, &target_refs);
+        assert_destinations(bytes, &pages, &target_refs);
         assert_eq!(
-            String::from_utf8_lossy(&bytes).matches("/S /Note ").count(),
+            String::from_utf8_lossy(bytes).matches("/S /Note ").count(),
             9
+        );
+        if joint {
+            assert!((locate(&pages, "EDGE8ROW000").1.size - 11.0).abs() < PRECISION);
+            let body: String = pages
+                .iter()
+                .flat_map(|page| &page.runs)
+                .filter(|run| !run.artifact && run.size >= 10.9)
+                .flat_map(|run| run.text.chars())
+                .filter(|ch| !ch.is_whitespace() && *ch != '-')
+                .collect();
+            let expected: String = prose.chars().filter(|ch| !ch.is_whitespace()).collect();
+            assert!(
+                body.contains(&expected),
+                "the selected fallback shape preserves all prose"
+            );
+        }
+        let verified = franken_markdown::verify::verify_pdf_result(&document, &options).unwrap();
+        assert_eq!(verified.page_count, pages.len());
+        assert_eq!(verified.pages.len(), pages.len());
+        if strict {
+            assert!(
+                verified
+                    .findings
+                    .iter()
+                    .all(|finding| !finding.code.starts_with("pagination_"))
+            );
+        }
+        for index in 0..9 {
+            for row in [0, 7] {
+                let marker = format!("EDGE{index}ROW{row:03}");
+                let (page, painted) = locate(&pages, &marker);
+                let matches: Vec<_> = verified
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(page, runs)| {
+                        runs.runs
+                            .iter()
+                            .filter(|run| run.text.contains(marker.as_str()))
+                            .map(move |run| (page, run))
+                    })
+                    .collect();
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].0, page, "verified fallback page for {marker}");
+                assert!((f64::from(matches[0].1.y) - painted.y).abs() < PRECISION);
+                assert!((f64::from(matches[0].1.size) - painted.size).abs() < PRECISION);
+            }
+        }
+        assert_eq!(
+            rendered,
+            render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic())
+                .unwrap(),
+            "counting, painting and both emitters use the same fallback ink guards"
         );
     }
 }
@@ -2787,6 +2880,263 @@ fn oversized_definition_term_group_preserves_the_complete_ordinary_endnote() {
     );
 }
 
+/// Derive each source paragraph's physical fragments from unique painted row
+/// markers. The row list comes from the source, not from the renderer's report.
+fn note_paragraph_fragments(pages: &[PaintedPage], prefix: &str, rows: usize) -> Vec<usize> {
+    assert_markers(pages, prefix, rows);
+    let mut fragments = Vec::new();
+    let mut previous = None;
+    for row in 0..rows {
+        let page = locate(pages, &format!("{prefix}{row:03}")).0;
+        assert!(previous.is_none_or(|previous| page >= previous));
+        if previous == Some(page) {
+            *fragments.last_mut().unwrap() += 1;
+        } else {
+            fragments.push(1);
+        }
+        previous = Some(page);
+    }
+    fragments
+}
+
+#[test]
+fn exact_note_orphans_reserve_a_whole_three_row_paragraph_on_its_citation_page() {
+    let source = format!("CITATION.[^n]\n\n{}", numbered_note("n", "NOTE", 3));
+    let document = parse_markdown(&source);
+    let mut options = options();
+    options.theme.page.size.height_pt = 144.0;
+    options.footnote_backlinks = true;
+
+    // At 72pt content height the preferred 40% foot region fits one row.
+    // A three-row paragraph has no legal 2/2 cut, but its whole mandatory
+    // prefix fits when the preferred share yields. Both the published greedy
+    // policy and the exact solver must retain that complete first fragment.
+    let greedy = render_pdf_reported(&source, &options).unwrap();
+    let greedy_pages = painted_pages(&greedy.bytes);
+    assert_eq!(note_paragraph_fragments(&greedy_pages, "NOTE", 3), [3]);
+    assert_eq!(greedy_pages.len(), 1);
+    assert_eq!(
+        locate(&greedy_pages, "CITATION").0,
+        locate(&greedy_pages, "NOTE000").0
+    );
+    assert!(!text(&greedy_pages).contains("Notes"));
+    assert_geometry(&greedy_pages, &options);
+    assert_destinations(&greedy.bytes, &greedy_pages, &["NOTE000", "CITATION"]);
+
+    options.strict_pagination = true;
+    let strict = render_pdf_reported(&source, &options).unwrap();
+    assert!(strict.pagination.page_breaks.is_exact());
+    let pages = painted_pages(&strict.bytes);
+    assert_eq!(pages.len(), 1);
+    assert_eq!(note_paragraph_fragments(&pages, "NOTE", 3), [3]);
+    assert_eq!(locate(&pages, "CITATION").0, locate(&pages, "NOTE000").0);
+    assert!(!text(&pages).contains("Notes"));
+    assert_geometry(&pages, &options);
+    assert_destinations(&strict.bytes, &pages, &["NOTE000", "CITATION"]);
+    assert_eq!(
+        strict,
+        render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic()).unwrap(),
+    );
+    options.strict_pagination = false;
+    options.optimal_pagination = true;
+    assert_eq!(
+        strict,
+        render_pdf_reported(&source, &options).unwrap(),
+        "successful strict and optimal note constraints have identical semantics"
+    );
+}
+
+#[test]
+fn exact_note_orphans_keep_two_source_rows_in_every_fragment_with_fractional_grids() {
+    for (rows, height, grid) in [(9, 144.0, None), (19, 216.0, Some(13.333))] {
+        let source = format!("CITATION.[^n]\n\n{}", numbered_note("n", "NOTE", rows));
+        let document = parse_markdown(&source);
+        let mut options = options();
+        options.theme.page.size.height_pt = height;
+        options.theme.page.baseline_grid =
+            grid.map(|pitch| BaselineGrid::from_points(pitch).unwrap());
+        options.strict_pagination = true;
+        options.footnote_backlinks = true;
+        let result = render_pdf_reported(&source, &options).unwrap();
+        assert!(result.pagination.page_breaks.is_exact());
+        let pages = painted_pages(&result.bytes);
+        let fragments = note_paragraph_fragments(&pages, "NOTE", rows);
+        assert!(
+            fragments.len() >= 3,
+            "exercise intermediate and final fragments: {fragments:?}"
+        );
+        assert!(
+            fragments.iter().all(|&rows| rows >= 2),
+            "no isolated source row: {fragments:?}"
+        );
+        assert!(
+            fragments.iter().any(|&rows| rows % 2 == 1),
+            "valid odd fragments must not become static pairs: {fragments:?}"
+        );
+        assert_eq!(locate(&pages, "CITATION").0, locate(&pages, "NOTE000").0);
+        assert!(!text(&pages).contains("Notes"));
+        assert_geometry(&pages, &options);
+        assert_destinations(&result.bytes, &pages, &["NOTE000", "CITATION"]);
+        if grid.is_some() {
+            assert_grid_rows(&pages, &options);
+        }
+        let verified = franken_markdown::verify::verify_pdf_result(&document, &options).unwrap();
+        assert_eq!(verified.page_count, pages.len());
+        assert!(
+            verified
+                .findings
+                .iter()
+                .all(|finding| !finding.code.starts_with("pagination_"))
+        );
+        for row in 0..rows {
+            let marker = format!("NOTE{row:03}");
+            let (physical_page, painted) = locate(&pages, &marker);
+            let matches: Vec<_> = verified
+                .pages
+                .iter()
+                .enumerate()
+                .flat_map(|(page, runs)| {
+                    runs.runs
+                        .iter()
+                        .filter(|run| run.text.contains(marker.as_str()))
+                        .map(move |run| (page, run))
+                })
+                .collect();
+            assert_eq!(matches.len(), 1, "verified note row {marker}");
+            assert_eq!(matches[0].0, physical_page, "verified page for {marker}");
+            assert!(
+                (f64::from(matches[0].1.y) - painted.y).abs() < PRECISION,
+                "verified baseline for {marker}"
+            );
+        }
+        assert_eq!(
+            result,
+            render_pdf_document_reported(&document, &options, PdfEmitOptions::monolithic(),)
+                .unwrap()
+        );
+        assert_eq!(result, render_pdf_reported(&source, &options).unwrap());
+    }
+}
+
+#[test]
+fn exact_note_orphans_extend_heading_and_definition_keeps_through_three_row_paragraphs() {
+    let source_rows = |prefix: &str, rows: usize| {
+        let mut inlines = Vec::new();
+        for row in 0..rows {
+            if row > 0 {
+                inlines.push(Inline::HardBreak);
+            }
+            inlines.push(Inline::Text(format!(
+                "{prefix}{row:03} preserved source line."
+            )));
+        }
+        inlines
+    };
+    for definition in [false, true] {
+        let mut blocks = if definition {
+            vec![Block::DefinitionList(vec![DefinitionItem {
+                terms: vec![definition_text("TERMINTRO")],
+                definitions: vec![source_rows("SHORT", 3)],
+            }])]
+        } else {
+            vec![
+                Block::Heading {
+                    level: 3,
+                    inlines: definition_text("HEADINGINTRO"),
+                },
+                Block::Paragraph(source_rows("SHORT", 3)),
+            ]
+        };
+        blocks.push(Block::Paragraph(source_rows("AFTER", 37)));
+        let document = definition_note(blocks);
+        let mut options = definition_options();
+        options.theme.page.size.height_pt = 216.0;
+        options.strict_pagination = true;
+        let result =
+            render_pdf_document_reported(&document, &options, PdfEmitOptions::default()).unwrap();
+        assert!(result.pagination.page_breaks.is_exact());
+        let pages = painted_pages(&result.bytes);
+        assert_eq!(note_paragraph_fragments(&pages, "SHORT", 3), [3]);
+        let intro = if definition {
+            "TERMINTRO"
+        } else {
+            "HEADINGINTRO"
+        };
+        assert_eq!(locate(&pages, intro).0, locate(&pages, "SHORT000").0);
+        assert_eq!(locate(&pages, intro).0, locate(&pages, "BODYCITE").0);
+        let after = note_paragraph_fragments(&pages, "AFTER", 37);
+        assert!(after.len() > 1);
+        assert!(after.iter().all(|&rows| rows >= 2), "{intro}: {after:?}");
+        assert!(!text(&pages).contains("Notes"));
+        assert_first_note_navigation(&result.bytes, &pages, "BODYCITE");
+        assert_section_note_geometry(&pages, &options);
+        assert_eq!(structure_count(&result.bytes, "Note"), 1);
+    }
+}
+
+#[test]
+fn exact_note_orphans_refuse_impossible_mandatory_prefixes_without_weakening_strict_mode() {
+    let source = format!(
+        "BODYCITE.[^n]  \nBODYFOLLOW\n\n{}",
+        numbered_note("n", "NOTE", 3),
+    );
+    let document = parse_markdown(&source);
+    let mut options = options();
+    options.theme.page.size.height_pt = 144.0;
+    options.footnote_backlinks = true;
+    let greedy = render_pdf(&source, &options).unwrap();
+    let greedy_pages = painted_pages(&greedy);
+    assert_eq!(note_paragraph_fragments(&greedy_pages, "NOTE", 3), [3]);
+    assert!(
+        !text(&greedy_pages).contains("Notes"),
+        "the note is admitted at the foot before exact constraint checking"
+    );
+
+    options.strict_pagination = true;
+    for result in [
+        render_pdf(&source, &options),
+        render_pdf_document_emitted(&document, &options, PdfEmitOptions::monolithic()),
+        franken_markdown::verify::verify_pdf_result(&document, &options).map(|_| Vec::new()),
+    ] {
+        let error = result.expect_err(
+            "the two-row body and complete three-row note cannot share this physical page",
+        );
+        assert_eq!(error.code(), "pagination_infeasible");
+        assert!(matches!(
+            error,
+            RenderError::Pagination(PdfPaginationFailure::Planner(
+                HeightPaginationError::NoFeasibleLayout { .. },
+            ))
+        ));
+    }
+
+    options.strict_pagination = false;
+    options.optimal_pagination = true;
+    let fallback = render_pdf_reported(&source, &options).unwrap();
+    assert_eq!(
+        fallback.pagination.page_breaks.strategy,
+        PdfPaginationStrategy::Greedy
+    );
+    assert!(matches!(
+        fallback.pagination.page_breaks.fallback,
+        Some(PdfPaginationFailure::Planner(
+            HeightPaginationError::NoFeasibleLayout { .. }
+        ))
+    ));
+    assert_eq!(
+        fallback.bytes, greedy,
+        "the reported fallback replays unchanged greedy output"
+    );
+    let verified = franken_markdown::verify::verify_pdf_result(&document, &options).unwrap();
+    assert!(
+        verified
+            .findings
+            .iter()
+            .any(|finding| finding.code == "pagination_infeasible")
+    );
+    assert_eq!(verified.page_count, greedy_pages.len());
+}
+
 #[test]
 fn continued_note_paragraphs_keep_two_rows_on_every_physical_page() {
     let source = format!("CITATION.[^long]\n\n{}", numbered_note("long", "NOTE", 17));
@@ -2878,21 +3228,32 @@ fn short_note_paragraphs_stay_whole_without_capturing_adjacent_paragraphs() {
 
 #[test]
 fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
-    // Both authored fragments fit the 72-point measure; a longer prefix
-    // would exercise an earlier emergency break instead of choosing the SHY.
-    let word = "abcdefghijklm\u{00ad}nopqrstuvwxyz";
+    // Both authored segments fit the measure, while the unbroken word does
+    // not. A longer first segment triggers emergency wrapping and would not
+    // exercise a chosen discretionary hyphen at all.
+    let word = "abcdefghij\u{00ad}klmnopqrstuvwx";
+    let visible_word = "abcdefghijklmnopqrstuvwx";
     let source = format!(
         "WORDCITE.[^long]\n\n[^long]: {}\n",
         std::iter::repeat_n(word, 16)
             .collect::<Vec<_>>()
             .join("  \n    ")
     );
+    let note_letters = |page: &PaintedPage| -> String {
+        page.runs
+            .iter()
+            .filter(|run| !run.artifact && run.size < 10.9)
+            .flat_map(|run| run.text.chars())
+            .filter(|ch| ch.is_ascii_lowercase())
+            .collect()
+    };
     for strict in [false, true] {
         let mut options = options();
         options.theme.page.size.width_pt = 144.0;
         options.theme.page.size.height_pt = 180.0;
         options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
         options.strict_pagination = strict;
+        options.footnote_backlinks = true;
         let rendered = render_pdf_reported(&source, &options).unwrap();
         if strict {
             assert!(rendered.pagination.page_breaks.is_exact());
@@ -2901,15 +3262,19 @@ fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
         assert!(pages.len() >= 3);
         assert!(!text(&pages).contains("Notes"));
         assert_eq!(
-            text(&pages)
-                .replace('-', "")
-                .matches("abcdefghijklmnopqrstuvwxyz")
-                .count(),
+            text(&pages).replace('-', "").matches(visible_word).count(),
             16,
             "every source word survives its discretionary break"
         );
         let mut hyphens = 0;
         for (index, page) in pages.iter().enumerate() {
+            let letters = note_letters(page);
+            assert_eq!(
+                letters,
+                visible_word.repeat(letters.len() / visible_word.len()),
+                "page {} must retain complete source words, not just a lower text run",
+                index + 1
+            );
             for run in page
                 .runs
                 .iter()
@@ -2920,7 +3285,7 @@ fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
                     page.runs.iter().any(|next| {
                         !next.artifact
                             && next.size < 10.9
-                            && next.text.contains("nopqrstuvwxyz")
+                            && next.text.contains("klmnopqrstuvwx")
                             && next.y < run.y - PRECISION
                     }),
                     "page {} strands an intra-word hyphen: {run:?}",
@@ -2930,9 +3295,36 @@ fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
         }
         assert_eq!(
             hyphens, 16,
-            "every source word must exercise its actual discretionary break"
+            "all sixteen source words must exercise their actual discretionary break"
         );
         assert_geometry(&pages, &options);
         assert_grid_rows(&pages, &options);
+        assert_destinations(&rendered.bytes, &pages, &["WORDCITE", "abcdefghij"]);
+
+        // The same two measured word segments separated by a zero-width
+        // break can cross pages. This control proves an interior, odd-row cut
+        // is available despite the paragraph's 2/2 minima, so the positive
+        // fixture actually depends on the hyphen continuation keep.
+        let control_source = source.replace('\u{00ad}', "\u{200b}");
+        let control = render_pdf_reported(&control_source, &options).unwrap();
+        if strict {
+            assert!(control.pagination.page_breaks.is_exact());
+        }
+        let control_pages = painted_pages(&control.bytes);
+        assert!(control_pages.len() >= 3);
+        let control_text = text(&control_pages);
+        assert!(!control_text.contains("Notes"));
+        assert!(!control_text.contains('-'));
+        assert_eq!(control_text.matches(visible_word).count(), 16);
+        assert!(
+            control_pages.windows(2).any(|pair| {
+                note_letters(&pair[0]).ends_with("abcdefghij")
+                    && note_letters(&pair[1]).starts_with("klmnopqrstuvwx")
+            }),
+            "strict={strict}: the control must expose a real page cut between the same source segments"
+        );
+        assert_geometry(&control_pages, &options);
+        assert_grid_rows(&control_pages, &options);
+        assert_destinations(&control.bytes, &control_pages, &["WORDCITE", "abcdefghij"]);
     }
 }

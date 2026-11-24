@@ -43,6 +43,7 @@ fn input(heights: &[i64], notes: &[(usize, &[i64])]) -> Input {
             .iter()
             .map(|&(first_reference, heights)| Note {
                 first_reference,
+                constraints: None,
                 units: heights
                     .iter()
                     .map(|&height| Unit {
@@ -70,6 +71,39 @@ fn fragment_height(input: &Input, note: usize, start: usize, end: usize) -> i64 
         .sum::<i64>()
         + units[start].prefix
         + units[end - 1].suffix
+}
+
+/// Independently check the fragment's per-start minimum and intersect it with
+/// every source paragraph. Complete short paragraphs are allowed. A split
+/// paragraph contributes two rows locally and must not strand a one-row suffix
+/// on a future page.
+fn oracle_note_legal(input: &Input, note: usize, start: usize, end: usize) -> bool {
+    if start >= end || end > input.notes[note].units.len() {
+        return false;
+    }
+    if end - start < input.notes[note].units[start].minimum_units {
+        return false;
+    }
+    let Some(constraints) = &input.notes[note].constraints else {
+        return true;
+    };
+    if !constraints.break_after[end - 1] || (start > 0 && !constraints.break_after[start - 1]) {
+        return false;
+    }
+    for paragraph in &constraints.paragraphs {
+        let first = start.max(paragraph.start);
+        let last = end.min(paragraph.end);
+        if first >= last {
+            continue;
+        }
+        if (first > paragraph.start || last < paragraph.end) && last - first < 2 {
+            return false;
+        }
+        if last < paragraph.end && paragraph.end - last < 2 {
+            return false;
+        }
+    }
+    true
 }
 
 fn oracle_page(
@@ -120,11 +154,14 @@ fn oracle_page(
     let mut ranges = vec![None; input.notes.len()];
     let mut used = 0;
 
-    // First-citation fragments are mandatory even above the preferred share.
+    // Enumerate every endpoint independently. In particular, do not stop at
+    // an illegal endpoint or at a large suffix: a later suffix can be smaller.
+    // This oracle never calls the production legality or extension helpers.
     for (note, source) in input.notes.iter().enumerate() {
         if body.contains(&source.first_reference) {
             assert_eq!(progress[note], 0);
-            let end = source.units[0].minimum_units;
+            let end =
+                (1..=source.units.len()).find(|&end| oracle_note_legal(input, note, 0, end))?;
             ranges[note] = Some((0, end));
             progress[note] = end;
             used += fragment_height(input, note, 0, end);
@@ -138,13 +175,11 @@ fn oracle_page(
             continue;
         }
         let first = progress[note];
-        let mut last = first;
-        for candidate in first + source.units[first].minimum_units..=source.units.len() {
-            if fragment_height(input, note, first, candidate) > (available - used).max(0) {
-                break;
-            }
-            last = candidate;
-        }
+        let last = (first + 1..=source.units.len())
+            .filter(|&last| oracle_note_legal(input, note, first, last))
+            .filter(|&last| fragment_height(input, note, first, last) <= (available - used).max(0))
+            .max()
+            .unwrap_or(first);
         if first == last {
             break;
         }
@@ -161,16 +196,14 @@ fn oracle_page(
         if !body.contains(&source.first_reference) {
             continue;
         }
-        let minimum = source.units[0].minimum_units;
-        let before = fragment_height(input, note, 0, minimum);
+        let first_end = progress[note];
+        let before = fragment_height(input, note, 0, first_end);
         let limit = before + (available - used).max(0);
-        let mut last = minimum;
-        for candidate in minimum + 1..=source.units.len() {
-            if fragment_height(input, note, 0, candidate) > limit {
-                break;
-            }
-            last = candidate;
-        }
+        let last = (first_end..=source.units.len())
+            .filter(|&last| oracle_note_legal(input, note, 0, last))
+            .filter(|&last| fragment_height(input, note, 0, last) <= limit)
+            .max()
+            .expect("the already reserved mandatory prefix remains admitted");
         ranges[note] = Some((0, last));
         progress[note] = last;
         used += fragment_height(input, note, 0, last) - before;
@@ -304,6 +337,12 @@ fn assert_oracle(input: &Input, options: Options) -> Option<Plan> {
                             >= input.notes[fragment.note].units[fragment.start].minimum_units,
                         "every continuation fragment retains its own minimum"
                     );
+                    assert!(oracle_note_legal(
+                        input,
+                        fragment.note,
+                        fragment.start,
+                        fragment.end
+                    ));
                     seen[fragment.note] = fragment.end;
                 }
                 for (note, source) in input.notes.iter().enumerate() {
@@ -343,6 +382,7 @@ fn exhaustive_partitions_match_the_global_body_boundary_minimum() {
             for (note, reference) in [0, count / 2, count - 1].into_iter().enumerate() {
                 input.notes.push(Note {
                     first_reference: reference,
+                    constraints: None,
                     units: (0..2 + (seed + note) % 5)
                         .map(|unit| Unit {
                             height: 3 + ((seed + unit * 3 + note) % 7) as i64,
@@ -819,4 +859,214 @@ fn failed_candidates_consume_the_shared_search_budget() {
     assert_eq!(usage.search_nodes, result.search_nodes);
     assert_eq!(usage.search_work, result.search_work);
     assert!(usage.retained_ranges > 0);
+}
+
+fn constrain(note: &mut Note, paragraphs: &[Range<usize>], forbidden_after: &[usize]) {
+    let mut break_after = vec![true; note.units.len()];
+    for &row in forbidden_after {
+        break_after[row] = false;
+    }
+    note.constraints = Some(NoteConstraints {
+        break_after,
+        paragraphs: paragraphs.to_vec(),
+    });
+}
+
+fn forced_body_rows(input: &mut Input) {
+    for boundary in 1..input.rows.len() {
+        input.forced[boundary] = true;
+    }
+    input.separator = 0;
+}
+
+fn note_fragments(plan: &Plan, note: usize) -> Vec<Range<usize>> {
+    plan.pages
+        .iter()
+        .flat_map(|page| &page.fragments)
+        .filter(|fragment| fragment.note == note)
+        .map(|fragment| fragment.start..fragment.end)
+        .collect()
+}
+
+#[test]
+fn constrained_note_rows_allow_odd_fragments_without_single_row_tails() {
+    for (length, capacity, body, expected) in [
+        (5, 75, vec![45, 45], vec![0..3, 3..5]),
+        (6, 75, vec![45, 45], vec![0..3, 3..6]),
+        (9, 100, vec![60, 60, 60], vec![0..4, 4..7, 7..9]),
+    ] {
+        let note_rows = vec![10; length];
+        let mut input = input(&body, &[(0, note_rows.as_slice())]);
+        forced_body_rows(&mut input);
+        constrain(&mut input.notes[0], &[0..length], &[]);
+        let result = assert_oracle(&input, options(capacity)).unwrap();
+        assert_eq!(note_fragments(&result, 0), expected);
+    }
+}
+
+#[test]
+fn a_single_row_middle_fragment_waits_for_a_page_with_two_rows_of_its_own_paragraph() {
+    let mut input = input(&[45, 65, 45, 45], &[(0, &[10; 9])]);
+    forced_body_rows(&mut input);
+    constrain(&mut input.notes[0], &[0..9], &[]);
+    let result = assert_oracle(&input, options(75)).unwrap();
+    assert_eq!(note_fragments(&result, 0), [0..3, 3..6, 6..9]);
+    assert!(
+        result.pages[1].fragments.is_empty(),
+        "one available row cannot become an isolated middle fragment"
+    );
+    assert_eq!(result.pages[1].body, 1..2);
+}
+
+#[test]
+fn a_heading_and_three_row_paragraph_reserve_the_complete_mandatory_prefix() {
+    let mut input = input(&[10], &[(0, &[10; 4])]);
+    input.separator = 0;
+    // Row zero represents a complete heading or definition introduction.
+    // Its semantic keep includes the first row of the following paragraph.
+    constrain(&mut input.notes[0], &[1..4], &[0]);
+    let result = assert_oracle(&input, options(50)).unwrap();
+    assert_eq!(note_fragments(&result, 0), [0..4]);
+    assert_eq!(result.pages[0].reserve, 40);
+    assert!(
+        result.pages[0].reserve > 50 * 2 / 5,
+        "mandatory first fragments can exceed the preferred share"
+    );
+    assert!(
+        assert_oracle(&input, options(40)).is_none(),
+        "a whole three-row paragraph cannot be weakened to a one-row introduction"
+    );
+}
+
+#[test]
+fn whole_short_paragraphs_and_long_paragraph_minima_remain_independent() {
+    let mut input = input(&[50, 50, 50], &[(0, &[10; 9])]);
+    forced_body_rows(&mut input);
+    constrain(&mut input.notes[0], &[0..1, 1..4, 4..9], &[]);
+    let result = assert_oracle(&input, options(80)).unwrap();
+    assert_eq!(note_fragments(&result, 0), [0..1, 1..4, 4..7, 7..9]);
+    assert_eq!(result.pages.len(), 4);
+}
+
+#[test]
+fn a_large_temporary_suffix_cannot_hide_a_later_legal_continuation() {
+    let mut input = input(&[50, 50], &[(0, &[10; 6])]);
+    forced_body_rows(&mut input);
+    constrain(&mut input.notes[0], &[0..6], &[]);
+    // Ending after the first pending row would require a large painted guard,
+    // but extending across that seam removes it. The full three-row fragment
+    // fits. A stop-at-first-overflow scan incorrectly declares this impossible.
+    input.notes[0].units[3].suffix = 100;
+    let result = assert_oracle(&input, options(80)).unwrap();
+    assert_eq!(note_fragments(&result, 0), [0..3, 3..6]);
+    assert_eq!(result.pages[1].reserve, 30);
+}
+
+#[test]
+fn constrained_allocation_preserves_semantic_units_and_repeated_prefix_costs() {
+    let mut input = input(&[40, 40, 40], &[(0, &[10; 7])]);
+    forced_body_rows(&mut input);
+    // Header, separator and wrapped first row are one semantic chain. Later
+    // wrapped rows also remain whole. These rows are table material, not prose.
+    constrain(&mut input.notes[0], &[], &[0, 1, 3, 5]);
+    for unit in &mut input.notes[0].units {
+        unit.prefix = 5;
+    }
+    let result = assert_oracle(&input, options(80)).unwrap();
+    assert_eq!(note_fragments(&result, 0), [0..3, 3..5, 5..7]);
+    assert_eq!(
+        result
+            .pages
+            .iter()
+            .map(|page| page.reserve)
+            .collect::<Vec<_>>(),
+        [35, 25, 25]
+    );
+}
+
+#[test]
+fn constrained_exhaustive_partitions_match_independent_complete_allocations() {
+    // Forty-eight small complete source models, each exercised both with and
+    // without nontrivial per-start minima and body ink guards, compare every
+    // body partition while combining semantic keeps and source paragraphs.
+    for count in 2..=7 {
+        for seed in 0..8 {
+            let heights: Vec<_> = (0..count)
+                .map(|index| 9 + ((seed * 5 + index * 7) % 17) as i64)
+                .collect();
+            let mut input = input(&heights, &[]);
+            for (note, reference) in [0, count / 2, count - 1].into_iter().enumerate() {
+                let length = 2 + (seed + note * 3) % 8;
+                let paragraphs = match seed % 3 {
+                    0 => vec![0..length],
+                    1 => vec![0..1, 1..length],
+                    _ => vec![1..length],
+                };
+                let mut source = Note {
+                    first_reference: reference,
+                    units: (0..length)
+                        .map(|unit| Unit {
+                            height: 3 + ((seed + unit * 3 + note) % 7) as i64,
+                            prefix: ((unit + note) % 3) as i64,
+                            suffix: if seed == 7 && unit == 2 {
+                                30
+                            } else {
+                                (unit % 2) as i64
+                            },
+                            minimum_units: 1,
+                        })
+                        .collect(),
+                    constraints: None,
+                };
+                constrain(
+                    &mut source,
+                    &paragraphs,
+                    if seed % 3 == 2 { &[0] } else { &[] },
+                );
+                input.notes.push(source);
+            }
+            for (boundary, cost) in input.break_costs.iter_mut().enumerate().take(count).skip(1) {
+                *cost = Some(((boundary * 13 + seed * 7) % 9) as i64 * 1_000 - 2_000);
+            }
+            if seed % 2 == 0 {
+                input.forced[count / 2] = true;
+            }
+            assert_oracle(&input, options(40 + (seed * 9 % 31) as i64));
+            for (index, row) in input.rows.iter_mut().enumerate() {
+                row.continuation_prefix = ((seed + index) % 3) as i64;
+                row.suffix = ((seed * 2 + index) % 5) as i64;
+            }
+            for (note, source) in input.notes.iter_mut().enumerate() {
+                let length = source.units.len();
+                for (unit, row) in source.units.iter_mut().enumerate() {
+                    row.minimum_units = 1 + ((unit + seed + note) % 3).min(length - unit - 1);
+                }
+            }
+            assert_oracle(&input, options(40 + (seed * 9 % 31) as i64));
+        }
+    }
+}
+
+#[test]
+fn malformed_note_boundaries_and_paragraph_spans_are_rejected() {
+    let mut original = input(&[10], &[(0, &[5; 5])]);
+    constrain(&mut original.notes[0], &[0..2, 2..5], &[]);
+    for case in 0..6 {
+        let mut bad = original.clone();
+        let constraints = bad.notes[0].constraints.as_mut().unwrap();
+        match case {
+            0 => {
+                constraints.break_after.pop();
+            }
+            1 => constraints.break_after[4] = false,
+            2 => constraints.paragraphs[1] = 1..5,
+            3 => constraints.paragraphs[1] = 2..6,
+            4 => constraints.paragraphs[1] = 2..2,
+            _ => constraints.paragraphs.swap(0, 1),
+        }
+        assert!(
+            matches!(plan(&bad, options(50)), Err(Error::Invalid(_))),
+            "case {case}"
+        );
+    }
 }

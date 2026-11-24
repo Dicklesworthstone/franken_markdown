@@ -592,6 +592,7 @@ mod tests {
                             forced: vec![false; total + 1],
                             notes: vec![solver::Note {
                                 first_reference: first - 1,
+                                constraints: None,
                                 units: vec![
                                     solver::Unit {
                                         height: 5,

@@ -96,8 +96,9 @@ pub struct WasmRenderOptions {
     /// Link PDF note numbers back to their first citation. Disabled by default.
     pub footnote_backlinks: bool,
     /// Continue long text PDF notes across page feet. Default false.
-    /// Supports optimal/strict pagination and baseline grids; exact body planning
-    /// uses the fixed note policy in [`crate::PdfOptions::split_footnotes`].
+    /// Supports optimal/strict pagination and baseline grids; exact planning
+    /// uses the fixed note policy and prose split minima in
+    /// [`crate::PdfOptions::split_footnotes`].
     pub split_footnotes: bool,
     /// Opt-in running header/footer chrome for PDF output; see
     /// [`crate::PdfRunningContent`]. Default draws nothing.

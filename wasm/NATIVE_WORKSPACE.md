@@ -133,8 +133,10 @@ Native workspaces expose **Document settings** after engine initialization.
 
 The PDF typesetting section exposes footnote return links, continued long
 footnotes, theme spacing, body line height (1–4 times the font size), and
-horizontal/vertical table padding (0–8 em). Continued notes require Standard
-page layout and support baseline grids. Turn on theme spacing when supplying
+horizontal/vertical table padding (0–8 em). Continued notes support Standard,
+optimized, and exact page layouts, including baseline grids. Exact pagination
+retains the native engine's explicit failure when its constraints cannot be met.
+Turn on theme spacing when supplying
 explicit leading or padding; zero padding is valid. Blank numeric fields retain
 renderer defaults. These settings use the existing measured PDF engine and are
 retained by Save HTML and reopening. They do not change source Markdown or

@@ -1,7 +1,7 @@
 // Export admission over the preview controller's private state. No rendering or
 // source reconstruction; the session exports its own captured native document.
 
-import { validateFlowExportResult } from "../flow_export.mjs";
+import { decodeFlowPdfVerification, encodeFlowPdfVerification, normalizeFlowPdfVerification, validateFlowExportResult } from "../flow_export.mjs";
 import { FlowError } from "../flow_session.mjs";
 
 const same = (a, b) => a?.revision === b?.revision && a?.layoutRevision === b?.layoutRevision;
@@ -10,7 +10,7 @@ const fail = (code, message) => {
 };
 export function createPreviewExport(readState) {
   let job = null;
-  return async function exportDocument(format, options, source) {
+  async function run(format, options, source, control, verifying = false) {
     const before = readState();
     if (before.disposed) fail("SESSION_DISPOSED", "preview is disposed");
     if (job) fail("EXPORT_BUSY", "a previous export has not settled");
@@ -34,12 +34,19 @@ export function createPreviewExport(readState) {
     const expected = Object.freeze({ ...current.token });
     if (!same(expected, before.frame))
       fail("STALE_LAYOUT", "export does not match the displayed document");
+    if (verifying) {
+      if (current.supportsPdfVerification !== true || typeof current.verifyPdf !== "function")
+        fail("UNSUPPORTED_WASM_PACKAGE", "this Flow package cannot verify configured PDF layouts");
+      [options] = normalizeFlowPdfVerification(options, expected);
+    }
     const ticket = {};
     job = ticket;
     try {
       // No abort tied to ordinary typing/scrolling: an in-flight worker abort
       // would destroy the session. Stale results are discarded instead.
-      const output = await current.exportDocument(format, options, expected);
+      const output = verifying
+        ? await current.verifyPdf(options, expected, control)
+        : await current.exportDocument(format, options, expected);
       const after = readState();
       if (after.disposed) fail("SESSION_DISPOSED", "preview was disposed during export");
       if (
@@ -61,11 +68,21 @@ export function createPreviewExport(readState) {
       }
       if (after.imagesBusy)
         fail("ASSET_BUSY", "selected images are still loading; prepare a fresh export after they finish");
+      if (verifying) {
+        const wire = encodeFlowPdfVerification(output, expected, options.maxOutputBytes, before.profile);
+        if (wire.sourceLengthBytes !== new TextEncoder().encode(source).length
+            || (before.font !== undefined && wire.font !== before.font))
+          fail("INVALID_WASM_RESPONSE", "verification does not acknowledge the captured source and font");
+        return decodeFlowPdfVerification(wire, expected, options.maxOutputBytes, before.profile);
+      }
       if (output?.format !== format)
         fail("INVALID_WASM_RESPONSE", "export format does not match the request");
       return validateFlowExportResult(output, expected, options?.maxOutputBytes);
     } finally {
       if (job === ticket) job = null;
     }
-  };
+  }
+  const exportDocument = (format, options, source) => run(format, options, source);
+  exportDocument.verifyPdf = (options, source, control) => run("pdf", options, source, control, true);
+  return Object.freeze(exportDocument);
 }

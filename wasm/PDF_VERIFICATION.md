@@ -138,6 +138,35 @@ accepting state or starting queued edits. Cancelling queued verification leaves
 the active request alone. Cancelling or timing out verification already running
 terminates the worker, loses that session and rejects queued work without replay.
 
+## Verify from the Flow Canvas editor
+
+The shipped `demo/flow-canvas.html` editor includes **Verify PDF layout**,
+**Cancel verification**, and **Download full verification report**. Apply the
+PDF settings first, then verify when the current preview and authorized images
+are ready. Verification uses the same captured source, dialect, font, page,
+typography, continued-footnote/pagination controls and complete image inventory
+as the editor's PDF publication. It never substitutes the accessibility subset
+or an HTML audit when configured verification is unavailable.
+
+The panel shows the native page count, anchor totals and findings. Its visible
+finding list is bounded to 100 entries and 2,000 characters per entry. Download
+retains the complete native report, including all findings, page text runs,
+digest and additional native fields, subject to the whole-report 8 MiB ceiling.
+Preparing a report does not automatically download it.
+
+Editing, applying or drafting settings, changing image authorization, restarting,
+and document replacement withdraw stale findings and revoke the report download.
+Scrolling an unchanged document preserves its report. Verification shares the
+preview controller's physical publication slot, and it carries a 15-second
+worker deadline. Ordinary typing discards a late result without aborting its
+worker; explicit cancellation reaches the captured request. A running worker
+cancel or timeout can lose that session, requiring an explicit preview restart.
+The editor source and last successful pixels remain available.
+
+This interface uses the existing native layout audit. It does not render and
+independently decode a PDF file, certify PDF/A or PDF/UA, or replace generated-WASM
+and real-browser qualification.
+
 ## Report and option semantics
 
 The native report retains schema version `"1"` and target `"pdf"`:
@@ -201,7 +230,14 @@ renderer double to check ownership, protocol, cancellation, and budgets.
 `flow_pdf_verification.test.mjs` and `flow_pdf_verification_worker.test.mjs`
 cover persistent-session capture, revisions, complete assets, report ownership,
 byte budgets, capability negotiation, cancellation and malformed responses using
-explicit native-session doubles. `flow_pdf_verification_types_test.mts` covers
+explicit native-session doubles. The demo tests
+`tests/flow_preview_verification.test.mjs`,
+`tests/flow_pdf_verification_controls.test.mjs` and
+`tests/flow_publication_controls.test.mjs` exercise the production preview
+admission, report controls and shared publication path with explicit native and
+DOM doubles. They check settings/source/resource parity, stale ownership,
+cancellation controls, complete report downloads, failure recovery and package
+assembly. `flow_pdf_verification_types_test.mts` covers
 the direct/worker declaration surface. These JavaScript and declaration tests do
 not substitute for generated-WASM execution.
 

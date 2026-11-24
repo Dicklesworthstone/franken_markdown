@@ -7,7 +7,7 @@ import { FlowError } from "../flow_session.mjs";
 // Both inputs have passed bounded, deeply owned export admission. New page,
 // running-band and asset records are allocated on each read, so reference
 // equality would reject unchanged settings and make those downloads unusable.
-function sameOptions(a, b) {
+export function sameOptions(a, b) {
   if (a === b) return true;
   if (a instanceof Uint8Array || b instanceof Uint8Array) {
     return a instanceof Uint8Array && b instanceof Uint8Array

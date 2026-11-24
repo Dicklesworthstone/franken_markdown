@@ -7,6 +7,7 @@ import test from "node:test";
 import { createFlowAdapter, FlowError } from "../flow_session.mjs";
 import { withFlowExports } from "../flow_export.mjs";
 import { createPreviewController } from "../demo/flow_preview_controller.mjs";
+import { createPdfVerificationControls } from "../demo/flow_pdf_verification_controls.mjs";
 import { createExportControls } from "../demo/flow_export_controls.mjs";
 import { normalizeRenderSettings } from "../demo/flow_render_settings.mjs";
 
@@ -62,12 +63,28 @@ async function fixture(options = {}) {
       return job;
     },
   });
+  const verificationElements = Object.fromEntries(["verify", "cancel", "download", "status", "findings"]
+    .map(name => [name, new Element()]));
+  const verification = createPdfVerificationControls({
+    ...verificationElements, sourceEditor,
+    readOptions: () => ({ ...settings.pdf, maxOutputBytes: 8 * 1024 * 1024 }),
+    urls: {
+      createObjectURL(blob) { f.blobs.push(blob); return "blob:verification-" + f.blobs.length; },
+      revokeObjectURL(url) { f.revoked.push(url); },
+    },
+    verifyPdf(...args) {
+      const job = controller.verifyPdf(...args);
+      f.lastVerification = job.then(() => {}, () => {});
+      return job;
+    },
+  });
   const input = (value, extra = {}) => ({
     source: value, width: 360, height: 300, ...settings.preview, ...extra,
   });
   controller = createPreviewController({
-    async createSession(markdown, { font, ...layout }) {
+    async createSession(markdown, { font, profile, ...layout }) {
       const raw = {
+        ...(profile === undefined ? {} : { profile }),
         source: markdown, revision: "9007199254740993", layoutRevision: "9007199254740995",
         free() {},
         replaceSource(expected, next) {
@@ -84,25 +101,44 @@ async function fixture(options = {}) {
         readingJson(revision, layoutRevision, offset) {
           return JSON.stringify({
             schemaVersion: 1, revision, layoutRevision, offset, total: 1,
+            ...(profile === undefined ? {} : { profile }),
             nodes: offset === 0 ? [{ text: raw.source }] : [], nextOffset: null,
           });
         },
         assetBytes() { return f.payload; },
       };
-      const adapter = createFlowAdapter(raw, layout);
+      const adapter = createFlowAdapter(raw, layout, profile);
       const render = (format) => async (markdown, rendererOptions) => {
         f.calls.push({ format, markdown, options: rendererOptions });
         const held = f.renderGate;
         f.renderGate = null;
         if (held) await held.promise;
         if (f.renderError) throw f.renderError;
-        return { format, mimeType: mime[format], bytes: new Uint8Array([5, 6, 7]), diagnostics: [] };
+        return { format, mimeType: mime[format], bytes: new Uint8Array([5, 6, 7]), diagnostics: [],
+          ...(profile === undefined ? {} : { profile }) };
       };
       const renderers = Object.fromEntries(formats
         .filter((format) => !options.unsupported?.includes(format))
         .map((format) => [format, render(format)]));
+      if (!options.unsupported?.includes("verify")) renderers.verifyPdf = async (markdown, rendererOptions) => {
+        f.calls.push({ format: "pdf-verification", markdown, options: rendererOptions });
+        const held = f.renderGate;
+        f.renderGate = null;
+        if (held) await held.promise;
+        if (f.renderError) throw f.renderError;
+        return {
+          schema_version: "1", target: "pdf", verdict: "findings", page_count: 1,
+          anchors: { resolved: 3, unresolved: ["missing"] },
+          findings: [{ code: "pdf.test", detail: "actual native report detail" }],
+          pages: [{ number: 1, runs: [{ text: markdown, x: 72, y: 700, size: 11, kind: "body" }] }],
+          digest: "fnv1a64:0123456789abcdef",
+          ...(rendererOptions.profile === undefined ? {} : { profile: rendererOptions.profile }),
+          extra: { complete: true },
+        };
+      };
       const session = withFlowExports(adapter, renderers, font, (expected, offset) => ({
         schemaVersion: 1, ...expected, offset, total: 1, nextOffset: null,
+        ...(profile === undefined ? {} : { profile }),
         items: [{ kind: "image", requestId: "7", destination: "local.png", isResolved: f.resolved }],
       }));
       f.sessions.push({ session, adapter, raw });
@@ -119,12 +155,17 @@ async function fixture(options = {}) {
       clear() { f.clears++; },
       dispose() {},
     },
-    onState(state) { f.states.push(state); controls.update(state); },
+    onState(state) { f.states.push(state); controls.update(state); verification.update(state); },
   });
-  Object.assign(f, { controller, controls, buttons, sourceEditor, download, status, input });
+  Object.assign(f, { controller, controls, buttons, sourceEditor, download, status, input, verification, verificationElements });
   f.prepare = async (format) => {
     buttons[format].click();
     await f.lastExport;
+    await turn();
+  };
+  f.verify = async () => {
+    verificationElements.verify.click();
+    await f.lastVerification;
     await turn();
   };
   f.changeSettings = (values) => { settings = normalizeRenderSettings({ ...settings.values, ...values }); };
@@ -133,7 +174,7 @@ async function fixture(options = {}) {
     sourceEditor.dispatchEvent(new Event("input"));
     controller.update(input(value));
   };
-  f.dispose = () => { controls.dispose(); controller.dispose(); };
+  f.dispose = () => { verification.dispose(); controls.dispose(); controller.dispose(); };
   controller.update(input(source));
   await controller.whenIdle();
   assert.equal(controller.state.status, "ready");
@@ -157,7 +198,7 @@ for (const format of formats) {
     assert.equal(call.options[format === "svg" ? "maxWidthPt" : "title"], format === "svg" ? 900 : "Edition");
     assert.equal(call.options.lang, format === "svg" ? undefined : "nl");
     assert.equal(call.options.darkMode, ["html", "epub"].includes(format) ? "disabled" : undefined);
-    assert.equal(call.options.author, format === "pdf" ? "PDF author" : undefined);
+    assert.equal(call.options.author, format === "svg" ? undefined : "PDF author");
     assert.equal(call.options.allowRawHtml, format === "svg" ? undefined : false);
     assert.equal(f.blobs[0].type, mime[format]);
     assert.equal(f.download.download, "document." + format);
@@ -337,4 +378,77 @@ test("native publication refusal on a live worker preserves readiness and suppor
   f.renderError = null;
   await f.prepare("svg");
   assert.equal(f.download.download, "document.svg");
+});
+
+
+test("configured verification and PDF export share exact source, settings, dialect, font and complete assets", async t => {
+  const f = await fixture(); t.after(f.dispose);
+  f.changeSettings({ profile: "commonmark-gfm", footnoteBacklinks: true, splitFootnotes: true,
+    optimalPagination: true, strictPagination: true, baselineGridPt: 12,
+    typographyThemeSpacing: true, pdfLineHeight: 1.4, tableCellPaddingXEm: 0, tableCellPaddingYEm: 0.75 });
+  f.controller.update(f.input(f.source)); await f.controller.whenIdle();
+  assert.equal(f.controller.state.status, "ready", JSON.stringify(f.controller.state.error));
+  await f.verify();
+  assert.equal(f.verificationElements.download.hidden, false, f.verificationElements.status.textContent);
+  assert.equal(f.verificationElements.download.click().defaultPrevented, false);
+  const report = JSON.parse(await f.blobs[0].text());
+  assert.equal(report.pages[0].runs[0].text, f.source);
+  assert.deepEqual(report.extra, { complete: true });
+  assert.equal(report.profile, "commonmark-gfm");
+  assert.match(f.verificationElements.status.textContent, /1 PDF pages; 1 findings/);
+  assert.match(f.verificationElements.findings.textContent, /pdf.test: actual native report detail/);
+  await f.prepare("pdf");
+  assert.deepEqual(f.calls.map(call => call.format), ["pdf-verification", "pdf"]);
+  assert.equal(f.calls[0].markdown, f.calls[1].markdown);
+  assert.deepEqual(f.calls[0].options, f.calls[1].options);
+  assert.equal(f.calls[0].options.footnoteBacklinks, true);
+  assert.equal(f.calls[0].options.splitFootnotes, true);
+  assert.equal(f.calls[0].options.strictPagination, true);
+  assert.equal(f.calls[0].options.typography.tableCellPaddingXEm, 0);
+  assert.deepEqual(f.calls[0].options.pdfImages[0].bytes, f.payload);
+});
+
+test("verification rejects unresolved images and missing package support without replacing the source", async t => {
+  for (const unavailable of ["assets", "verifier"]) {
+    const f = await fixture(unavailable === "verifier" ? { unsupported: ["verify"] } : {});
+    t.after(f.dispose);
+    if (unavailable === "assets") f.resolved = false;
+    await f.verify();
+    assert.equal(f.calls.length, 0); assert.equal(f.blobs.length, 0);
+    assert.match(f.verificationElements.status.textContent,
+      unavailable === "assets" ? /UNRESOLVED_EXPORT_ASSET/ : /UNSUPPORTED_WASM_PACKAGE/);
+    assert.equal(f.controller.state.status, "ready");
+    assert.equal(f.sourceEditor.value, f.source);
+    f.resolved = true; await f.prepare("pdf");
+    assert.equal(f.download.hidden, false);
+  }
+});
+
+test("verification and export share a physical slot even after source replacement", async t => {
+  const f = await fixture(); t.after(f.dispose);
+  const held = gate(); f.renderGate = held;
+  f.verificationElements.verify.click();
+  await assert.rejects(f.controller.exportDocument("pdf", {}, f.source), error => error.code === "EXPORT_BUSY");
+  f.replace(f.source + "changed");
+  held.resolve(); await f.lastVerification; await f.controller.whenIdle(); await turn();
+  assert.equal(f.blobs.length, 0);
+  await f.prepare("pdf");
+  assert.equal(f.download.hidden, false);
+});
+
+test("verification worker loss retires readiness without losing source or prior pixels", async t => {
+  const f = await fixture(); t.after(f.dispose);
+  const held = gate(); f.renderGate = held;
+  const frame = f.controller.state.frame;
+  f.verificationElements.verify.click();
+  f.sessions[0].session.dispose();
+  f.renderError = new FlowError("SESSION_LOST", "worker deadline");
+  held.resolve(); await f.lastVerification; await turn();
+  assert.equal(f.controller.state.status, "error");
+  assert.equal(f.controller.state.frame, frame);
+  assert.equal(f.controller.state.error.code, "SESSION_LOST");
+  assert.equal(f.sourceEditor.value, f.source);
+  assert.equal(f.verificationElements.download.hidden, true);
+  f.renderError = null; f.controller.restart(); await f.controller.whenIdle();
+  await f.verify(); assert.equal(f.verificationElements.download.hidden, false);
 });

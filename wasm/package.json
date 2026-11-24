@@ -162,6 +162,7 @@
     "demo/flow_reading_controls.mjs",
     "demo/flow_preview_export.mjs",
     "demo/flow_export_controls.mjs",
+    "demo/flow_pdf_verification_controls.mjs",
     "SOURCE.md",
     "demo/flow-source.js",
     "demo/source_commands.mjs",

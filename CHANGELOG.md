@@ -11,10 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flow Canvas can verify the configured PDF layout, cancel verification, and
+  download the full native report. Verification uses publication's source,
+  settings, fonts and authorized images; edited documents retire stale reports.
 - Browser Flow and standalone document settings now expose PDF footnote return
   links, continued footnotes, measured body leading and table-cell padding.
-  Settings retain explicit Off and zero padding, preserve unchanged defaults,
-  and reject incompatible continued-note pagination before applying the draft.
+  Settings retain explicit Off and zero padding and preserve unchanged defaults.
+  Continued notes support Standard, optimized and exact page layouts, including
+  baseline grids; fixed-grid/page-count conflicts remain rejected before apply.
   Standalone Save HTML retains the selected controls on reopening.
 
 ## [0.8.1] - 2026-11-23

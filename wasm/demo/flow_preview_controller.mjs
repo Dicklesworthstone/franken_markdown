@@ -68,6 +68,8 @@ export function createPreviewController({
   const prepareExport = createPreviewExport(() => ({
     session,
     source: appliedSource,
+    font: appliedFont,
+    profile: appliedProfile,
     desiredSource: desired?.source,
     status: state.status,
     frame: state.frame,
@@ -98,10 +100,10 @@ export function createPreviewController({
   const alive = () => {
     if (disposed) throw new FlowError("SESSION_DISPOSED", "preview controller is disposed");
   };
-  async function exportDocument(format, options, source) {
+  async function publishDocument(operation) {
     const owner = session, generation = epoch;
     try {
-      return await prepareExport(format, options, source);
+      return await operation();
     } catch (error) {
       // An active worker deadline/abort destroys its retained document. Retire
       // ready/navigation state immediately, retaining source and the last
@@ -114,7 +116,7 @@ export function createPreviewController({
           status: "error", reading: "", document: null, readingError: null, readingPending: false,
           error: Object.freeze({
             code: "SESSION_LOST",
-            message: "Document export lost the worker; restart explicitly. Source remains in the editor.",
+            message: "Document publication or verification lost the worker; restart explicitly. Source remains in the editor.",
           }),
         });
         settle();
@@ -558,7 +560,10 @@ export function createPreviewController({
     get disposed() {
       return disposed;
     },
-    exportDocument,
+    exportDocument: (format, options, source) =>
+      publishDocument(() => prepareExport(format, options, source)),
+    verifyPdf: (options, source, control) =>
+      publishDocument(() => prepareExport.verifyPdf(options, source, control)),
     locateReading(index, document, source) {
       alive();
       if (

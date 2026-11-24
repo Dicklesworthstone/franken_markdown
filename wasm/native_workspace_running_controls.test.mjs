@@ -51,7 +51,7 @@ function setup(options = {}, {async = false, old = false, profiledHtml = true, p
     Object.defineProperty(render, 'length', {value: 22}); bindings.renderHtmlConfiguredProfiled = render;
   }
   for (const [name, arity] of [['renderPdfConfiguredMulti', 28], ['renderPdfConfiguredPage', 29],
-    ['renderPdfConfiguredRunning', 33], ['renderPdfConfiguredRunningImages', 36], ['renderPdfConfiguredProfiled', 40]]) {
+    ['renderPdfConfiguredRunning', 33], ['renderPdfConfiguredRunningImages', 36], ['renderPdfConfiguredGrid', 37], ['renderPdfConfiguredProfiled', 40]]) {
     if (old && name.includes('Running')) continue;
     if (!profiledPdf && name === 'renderPdfConfiguredProfiled') continue;
     const render = (...args) => {
@@ -186,14 +186,38 @@ test('long-document settings reach native PDF and preserve saved state on reopen
   f.renderer.pdf('Current'); assert.equal(f.calls.at(-1).args.length, 27);
 });
 
-test('continued-note conflicts and disabled spacing preserve committed settings', () => {
-  for (const pagination of ['optimal', 'strict']) {
-    const f = setup(), before = f.renderer.settings;
-    f.open(); f.edit('splitFootnotes', true); f.edit('pagination', pagination); f.apply();
-    assert.equal(f.renderer.settings, before); assert.equal(f.patches.length, 0);
-    assert.equal(f.dialog.open, true); assert.match(f.status, /require Standard/);
-    f.cancel(); assert.equal(f.renderer.settings, before);
+test('continued notes retain the selected page policy and grid through settings and export', () => {
+  for (const pagination of ['default', 'optimal', 'strict']) {
+    for (const grid of ['', '12']) {
+      const f = setup(), images = f.payload.images;
+      f.open(); f.edit('splitFootnotes', true); f.edit('pagination', pagination);
+      f.edit('baselineGridPt', grid); f.apply();
+      assert.equal(f.dialog.open, false);
+      assert.equal(f.renderer.settings.splitFootnotes, true);
+      assert.equal(Boolean(f.renderer.settings.optimalPagination), pagination !== 'default');
+      assert.equal(Boolean(f.renderer.settings.strictPagination), pagination === 'strict');
+      assert.equal(f.renderer.settings.baselineGridPt, grid ? 12 : undefined);
+      f.renderer.pdf('# Current source');
+      const {name, args} = f.calls.at(-1);
+      assert.equal(name, grid ? 'renderPdfConfiguredGrid' : 'renderPdfConfiguredMulti');
+      const tokens = [pagination !== 'default' && 'optimal-pagination',
+        pagination === 'strict' && 'strict-pagination', 'split-footnotes'].filter(Boolean).join(',');
+      assert.equal(args[grid ? 35 : 27], tokens);
+      if (grid) assert.equal(args[36], 12);
+      assert.equal(args[0], '# Current source');
+      assert.deepEqual(args[8], ['logo.png']);
+      assert.equal(f.payload.images, images);
+      f.open();
+      assert.equal(f.field('pagination').value, pagination);
+      assert.equal(f.field('splitFootnotes').checked, true);
+      assert.equal(f.field('baselineGridPt').value, grid);
+      const saved = f.renderer.settings;
+      f.apply(); assert.equal(f.renderer.settings, saved);
+    }
   }
+});
+
+test('disabled spacing preserves committed settings until the draft is corrected', () => {
   const f = setup({typography: {themeSpacing: false}}), before = f.renderer.settings;
   f.open(); f.edit('lineHeight', '2'); f.apply();
   assert.equal(f.renderer.settings, before); assert.equal(f.dialog.open, true);

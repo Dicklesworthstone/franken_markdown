@@ -3,6 +3,7 @@ import { FlowImageAssets } from "../flow-assets.js";
 import { FlowCanvasRenderer } from "../flow-canvas.js";
 import { readFlowDocument } from "../flow-reader.js";
 import { createWorkerFlowSession } from "../flow-worker.js";
+import { createPdfVerificationControls } from "./flow_pdf_verification_controls.mjs";
 import { createExportControls } from "./flow_export_controls.mjs";
 import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createReadingControls } from "./flow_reading_controls.mjs";
@@ -26,7 +27,8 @@ let controller = null,
   scheduled = 0,
   localSources = createLocalImageSources([]),
   readingControls = null,
-  exportControls = null;
+  exportControls = null,
+  verificationControls = null;
 
 let settingsControls = null,
   retainedSettings,
@@ -52,15 +54,17 @@ function start() {
   settingsControls?.dispose();
   readingControls?.dispose();
   exportControls?.dispose();
+  verificationControls?.dispose();
   settingsControls = createRenderSettingsControls({
     root: document,
     sourceEditor: source,
     initial: retainedSettings,
-    onInvalidate: () =>
-      exportControls?.invalidate(
-        "Settings fields changed; apply or discard them before exporting.",
-      ),
+    onInvalidate() {
+      exportControls?.invalidate("Settings fields changed; apply or discard them before exporting.");
+      verificationControls?.invalidate("Settings fields changed; apply or discard them before verifying.");
+    },
     onApply(next) {
+      verificationControls?.invalidate("PDF settings changed; verify the current layout again.");
       exportControls?.invalidate(
         "Typography or publishing settings changed; prepare a fresh export.",
       );
@@ -81,6 +85,19 @@ function start() {
     exportDocument: (format, options, currentSource) =>
       controller.exportDocument(format, options, currentSource),
     readOptions: (format) => settingsControls.exportOptions(format),
+  });
+  verificationControls = createPdfVerificationControls({
+    verify: document.querySelector("#verify-pdf"),
+    cancel: document.querySelector("#verify-cancel"),
+    download: document.querySelector("#verify-download"),
+    status: document.querySelector("#verify-status"),
+    findings: document.querySelector("#verify-findings"),
+    sourceEditor: source,
+    verifyPdf: (options, currentSource, control) =>
+      controller.verifyPdf(options, currentSource, control),
+    // The print settings are shared. Reports have their own 8 MiB ceiling,
+    // separate from the larger PDF-publication byte budget.
+    readOptions: () => ({ ...settingsControls.exportOptions("pdf"), maxOutputBytes: 8 * 1024 * 1024 }),
   });
   readingControls = createReadingControls({
     root: reading,
@@ -113,6 +130,7 @@ function start() {
       canvasNavigation.update();
       readingControls.update(state);
       exportControls.update(state);
+      verificationControls.update(state);
       if (state.status === "ready") {
         const frame = state.frame,
           images = state.images;
@@ -174,6 +192,7 @@ function changeImages(next) {
   // Change the grant only after admission succeeds. Restart clears published
   // pixels before disposing bitmaps, and invalidates old worker generations.
   exportControls?.invalidate();
+  verificationControls?.invalidate();
   localSources = next;
   insertImages.disabled = next.count === 0;
   clearImages.disabled = next.count === 0;
@@ -228,6 +247,7 @@ source.addEventListener("fmd-document-replaced", () => {
   files.value = "";
   folderImages.clear();
   exportControls?.invalidate();
+  verificationControls?.invalidate();
   try {
     changeImages(createLocalImageSources([]));
   } catch (error) {
@@ -254,6 +274,7 @@ window.addEventListener("pagehide", (event) => {
   controller?.dispose();
   readingControls?.dispose();
   exportControls?.dispose();
+  verificationControls?.dispose();
   localSources = createLocalImageSources([]);
   files.value = "";
   folderImages.suspend();

@@ -17,11 +17,12 @@ canvas { display: block; }
 #extent { pointer-events: none; }
 button { padding: 9px 15px; background: #0969da; color: white; border: 0; border-radius: 6px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
-#source-controls, #image-controls, #export-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
+#source-controls, #image-controls, #export-controls, #verification-controls { margin-top: 18px; padding: 14px; border: 1px solid #b8c0cc; border-radius: 6px; }
 #source-find, #source-replacement { box-sizing: border-box; width: 100%; padding: 10px; margin-bottom: 10px; }
 #source-editing button { min-height: 44px; margin-bottom: 6px; }
 #source-filename { box-sizing: border-box; max-width: 100%; padding: 8px; }
 #source-status, #draft-status, #source-edit-status { overflow-wrap: anywhere; }
+#verify-findings { white-space: pre-wrap; overflow-wrap: anywhere; }
 #status, #hit { min-height: 24px; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: white; border: 1px solid #d0d7de; }
 details { margin-top: 18px; }
@@ -114,6 +115,13 @@ The selectable reading text below comes from the same session, not a second Mark
 <p>Prepare an HTML document, PDF, EPUB ebook, or SVG poster in the worker, then click Download. Exports use the document renderer, not a Canvas screenshot. Every image needs an authorized encoded payload; unresolved images stop export. Source edits and authorization changes invalidate prepared downloads. EPUB uses the title, language, contents, and appearance settings; SVG uses the contents and poster width settings.</p>
 <p><button id="export-html" type="button" disabled>Prepare HTML</button> <button id="export-pdf" type="button" disabled>Prepare PDF</button> <button id="export-epub" type="button" disabled>Prepare EPUB</button> <button id="export-svg" type="button" disabled>Prepare SVG</button> <a id="export-download" hidden>Download</a></p>
 <p id="export-status" role="status">Waiting for the current preview. Files are not uploaded or saved automatically.</p>
+</section>
+<section id="verification-controls" aria-label="PDF layout verification">
+<h2>Verify the configured PDF layout</h2>
+<p>Check the current PDF page layout, text, anchors and renderer findings using the applied PDF settings and authorized images. This native layout audit does not inspect an emitted PDF file or certify PDF/A or PDF/UA compliance.</p>
+<p><button id="verify-pdf" type="button" disabled>Verify PDF layout</button> <button id="verify-cancel" type="button" disabled>Cancel verification</button> <a id="verify-download" hidden>Download full verification report</a></p>
+<p id="verify-status" role="status">Waiting for the current preview. Reports are withdrawn when the source or PDF settings change.</p>
+<pre id="verify-findings" aria-label="PDF verification findings"></pre>
 </section>
 <p><button id="restart" type="button">Restart preview from current source</button></p>
 <p id="status" role="status">Loading the matching WASM package. A build containing the flow and outline APIs is required.</p>

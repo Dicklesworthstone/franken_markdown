@@ -67,6 +67,7 @@ async function inspectDependencies(stage, files) {
       dependency(file, specifier);
   }
   assert(visited.has("demo/flow_canvas_navigation.mjs"));
+  assert(visited.has("demo/flow_pdf_verification_controls.mjs"));
   assert(visited.has("flow_worker.js"));
   assert(visited.has("demo/sample.md"));
 }

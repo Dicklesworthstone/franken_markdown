@@ -611,7 +611,7 @@ function fmdReadAuthoringProfile(doc) {
           <label>Baseline grid (pt, blank = off)<input name="baselineGridPt" type="number" min="1" max="144" step="any" placeholder="Off" aria-describedby="fmd-typesetting-fit-help"></label>
           <label>Fit to pages (blank = no target)<input name="fitToPages" type="number" min="1" max="4294967295" step="1" placeholder="No target" aria-describedby="fmd-typesetting-fit-help"></label>
         </div>
-        <p id="fmd-typesetting-fit-help">A baseline grid uses fixed spacing from 1 to 144 points. Page fitting adjusts type size and margins to reach a page-count target. Choose one; they cannot be combined. Continued footnotes require Standard page layout and support a baseline grid. Explicit line height or table padding uses theme spacing; enable it when changing those values.</p>
+        <p id="fmd-typesetting-fit-help">A baseline grid uses fixed spacing from 1 to 144 points. Page fitting adjusts type size and margins to reach a page-count target. Choose one; they cannot be combined. Continued footnotes support all page layouts and a baseline grid. Exact page layout reports a failure if its constraints cannot be met. Explicit line height or table padding uses theme spacing; enable it when changing those values.</p>
       </fieldset>
       <p data-status role="status" aria-live="polite" tabindex="-1"></p>
       <div style="display:flex;gap:12px;justify-content:flex-end"><button class="fmd-btn" type="button" data-cancel>Cancel</button><button class="fmd-btn fmd-btn-primary" type="submit">Apply settings</button></div>
@@ -817,9 +817,6 @@ function fmdReadAuthoringProfile(doc) {
         }
         if (raw('baselineGridPt') !== '' && raw('fitToPages') !== '') {
           throw Error('A fixed baseline grid and a page-count target cannot be combined. Clear one value before applying settings.');
-        }
-        if (raw('splitFootnotes') && raw('pagination') !== 'default') {
-          throw Error('Continued footnotes require Standard page layout. Choose Standard or turn off continued footnotes before applying settings.');
         }
         if (runningFields.some(name => raw(name) !== initial[name])) {
           const running = {...opened.running};

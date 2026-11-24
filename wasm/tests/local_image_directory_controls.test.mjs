@@ -68,7 +68,8 @@ function dom(folders = true) {
   };
   for (const id of ["source", "viewport", "preview", "extent", "status", "reading", "hit", "restart",
     "images", "image-controls", "image-status", "insert-images", "clear-images", "export-html", "export-pdf",
-    "export-download", "export-status", "reader-panel", "find-text", "find-insensitive", "find-whole-word",
+    "export-download", "export-status", "verify-pdf", "verify-cancel", "verify-download",
+    "verify-status", "verify-findings", "reader-panel", "find-text", "find-insensitive", "find-whole-word",
     "find-previous", "find-next", "outline", "reading-source", "reading-status"]) {
     const node = document.createElement(id === "images" ? "input" : "div");
     node.id = id;
@@ -110,6 +111,15 @@ function fixture({ folders = true } = {}) {
   const bindings = {
     document, window, Event, console, Math,
     createLocalImageSources, createDirectoryImageControls, createExportControls, createPreviewController,
+    createPdfVerificationControls: (options) => {
+      for (const [key, id] of Object.entries({ verify: "verify-pdf", cancel: "verify-cancel",
+        download: "verify-download", status: "verify-status", findings: "verify-findings" }))
+        assert.equal(options[key]?.id, id, "entrypoint wires the verification controls");
+      assert.equal(options.sourceEditor, document.querySelector("#source"));
+      assert.equal(typeof options.verifyPdf, "function");
+      assert.equal(typeof options.readOptions, "function");
+      return { update: noop, invalidate: noop, dispose: noop };
+    },
     FlowImageAssets: class { constructor(session, options) { this.options = options; assets.push(this); } },
     FlowCanvasRenderer: class { constructor() { painters.push(this); } clear() { events.push("clear-pixels"); } },
     // Canvas interaction is covered by flow_canvas_navigation.test.mjs.

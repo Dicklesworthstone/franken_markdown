@@ -9,6 +9,9 @@ const read = (path) => readFile(new URL(path, root), "utf8");
 const demo = [
   "flow-source.js",
   "flow_document.mjs",
+  "flow_project.mjs",
+  "flow_project_controls.mjs",
+  "flow_render_settings.mjs",
   "flow_draft_store.mjs",
   "flow_draft_session.mjs",
   "flow_draft_controls.mjs",
@@ -64,8 +67,11 @@ test("source controls have a separate script and their import graph never reache
     "wasm/demo/flow-source.js", "wasm/demo/flow_document.mjs",
     "wasm/demo/flow_draft_controls.mjs", "wasm/demo/flow_draft_session.mjs",
     "wasm/demo/flow_draft_store.mjs", "wasm/demo/flow_file_controls.mjs",
-    "wasm/demo/flow_file_session.mjs", "wasm/demo/source_commands.mjs",
-    "wasm/demo/source_formatting.mjs", "wasm/flow_session.mjs",
+    "wasm/demo/flow_file_session.mjs", "wasm/demo/flow_project.mjs",
+    "wasm/demo/flow_project_controls.mjs", "wasm/demo/flow_render_settings.mjs",
+    "wasm/demo/source_commands.mjs",
+    "wasm/demo/source_formatting.mjs", "wasm/flow_export.mjs", "wasm/flow_session.mjs",
+    "wasm/pdf_page.mjs", "wasm/pdf_running.mjs",
     "wasm/render_typography.mjs",
   ]);
 });

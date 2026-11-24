@@ -230,6 +230,8 @@
     "demo/flow_file_controls.mjs",
     "FILES.md",
     "demo/flow_render_settings.mjs",
+    "demo/flow_project.mjs",
+    "demo/flow_project_controls.mjs",
     "SETTINGS.md",
     "document_worker.mjs",
     "document_worker_entry.js",

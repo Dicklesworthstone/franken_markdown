@@ -240,12 +240,12 @@ const FIELDS = [
   ["bodySize", "Canvas body size", "number", 8, 48],
   ["codeSize", "Canvas code size", "number", 6, 40],
   ["lineHeight", "Canvas line height", "number", 8, 72],
-  ["title", "Export title (empty uses renderer default)", "text", 4096],
+  ["title", "Export title (empty uses renderer default)", "textarea", 4096],
   ["lang", "Export language tag (for example, de-DE)", "text", 64],
   ["toc", "Export table of contents", "boolean", booleanChoices],
   ["tocDepth", "Contents depth (empty uses renderer default)", "number", 1, 6, true],
   ["svgWidthPt", "SVG poster width in points (optional, default 612)", "number", 144, 14400],
-  ["author", "HTML/PDF/EPUB author (empty uses source metadata)", "text", 4096],
+  ["author", "HTML/PDF/EPUB author (empty uses source metadata)", "textarea", 4096],
   ["pageNumbers", "PDF page numbers", "boolean", booleanChoices],
   ["codeLineNumbers", "PDF code line numbers", "boolean", booleanChoices],
   ["baseFontSize", "PDF body size in points (optional)", "number", 6, 24],
@@ -347,7 +347,7 @@ function mount(root) {
         id = `render-${key}`;
       caption.setAttribute("for", id);
       const field = make(
-        type === "select" || type === "boolean" ? "select" : "input",
+        type === "select" || type === "boolean" ? "select" : type === "textarea" ? "textarea" : "input",
         undefined,
         id,
       );
@@ -361,7 +361,8 @@ function mount(root) {
           field.append(option);
         }
       } else {
-        field.type = type;
+        if (type === "textarea") { field.rows = 2; field.style.width = "100%"; }
+        else field.type = type;
         field.autocomplete = "off";
         if (type === "number") {
           field.min = String(first);
@@ -441,6 +442,7 @@ export function createRenderSettingsControls({
   onApply,
   onInvalidate = () => {},
   initial,
+  resetOnDocumentReplacement = true,
 }) {
   if (typeof onApply !== "function" || typeof onInvalidate !== "function")
     fail("A synchronous rendering settings callback is required.");
@@ -450,15 +452,18 @@ export function createRenderSettingsControls({
     finishingComposition = null,
     applying = false;
   const ui = mount(root),
-    listeners = [];
+    listeners = [],
+    writtenViews = new Map();
   for (const field of Object.values(ui.fields)) field.disabled = false;
   const alive = () => {
     if (disposed)
       throw new FlowError("SESSION_DISPOSED", "Rendering settings controls are disposed.");
   };
   const write = (value) => {
-    for (const [key, field] of Object.entries(ui.fields))
+    for (const [key, field] of Object.entries(ui.fields)) {
       field.value = value.values[key] === null ? "" : String(value.values[key]);
+      writtenViews.set(key, field.value);
+    }
   };
   function draft() {
     const values = {};
@@ -475,6 +480,10 @@ export function createRenderSettingsControls({
       } else if (type === "boolean") {
         if (!["", "true", "false"].includes(text)) fail(`Invalid ${key}.`);
         values[key] = text === "" ? null : text === "true";
+      } else if (type === "textarea" && text === writtenViews.get(key)) {
+        // Textarea views normalize CR/CRLF. Retain exact imported metadata
+        // while its view is unchanged, including edits to unrelated controls.
+        values[key] = applied.values[key];
       } else values[key] = optionalSelects.includes(key) && text === "" ? null : text;
     }
     return normalizeRenderSettings(values);
@@ -590,7 +599,7 @@ export function createRenderSettingsControls({
         );
       }),
     );
-  listen(
+  if (resetOnDocumentReplacement) listen(
     sourceEditor,
     "fmd-document-replaced",
     run(() => {
@@ -613,6 +622,24 @@ export function createRenderSettingsControls({
     },
     apply,
     reset,
+    // Source-project recovery owns the document boundary, so it may replace an
+    // old draft after validating the entire new source/settings capture.
+    restore(input) {
+      const next = normalizeRenderSettings(input);
+      alive();
+      composing = false;
+      if (finishingComposition !== null) clearTimeout(finishingComposition);
+      finishingComposition = null;
+      return commit(next);
+    },
+    capture() {
+      alive();
+      if (composing || finishingComposition !== null || applying)
+        throw new FlowError("SETTINGS_BUSY", "Finish text composition or the current settings operation first.");
+      if (pending())
+        throw new FlowError("UNAPPLIED_SETTINGS", "Apply or discard the settings fields before saving a project.");
+      return applied.values;
+    },
     exportOptions(format) {
       alive();
       if (!["html", "pdf", "epub", "svg"].includes(format))
@@ -638,4 +665,44 @@ export function createRenderSettingsControls({
       applied = normalizeRenderSettings();
     },
   });
+}
+
+// Source recovery owns these controls. The renderer subscribes to the same
+// applied profile without becoming necessary for authoring or project saves.
+const RENDER_SETTINGS_BINDINGS = new WeakMap();
+export function getRenderSettingsBinding(sourceEditor) {
+  let binding = RENDER_SETTINGS_BINDINGS.get(sourceEditor);
+  if (binding) return binding;
+  let owner = null, applied = normalizeRenderSettings(), revision = 0;
+  const listeners = new Set();
+  function notify(kind) {
+    revision++;
+    const event = Object.freeze({ kind, settings: applied, revision });
+    for (const listener of listeners) {
+      try { listener(event); } catch { /* A failed preview cannot block source recovery. */ }
+    }
+  }
+  binding = Object.freeze({
+    get settings() { return applied; },
+    get revision() { return revision; },
+    attach(controls) {
+      if (owner) throw new FlowError("SETTINGS_BUSY", "Rendering settings already have an owner.");
+      owner = controls; applied = controls.settings; notify("applied");
+      return () => {
+        if (owner === controls) { owner = null; notify("closed"); }
+      };
+    },
+    publish(next) { applied = next; notify("applied"); },
+    invalidate() { notify("draft"); },
+    exportOptions(format) {
+      if (!owner) throw new FlowError("SETTINGS_UNAVAILABLE", "Rendering settings are not ready.");
+      return owner.exportOptions(format);
+    },
+    subscribe(listener) {
+      if (typeof listener !== "function") throw new TypeError("A settings listener is required.");
+      listeners.add(listener); return () => listeners.delete(listener);
+    },
+  });
+  RENDER_SETTINGS_BINDINGS.set(sourceEditor, binding);
+  return binding;
 }

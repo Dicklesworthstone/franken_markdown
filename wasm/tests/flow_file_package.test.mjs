@@ -47,7 +47,7 @@ test("source entrypoint mounts saving before draft initialization and drops file
   assert.doesNotMatch(hide, /retained = [^\n]*(handle|files:|session:)/);
   assert.match(
     source,
-    /onReplace: \(\) => source\.dispatchEvent\(new Event\("fmd-document-replaced"\)\)/,
+    /onReplace\(\) \{[^]*?settings\.restore\([^]*?source\.dispatchEvent\(new Event\("fmd-document-replaced"\)\)/,
   );
 });
 

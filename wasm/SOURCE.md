@@ -8,6 +8,52 @@ They never persist image bytes, file handles, authorization grants, worker token
 rendered HTML or exported PDFs. The 4 MiB source admission and malformed-Unicode
 checks are shared with the existing flow facade.
 
+## Editable Flow source projects
+
+**Prepare Flow source project** saves the original Markdown and filename together
+with the applied authoring dialect, preview typography and complete publishing
+profile in a `.fmdflow.json` file. Apply or discard pending settings first, then
+click the separate download link. Paper and margins, metadata, table spacing,
+baseline grids, pagination and continued-footnote choices survive reopening.
+Project preparation uses the source owner, so an unchanged imported UTF-8 BOM
+and CR/LF bytes survive the textarea's newline normalization.
+
+**Reopen a Flow source project** validates the whole file before asking to replace
+the current document and profile. Malformed or newer schemas, invalid geometry,
+unsupported dialects and excess data leave both current source and settings in
+place. Editing source or settings while the file is read or confirmation is open
+cancels the replacement, including a change followed by a change back. Reopening
+resets source history, direct-file binding and previous image grants through the
+same document-replacement event used by ordinary Markdown imports. Reauthorize
+images separately before publication.
+
+Source projects contain only source text, filename and primitive settings. They
+never embed images, font bytes, file handles, worker tokens or permissions. The
+version 1 schema is `franken-markdown-flow-project`; unknown fields and versions
+are rejected. The source keeps its 4 MiB UTF-8 limit, while JSON has a separate
+32 MiB ceiling to accommodate escaping. Text must be valid Unicode/UTF-8. These
+are Flow editor projects, separate from the native workspace's `.fmd.json` and
+book publisher's `.fmdbook.json` formats.
+
+Settings and project controls load in the independent source entrypoint. They
+remain usable if WASM or the Canvas preview cannot load, or draft storage is
+unavailable. Plain Markdown downloads and local drafts continue to contain only
+source; opening either resets document-specific settings. An ordinary page
+reload starts with defaults until a saved Flow project is explicitly reopened.
+Back/forward restoration can retain the applied profile in page memory, while
+releasing prepared downloads and image/file authority.
+
+```sh
+node --test wasm/tests/flow_project.test.mjs wasm/tests/flow_source_entry.test.mjs
+```
+
+These checks execute the production project schema, controls and source
+entrypoint with real Node UTF-8, File, Blob and object URLs. The DOM/storage
+adapters are explicit; this is source-recovery evidence, not generated-WASM or
+native browser acceptance.
+
+## Plain Markdown and local drafts
+
 Opening a file is transactional with respect to the editor: encoding, size and
 filename are checked before replacement. Edits made during reading or replacement
 confirmation invalidate the pending open. The host's replacement callback must

@@ -4,17 +4,29 @@ import { createSourceControls, createSourceEditingControls } from "./flow_docume
 import { createDraftControls } from "./flow_draft_controls.mjs";
 import { createFileControls } from "./flow_file_controls.mjs";
 import { createSourceFormattingControls } from "./source_formatting.mjs";
+import { createRenderSettingsControls, getRenderSettingsBinding } from "./flow_render_settings.mjs";
+import { createFlowProjectControls } from "./flow_project_controls.mjs";
 
 const source = document.querySelector("#source"),
   filename = document.querySelector("#source-filename");
 const status = document.querySelector("#source-status");
+const renderSettings = getRenderSettingsBinding(source);
 let controls = null,
   drafts = null,
   editing = null,
   formatting = null,
   files = null,
+  projects = null,
+  settings = null,
+  releaseSettings = null,
+  replacingSettings = null,
   retained = null;
 function start() {
+  projects?.dispose();
+  projects = null;
+  releaseSettings?.();
+  releaseSettings = null;
+  settings?.dispose();
   files?.dispose();
   files = null;
   controls?.dispose();
@@ -26,6 +38,16 @@ function start() {
       ? retained.document
       : undefined;
   retained = null;
+  // Authoring settings load with source recovery, even when the generated WASM
+  // or Canvas entrypoint cannot be imported. Renderer restarts are subscribers.
+  settings = createRenderSettingsControls({
+    root: document, sourceEditor: source,
+    initial: renderSettings.settings.values,
+    resetOnDocumentReplacement: false,
+    onInvalidate: () => renderSettings.invalidate(),
+    onApply: next => renderSettings.publish(next),
+  });
+  releaseSettings = renderSettings.attach(settings);
   controls = createSourceControls({
     sourceEditor: source,
     filename,
@@ -40,7 +62,21 @@ function start() {
       ),
     // The preview revokes its old document's image grant synchronously on this
     // event, BEFORE source controls emit the ordinary input notification.
-    onReplace: () => source.dispatchEvent(new Event("fmd-document-replaced")),
+    onReplace() {
+      settings.restore(replacingSettings ?? { ...settings.settings.preview, profile: null });
+      source.dispatchEvent(new Event("fmd-document-replaced"));
+    },
+  });
+  projects = createFlowProjectControls({
+    root: document, sourceControls: controls, settingsControls: settings, renderSettings,
+    replaceProject(project) {
+      replacingSettings = project.settings;
+      try { controls.replace(project.document); }
+      finally { replacingSettings = null; }
+    },
+    confirmReplace: project => window.confirm(
+      `Replace the current editor and publishing settings with ${project.document.filename}? Download a project first to keep the current work. Current image access will be revoked.`,
+    ),
   });
   editing = createSourceEditingControls({
     sourceEditor: source,
@@ -103,6 +139,12 @@ window.addEventListener("pagehide", (event) => {
       retained = null;
     }
   }
+  projects?.dispose();
+  projects = null;
+  releaseSettings?.();
+  releaseSettings = null;
+  settings?.dispose();
+  settings = null;
   files?.dispose();
   files = null;
   controls?.dispose();

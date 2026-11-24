@@ -7,7 +7,7 @@ import { createPdfVerificationControls } from "./flow_pdf_verification_controls.
 import { createExportControls } from "./flow_export_controls.mjs";
 import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createReadingControls } from "./flow_reading_controls.mjs";
-import { createRenderSettingsControls } from "./flow_render_settings.mjs";
+import { getRenderSettingsBinding } from "./flow_render_settings.mjs";
 import { createDirectoryImageControls, createLocalImageSources } from "./local_image_sources.mjs";
 
 const source = document.querySelector("#source"),
@@ -30,9 +30,8 @@ let controller = null,
   exportControls = null,
   verificationControls = null;
 
-let settingsControls = null,
-  retainedSettings,
-  suspended = false;
+const renderSettings = getRenderSettingsBinding(source);
+let suspended = false;
 
 // One owner across worker restarts and persisted page suspension keeps hit RPCs
 // bounded and prevents stale results from acquiring a replacement document.
@@ -50,30 +49,9 @@ const canvasNavigation = createCanvasNavigationControls({
 
 function start() {
   if (suspended) return;
-  if (settingsControls) retainedSettings = settingsControls.settings.values;
-  settingsControls?.dispose();
   readingControls?.dispose();
   exportControls?.dispose();
   verificationControls?.dispose();
-  settingsControls = createRenderSettingsControls({
-    root: document,
-    sourceEditor: source,
-    initial: retainedSettings,
-    onInvalidate() {
-      exportControls?.invalidate("Settings fields changed; apply or discard them before exporting.");
-      verificationControls?.invalidate("Settings fields changed; apply or discard them before verifying.");
-    },
-    onApply(next) {
-      verificationControls?.invalidate("PDF settings changed; verify the current layout again.");
-      exportControls?.invalidate(
-        "Typography or publishing settings changed; prepare a fresh export.",
-      );
-      // Admit immediately, not at the next animation frame: an export click
-      // between Apply and reflow must not use the previous font or metrics.
-      updateNow(next.preview);
-    },
-  });
-  retainedSettings = undefined;
   exportControls = createExportControls({
     html: document.querySelector("#export-html"),
     pdf: document.querySelector("#export-pdf"),
@@ -84,7 +62,7 @@ function start() {
     sourceEditor: source,
     exportDocument: (format, options, currentSource) =>
       controller.exportDocument(format, options, currentSource),
-    readOptions: (format) => settingsControls.exportOptions(format),
+    readOptions: (format) => renderSettings.exportOptions(format),
   });
   verificationControls = createPdfVerificationControls({
     verify: document.querySelector("#verify-pdf"),
@@ -97,7 +75,7 @@ function start() {
       controller.verifyPdf(options, currentSource, control),
     // The print settings are shared. Reports have their own 8 MiB ceiling,
     // separate from the larger PDF-publication byte budget.
-    readOptions: () => ({ ...settingsControls.exportOptions("pdf"), maxOutputBytes: 8 * 1024 * 1024 }),
+    readOptions: () => ({ ...renderSettings.exportOptions("pdf"), maxOutputBytes: 8 * 1024 * 1024 }),
   });
   readingControls = createReadingControls({
     root: reading,
@@ -154,7 +132,14 @@ function start() {
   });
   update();
 }
-function updateNow(preview = settingsControls.settings.preview) {
+// Applied settings are owned by the independent source entrypoint. Reading,
+// exporting and verification still retire immediately when its draft changes.
+const unsubscribeSettings = renderSettings.subscribe(({ kind, settings }) => {
+  exportControls?.invalidate("Publishing settings changed; prepare a fresh export.");
+  verificationControls?.invalidate("PDF settings changed; verify the current layout again.");
+  if (kind === "applied" && !suspended) updateNow(settings.preview);
+});
+function updateNow(preview = renderSettings.settings.preview) {
   if (!controller || controller.disposed) return;
   const width = Math.max(40, viewport.clientWidth),
     height = Math.max(40, viewport.clientHeight);
@@ -268,9 +253,6 @@ restart.addEventListener("click", () => {
 window.addEventListener("pagehide", (event) => {
   suspended = true;
   canvasNavigation.suspend();
-  retainedSettings = event.persisted ? settingsControls?.settings.values : undefined;
-  settingsControls?.dispose();
-  settingsControls = null;
   controller?.dispose();
   readingControls?.dispose();
   exportControls?.dispose();
@@ -280,7 +262,7 @@ window.addEventListener("pagehide", (event) => {
   folderImages.suspend();
   insertImages.disabled = clearImages.disabled = true;
   imageStatus.textContent = "Image access revoked while the page is suspended. Select files or a folder again after returning.";
-  if (!event.persisted) { folderImages.dispose(); canvasNavigation.dispose(); }
+  if (!event.persisted) { folderImages.dispose(); canvasNavigation.dispose(); unsubscribeSettings(); }
   if (scheduled) cancelAnimationFrame(scheduled);
   scheduled = 0;
   observer.disconnect();

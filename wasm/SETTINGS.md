@@ -40,8 +40,10 @@ Returning to **Renderer default** also rebuilds explicitly.
 Typing, resizing, typography presets and **Restart preview from current source**
 retain the applied dialect. Opening/importing/restoring a different plain
 Markdown document resets dialect to **Renderer default**: plain Markdown files
-and browser drafts do not carry these session-only settings. Font and preview
-size preferences are retained across that document change.
+and browser drafts do not carry publishing settings. Font and preview size
+preferences are retained across that document change. An editable
+`.fmdflow.json` project instead restores its saved dialect and complete applied
+profile; see [source-project recovery](SOURCE.md#editable-flow-source-projects).
 
 An explicit dialect requires a matching generated WASM package with the
 `FmdFlowSession.withProfile` binding. An older package reports
@@ -78,6 +80,9 @@ Canvas body size, code size and line height are not PDF point-size settings.
 Choose **Prepare HTML**, **Prepare PDF**, **Prepare EPUB**, or **Prepare SVG**,
 then use the prepared download link. Title and language apply to HTML, PDF and
 EPUB. All four formats receive the selected table of contents and its depth.
+Title and author controls support multiple lines. Unchanged imported metadata
+retains its original CR/LF bytes in project saves and exports; editing the field
+uses the textarea's LF convention. Changing other settings preserves that text.
 A language tag is metadata/render configuration, not translation or a promise of
 support for an otherwise unsupported script. Optional blank fields use the
 renderer default instead of guessing an application default.
@@ -154,13 +159,15 @@ keeps its Markdown and the last successfully painted frame. Choose **Restart pre
 from the old session cannot restore readiness or replace the new session; at
 most one physical export remains active while old work settles.
 
-Settings are page-session memory only. They are not written into Markdown,
-frontmatter, file handles, browser drafts, local storage, or a server. Applying a
-setting never changes selection, undo/redo, file-save identity, or source dirty
-state. It does not save a file. Opening/importing/restoring another document
-resets dialect, publishing settings and pending fields so another document's
-grammar, title, author or language cannot leak into the next document; applied
-font and preview size preferences remain.
+Settings remain in page memory until explicitly saved with **Prepare Flow source
+project**. That project retains source and the complete applied profile together;
+unapplied fields must be applied or discarded before saving. Settings are not
+written into Markdown, frontmatter, direct Markdown file saves, browser drafts,
+local storage, or a server. Applying a setting never changes selection,
+undo/redo, file-save identity, or source dirty state, and does not save a file.
+Opening or restoring plain Markdown resets dialect, publishing settings and
+pending fields while retaining font and preview size preferences. Reopening a
+Flow source project restores its own profile and revokes prior image access.
 
 Page suspension removes listeners and disables the old controls. A back/forward
 return can retain applied primitive settings in memory, but does not retain file
@@ -172,6 +179,9 @@ override workers, or smuggle asset payloads through export options. Existing
 source, image-authorization, worker, byte-budget and stale-revision checks remain
 in force. Source import/save/download runs through its separate entrypoint, so a
 rendering or settings failure does not take away original Markdown recovery.
+The source entrypoint also owns the settings panel, so applied-profile project
+save/reopen remains available when the generated renderer cannot load. Preview,
+publication and PDF verification subscribe to that same applied profile.
 
 ## Verification
 

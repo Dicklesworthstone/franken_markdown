@@ -96,6 +96,12 @@ The selectable reading text below comes from the same session, not a second Mark
 <input id="source-filename" type="text" value="document.md" maxlength="240" autocomplete="off" spellcheck="false">
 <p><button id="prepare-markdown" type="button">Prepare Markdown</button> <a id="source-download" hidden>Download Markdown</a></p>
 <p id="source-status" role="status">Source downloads do not require a successful render. Preparing a download does not save it automatically.</p>
+<h3>Editable Flow source projects</h3>
+<p id="flow-project-help">Save a .fmdflow.json project to keep the original Markdown, filename, selected dialect, preview typography, and all applied publishing settings together. Apply or discard unfinished settings first. Projects work without a running preview. They contain no images or access grants; authorize images again after reopening. Plain Markdown downloads and local drafts retain source only.</p>
+<label for="open-flow-project">Reopen a Flow source project</label>
+<input id="open-flow-project" type="file" accept=".fmdflow.json,.json,application/json" aria-describedby="flow-project-help flow-project-status">
+<p><button id="prepare-flow-project" type="button">Prepare Flow source project</button> <button id="cancel-flow-project" type="button" disabled>Cancel project operation</button> <a id="flow-project-download" hidden>Download source project</a></p>
+<p id="flow-project-status" role="status">Source projects preserve applied settings. Preparing a download does not save it automatically.</p>
 <h3>Local draft recovery</h3>
 <p id="draft-help">Opt in to save source and filename in this browser after edits. One draft is shared by tabs on this origin; conflicting changes pause autosave rather than overwrite another tab. Images and access grants are never stored. Drafts are unencrypted, may be evicted, and are not a backup. Changes are saved only after a transaction acknowledgment.</p>
 <label><input id="remember-draft" type="checkbox" disabled aria-describedby="draft-help draft-status"> Autosave the current source locally</label>

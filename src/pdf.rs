@@ -2830,15 +2830,6 @@ pub fn render_warnings(doc: &Document, opts: &PdfOptions) -> Vec<RenderWarning> 
     render_warnings_for_input(doc, opts)
 }
 
-/// Internal audits retain preparation provenance instead of guessing from
-/// author-controlled footnote IDs or numbering the same note bodies twice.
-pub(crate) fn render_warnings_for_prepared(
-    doc: &crate::footnotes::PreparedPdfDocument<'_>,
-    opts: &PdfOptions,
-) -> Vec<RenderWarning> {
-    render_warnings_for_input(doc, opts)
-}
-
 fn render_warnings_for_input(
     input: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
@@ -3414,11 +3405,7 @@ fn render_inner_with_languages(
         paragraph_variants,
     };
     let warnings = if collect_warnings {
-        let (mut warnings, _) =
-            source_render_warnings_with_chapters(doc, &effective_opts, Some(&faces), languages);
-        inline_math_fit::append_warnings(&lines, &mut warnings);
-        pagination.append_warnings(&mut warnings);
-        warnings
+        final_layout_warnings(doc, &effective_opts, &faces, languages, &lines, &pagination)
     } else {
         Vec::new()
     };
@@ -3429,6 +3416,22 @@ fn render_inner_with_languages(
         pagination,
         warnings,
     })
+}
+
+/// Report on the fitted document and its selected page breaks. Callers that
+/// already have the layout must not fit, shape or paginate it again for warnings.
+fn final_layout_warnings(
+    doc: &Document,
+    opts: &PdfOptions,
+    faces: &Faces,
+    languages: &language::Context,
+    lines: &[Line],
+    pagination: &PdfPaginationReport,
+) -> Vec<RenderWarning> {
+    let (mut warnings, _) = source_render_warnings_with_chapters(doc, opts, Some(faces), languages);
+    inline_math_fit::append_warnings(lines, &mut warnings);
+    pagination.append_warnings(&mut warnings);
+    warnings
 }
 
 struct RenderedPdf {
@@ -45827,7 +45830,7 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
 /// ordinary parsed Markdown: it applies the same document preparation as PDF
 /// publication and preserves the specific error.
 pub fn verification_text_layer(doc: &Document, opts: &PdfOptions) -> Option<VerifyTextLayer> {
-    verification_text_layer_for_layout(doc, opts).ok()
+    verification_text_layer_for_layout(doc, opts, None).ok()
 }
 
 /// Build the verification text layer while preserving the renderer's typed
@@ -45841,12 +45844,13 @@ pub fn verification_text_layer_result(
     // This API accepts source. Already prepared layout documents use the
     // separate compatibility API rather than inferring state from note IDs.
     let prepared = crate::transform_footnotes_for_pdf(doc, opts);
-    verification_text_layer_for_layout(&prepared, opts)
+    verification_text_layer_for_layout(&prepared, opts, None)
 }
 
 pub(crate) fn verification_text_layer_for_layout(
     input: &impl crate::footnotes::PdfDocumentInput,
     opts: &PdfOptions,
+    warnings: Option<&mut Vec<RenderWarning>>,
 ) -> Result<VerifyTextLayer> {
     opts.font_assets.validate()?;
     baseline_grid::validate_options(opts)?;
@@ -45863,7 +45867,7 @@ pub(crate) fn verification_text_layer_for_layout(
     let (effective_opts, page) =
         effective_pdf_options_with_languages(doc, opts, &faces, &language::EMPTY, &notes);
     let running = running::resolve(doc, &effective_opts, &faces, page)?;
-    let (lines, _) = layout_with_languages(
+    let (lines, paragraph_variants) = layout_with_languages(
         &doc.blocks,
         &effective_opts,
         &faces,
@@ -45871,14 +45875,36 @@ pub(crate) fn verification_text_layer_for_layout(
         &language::EMPTY,
         &notes,
     )?;
-    let (plan, _) = validated_page_break_plan(&lines, page, &effective_opts)?;
-    let pages = paginate_lines_with(&lines, page, plan.as_ref());
+    let (plan, page_breaks) = validated_page_break_plan(&lines, page, &effective_opts)?;
     if let Some(running) = running {
         let mut chrome = running.layout_document_pages(&faces, page, &lines, plan.as_ref());
         chrome.fit_positioned_ink(&faces, page)?;
     }
-    let mut out_pages = Vec::with_capacity(pages.len());
-    for (idx, placed) in pages.iter().enumerate() {
+    if let Some(warnings) = warnings {
+        *warnings = final_layout_warnings(
+            doc,
+            &effective_opts,
+            &faces,
+            &language::EMPTY,
+            &lines,
+            &PdfPaginationReport {
+                page_breaks,
+                paragraph_variants,
+            },
+        );
+    }
+    let mut out_pages = Vec::new();
+    let mut start = 0;
+    let mut emitted_any = false;
+    let page_notes = PageNotes::scan(&lines);
+    while let Some(placed) = next_placed_page(
+        &lines,
+        &mut start,
+        page,
+        &mut emitted_any,
+        plan.as_ref(),
+        page_notes.as_ref(),
+    ) {
         let mut runs = Vec::with_capacity(placed.len());
         for p in placed {
             let line = p.line;
@@ -45902,7 +45928,7 @@ pub(crate) fn verification_text_layer_for_layout(
             });
         }
         out_pages.push(VerifyPage {
-            number: idx + 1,
+            number: out_pages.len() + 1,
             runs,
         });
     }

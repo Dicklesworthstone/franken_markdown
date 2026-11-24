@@ -155,6 +155,50 @@ fn exact_success_and_infeasible_fallback_report_the_actual_emitted_pages() {
 }
 
 #[test]
+fn verification_reports_the_published_layout_warnings_and_page_count() {
+    let cases = [
+        (
+            "A[^n]  \nB  \nC\n\n[^n]: N".to_owned(),
+            options(40.0),
+            "pagination_infeasible",
+        ),
+        (
+            "A".to_owned(),
+            options(10_001.0),
+            "pagination_budget_exceeded",
+        ),
+        (
+            ["word"; 600].join(" "),
+            options(700.0),
+            "paragraph_pagination_limited",
+        ),
+    ];
+    for (source, opts, expected_code) in cases {
+        let output = franken_markdown::render_pdf_with_diagnostics(&source, &opts).unwrap();
+        let report =
+            franken_markdown::verify::verify_pdf_result(&parse_markdown(&source), &opts).unwrap();
+        assert_eq!(report.page_count, page_contents(&output.bytes).len());
+        assert!(
+            output
+                .warnings
+                .iter()
+                .any(|warning| warning.code() == expected_code)
+        );
+        let findings: Vec<_> = report
+            .findings
+            .iter()
+            .map(|finding| (finding.code, finding.detail.clone()))
+            .collect();
+        let warnings: Vec<_> = output
+            .warnings
+            .iter()
+            .map(|warning| (warning.code(), warning.message()))
+            .collect();
+        assert_eq!(findings, warnings);
+    }
+}
+
+#[test]
 fn resource_budget_failure_is_not_mislabeled_as_infeasibility() {
     let opts = options(10_001.0);
     let rendered = render_pdf_reported("A", &opts).unwrap();

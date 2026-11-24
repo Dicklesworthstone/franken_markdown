@@ -11,7 +11,7 @@
 use crate::PdfOptions;
 use crate::ast::Document;
 use crate::caret::{CaretStyle, render_caret};
-use crate::pdf::{RenderWarning, render_warnings_for_prepared, verification_text_layer_for_layout};
+use crate::pdf::{RenderWarning, verification_text_layer_for_layout};
 use crate::span::{DiagnosticSeverity, SourceSpan};
 
 /// Report schema version (bump on any breaking shape change).
@@ -68,9 +68,9 @@ pub fn verify_pdf(doc: &Document, opts: &PdfOptions) -> Option<VerifyReport> {
 /// layout/authoring audit, not a PDF/A or PDF/UA conformance certification.
 pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<VerifyReport> {
     let prepared = crate::transform_footnotes_for_pdf(doc, opts);
-    let layer = verification_text_layer_for_layout(&prepared, opts)?;
+    let mut warnings = Vec::new();
+    let layer = verification_text_layer_for_layout(&prepared, opts, Some(&mut warnings))?;
     let audit = crate::book::audit_document_note_links(doc, &prepared, opts);
-    let warnings = render_warnings_for_prepared(&prepared, opts);
 
     let mut findings = Vec::new();
     for target in &audit.unresolved {

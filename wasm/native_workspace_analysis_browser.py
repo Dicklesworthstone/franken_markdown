@@ -59,6 +59,12 @@ export function documentStats(source) {
     structure: {paragraphs: 3, headings_total: outline.length, code_blocks: 2, tables: 1, lists: 2, images: 1, links_total: 4},
     outline, findings, fixture_source: source, additive_native_field: {preserved: true}}, null, 2);
 }
+export const verifyPdfConfigured = Object.defineProperty((...args) => JSON.stringify({
+  schema_version: '1', target: 'pdf', page_count: 2, verdict: 'findings', digest: 'fnv1a64:0000000000000001',
+  anchors: {resolved: 3, unresolved: ['#absent']}, findings: [{code: 'layout_warning', detail: '<img src=x>'}],
+  pages: [{number: 1, runs: [{kind: 'body', text: args[0], x: 40, y: 60, size: 12}]}, {number: 2, runs: []}],
+  paper: [...args[27]], font: [...args[11]], images: args[8],
+}), 'length', {value: 38});
 export function accessibilityAudit(source) {
   if (source === 'ERROR') throw Error('Deliberate native audit failure');
   return JSON.stringify({schema_version: '1', target: 'pdf', page_count: 1,
@@ -71,11 +77,12 @@ def fixture(path: Path, mode: str = 'full') -> None:
     bindings = BINDINGS
     if mode in ('legacy', 'audit-only'):
         bindings = bindings.replace('export function documentStats', 'function documentStats')
+        bindings = bindings.replace('export const verifyPdfConfigured', 'const verifyPdfConfigured')
     if mode == 'legacy':
         bindings = bindings.replace('export function accessibilityAudit', 'function accessibilityAudit')
     payload = {'version': 1, 'wasm': 'AGFzbQEAAAA=', 'bindings': bindings,
                'options': {'font': 'serif', 'darkMode': 'disabled', 'fontScale': 1.25, 'title': 'Fixture',
-                           'lang': 'fr', 'toc': True, 'tocDepth': 3, 'pageNumbers': True, 'codeLineNumbers': True},
+                           'lang': 'fr', 'toc': True, 'tocDepth': 3, 'pageGeometry': [792, 612, 36, 24, 36, 24], 'pageNumbers': True, 'codeLineNumbers': True},
                'images': [{'destination': 'chart.png', 'bytes': 'AQID'}],
                'fonts': [{'slot': 'body-regular', 'bytes': 'BAU=', 'weight': 650}]}
     def data(value):
@@ -187,11 +194,25 @@ def main() -> None:
         page.locator('#btn-lab-audit').click()
         wait_check(page, 'document.querySelector("#fmd-lab-status").textContent.startsWith("Analysis complete")')
         assert 'engine defaults' in page.locator('#fmd-lab-output h3').inner_text()
-        assert 'not this workspace' in page.locator('#fmd-lab-scope').inner_text()
+        assert 'engine-default PDF options' in page.locator('#fmd-lab-scope').inner_text()
         assert 'missing_alt_text' in page.locator('#fmd-lab-findings').inner_text()
         assert report(page, 'Fixture.accessibility.json')['fixture_source'] == SOURCE
         assert page.locator('#fmd-native-runtime').text_content() == initial_payload
         check('accessibility audit is explicitly scoped to engine defaults and leaves saved data unchanged')
+        page.locator('#btn-lab-layout').click()
+        wait_check(page, 'document.querySelector("#fmd-lab-status").textContent.startsWith("Analysis complete")')
+        assert page.locator('#fmd-lab-output h3').inner_text() == 'Configured PDF layout'
+        assert page.locator('#fmd-lab-output dd').all_text_contents() == ['2', '3', '1']
+        assert page.locator('#fmd-lab-output img').count() == 0
+        packet = report(page, 'Fixture.layout.json')
+        assert packet['pages'][0]['runs'][0]['text'] == SOURCE
+        assert packet['paper'] == [792, 612, 36, 24, 36, 24]
+        assert packet['font'] == [4, 5] and packet['images'] == ['chart.png']
+        assert page.locator('#fmd-native-runtime').text_content() == initial_payload
+        page.evaluate("window.dispatchEvent(new Event('fmd-native-fonts-changed'))")
+        assert page.locator('#btn-lab-download').is_disabled()
+        assert page.locator('#fmd-lab-output').inner_text() == ''
+        check('configured PDF layout reports measured pages, safe findings and exact resources; resource changes retire it')
         # Panel is modeless: source editing remains usable during native CPU work.
         for action in ['cancel', 'edit', 'close', 'escape', 'silent-edit', 'round-trip']:
             if page.locator('#fmd-document-lab').is_hidden():

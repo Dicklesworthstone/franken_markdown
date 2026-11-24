@@ -307,3 +307,80 @@ test('boot old worker mismatch is explicit and releases the document slot', asyn
   await assert.rejects(engine.analyzeDocument('stats', '# Source'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
   assert.equal(engine.analysisPending, false); assert.equal(engine.exportPending, false);
 });
+
+function configuredReport(...args) {
+  const [source] = args;
+  if (source === 'strict failure') throw JSON.stringify({code: 'PAGINATION_INFEASIBLE',
+    reason: 'infeasible', message: 'Paragraph cannot fit the configured page'});
+  return JSON.stringify({schema_version: '1', target: 'pdf', digest: 'fnv1a64:abcde00123456789', verdict: 'clean',
+    anchors: {resolved: 1, unresolved: []}, findings: [], page_count: 1,
+    pages: [{number: 1, runs: [{kind: 'body', text: source, x: 24, y: 60, size: 14}]}],
+    adapterArgs: args}, (_, v) => ArrayBuffer.isView(v) ? [...v] : v);
+}
+
+test('configured layout shares source, fonts, images, grammar, page and typography with PDF publication', () => {
+  const data = payload(), bindings = fixtureBindings(), calls = [];
+  const arity = (func, count) => Object.defineProperty(func, 'length', {value: count});
+  const source = '\ufeff# Exact\r\n\r\nCafé 𝄞  \r\nréel';
+  Object.assign(data.options, {pageGeometry: [792, 612, 42, 36, 54, 60], profile: 'gfm-plus',
+    baselineGridPt: 13, pdfA: '2b', pdfAStrict: true, optimalPagination: true, strictPagination: true,
+    typography: {themeSpacing: true, lineHeight: 1.5}, running: {header: {center: '{title}',
+      image: {dest: 'chart.png', position: 'right', heightPt: 12}}, footer: {right: '{page}'}}});
+  data.fonts = [{slot: 'body-regular', bytes: 'BAU=', weight: 650}];
+  bindings.verifyPdfConfigured = arity(configuredReport, 38);
+  bindings.renderPdfConfiguredProfiled = arity((...args) => {
+    calls.push(args); return bindings.renderPdfConfiguredMulti();
+  }, 40);
+  bindings.renderHtmlConfiguredProfiled = arity(() => {}, 22);
+  const renderer = createNativeWorkspaceRenderer(bindings, data);
+  assert.ok(renderer.analysisFormats.includes('layout'));
+  const report = JSON.parse(renderer.analyze('layout', source));
+  renderer.pdf(source);
+  const published = JSON.parse(JSON.stringify(calls[0], (_, v) => ArrayBuffer.isView(v) ? [...v] : v));
+  assert.deepEqual(report.adapterArgs, [...published.slice(0, 36), ...published.slice(38)]);
+  assert.deepEqual(report.adapterArgs.slice(8, 12), [['chart.png'], [1, 2, 3], [3], [4, 5]]);
+  assert.equal(report.adapterArgs[16][0], 650);
+  assert.deepEqual(report.adapterArgs[27], data.options.pageGeometry);
+  assert.deepEqual(report.adapterArgs[32], ['chart.png', '']);
+  assert.match(report.adapterArgs[35], /strict-pagination/);
+  assert.deepEqual(report.adapterArgs.slice(36), [13, 'gfm-plus']);
+  assert.equal(report.pages[0].runs[0].text, source);
+});
+
+test('old and underspecified binding packages keep the legacy audits without advertising configured layout', () => {
+  for (const verify of [undefined, () => assert.fail('incompatible binding invoked')]) {
+    const bindings = {...fixtureBindings(), verifyPdfConfigured: verify};
+    const renderer = createNativeWorkspaceRenderer(bindings, payload());
+    assert.ok(!renderer.analysisFormats.includes('layout'));
+    assert.throws(() => renderer.analyze('layout', '# Source'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    assert.equal(JSON.parse(renderer.analyze('accessibility', '# Source')).findings.length, 1);
+  }
+});
+
+test('disposable analysis worker transfers complete layout JSON and preserves strict pagination failures', async t => {
+  const data = payload(bindingsSource + '\nexport const verifyPdfConfigured = Object.defineProperty('
+    + configuredReport.toString() + ', "length", {value: 38});');
+  const {api} = client(t, data);
+  const source = '# 中\r\n', result = await api.analyzeDocument('layout', source, data);
+  assert.equal(result.report.pages[0].runs[0].text, source);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(result.bytes)), result.report);
+  await assert.rejects(api.analyzeDocument('layout', 'strict failure', data),
+    {code: 'PAGINATION_INFEASIBLE', reason: 'infeasible'});
+});
+
+test('layout rejects accessibility-only, malformed page/run/anchor reports and mismatched dialect receipts', async t => {
+  for (const patch of [value => {delete value.pages;}, value => {value.pages[0].number = 2;},
+    value => {value.pages[0].runs[0].x = null;}, value => {value.anchors.unresolved = [3];},
+    value => {value.digest = 'absent';}, value => {value.verdict = 'findings';},
+    value => {value.profile = 'commonmark-gfm';}]) {
+    const report = JSON.parse(configuredReport('source')); patch(report);
+    const data = payload(), endpoint = fakeEndpoint(() => ({kind: 'layout', mimeType: 'application/json',
+      bytes: new TextEncoder().encode(JSON.stringify(report))}));
+    const {api} = client(t, data, {workerFactory: () => endpoint});
+    await assert.rejects(api.analyzeDocument('layout', 'source', data), {code: 'ANALYSIS_PROTOCOL'});
+  }
+  const data = payload(), endpoint = fakeEndpoint(() => ({kind: 'layout', mimeType: 'application/json',
+    profile: 'gfm-plus', bytes: new TextEncoder().encode(configuredReport('source'))}));
+  const {api} = client(t, data, {workerFactory: () => endpoint});
+  await assert.rejects(api.analyzeDocument('layout', 'source', data), {code: 'ANALYSIS_PROTOCOL'});
+});

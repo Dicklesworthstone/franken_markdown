@@ -82,7 +82,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
   }
   // Serialized into the worker too. Bound bytes before decoding/JSON parsing;
   // report strings stay data, and additive native fields survive JSON download.
-  function validateReport(bytes, kind, sourceLength) {
+  function validateReport(bytes, kind, sourceLength, profile) {
     const invalid = () => { throw new Error('Invalid native document analysis report'); };
     if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > 8 * 1024 * 1024
         || !(bytes.buffer instanceof ArrayBuffer)) invalid();
@@ -111,7 +111,26 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
         if (!object(heading) || !Number.isInteger(heading.level) || heading.level < 1 || heading.level > 6
             || typeof heading.text !== 'string' || typeof heading.slug !== 'string') invalid();
       }
-    } else if (kind !== 'accessibility' || report.schema_version !== '1' || report.target !== 'pdf') invalid();
+    } else {
+      if (report.schema_version !== '1' || report.target !== 'pdf') invalid();
+      if (kind === 'layout') {
+        const count = value => Number.isSafeInteger(value) && value >= 0;
+        if ((Object.hasOwn(report, 'profile') && report.profile !== profile)
+            || !count(report.page_count) || !Array.isArray(report.pages) || report.pages.length !== report.page_count
+            || report.verdict !== (report.findings.length ? 'findings' : 'clean')
+            || typeof report.digest !== 'string' || !/^fnv1a64:[0-9a-f]{16}$/.test(report.digest)
+            || !object(report.anchors) || !count(report.anchors.resolved) || !Array.isArray(report.anchors.unresolved)
+            || !report.anchors.unresolved.every(value => typeof value === 'string')
+            || !report.findings.every(finding => finding.code.length && typeof finding.detail === 'string')) invalid();
+        for (const [index, page] of report.pages.entries()) {
+          if (!object(page) || page.number !== index + 1 || !Array.isArray(page.runs)) invalid();
+          for (const run of page.runs) {
+            if (!object(run) || typeof run.text !== 'string' || typeof run.kind !== 'string' || !run.kind
+                || !Number.isFinite(run.x) || !Number.isFinite(run.y) || !Number.isFinite(run.size) || run.size < 0) invalid();
+          }
+        }
+      } else if (kind !== 'accessibility') invalid();
+    }
     return report;
   }
   // Worker-owned WASM and resource cache. No URLs or functions arrive in render
@@ -154,14 +173,15 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
             renderer = staged; data = next;
           }
           if (request.type === 'analyze') {
-            if (!['stats', 'accessibility'].includes(request.kind)) throw new Error('Unsupported analysis kind');
+            if (!['stats', 'accessibility', 'layout'].includes(request.kind)) throw new Error('Unsupported analysis kind');
             if (typeof renderer.analyze !== 'function') throw Object.assign(
               new Error('Document analysis requires the matching native workspace runtime'), {code: 'UNSUPPORTED_WASM_PACKAGE'});
             const json = renderer.analyze(request.kind, request.markdown);
             if (typeof json !== 'string' || json.length > 8 * 1024 * 1024) throw new Error('Oversized native analysis report');
             const bytes = new TextEncoder().encode(json);
-            validateReport(bytes, request.kind);
+            validateReport(bytes, request.kind, undefined, data.options.profile);
             self.postMessage({type: 'result', id, kind: request.kind, bytes,
+              ...(request.kind === 'layout' ? {profile: data.options.profile} : {}),
               mimeType: 'application/json'}, [bytes.buffer]);
           } else if (request.type === 'export') {
             const format = request.format;
@@ -225,6 +245,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     else job.resolve(value);
   }
   function analysisError(reason) {
+    if (paginationReason(reason)) return reason;
     return error(String(reason?.code || 'ANALYSIS_FAILED').replace(/^(PREVIEW|EXPORT)_/, 'ANALYSIS_'),
       String(reason?.message || reason).replace(/preview|export/gi, 'analysis').slice(0, 2048));
   }
@@ -294,7 +315,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
     if (result.type === 'error') {
       // Do not reuse a resource cache whose attempted revision was rejected.
       lastOptions = null; lastImages = null;
-      const reason = job.format === 'pdf' ? paginationReason(result) : undefined;
+      const reason = job.format === 'pdf' || job.kind === 'layout' ? paginationReason(result) : undefined;
       const fontCode = job.collection ? collectionCode(result) : undefined;
       const failure = error(result.code === 'UNSUPPORTED_WASM_PACKAGE' || reason ? result.code : fontCode ?? 'PREVIEW_RENDER_FAILED',
         String(result.message).slice(0, 2048));
@@ -313,12 +334,13 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
         }
         if (job.kind) {
           if (result.kind !== job.kind || result.mimeType !== 'application/json'
+              || (job.kind === 'layout' && result.profile !== job.options.profile)
               || !(result.bytes instanceof Uint8Array) || !(result.bytes.buffer instanceof ArrayBuffer)
               || result.bytes.byteOffset !== 0 || result.bytes.byteLength !== result.bytes.buffer.byteLength) {
             throw error('ANALYSIS_PROTOCOL', 'Invalid background analysis result');
           }
           let report;
-          try { report = validateReport(result.bytes, job.kind, job.sourceLength); }
+          try { report = validateReport(result.bytes, job.kind, job.sourceLength, job.options.profile); }
           catch { throw error('ANALYSIS_PROTOCOL', 'Invalid background analysis report'); }
           settle(job, {kind: job.kind, mimeType: 'application/json', bytes: result.bytes, report});
           dispatch(); return;
@@ -430,7 +452,7 @@ export function createWorkspacePreviewWorker(factory, payload, configuration = {
       return new Promise((resolve, reject) => {
         try {
           if (closed) throw error('ANALYSIS_CLOSED', 'Background analysis is closed');
-          if (!['stats', 'accessibility'].includes(kind) || !state?.options || !Array.isArray(state.images)) {
+          if (!['stats', 'accessibility', 'layout'].includes(kind) || !state?.options || !Array.isArray(state.images)) {
             throw error('ANALYSIS_OPTIONS', 'Invalid document analysis options');
           }
           const sourceLength = text(markdown, 32 * MiB, 'Workspace source');

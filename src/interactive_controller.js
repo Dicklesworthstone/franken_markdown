@@ -1304,7 +1304,8 @@ function fmdReadAuthoringProfile(doc) {
       panel.style.cssText = 'position:fixed;z-index:1000;right:16px;bottom:16px;width:min(38rem,calc(100vw - 32px));max-height:75vh;overflow:auto;box-sizing:border-box;padding:20px;border:1px solid var(--border-color,#aaa);border-radius:8px;background:var(--bg-primary,#fff);color:var(--fg-primary,#222);box-shadow:0 4px 24px #0003;overflow-wrap:anywhere';
       make('h2', 'Document Lab', panel).id = 'fmd-lab-title';
       make('p', 'Analyze the current Markdown with the embedded Rust engine. Reports are read-only and never change source, settings or resources.', panel);
-      make('p', 'Accessibility follows the selected Markdown dialect. Layout checks use engine-default PDF options, not this workspace’s configured paper, fonts or images. It is an authoring audit, not PDF/UA certification.', panel).id = 'fmd-lab-scope';
+      make('p', 'Accessibility uses the selected Markdown dialect and engine-default PDF options.'
+        + (native.analysisFormats.includes('layout') ? ' PDF layout uses this workspace’s paper, typography, running content and resources.' : ''), panel).id = 'fmd-lab-scope';
       const actions = make('div', undefined, panel);
       actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px';
       const action = (id, label) => {
@@ -1313,6 +1314,7 @@ function fmdReadAuthoringProfile(doc) {
       };
       const stats = action('btn-lab-stats', 'Analyze document');
       const audit = action('btn-lab-audit', 'Audit accessibility');
+      const layout = action('btn-lab-layout', 'Verify PDF layout');
       const save = action('btn-lab-download', 'Download report JSON');
       const cancel = action('btn-lab-cancel', 'Cancel analysis');
       const close = action('btn-lab-close', 'Close');
@@ -1322,13 +1324,15 @@ function fmdReadAuthoringProfile(doc) {
       let pending = null, latest = null, revision = 0;
       const current = snapshot => snapshot && snapshot.revision === revision
         && snapshot.source === currentSource() && snapshot.settings === native.settings
+        && (snapshot.kind !== 'layout' || snapshot.documentRevision === native.documentRevision)
         && !previewSuspended && !previewComposing;
       function refresh() {
         const busy = pending !== null || pendingExport !== null || settingsController?.busy || native.exportPending || native.settingsPending;
         const paused = previewSuspended || previewComposing;
         stats.hidden = !native.analysisFormats.includes('stats');
         audit.hidden = !native.analysisFormats.includes('accessibility');
-        stats.disabled = audit.disabled = busy || paused;
+        layout.hidden = !native.analysisFormats.includes('layout');
+        stats.disabled = audit.disabled = layout.disabled = busy || paused;
         save.disabled = busy || !current(latest);
         cancel.hidden = pending === null;
         panel.setAttribute('aria-busy', String(pending !== null));
@@ -1352,7 +1356,8 @@ function fmdReadAuthoringProfile(doc) {
         const report = result.report;
         const content = document.createDocumentFragment();
         const short = text => text.length > 1200 ? text.slice(0, 1200) + '…' : text;
-        make('h3', result.kind === 'stats' ? 'Document intelligence' : 'Accessibility — engine defaults', content);
+        make('h3', result.kind === 'stats' ? 'Document intelligence'
+          : result.kind === 'layout' ? 'Configured PDF layout' : 'Accessibility — engine defaults', content);
         if (result.kind === 'stats') {
           const metrics = make('dl', undefined, content);
           const values = [['Words', report.words], ['Characters (excluding whitespace)', report.characters],
@@ -1380,6 +1385,13 @@ function fmdReadAuthoringProfile(doc) {
           }
           if (!report.outline.length) make('p', 'No headings found.', content);
           if (report.outline.length > 200) make('p', 'Showing the first 200 headings; the JSON report contains all ' + report.outline.length + '.', content);
+        } else if (result.kind === 'layout') {
+          const metrics = make('dl', undefined, content);
+          for (const [label, value] of [['Pages', report.page_count], ['Resolved internal links', report.anchors.resolved],
+            ['Unresolved internal links', report.anchors.unresolved.length]]) {
+            make('dt', label, metrics); make('dd', String(value), metrics);
+          }
+          make('p', 'Download JSON for page-by-page text positions and internal destinations.', content);
         }
         make('h4', 'Findings (' + report.findings.length + ')', content);
         const findings = make('ul', undefined, content); findings.id = 'fmd-lab-findings';
@@ -1389,7 +1401,7 @@ function fmdReadAuthoringProfile(doc) {
         }
         if (!report.findings.length) make('p', 'No findings returned by this check. This is not a certification of the exported document.', content);
         if (report.findings.length > 200) make('p', 'Showing the first 200 findings; download JSON for all ' + report.findings.length + '.', content);
-        make('p', 'Findings have no source spans in this native contract; no line numbers are inferred. Long display text is abbreviated; JSON retains the full report.', content);
+        if (result.kind !== 'layout') make('p', 'Findings have no source spans in this native contract; no line numbers are inferred. Long display text is abbreviated; JSON retains the full report.', content);
         output.replaceChildren(content);
       }
       async function navigate(heading, snapshot) {
@@ -1431,13 +1443,15 @@ function fmdReadAuthoringProfile(doc) {
           status.textContent = 'Finish or cancel the current document operation first.'; return;
         }
         if (previewSuspended || previewComposing) return;
-        const operation = {source: currentSource(), settings: native.settings, revision: ++revision, buttons: []};
+        const operation = {kind, source: currentSource(), settings: native.settings, documentRevision: native.documentRevision,
+          revision: ++revision, buttons: []};
         pending = operation; latest = null; output.replaceChildren();
         for (const id of [...Object.values(publicationFormats).map(spec => spec.button), 'btn-document-settings']) {
           const node = header.querySelector('#' + id);
           if (node) { operation.buttons.push([node, node.disabled]); node.disabled = true; }
         }
-        status.textContent = kind === 'stats' ? 'Analyzing document in background…' : 'Auditing accessibility in background with engine-default PDF options…';
+        status.textContent = kind === 'stats' ? 'Analyzing document in background…'
+          : kind === 'layout' ? 'Verifying the configured PDF layout…' : 'Auditing accessibility in background with engine-default PDF options…';
         refresh();
         Promise.resolve().then(() => {
           if (pending !== operation || !current(operation)) throw Object.assign(Error('Document changed'), {code: 'ANALYSIS_CANCELLED'});
@@ -1461,10 +1475,11 @@ function fmdReadAuthoringProfile(doc) {
       button.addEventListener('click', () => {
         panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden));
         if (panel.hidden) cancelPending('Analysis cancelled: Document Lab closed.');
-        else { refresh(); (stats.hidden ? audit : stats).focus(); }
+        else { refresh(); [stats, audit, layout].find(action => !action.hidden)?.focus(); }
       });
       stats.addEventListener('click', () => run('stats'));
       audit.addEventListener('click', () => run('accessibility'));
+      layout.addEventListener('click', () => run('layout'));
       cancel.addEventListener('click', () => cancelPending('Analysis cancelled — source and resources are unchanged.'));
       close.addEventListener('click', () => {
         cancelPending('Analysis cancelled: Document Lab closed.');
@@ -1477,6 +1492,11 @@ function fmdReadAuthoringProfile(doc) {
         if (!current(latest)) { invalidate('Source or settings changed — analyze again before downloading.'); return; }
         attempt(() => download(latest.result.bytes, 'application/json', latest.result.kind + '.json'));
       });
+      for (const event of ['fmd-native-images-changed', 'fmd-native-fonts-changed']) {
+        window.addEventListener(event, () => {
+          if (pending?.kind === 'layout' || latest?.kind === 'layout') invalidate('Resources changed — verify the PDF layout again.');
+        });
+      }
       documentLab = {invalidate, refresh, get busy() { return pending !== null; }};
       refresh();
     };

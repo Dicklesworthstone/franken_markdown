@@ -35,25 +35,32 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     ), {code: 'UNSUPPORTED_WASM_PACKAGE'});
     return render;
   }
-  const analyses = {stats: 'documentStats', accessibility: 'accessibilityAudit'};
+  const analyses = {stats: 'documentStats', accessibility: 'accessibilityAudit', layout: 'verifyPdfConfigured'};
   const analysisFormats = Object.freeze(Object.keys(analyses)
-    .filter(kind => typeof bindings[analyses[kind]] === 'function'));
+    .filter(kind => typeof bindings[analyses[kind]] === 'function'
+      && (kind !== 'layout' || bindings.verifyPdfConfigured.length >= 38)));
   function analyze(kind, markdown) {
     if (!Object.hasOwn(analyses, kind) || !analysisFormats.includes(kind)) {
       throw Object.assign(new Error('Document analysis requires matching native WASM bindings'),
         {code: 'UNSUPPORTED_WASM_PACKAGE'});
     }
-    // The audit uses the selected grammar with engine-default PDF layout and
-    // resources, not a certification of the workspace's configured PDF or assets.
-    // Keep reports separate from render diagnostics and from saved document data.
-    const name = analyses[kind] + (options.profile === undefined ? '' : 'Profiled');
-    const analyze = bindings[name];
-    if (typeof analyze !== 'function' || (options.profile !== undefined && analyze.length < 2)) {
-      throw Object.assign(new Error('Profile-aware document analysis requires matching WASM bindings'),
-        {code: 'UNSUPPORTED_WASM_PACKAGE'});
+    let json;
+    if (kind === 'layout') {
+      const running = runningArguments(options.running);
+      try {
+        json = bindings.verifyPdfConfigured(...pdfDocumentArgs(markdown), ...pdfPageArgs(running),
+          typographyTokens(options), options.baselineGridPt, options.profile);
+      } catch (error) { throw paginationError(error); }
+    } else {
+      // The accessibility subset retains its established engine-default layout.
+      const name = analyses[kind] + (options.profile === undefined ? '' : 'Profiled');
+      const analyze = bindings[name];
+      if (typeof analyze !== 'function' || (options.profile !== undefined && analyze.length < 2)) {
+        throw Object.assign(new Error('Profile-aware document analysis requires matching WASM bindings'),
+          {code: 'UNSUPPORTED_WASM_PACKAGE'});
+      }
+      json = options.profile === undefined ? analyze(source(markdown)) : analyze(source(markdown), options.profile);
     }
-    const json = options.profile === undefined ? analyze(source(markdown))
-      : analyze(source(markdown), options.profile);
     if (typeof json !== 'string' || !json.length) throw new TypeError('Invalid native analysis report');
     settingsText(json, 8 * 1024 * 1024, 'analysis report');
     return json;
@@ -751,6 +758,23 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     const policy = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline' data:; base-uri 'none'; form-action 'none'";
     return html.replace(head, match => match + '<meta http-equiv="Content-Security-Policy" content="' + policy + '">');
   }
+  // Both publication and layout verification consume the exact same live
+  // settings and packed resources. PDF/A flags belong only to the byte writer.
+  function pdfDocumentArgs(markdown) {
+    return [
+      source(markdown), options.font, options.darkMode, options.title, options.author,
+      options.metadataEpochSeconds, false, options.codeLineNumbers,
+      images.destinations, images.flat, images.lengths, ...fontBytes, weights,
+      undefined, undefined, undefined, options.pageNumbers,
+      options.fontScale, options.lang, options.toc, options.tocDepth, options.fitToPages,
+      options.microtype === 'protrusion' || options.microtypeProtrusion === true,
+    ];
+  }
+  function pdfPageArgs(running) {
+    return [pageGeometry ?? new Float64Array(), running?.slots ?? [],
+      running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
+      running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array()];
+  }
   return {
     get diagnostics() { return diagnostics; },
     get settings() { return options; },
@@ -794,27 +818,16 @@ export function createNativeWorkspaceRenderer(bindings, payload) {
     },
     pdf(markdown) {
       const render = pdfBinding(options), typography = typographyTokens(options), running = runningArguments(options.running);
-      const args = [
-        source(markdown), options.font, options.darkMode, options.title, options.author,
-        options.metadataEpochSeconds, false, options.codeLineNumbers,
-        images.destinations, images.flat, images.lengths, ...fontBytes, weights,
-        undefined, undefined, undefined, options.pageNumbers,
-        options.fontScale, options.lang, options.toc, options.tocDepth, options.fitToPages,
-        options.microtype === 'protrusion' || options.microtypeProtrusion === true,
-      ];
+      const args = pdfDocumentArgs(markdown);
       let result;
       try {
         if (options.profile !== undefined || options.pdfA === '2b') {
-          result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
-            running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
-            running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array(),
+          result = render(...args, ...pdfPageArgs(running),
             typography, options.pdfA ?? 'off', options.pdfAStrict ?? false,
             ...(options.profile !== undefined ? [options.baselineGridPt, options.profile]
               : options.baselineGridPt > 0 ? [options.baselineGridPt] : []));
         } else if (options.baselineGridPt > 0) {
-          result = render(...args, pageGeometry ?? new Float64Array(), running?.slots ?? [],
-            running?.headerRule ?? false, running?.footerRule ?? false, running?.skipFirstPage ?? false,
-            running?.destinations ?? [], running?.positions ?? new Uint32Array(), running?.heights ?? new Uint32Array(),
+          result = render(...args, ...pdfPageArgs(running),
             typography, options.baselineGridPt);
         } else {
           const tail = typography === undefined ? [] : [typography];
@@ -1143,17 +1156,17 @@ export function bootNativeWorkspace(factory, createPreview) {
       if (!renderer) throw failure ?? exportError('ANALYSIS_NOT_READY', 'Native renderer is loading');
       if (!background) throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Document analysis requires the matching worker runtime');
       if (suspended) throw exportError('ANALYSIS_SUSPENDED', 'Document analysis is suspended');
-      if (!['stats', 'accessibility'].includes(kind) || typeof isCurrent !== 'function') {
-        throw exportError('ANALYSIS_OPTIONS', 'Choose document stats or accessibility analysis');
+      if (!['stats', 'accessibility', 'layout'].includes(kind) || typeof isCurrent !== 'function') {
+        throw exportError('ANALYSIS_OPTIONS', 'Choose document stats, accessibility or PDF layout analysis');
       }
       if (!renderer.analysisFormats?.includes(kind)) {
         throw exportError('UNSUPPORTED_WASM_PACKAGE', 'This embedded engine does not support the requested document analysis');
       }
       if (pendingExport || pendingSettings) throw exportError('ANALYSIS_BUSY', 'Finish or cancel the current document operation first');
-      const options = renderer.settings, images = payload.images;
+      const options = renderer.settings, images = payload.images, fonts = payload.fonts;
       const operation = {kind, worker: null, cancelled: false};
       const current = () => !operation.cancelled && !suspended && pendingExport === operation
-        && options === renderer.settings && images === payload.images && isCurrent();
+        && options === renderer.settings && images === payload.images && fonts === payload.fonts && isCurrent();
       const check = () => {
         if (!current()) throw exportError('ANALYSIS_CANCELLED', 'Document analysis was cancelled or the document changed');
       };
@@ -1162,7 +1175,7 @@ export function bootNativeWorkspace(factory, createPreview) {
       pendingExport = operation;
       return Promise.resolve().then(() => {
         check();
-        operation.worker = createPreview(factory, {...payload, options, images});
+        operation.worker = createPreview(factory, {...payload, options, images, fonts});
         if (typeof operation.worker?.analyzeDocument !== 'function') {
           throw exportError('UNSUPPORTED_WASM_PACKAGE', 'Rebuild the matching workspace analysis worker');
         }

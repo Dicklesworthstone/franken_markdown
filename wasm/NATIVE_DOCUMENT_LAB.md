@@ -1,7 +1,7 @@
 # Native Document Lab in portable workspaces
 
 **Document Lab** connects the portable native editor to the embedded engine's
-`documentStats` and `accessibilityAudit` APIs. Rebuild a matching WASM package
+`documentStats`, `accessibilityAudit`, and `verifyPdfConfigured` APIs. Rebuild a matching WASM package
 containing the updated controller, then create a workspace with
 `createNativeWorkspaceExporter`. Existing saved workspaces do not self-upgrade.
 No extra JavaScript Markdown parser, native process, file access or network
@@ -34,6 +34,16 @@ invented. Missing preview headings produce a visible message.
 configured paper, supplied fonts or image resources. Its findings are authoring assistance,
 not certification of the exported PDF, PDF/UA conformance, or a complete
 accessibility evaluation. The panel labels that distinction explicitly.
+
+**Verify PDF layout** measures the PDF with this workspace's selected dialect,
+page dimensions, margins, fonts, images, running content, pagination and typography.
+The panel displays the measured page count, resolved and unresolved internal
+links, and findings. Download the report to inspect each page's text runs and
+coordinates. It uses the PDF export configuration and runs independently of
+publication. Strict pagination errors reach the editor and retire the failed
+report. Paper, font and image edits retire the previous layout report.
+PDF/A and PDF/UA certification are outside this layout check. The action appears
+when the embedded engine provides the complete configured verification binding.
 
 **Download report JSON** downloads the original native report bytes, preserving
 additive fields, full strings and every admitted row. Display is limited to the

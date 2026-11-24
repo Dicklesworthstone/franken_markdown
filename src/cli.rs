@@ -1802,10 +1802,11 @@ fn run_render_with_preview(
         theme = theme.with_font_scale(scale);
     }
 
-    let use_theme_spacing = match apply_pdf_page_style(&args.style, args.to, &config, &mut theme, json) {
-        Ok(enabled) => enabled,
-        Err(code) => return code,
-    };
+    let use_theme_spacing =
+        match apply_pdf_page_style(&args.style, args.to, &config, &mut theme, json) {
+            Ok(enabled) => enabled,
+            Err(code) => return code,
+        };
 
     let src = match read_input(
         args.input.as_deref(),
@@ -2467,7 +2468,7 @@ fn check_external_links(
         .unwrap_or(0);
 
     // Cache: read JSONL entries within TTL.
-    let mut cache: BTreeMap<String, (u16, bool, u64)> = BTreeMap::new();
+    let mut cache: BTreeMap<String, (u16, u64)> = BTreeMap::new();
     if let Some(path) = cache_path
         && let Ok(text) = std::fs::read_to_string(path)
     {
@@ -2477,26 +2478,25 @@ fn check_external_links(
                 continue;
             }
             // entry: {"url":..,"status":NNN,"ok":bool,"checked":NNN}
-            let Some(v) = parse_cache_line(line) else {
+            let Some((url, status, _, checked)) = parse_cache_line(line) else {
                 continue;
             };
-            cache.insert(v.0, (v.1, v.2, v.3));
+            cache.insert(url, (status, checked));
         }
     }
 
     let mut findings = Vec::new();
     let mut out_cache: BTreeMap<String, (u16, bool, u64)> = BTreeMap::new();
     for url in &urls {
-        let (status, ok) = if let Some((status, ok, checked)) = cache.get(url) {
-            if now.saturating_sub(*checked) <= ttl_secs {
-                (*status, *ok)
-            } else {
-                check_one_link(url, timeout_secs)
-            }
-        } else {
-            check_one_link(url, timeout_secs)
-        };
-        out_cache.insert(url.clone(), (status, ok, now));
+        let (status, checked) = cache
+            .get(url)
+            .copied()
+            .filter(|(_, checked)| now.checked_sub(*checked).is_some_and(|age| age <= ttl_secs))
+            .unwrap_or_else(|| (check_one_link(url, timeout_secs), now));
+        // The observed status is authoritative, including legacy records that
+        // wrote ok=false for a HEAD redirect. A cache hit is not a new probe.
+        let ok = (200..400).contains(&status);
+        out_cache.insert(url.clone(), (status, ok, checked));
         if !ok {
             findings.push(crate::verify::VerifyFinding {
                 code: "link_broken",
@@ -2565,13 +2565,13 @@ fn parse_cache_line(line: &str) -> Option<(String, u16, bool, u64)> {
 }
 
 /// One link probe: HEAD, then a ranged GET when HEAD fails (405/501), via the
-/// system curl or wget. ok = 2xx (3xx reported separately, not broken).
-fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
+/// system curl or wget. Return the first-hop HTTP status, or zero on failure.
+fn check_one_link(url: &str, timeout_secs: u64) -> u16 {
     let ua = "--user-agent";
     let ua_owned = format!("fmd/{}", crate::VERSION);
     let ua_val = ua_owned.as_str();
     let timeout = timeout_secs.to_string();
-    let head = |program: &str| -> Option<(u16, bool)> {
+    let head = |program: &str| -> Option<u16> {
         let args: Vec<String> = match program {
             "curl" => vec![
                 "-sS".into(),
@@ -2581,6 +2581,7 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
                 "%{http_code}".into(),
                 "--max-time".into(),
                 timeout.clone(),
+                "--no-location".into(),
                 "-I".into(),
                 ua.into(),
                 ua_val.into(),
@@ -2589,6 +2590,7 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
             _ => vec![
                 "--server-response".into(),
                 "--spider".into(),
+                "--max-redirect=0".into(),
                 format!("--timeout={timeout}"),
                 ua.into(),
                 ua_val.into(),
@@ -2628,13 +2630,13 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
                 code_str.parse().ok()
             })?
         };
-        Some((code, (200..300).contains(&code)))
+        Some(code)
     };
     for program in ["curl", "wget"] {
-        if let Some((status, ok)) = head(program)
-            && (ok || !(status == 405 || status == 501))
+        if let Some(status) = head(program)
+            && !matches!(status, 405 | 501)
         {
-            return (status, ok);
+            return status;
         }
     }
     // GET fallback (range-limited so we never download bodies).
@@ -2648,6 +2650,7 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
             "%{http_code}",
             "--max-time",
             timeout_str.as_str(),
+            "--no-location",
             "--range",
             "0-0",
             ua,
@@ -2658,18 +2661,9 @@ fn check_one_link(url: &str, timeout_secs: u64) -> (u16, bool) {
     match out {
         Ok(o) => {
             let text = String::from_utf8_lossy(&o.stdout);
-            match text
-                .trim()
-                .chars()
-                .take(3)
-                .collect::<String>()
-                .parse::<u16>()
-            {
-                Ok(code) => (code, (200..400).contains(&code)),
-                Err(_) => (0, false),
-            }
+            text.trim().parse().unwrap_or(0)
         }
-        Err(_) => (0, false),
+        Err(_) => 0,
     }
 }
 
@@ -2926,10 +2920,11 @@ fn run_batch(mut args: BatchArgs, global_json: bool, no_config: bool) -> ExitCod
     if let Some(font) = args.font {
         theme = theme.with_font(font.into());
     }
-    let use_theme_spacing = match apply_pdf_page_style(&args.style, args.to, &config, &mut theme, json) {
-        Ok(enabled) => enabled,
-        Err(code) => return code,
-    };
+    let use_theme_spacing =
+        match apply_pdf_page_style(&args.style, args.to, &config, &mut theme, json) {
+            Ok(enabled) => enabled,
+            Err(code) => return code,
+        };
     let css_path = args.css.clone().or_else(|| config.custom_css.clone());
     let custom_css = match css_path.as_deref() {
         Some(p) => match read_stylesheet(p) {

@@ -1,5 +1,5 @@
 //! Verification's optional link cache is an output, not permission to replace
-//! the Markdown being verified. All probes use cached results, without network.
+//! the Markdown being verified. Probes use cached results or local command fixtures.
 #![cfg(feature = "cli")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -142,7 +142,7 @@ fn verify_refuses_symlink_hardlink_and_directory_alias_caches() {
 }
 
 #[test]
-fn a_distinct_cache_is_reused_and_refreshed_without_modifying_source() {
+fn a_distinct_cache_preserves_its_probe_time_without_modifying_source() {
     let dir = Directory::new();
     let source = format!("# Source\n\n[Reference]({URL}).\n");
     let cache = cache_record(URL);
@@ -161,10 +161,7 @@ fn a_distinct_cache_is_reused_and_refreshed_without_modifying_source() {
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("checked 1 external link(s), 0 broken")
     );
-    let updated = std::fs::read_to_string(dir.path("links.jsonl")).unwrap();
-    assert!(updated.starts_with(&format!("{{\"url\":\"{URL}\",\"status\":200,\"ok\":true,")));
-    assert!(!updated.contains("\"checked\":0}"));
-    assert_eq!(updated.lines().count(), 1);
+    dir.assert_contents("links.jsonl", cache);
     dir.assert_contents("source.md", source);
     assert!(std::fs::read_dir(&dir.0).unwrap().all(|entry| {
         !entry
@@ -187,7 +184,7 @@ fn unused_cache_flags_do_not_write_or_refuse_the_source() {
 }
 
 #[test]
-fn verification_from_stdin_can_still_update_a_distinct_cache() {
+fn verification_from_stdin_can_still_reuse_a_distinct_cache() {
     let dir = Directory::new();
     dir.write("links.jsonl", cache_record(URL));
     let source = format!("# Stdin\n\n[Reference]({URL}).\n");
@@ -216,11 +213,7 @@ fn verification_from_stdin_can_still_update_a_distinct_cache() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{:?}", output);
     assert!(!output.stdout.is_empty());
-    assert!(
-        !std::fs::read_to_string(dir.path("links.jsonl"))
-            .unwrap()
-            .contains("\"checked\":0}")
-    );
+    dir.assert_contents("links.jsonl", cache_record(URL));
     assert!(!dir.path("-").exists());
 }
 
@@ -228,7 +221,7 @@ fn verification_from_stdin_can_still_update_a_distinct_cache() {
 #[test]
 fn interrupted_cache_staging_preserves_the_complete_previous_cache() {
     let dir = Directory::new();
-    // A long URL makes the refreshed cache exceed the child's file-size cap.
+    // A long URL makes the staged cache exceed the child's file-size cap.
     // The cached status avoids any HTTP request in either old or fixed code.
     let url = format!("https://example.invalid/{}", "a".repeat(4096));
     let source = format!("# Source\n\n[Reference]({url}).\n");
@@ -259,4 +252,128 @@ fn interrupted_cache_staging_preserves_the_complete_previous_cache() {
     assert!(!output.status.success());
     dir.assert_contents("links.jsonl", cache);
     dir.assert_contents("source.md", source);
+}
+
+#[cfg(unix)]
+#[test]
+fn link_findings_use_first_hop_status_and_only_probes_advance_the_cache_clock() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+    const ROOT: &str = "https://links.invalid";
+    // Both client interfaces run against deterministic responses. Narrow PATH
+    // to this directory so a missing client can never reach the network.
+    for client in ["curl", "wget"] {
+        let dir = Directory::new();
+        dir.write(
+            client,
+            r#"#!/bin/sh
+for arg in "$@"; do url=$arg; done
+printf '%s\n' "$url" >> probes
+case "$url" in
+  */expired) status=302 ;;
+  */future) status=404 ;;
+  *) status=200 ;;
+esac
+case "$0" in
+  */curl) printf '%s' "$status" ;;
+  */wget)
+    printf '  HTTP/1.1 %s fixture\n' "$status" >&2
+    case " $* " in
+      *" --max-redirect=0 "*) ;;
+      *) if [ "$status" = 302 ]; then printf '  HTTP/1.1 200 destination\n' >&2; fi ;;
+    esac ;;
+esac
+"#,
+        );
+        std::fs::set_permissions(dir.path(client), std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir.write(
+            "source.md",
+            format!(
+                "[Cached]({ROOT}/cached)\n\n[Expired]({ROOT}/expired)\n\n[Future]({ROOT}/future)\n"
+            ),
+        );
+        let start = now();
+        let valid = start - 30;
+        let record = |name: &str, status: u16, ok: bool, checked: u64| {
+            format!(r#"{{"url":"{ROOT}/{name}","status":{status},"ok":{ok},"checked":{checked}}}"#)
+        };
+        dir.write(
+            "links.jsonl",
+            [
+                record("cached", 301, false, valid), // Legacy HEAD verdict.
+                record("expired", 200, true, 1),
+                record("future", 200, true, u64::MAX),
+            ]
+            .join("\n"),
+        );
+        let verify = || {
+            dir.command()
+                .args([
+                    "source.md",
+                    "--links",
+                    "--links-cache",
+                    "links.jsonl",
+                    "--links-ttl-secs",
+                    "3600",
+                    "--json",
+                ])
+                .env("PATH", &dir.0)
+                .output()
+                .unwrap()
+        };
+        let output = verify();
+        assert_eq!(output.status.code(), Some(1), "{client}: {output:?}");
+        let report = String::from_utf8(output.stdout).unwrap();
+        for (name, status) in [("cached", 301), ("expired", 302)] {
+            assert!(
+                report.contains(&format!(
+                    "external link {ROOT}/{name} redirected (HTTP {status})"
+                )),
+                "{report}"
+            );
+        }
+        assert!(
+            report.contains(&format!("external link {ROOT}/future returned HTTP 404")),
+            "{report}"
+        );
+        let probes = std::fs::read_to_string(dir.path("probes")).unwrap();
+        assert_eq!(
+            probes.lines().collect::<Vec<_>>(),
+            [format!("{ROOT}/expired"), format!("{ROOT}/future")]
+        );
+        let end = now();
+        let cache = std::fs::read_to_string(dir.path("links.jsonl")).unwrap();
+        assert!(
+            cache
+                .lines()
+                .any(|line| line == record("cached", 301, true, valid))
+        );
+        for (name, status, ok) in [("expired", 302, true), ("future", 404, false)] {
+            let line = cache
+                .lines()
+                .find(|line| line.contains(&format!("{ROOT}/{name}")))
+                .unwrap();
+            let stamp: u64 = line
+                .split_once("\"checked\":")
+                .unwrap()
+                .1
+                .trim_end_matches('}')
+                .parse()
+                .unwrap();
+            assert!((start..=end).contains(&stamp));
+            assert_eq!(line, record(name, status, ok, stamp));
+        }
+        let replay = verify();
+        assert_eq!(replay.status.code(), Some(1));
+        assert_eq!(replay.stdout, report.as_bytes());
+        dir.assert_contents("probes", probes);
+        dir.assert_contents("links.jsonl", cache);
+    }
 }

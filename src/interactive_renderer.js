@@ -884,7 +884,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
         if (ch === '\n' || ch === '<') return null;
       } else {
         if (' \t\r\n'.includes(ch) || ch === ')') break;
-        if (ch === '<' || /[\u0000-\u001f\u007f]/.test(ch)) return null;
+        if (/[\u0000-\u001f\u007f]/.test(ch)) return null;
         if (ch === '(') {
           const end = bareParenEnd(i);
           if (end === undefined) return null;
@@ -941,8 +941,8 @@ function parseMarkdownClient(source, imageAssets, profile) {
     const reference = definitions.get(normalizeReference(label));
     return reference ? {...reference, end: suffix ? suffix.end : close + 1} : null;
   }
-  // Only nested bare-URL groups use these pairs. Whitespace, controls and raw
-  // '<' end a bare destination, so an opener cannot match across them. Sharing
+  // Only nested bare-URL groups use these pairs. Whitespace and controls end
+  // a bare destination, so an opener cannot match across them. Sharing
   // this lazy index prevents repeated incomplete links from rescanning the
   // entire suffix; angle destinations and titles retain their own grammars.
   function bareParenthesisPairs(text) {
@@ -953,7 +953,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
       if (ch === '\\' && escapable(text[i + 1])) { charge(); i++; continue; }
       if (ch === '(') { allocate(); stack.push(i); }
       else if (ch === ')' && stack.length) { allocate(); pairs.set(stack.pop(), i); }
-      else if (ch === '<' || ch.charCodeAt(0) <= 32 || ch === '\x7f') stack.length = 0;
+      else if (ch.charCodeAt(0) <= 32 || ch === '\x7f') stack.length = 0;
     }
     return pairs;
   }
@@ -1920,7 +1920,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
       while (column < text.length && text[column] !== ' ' && text[column] !== '\t') {
         charge();
         const ch = text[column];
-        if (ch === '<' || ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return null;
+        if (ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return null;
         if (ch === '\\' && column + 1 < text.length && /[!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~]/.test(text[column + 1])) {
           column += 2; continue;
         }
@@ -2010,8 +2010,8 @@ function parseMarkdownClient(source, imageAssets, profile) {
           case 'angle': case 'bare':
             if (escaped) { escaped = false; if (punctuation(ch)) break; }
             if (ch === '\\') { escaped = true; break; }
-            if (ch === '<') return null;
             if (phase === 'angle') {
+              if (ch === '<') return null;
               if (ch === '>') { phase = 'after'; separated = false; }
               break;
             }

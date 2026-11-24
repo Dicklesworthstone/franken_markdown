@@ -63,18 +63,23 @@ test('accepting path spaces does not admit obfuscated schemes, controls or backs
   }
 });
 
-test('a bare reference destination cannot consume an unescaped opening angle bracket', () => {
-  for (const destination of ['foo<bar', 'foo<bar>', '/docs<other.md', 'foo<bar> "Title"']) {
-    const source = '[r]: ' + destination + '\n\n[r]';
-    const html = render(source);
-    assert.ok(html.includes('[r]:'), source);
-    assert.ok(html.includes('<p>[r]</p>'), source);
-    assert.doesNotMatch(html, /<a\b/, source);
+test('interior angles survive inline links, images, references and nested destination parentheses', () => {
+  for (const [raw, escaped] of [
+    ['foo<bar', 'foo&lt;bar'], ['docs/a<b>.md', 'docs/a&lt;b&gt;.md'],
+    ['docs/query(a<β)#part', 'docs/query(a&lt;β)#part'],
+  ]) {
+    for (const source of [
+      '[r](' + raw + ' "Guide")', '[r]: ' + raw + ' "Guide"\n\n[r]',
+      '[r]:\n  ' + raw + '\n  "Guide"\n\n[r][]',
+    ]) {
+      assert.equal(render(source), '<p><a href="' + escaped + '" title="Guide">r</a></p>\n', source);
+    }
+    assert.equal(render('![r](' + raw + ')'), '<p><img src="' + escaped + '" alt="r"></p>\n');
   }
 });
 
 test('rejected references cannot shadow later valid definitions in nested containers', () => {
-  for (const malformed of ['[r]: foo<bar', '> [r]: foo<bar', '- [r]: foo<bar']) {
+  for (const malformed of ['[r]: <foo<bar>', '> [r]: <foo<bar>', '- [r]: <foo<bar>']) {
     const html = render(malformed + '\n\n[r]: /real\n\n[r]');
     assert.match(html, /foo&lt;bar/);
     assert.match(html, /<a href="\/real">r<\/a>/);

@@ -2798,7 +2798,7 @@ impl ReferenceDefinitionScan {
                     }
                     match (self.phase, ch) {
                         (_, '\\') => self.escaped = true,
-                        (_, '<') => return None,
+                        (ReferencePhase::AngleDestination, '<') => return None,
                         (ReferencePhase::AngleDestination, '>') => {
                             self.phase = ReferencePhase::AfterDestination { separated: false };
                         }
@@ -3057,9 +3057,9 @@ fn parse_simple_ascii_reference_definition(line: &str) -> Option<(String, LinkRe
         let start = i;
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
             // The general destination parser owns parenthesis balance and
-            // rejects unescaped '<' and controls. Do not let this ASCII fast
-            // path turn malformed source into a definition and delete it.
-            if matches!(bytes[i], b'(' | b')' | b'<') || bytes[i].is_ascii_control() {
+            // rejects controls. Only a leading '<' selects the angle form;
+            // an interior '<' is ordinary destination text in either parser.
+            if matches!(bytes[i], b'(' | b')') || bytes[i].is_ascii_control() {
                 return None;
             }
             i += 1;
@@ -6507,7 +6507,6 @@ fn parse_bare_link_destination(chars: &[char], i: &mut usize) -> Option<String> 
                 dest.push(ch);
                 *i += 1;
             }
-            '<' => return None,
             ch if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' => break,
             ch if ch.is_ascii_control() => return None,
             '\\' if chars.get(*i + 1).is_some_and(|&next| is_ascii_punct(next)) => {

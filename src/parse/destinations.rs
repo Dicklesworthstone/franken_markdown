@@ -1073,34 +1073,8 @@ impl DestinationTracker {
             index = close + 2;
             skip_spaces_or_newline(&chars, &mut index);
             let start = index;
-            // The parser's ASCII reference fast path deliberately accepts a
-            // complete non-whitespace bare token, including unmatched parens.
-            if lines
-                .first()
-                .and_then(|line| parse_simple_ascii_reference_definition(line))
-                .is_some_and(|(_, reference)| reference.dest == dest)
-            {
-                if chars.get(index) == Some(&'<') {
-                    index += 1;
-                    while chars.get(index).is_some_and(|character| *character != '>') {
-                        index += 1;
-                    }
-                    if chars.get(index) != Some(&'>') {
-                        return None;
-                    }
-                    index += 1;
-                } else {
-                    while chars
-                        .get(index)
-                        .is_some_and(|character| !character.is_ascii_whitespace())
-                    {
-                        index += 1;
-                    }
-                }
-            } else {
-                if parse_link_destination(&chars, &mut index)?.as_str() != dest {
-                    return None;
-                }
+            if parse_link_destination(&chars, &mut index)?.as_str() != dest {
+                return None;
             }
             Some(start..index)
         })();

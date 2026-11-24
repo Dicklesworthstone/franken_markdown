@@ -110,7 +110,7 @@ fn indented_dash_line_is_not_setext_underline() {
 fn malformed_ascii_reference_destinations_remain_source_text() {
     for destination in [
         "<foo<bar>",
-        "foo<bar",
+        "<foo<bar",
         "foo(bar",
         "foo)bar",
         "foo\u{0001}bar",
@@ -1296,9 +1296,9 @@ fn angle_link_destination_escapes_and_rejects() {
 }
 
 #[test]
-fn bare_link_destination_rejects_angle_and_unbalanced_parens() {
-    // A `<` inside a bare destination invalidates the link.
-    assert!(!html("[x](a<b)").contains("<a href"));
+fn leading_angle_and_bare_destinations_keep_their_distinct_grammars() {
+    assert!(html("[x](a<b)").contains("href=\"a%3Cb\""));
+    assert!(!html("[x](<a<b>)").contains("<a href"));
     // Unbalanced opening parens leave no valid destination.
     assert!(!html("[x](a(b").contains("<a href"));
     assert!(html("[x](a(b").contains("[x](a(b"));

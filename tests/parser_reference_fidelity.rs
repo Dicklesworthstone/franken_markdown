@@ -281,3 +281,40 @@ fn escaped_entity_and_quoted_parentheses_remain_valid_titles() {
         }
     }
 }
+
+#[test]
+fn interior_angle_characters_belong_to_bare_destinations_and_their_source_spans() {
+    // CommonMark 0.31.2 §6.3 distinguishes the leading '<' from interior data.
+    let target = "docs/query(a<β)#part";
+    let source = format!(
+        "[ascii]: /search?x<12\r\n[ref]:\r\n  {target}\r\n  \"Guide\"\r\n\r\n[a][ascii] [b][ref] [c]({target}) ![p]({target})"
+    );
+    let document = parse_markdown(&source);
+    assert_eq!(
+        document.blocks,
+        vec![Block::Paragraph(vec![
+            link("a", "/search?x<12", None),
+            text(" "),
+            link("b", target, Some("Guide")),
+            text(" "),
+            link("c", target, None),
+            text(" "),
+            Inline::Image {
+                dest: target.into(),
+                title: None,
+                alt: "p".into(),
+            },
+        ])]
+    );
+    assert_eq!(parse_markdown_spanned(&source).to_document(), document);
+    let spans = destination_spans(&source);
+    assert_eq!(spans.len(), 4);
+    for (span, expected) in spans.iter().zip(["/search?x<12", target, target, target]) {
+        assert_eq!(span.dest, expected);
+        assert_eq!(&source[span.range.clone()], expected);
+        if expected == target {
+            assert_eq!(&source[span.fragment_range(&source).unwrap()], "part");
+        }
+    }
+    assert!(fragment(&source).contains("href=\"/search?x%3C12\""));
+}

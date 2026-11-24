@@ -144,8 +144,12 @@ boundaries under that policy.
 Hard body constraints, including two-line widow/orphan minima, heading and
 caption keeps, definition-term keeps, table-row atomicity and explicit breaks,
 remain in force. Note fragments retain their existing semantic-unit keeps,
-including complete table rows and repeated headers. This does not introduce a
-two-line widow/orphan guarantee for note prose. The emitted PDF, verification,
+including complete table rows and repeated headers. Continued prose also keeps
+two measured rows in every fragment of a multi-row paragraph, including the
+first citation-page fragment and intermediate note-only pages. Two- and
+three-row paragraphs stay whole. Actual intra-word hyphen breaks cannot split
+across pages. Single-row source paragraphs retain their own boundaries.
+The emitted PDF, verification,
 book contents, running totals and both emission modes replay the same physical
 page plan. An optional baseline grid still shares its phase between body and
 note text.
@@ -153,7 +157,10 @@ note text.
 The search is bounded. An impossible plan or exhausted budget produces the
 existing typed pagination failure: strict mode returns it, while best-effort
 optimal mode reports it and uses note-aware greedy continuation. Default greedy
-continuation retains its existing behavior.
+continuation uses the same note paragraph minima and semantic keeps. A note
+whose mandatory continuation minima cannot fit retains the complete endnote
+fallback during admission; an infeasible exact body plan is still reported as
+a pagination failure rather than silently relaxing those body constraints.
 
 The same eligible body paragraph alternatives participate in a bounded exact
 selection. Each complete combination is flattened with the unchanged measured

@@ -596,6 +596,7 @@ mod tests {
                                         height: 5,
                                         prefix: 0,
                                         suffix: 0,
+                                        minimum_units: 1,
                                     };
                                     note_rows
                                 ],

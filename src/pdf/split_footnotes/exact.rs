@@ -158,9 +158,17 @@ fn evaluate_measured(
                 height: sum_rows(&lines[start..end])?.max(1),
                 prefix: measured(top_guard(&lines[start]) + headers.extra_height(lines, start))?,
                 suffix: measured(bottom_guard(&lines[end - 1]))?,
+                minimum_units: 1,
             });
             source.push(start..end);
             start = end;
+        }
+        if lines[range.start].flow.split_note {
+            for (index, (unit, source_range)) in units.iter_mut().zip(&source).enumerate() {
+                let minimum = minimum_fragment_end(lines, source_range.start, range.end);
+                unit.minimum_units =
+                    source[index..].partition_point(|range| range.end < minimum) + 1;
+            }
         }
         input.notes.push(solver::Note {
             first_reference: *first_reference,

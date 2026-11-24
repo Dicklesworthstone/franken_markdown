@@ -31,6 +31,10 @@ pub(crate) struct Unit {
     pub height: i64,
     pub prefix: i64,
     pub suffix: i64,
+    /// Required consecutive units when a fragment starts at this unit.
+    /// Source paragraph edges and inseparable content are already grouped;
+    /// this additionally protects interior continuation-page fragments.
+    pub minimum_units: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -273,7 +277,10 @@ impl<'a> Measured<'a> {
             previous_reference = note.first_reference;
             let mut heights = Vec::with_capacity(note.units.len() + 1);
             heights.push(0);
-            for unit in &note.units {
+            for (index, unit) in note.units.iter().enumerate() {
+                if unit.minimum_units == 0 || unit.minimum_units > note.units.len() - index {
+                    return Err(Error::Invalid("invalid note fragment minimum"));
+                }
                 if unit.height <= 0 || unit.prefix < 0 || unit.suffix < 0 {
                     return Err(Error::Invalid("invalid note unit height"));
                 }
@@ -338,7 +345,20 @@ impl<'a> Measured<'a> {
         budget: i64,
         search: &mut Search,
     ) -> Result<(), Error> {
-        while fragment.end < self.input.notes[fragment.note].units.len() {
+        let units = &self.input.notes[fragment.note].units;
+        if fragment.start == fragment.end && fragment.end < units.len() {
+            let minimum = units[fragment.start].minimum_units;
+            search.charge(minimum)?;
+            let candidate = Fragment {
+                end: fragment.start + minimum,
+                ..*fragment
+            };
+            if self.note_height(&candidate)? > budget {
+                return Ok(());
+            }
+            fragment.end = candidate.end;
+        }
+        while fragment.end < units.len() {
             search.charge(1)?;
             let candidate = Fragment {
                 end: fragment.end + 1,
@@ -369,11 +389,11 @@ impl<'a> Measured<'a> {
         search.charge(pending.len().saturating_add(to - from))?;
         let mut fresh = Vec::with_capacity(to - from);
         let mut used = 0;
-        for note in from..to {
+        for (note, source) in notes.iter().enumerate().take(to).skip(from) {
             let fragment = Fragment {
                 note,
                 start: 0,
-                end: 1,
+                end: source.units[0].minimum_units,
             };
             used = height_sum(used, self.note_height(&fragment)?)?;
             fresh.push(fragment);

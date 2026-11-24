@@ -62,6 +62,23 @@ line belongs to the same logical note across its fragments, and the citation
 still links to the first fragment. `--pdf-footnote-backlinks` can be combined
 with this mode.
 
+Every fragment of a continued prose paragraph retains at least two measured
+rows, including its first citation-page fragment and intermediate note-only
+pages. Two- and three-row paragraphs stay whole; a source paragraph containing
+only one row remains valid on its own. These limits follow paragraph ownership,
+so adjacent short paragraphs are not combined into one indivisible note.
+An actual intra-word hyphen break also stays with the following row; literal
+hyphens in source text do not create that bond. The same rules apply in greedy,
+optimal and strict continuation, with or without a baseline grid.
+
+The first fragment may exceed the preferred note share to retain these keeps.
+An older pending note waits for enough space for its complete next minimum;
+it does not spend a small leftover allowance on a single prose row. Admission
+checks the measured minimum at every possible continuation start, including
+final grid clearance. If a mandatory fragment cannot fit or its first fragment
+cannot share a page with the citing row, the complete source note retains the
+existing full-size endnote fallback.
+
 Continuation supports paragraphs with styled text, inline code, inline
 mathematics, images mixed with prose, and ordinary links, as well as ordinary
 fenced or indented code, tables, headings, definition lists,
@@ -174,11 +191,12 @@ The search optimizes body boundaries under this policy; it does not explore all
 possible allocations of note lines to pages. Exact planning retains the hard
 body rules, including two-line widow/orphan minima and heading, caption, list,
 definition-term and table keeps. Continued notes retain their semantic-unit
-rules described above; this does not add a two-line widow/orphan guarantee to
-note prose. `--pdf-strict-pagination` requires a successful exact plan and
+keeps, two-row prose minima and protected hyphen breaks described above.
+`--pdf-strict-pagination` requires a successful exact plan and
 returns a typed error for an impossible layout or an exhausted search budget.
 Best-effort optimal mode reports that failure before using its note-aware greedy
-fallback. Default greedy continuation keeps its existing behavior.
+fallback. The greedy allocator also retains the continued-note keeps and
+paragraph minima; the fallback does not claim exact body pagination.
 
 Documents with continued notes also participate in bounded joint paragraph and
 page selection. The planner evaluates every admitted combination of measured
@@ -284,7 +302,12 @@ moves to a page foot or to the trailing Notes section.
 ## Tests
 
 `tests/pdf_footnote_continuation_test.rs` independently reads emitted text,
-geometry, links and page objects to check text-note continuation, source-line
+geometry, links and page objects. It checks two-row paragraph fragments at
+tight citation-page and note-only boundaries, complete short paragraphs, and
+chosen intra-word hyphens that remain on the same page as their continuation.
+Its note-policy fixtures run greedy and strict pagination with natural and
+grid-based row measurements.
+The file also checks text-note continuation, source-line
 conservation, tail pages, book note scope, running folios, shared browser-core
 output, emitter parity, and exact/strict continuation with and without a baseline
 grid. Exact-policy fixtures cover repeated citations, multiple pending notes,

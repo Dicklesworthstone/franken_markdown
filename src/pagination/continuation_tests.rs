@@ -48,6 +48,7 @@ fn input(heights: &[i64], notes: &[(usize, &[i64])]) -> Input {
                         height,
                         prefix: 0,
                         suffix: 0,
+                        minimum_units: 1,
                     })
                     .collect(),
             })
@@ -121,9 +122,10 @@ fn oracle_page(
     for (note, source) in input.notes.iter().enumerate() {
         if body.contains(&source.first_reference) {
             assert_eq!(progress[note], 0);
-            ranges[note] = Some((0, 1));
-            progress[note] = 1;
-            used += fragment_height(input, note, 0, 1);
+            let end = source.units[0].minimum_units;
+            ranges[note] = Some((0, end));
+            progress[note] = end;
+            used += fragment_height(input, note, 0, end);
         }
     }
 
@@ -135,7 +137,7 @@ fn oracle_page(
         }
         let first = progress[note];
         let mut last = first;
-        for candidate in first + 1..=source.units.len() {
+        for candidate in first + source.units[first].minimum_units..=source.units.len() {
             if fragment_height(input, note, first, candidate) > (available - used).max(0) {
                 break;
             }
@@ -157,10 +159,11 @@ fn oracle_page(
         if !body.contains(&source.first_reference) {
             continue;
         }
-        let before = fragment_height(input, note, 0, 1);
+        let minimum = source.units[0].minimum_units;
+        let before = fragment_height(input, note, 0, minimum);
         let limit = before + (available - used).max(0);
-        let mut last = 1;
-        for candidate in 2..=source.units.len() {
+        let mut last = minimum;
+        for candidate in minimum + 1..=source.units.len() {
             if fragment_height(input, note, 0, candidate) > limit {
                 break;
             }
@@ -293,7 +296,11 @@ fn assert_oracle(input: &Input, options: Options) -> Option<Plan> {
             for page in &result.pages {
                 for fragment in &page.fragments {
                     assert_eq!(fragment.start, seen[fragment.note]);
-                    assert!(fragment.start < fragment.end);
+                    assert!(
+                        fragment.end - fragment.start
+                            >= input.notes[fragment.note].units[fragment.start].minimum_units,
+                        "every continuation fragment retains its own minimum"
+                    );
                     seen[fragment.note] = fragment.end;
                 }
                 for (note, source) in input.notes.iter().enumerate() {
@@ -334,6 +341,7 @@ fn exhaustive_partitions_match_the_global_body_boundary_minimum() {
                             height: 3 + ((seed + unit * 3 + note) % 7) as i64,
                             prefix: ((unit + note) % 3) as i64,
                             suffix: ((seed + unit) % 2) as i64,
+                            minimum_units: 1,
                         })
                         .collect(),
                 });
@@ -613,7 +621,7 @@ fn work_nodes_fragments_blocks_and_retained_ranges_have_typed_budget_failures() 
 #[test]
 fn malformed_partitions_heights_and_citation_order_are_rejected() {
     let original = input(&[10, 10, 10], &[(0, &[5]), (2, &[5])]);
-    for case in 0..8 {
+    for case in 0..10 {
         let mut bad = original.clone();
         match case {
             0 => {
@@ -627,6 +635,8 @@ fn malformed_partitions_heights_and_citation_order_are_rejected() {
             4 => bad.rows[1].continuation_prefix = -1,
             5 => bad.notes[0].units[0].suffix = -1,
             6 => bad.notes.swap(0, 1),
+            7 => bad.notes[0].units[0].minimum_units = 0,
+            8 => bad.notes[1].units[0].minimum_units = 2,
             _ => bad.separator = -1,
         }
         assert!(
@@ -651,6 +661,75 @@ fn cost_overflow_is_an_error_instead_of_a_wrapped_minimum() {
         ..options(50)
     };
     assert_eq!(plan(&input, options).unwrap_err(), Error::CostOverflow);
+}
+
+#[test]
+fn mandatory_first_note_minima_can_exceed_the_preferred_share() {
+    let mut input = input(&[15], &[(0, &[20, 20, 20, 20])]);
+    for unit in &mut input.notes[0].units[..3] {
+        unit.minimum_units = 2;
+    }
+    let result = assert_oracle(&input, options(100)).unwrap();
+    assert_eq!(result.pages.len(), 2);
+    assert_eq!(result.pages[0].reserve, 45);
+    assert_eq!(
+        result.pages[0].fragments,
+        [Fragment {
+            note: 0,
+            start: 0,
+            end: 2
+        }]
+    );
+    assert_eq!(
+        result.pages[1].fragments,
+        [Fragment {
+            note: 0,
+            start: 2,
+            end: 4
+        }]
+    );
+}
+
+#[test]
+fn a_pending_note_waits_for_its_whole_minimum_instead_of_emitting_one_row() {
+    let mut input = input(&[15, 15, 15], &[(0, &[10; 10])]);
+    input.forced[1] = true;
+    input.forced[2] = true;
+    for unit in &mut input.notes[0].units[..9] {
+        unit.minimum_units = 2;
+    }
+    let result = assert_oracle(&input, options(50)).unwrap();
+    assert!(result.pages[1].fragments.is_empty());
+    assert!(result.pages[2].fragments.is_empty());
+    assert_eq!(result.pages.len(), 5);
+    for page in &result.pages {
+        for fragment in &page.fragments {
+            assert!(fragment.end - fragment.start >= 2);
+        }
+    }
+}
+
+#[test]
+fn bounded_note_minima_match_independent_complete_partition_enumeration() {
+    for count in 2..=8 {
+        for seed in 0..12 {
+            let heights: Vec<_> = (0..count)
+                .map(|index| 5 + ((seed + index * 3) % 9) as i64)
+                .collect();
+            let mut input = input(&[12, 17, 11, 15, 13], &[(0, &heights), (2, &heights)]);
+            for note in &mut input.notes {
+                let count = note.units.len();
+                for (index, unit) in note.units.iter_mut().enumerate() {
+                    if index + 1 < count && (index + seed) % 3 != 0 {
+                        unit.minimum_units = 2;
+                    }
+                    unit.prefix = ((index + seed) % 4) as i64;
+                    unit.suffix = (index % 3) as i64;
+                }
+            }
+            assert_oracle(&input, options(40 + seed as i64 * 3));
+        }
+    }
 }
 
 #[test]

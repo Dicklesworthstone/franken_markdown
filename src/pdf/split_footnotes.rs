@@ -222,12 +222,15 @@ pub(super) fn fits(lines: &[Line], capacity: f32) -> bool {
     let headers = TableHeaders::scan(lines);
     let mut start = 0;
     while start < lines.len() {
-        let end = unit_end(lines, start, lines.len());
+        let end = minimum_fragment_end(lines, start, lines.len());
         let height = headers.fragment_height(lines, start..end);
         if !height.is_finite() || height <= 0.0 || height > capacity {
             return false;
         }
-        start = end;
+        // Every legal unit boundary can become a continuation start. Check
+        // overlapping minima too; a later fragment cannot rely on the rows
+        // already painted at the end of the preceding page.
+        start = unit_end(lines, start, lines.len());
     }
     !lines.is_empty()
 }
@@ -374,10 +377,20 @@ fn note_label_only(line: &Line) -> bool {
 fn keeps_next(before: &Line, after: &Line) -> bool {
     // Definition introductions carry source-owned keeps from layout. Bold
     // prose and indented paragraphs never acquire definition authority.
-    if definition_keeps_next(before, after) {
+    if definition_keeps_next(before, after) || before.hyphenated {
         return true;
     }
     if before.flow.group == after.flow.group {
+        // A two- or three-row paragraph is indivisible. Longer paragraphs
+        // keep their first and last two rows, so neither the citation page
+        // nor the final continuation can contain a one-row fragment.
+        if before.flow.kind == FlowKind::Paragraph
+            && after.flow.kind == FlowKind::Paragraph
+            && before.flow.count >= 2
+            && (before.flow.index == 0 || after.flow.index + 1 == after.flow.count)
+        {
+            return true;
+        }
         // Keep wrapped logical rows intact. The header plus separator belongs
         // with the first complete data row; the closing rule belongs with the
         // last row, so no header-only or rule-only continuation page is made.
@@ -404,7 +417,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
     // source row too, using semantic provenance rather than superscript text.
     // A separate figure/formula block can resolve to ordinary fallback text;
     // its source group still makes it the generated label's first subject.
-    // Ordinary paragraph-only notes keep their historical row boundaries.
+    // Ordinary paragraph rows retain their own source group and minimum.
     (before.flow.group != after.flow.group
         || after.bg != 0
         || after.image.is_some()
@@ -417,8 +430,8 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
         && note_label_only(before)
 }
 
-/// The smallest consecutive unit that may end a fragment. Heading, label and
-/// table-row chains are bounded by the immutable note range.
+/// The smallest consecutive unit that may end a fragment. Paragraph edges,
+/// hyphenated words, headings, labels and table rows retain their own chains.
 fn unit_end(lines: &[Line], start: usize, end: usize) -> usize {
     let mut next = start + 1;
     while next < end && keeps_next(&lines[next - 1], &lines[next]) {
@@ -427,11 +440,29 @@ fn unit_end(lines: &[Line], start: usize, end: usize) -> usize {
     next
 }
 
+/// A continuation beginning inside a paragraph needs two source rows of its
+/// own. Static first/last-row bonds alone cannot protect intermediate pages:
+/// they would still permit a single interior row to become a whole fragment.
+/// Other units already retain their complete semantic keeps.
+fn minimum_fragment_end(lines: &[Line], start: usize, end: usize) -> usize {
+    let next = unit_end(lines, start, end);
+    if next == start + 1
+        && next < end
+        && lines[start].flow.kind == FlowKind::Paragraph
+        && lines[next].flow.kind == FlowKind::Paragraph
+        && lines[start].flow.group == lines[next].flow.group
+    {
+        unit_end(lines, next, end)
+    } else {
+        next
+    }
+}
+
 /// Mandatory space on a note's first citation page. Multiple marks on one
 /// physical body row are admitted together against these same measurements.
 pub(super) fn minimum_reserve(lines: &[Line]) -> f32 {
     if lines.first().is_some_and(|line| line.flow.split_note) {
-        fragment_height(&lines[..unit_end(lines, 0, lines.len())])
+        fragment_height(&lines[..minimum_fragment_end(lines, 0, lines.len())])
     } else {
         fragment_height(lines)
     }
@@ -553,8 +584,8 @@ impl Cursor {
     }
 }
 
-/// Extend an admitted prefix without separating a heading or label from its
-/// first content row. Each source row is measured once per extension probe.
+/// Extend an admitted prefix without breaking source keeps or paragraph
+/// minima. Each source row is measured once per extension probe.
 fn extend(
     lines: &[Line],
     headers: &TableHeaders,
@@ -569,7 +600,11 @@ fn extend(
         let mut height = milli_height(headers.fragment_height(lines, fragment.clone()));
         let budget = ((f64::from(budget) + 0.001) * 1000.0).floor() as i64;
         while fragment.end < end {
-            let next_end = unit_end(lines, fragment.end, end);
+            let next_end = if fragment.start == fragment.end {
+                minimum_fragment_end(lines, fragment.start, end)
+            } else {
+                unit_end(lines, fragment.end, end)
+            };
             let mut candidate = height;
             if fragment.start >= fragment.end {
                 candidate += milli_height(headers.extra_height(lines, fragment.start));
@@ -590,7 +625,11 @@ fn extend(
     }
     let mut height = headers.fragment_height(lines, fragment.clone());
     while fragment.end < end {
-        let next_end = unit_end(lines, fragment.end, end);
+        let next_end = if fragment.start == fragment.end {
+            minimum_fragment_end(lines, fragment.start, end)
+        } else {
+            unit_end(lines, fragment.end, end)
+        };
         let mut candidate = if fragment.start >= fragment.end {
             height + top_guard(&lines[fragment.end]) + headers.extra_height(lines, fragment.end)
         } else {
@@ -641,7 +680,7 @@ fn allocate(
     let mut used = 0.0;
     for (_, range) in introduced {
         let fragment = if lines[range.start].flow.split_note {
-            range.start..unit_end(lines, range.start, range.end)
+            range.start..minimum_fragment_end(lines, range.start, range.end)
         } else {
             range.clone()
         };

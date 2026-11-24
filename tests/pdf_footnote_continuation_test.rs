@@ -2779,3 +2779,151 @@ fn oversized_definition_term_group_preserves_the_complete_ordinary_endnote() {
         render_pdf_document_emitted(&document, &ordinary, PdfEmitOptions::default()).unwrap(),
     );
 }
+
+#[test]
+fn continued_note_paragraphs_keep_two_rows_on_every_physical_page() {
+    let source = format!("CITATION.[^long]\n\n{}", numbered_note("long", "NOTE", 17));
+    for strict in [false, true] {
+        for grid in [false, true] {
+            let mut options = options();
+            options.theme.page.size.height_pt = if grid { 180.0 } else { 144.0 };
+            options.strict_pagination = strict;
+            options.footnote_backlinks = true;
+            if grid {
+                options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+            }
+            let rendered = render_pdf_reported(&source, &options).unwrap();
+            if strict {
+                assert!(rendered.pagination.page_breaks.is_exact());
+            }
+            let pages = painted_pages(&rendered.bytes);
+            assert!(pages.len() >= 3, "exercise intermediate note-only pages");
+            assert!(!text(&pages).contains("Notes"));
+            assert_markers(&pages, "NOTE", 17);
+            let citation = locate(&pages, "CITATION").0;
+            assert_eq!(locate(&pages, "NOTE000").0, citation);
+            assert_eq!(
+                locate(&pages, "NOTE001").0,
+                citation,
+                "the mandatory first fragment may exceed the preferred share"
+            );
+            let mut fragments = BTreeMap::<usize, usize>::new();
+            for index in 0..17 {
+                *fragments
+                    .entry(locate(&pages, &format!("NOTE{index:03}")).0)
+                    .or_default() += 1;
+            }
+            assert!(
+                fragments.values().all(|&rows| rows >= 2),
+                "strict={strict}, grid={grid}: no orphan, widow or intermediate singleton: {fragments:?}"
+            );
+            assert_geometry(&pages, &options);
+            assert_destinations(&rendered.bytes, &pages, &["CITATION", "NOTE000"]);
+            if grid {
+                assert_grid_rows(&pages, &options);
+            }
+        }
+    }
+}
+
+#[test]
+fn short_note_paragraphs_stay_whole_without_capturing_adjacent_paragraphs() {
+    let mut source = String::from("PARACITE.[^long]\n\n[^long]: SINGLEINTRO.\n\n");
+    for paragraph in 0..8 {
+        source.push_str(&format!(
+            "    PARA{paragraph:02}ROW0.  \n    PARA{paragraph:02}ROW1.  \n    PARA{paragraph:02}ROW2.\n\n"
+        ));
+    }
+    for strict in [false, true] {
+        let mut options = options();
+        options.theme.page.size.height_pt = 180.0;
+        options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+        options.strict_pagination = strict;
+        let rendered = render_pdf_reported(&source, &options).unwrap();
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
+        }
+        let pages = painted_pages(&rendered.bytes);
+        let painted = text(&pages);
+        assert!(!painted.contains("Notes"));
+        assert!(pages.len() >= 3);
+        assert_eq!(painted.matches("SINGLEINTRO").count(), 1);
+        assert_eq!(
+            locate(&pages, "SINGLEINTRO").0,
+            locate(&pages, "PARACITE").0
+        );
+        for paragraph in 0..8 {
+            let page = locate(&pages, &format!("PARA{paragraph:02}ROW0")).0;
+            for row in 0..3 {
+                let marker = format!("PARA{paragraph:02}ROW{row}");
+                assert_eq!(painted.matches(&marker).count(), 1);
+                assert_eq!(
+                    locate(&pages, &marker).0,
+                    page,
+                    "a three-row paragraph has no legal two-row split"
+                );
+            }
+        }
+        assert_geometry(&pages, &options);
+        assert_grid_rows(&pages, &options);
+    }
+}
+
+#[test]
+fn continued_note_pages_never_separate_a_chosen_hyphen_from_its_word() {
+    let word = "abcdefghijklmno\u{00ad}pqrstuvwxyz";
+    let source = format!(
+        "WORDCITE.[^long]\n\n[^long]: {}\n",
+        std::iter::repeat_n(word, 16)
+            .collect::<Vec<_>>()
+            .join("  \n    ")
+    );
+    for strict in [false, true] {
+        let mut options = options();
+        options.theme.page.size.width_pt = 144.0;
+        options.theme.page.size.height_pt = 180.0;
+        options.theme.page.baseline_grid = Some(BaselineGrid::from_points(13.333).unwrap());
+        options.strict_pagination = strict;
+        let rendered = render_pdf_reported(&source, &options).unwrap();
+        if strict {
+            assert!(rendered.pagination.page_breaks.is_exact());
+        }
+        let pages = painted_pages(&rendered.bytes);
+        assert!(pages.len() >= 3);
+        assert!(!text(&pages).contains("Notes"));
+        assert_eq!(
+            text(&pages)
+                .replace('-', "")
+                .matches("abcdefghijklmnopqrstuvwxyz")
+                .count(),
+            16,
+            "every source word survives its discretionary break"
+        );
+        let mut hyphens = 0;
+        for (index, page) in pages.iter().enumerate() {
+            for run in page
+                .runs
+                .iter()
+                .filter(|run| !run.artifact && run.size < 10.9 && run.text.contains('-'))
+            {
+                hyphens += 1;
+                assert!(
+                    page.runs.iter().any(|next| {
+                        !next.artifact
+                            && next.size < 10.9
+                            && next.text.chars().any(|ch| ch.is_ascii_alphabetic())
+                            && next.y < run.y - PRECISION
+                    }),
+                    "page {} strands an intra-word hyphen: {run:?}",
+                    index + 1
+                );
+            }
+        }
+        assert!(
+            hyphens > 0,
+            "the fixture must exercise actual discretionary breaks"
+        );
+        assert_geometry(&pages, &options);
+        assert_grid_rows(&pages, &options);
+    }
+}

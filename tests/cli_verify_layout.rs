@@ -10,9 +10,12 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use franken_markdown::{
-    BaselineGrid, FontAssetSlot, FontFamily, FontScale, PageStyle, PdfImageAsset, PdfOptions,
-    parse_markdown_with_profile, verify,
+    BaselineGrid, FontAssetSlot, FontFamily, FontScale, PageSize, PageStyle, PdfImageAsset,
+    PdfOptions, parse_markdown_with_profile, verify,
 };
+
+#[path = "support/pdf_content.rs"]
+mod pdf_content;
 
 const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"80\"><rect width=\"120\" height=\"80\" fill=\"red\"/></svg>";
 const PROSE: &str = "A publication needs its actual paper, type size and resources to determine line breaks and page boundaries. This paragraph contains **strong text**, *emphasis* and an [external reference](https://example.invalid/reference).\n\n";
@@ -403,6 +406,10 @@ fn running_band_verification_matches_publication_with_a_logo_outside_the_body() 
     workspace.write("report.md", &source);
     workspace.write("brand=logo.svg", SVG);
     let flags = [
+        // Explicit geometry makes the skip-first control exercise later pages
+        // even when this source fits on a single default Letter page.
+        "--page-size",
+        "a5",
         "--pdf-header-left",
         "{title}",
         "--title",
@@ -447,6 +454,45 @@ fn running_band_verification_matches_publication_with_a_logo_outside_the_body() 
         .filter(|w| *w == b"/Type /Page ")
         .count();
     assert!(pages > 1);
+    let streams = pdf_content::page_content_streams(&bytes);
+    assert_eq!(streams.len(), pages);
+    let paints_logo = |content: &str| {
+        pdf_content::operations(content).windows(3).any(|ops| {
+            ops[0].operator == "rg"
+                && ops[0]
+                    .operands
+                    .iter()
+                    .map(|value| value.parse::<f64>().unwrap())
+                    .collect::<Vec<_>>()
+                    == [1.0, 0.0, 0.0]
+                && ops[1].operator == "re"
+                && ops[1]
+                    .operands
+                    .iter()
+                    .map(|value| value.parse::<f64>().unwrap())
+                    .collect::<Vec<_>>()
+                    == [0.0, 0.0, 120.0, 80.0]
+                && ops[2].operator == "f"
+        })
+    };
+    assert!(!streams[0].contains("/Subtype /Header"));
+    assert!(!streams[0].contains("/Subtype /Footer"));
+    assert!(!paints_logo(&streams[0]));
+    for stream in &streams[1..] {
+        assert!(stream.contains("/Subtype /Header"));
+        assert!(stream.contains("/Subtype /Footer"));
+        let header = stream
+            .split_once("/Subtype /Header>> BDC")
+            .unwrap()
+            .1
+            .split_once("EMC")
+            .unwrap()
+            .0;
+        assert!(
+            paints_logo(header),
+            "the supplied SVG's red rectangle must be painted inside the header artifact"
+        );
+    }
     assert!(
         String::from_utf8(checked.stdout)
             .unwrap()
@@ -610,19 +656,42 @@ fn invalid_options_fail_before_reading_source_and_incompatible_policies_retain_e
         64,
         "needs a file input",
     );
-    workspace.write("document.md", "# Report\n");
-    refused(
-        workspace.verify(
-            &[
-                "document.md",
-                "--pdf-split-footnotes",
-                "--pdf-optimal-pagination",
-            ],
-            None,
-        ),
-        70,
-        "pdf_split_footnotes",
+    // Continued notes now participate in both exact planner modes. Exercise a
+    // real multipage continuation rather than retaining the obsolete refusal.
+    let source = format!(
+        "# Report\n\nA citation.[^n]\n\n[^n]: {}\n",
+        "A continued footnote retains every sentence in source order. ".repeat(20)
     );
+    workspace.write("document.md", &source);
+    for (policy, strict) in [
+        ("--pdf-optimal-pagination", false),
+        ("--pdf-strict-pagination", true),
+    ] {
+        let mut options = PdfOptions {
+            split_footnotes: true,
+            optimal_pagination: !strict,
+            strict_pagination: strict,
+            ..Default::default()
+        };
+        options.theme.page.size = PageSize::named("a5").unwrap();
+        let checked = report(
+            workspace.verify(
+                &[
+                    "document.md",
+                    "--pdf-split-footnotes",
+                    policy,
+                    "--page-size",
+                    "a5",
+                ],
+                None,
+            ),
+            &source,
+            &options,
+        );
+        assert_eq!(checked.verdict, "clean");
+        assert!(checked.page_count > 1);
+        assert_eq!(checked.anchors_resolved, 1);
+    }
 }
 
 #[test]

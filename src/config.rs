@@ -12,6 +12,7 @@ use crate::span::DiagnosticSeverity;
 use crate::{DarkModePolicy, FontFamily, PageMargins, SystemAppearance, Theme};
 
 pub(crate) mod page;
+pub(crate) mod pdf_spacing;
 
 /// Supported config keys.
 pub const CONFIG_KEYS: &[&str] = &[
@@ -44,6 +45,9 @@ pub const CONFIG_KEYS: &[&str] = &[
     "pdf_footnote_backlinks",
     "pdf_split_footnotes",
     "pdf_theme_spacing",
+    "pdf_line_height",
+    "pdf_table_cell_padding_x_em",
+    "pdf_table_cell_padding_y_em",
     "typography_homogeneous",
     "typography_antiriver",
     "typography_pareto",
@@ -76,6 +80,12 @@ pub struct RenderDefaults {
     pub pdf_split_footnotes: Option<bool>,
     /// Apply shared theme body leading and per-side table-cell padding to PDF.
     pub pdf_theme_spacing: Option<bool>,
+    /// Validated body/table leading multiplier, retained at input precision.
+    pub pdf_line_height: Option<String>,
+    /// Validated per-side horizontal table padding in em.
+    pub pdf_table_cell_padding_x_em: Option<String>,
+    /// Validated per-side vertical table padding in em.
+    pub pdf_table_cell_padding_y_em: Option<String>,
     pub typography_homogeneous: Option<bool>,
     pub typography_antiriver: Option<bool>,
     pub typography_pareto: Option<bool>,
@@ -87,6 +97,14 @@ pub struct RenderDefaults {
 }
 
 impl RenderDefaults {
+    pub(crate) fn pdf_theme_spacing_enabled(&self) -> bool {
+        self.pdf_theme_spacing.unwrap_or(
+            self.pdf_line_height.is_some()
+                || self.pdf_table_cell_padding_x_em.is_some()
+                || self.pdf_table_cell_padding_y_em.is_some(),
+        )
+    }
+
     fn flag_mut(&mut self, key: &str) -> Option<&mut Option<bool>> {
         Some(match key {
             "toc" => &mut self.toc,
@@ -122,6 +140,15 @@ impl RenderDefaults {
             ("pdf_footnote_backlinks", flag(self.pdf_footnote_backlinks)),
             ("pdf_split_footnotes", flag(self.pdf_split_footnotes)),
             ("pdf_theme_spacing", flag(self.pdf_theme_spacing)),
+            ("pdf_line_height", self.pdf_line_height.clone()),
+            (
+                "pdf_table_cell_padding_x_em",
+                self.pdf_table_cell_padding_x_em.clone(),
+            ),
+            (
+                "pdf_table_cell_padding_y_em",
+                self.pdf_table_cell_padding_y_em.clone(),
+            ),
             ("typography_homogeneous", flag(self.typography_homogeneous)),
             ("typography_antiriver", flag(self.typography_antiriver)),
             ("typography_pareto", flag(self.typography_pareto)),
@@ -196,6 +223,16 @@ impl RenderDefaults {
             }
             "font_embedding" => choice(&["subset", "full"]).map(|v| self.font_embedding = v),
             "microtype" => choice(&["off", "protrusion", "expansion"]).map(|v| self.microtype = v),
+            "pdf_line_height" | "pdf_table_cell_padding_x_em" | "pdf_table_cell_padding_y_em" => {
+                pdf_spacing::parse_value(key, value).map(|number| {
+                    let slot = match key {
+                        "pdf_line_height" => &mut self.pdf_line_height,
+                        "pdf_table_cell_padding_x_em" => &mut self.pdf_table_cell_padding_x_em,
+                        _ => &mut self.pdf_table_cell_padding_y_em,
+                    };
+                    *slot = Some(number.to_string());
+                })
+            }
             "pdf_baseline_grid_pt" => page::parse_baseline_grid(value)
                 .map(|grid| {
                     self.pdf_baseline_grid_pt =
@@ -211,8 +248,22 @@ impl RenderDefaults {
     }
 
     fn resolved(&self, key: &str) -> Option<String> {
+        if key == "pdf_theme_spacing" {
+            return Some(self.pdf_theme_spacing_enabled().to_string());
+        }
         if let Some(value) = self.entries().into_iter().find(|(k, _)| *k == key) {
             return Some(value.1);
+        }
+        let spacing = crate::ThemeSpacing::default();
+        match key {
+            "pdf_line_height" => return Some(spacing.line_height.to_string()),
+            "pdf_table_cell_padding_x_em" => {
+                return Some(spacing.table_cell_padding_x_em.to_string());
+            }
+            "pdf_table_cell_padding_y_em" => {
+                return Some(spacing.table_cell_padding_y_em.to_string());
+            }
+            _ => {}
         }
         Some(
             match key {
@@ -228,7 +279,6 @@ impl RenderDefaults {
                 | "pdf_page_numbers"
                 | "pdf_footnote_backlinks"
                 | "pdf_split_footnotes"
-                | "pdf_theme_spacing"
                 | "typography_homogeneous"
                 | "typography_antiriver"
                 | "typography_pareto"
@@ -247,7 +297,14 @@ impl RenderDefaults {
             .map(|(key, value)| {
                 let is_raw = value == "true"
                     || value == "false"
-                    || matches!(key, "toc_depth" | "pdf_baseline_grid_pt");
+                    || matches!(
+                        key,
+                        "toc_depth"
+                            | "pdf_baseline_grid_pt"
+                            | "pdf_line_height"
+                            | "pdf_table_cell_padding_x_em"
+                            | "pdf_table_cell_padding_y_em"
+                    );
                 if is_raw {
                     format!("\"{key}\":{value}")
                 } else {

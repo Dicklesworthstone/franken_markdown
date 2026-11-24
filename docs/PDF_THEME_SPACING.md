@@ -53,6 +53,24 @@ disables it. An explicit `--pdf-theme-spacing=false` conflicts with numeric
 flags. Verification uses only the explicit layout options. In combined output,
 the numeric flags apply only to the PDF.
 
+Persistent numeric defaults use the corresponding configuration keys:
+
+```sh
+fmd config set pdf_line_height 2
+fmd config set pdf_table_cell_padding_x_em 1.25
+fmd config set pdf_table_cell_padding_y_em 0.75
+```
+
+Line height must be finite and in `1..=4`; table padding must be finite and in
+`0..=8` em per side. Numeric configuration enables PDF theme spacing unless
+`pdf_theme_spacing=false` is explicitly configured. A numeric CLI flag enables
+spacing even with that configured opt-out. Flags override individual values,
+so omitted values continue to inherit configuration. Use
+`--pdf-theme-spacing=false` to suppress all inherited spacing values or
+`--no-config` to ignore native configuration. Watch reloads changed defaults
+while retaining explicit CLI overrides. Render, watch, batch, and book apply
+these defaults; verification continues to use only explicit layout flags.
+
 The JavaScript rendering API accepts:
 
 ```javascript

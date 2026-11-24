@@ -84,6 +84,208 @@ fn numeric_options() -> PdfOptions {
     options
 }
 
+const NUMERIC_CONFIG: &str =
+    "pdf_line_height=2.5\npdf_table_cell_padding_x_em=1.25\npdf_table_cell_padding_y_em=0\n";
+
+#[test]
+fn numeric_config_round_trips_and_preserves_per_value_precedence() {
+    let workspace = Workspace::new();
+    let verification = workspace.run(&["verify", "document.md", "--json"]);
+    for (key, input, canonical) in [
+        ("pdf_line_height", "2.500", "2.5"),
+        ("pdf_table_cell_padding_x_em", "1.25", "1.25"),
+        ("pdf_table_cell_padding_y_em", "0.0", "0"),
+    ] {
+        succeeded(&workspace.run(&["config", "set", key, input]));
+        let get = workspace.run(&["config", "get", key, "--json"]);
+        succeeded(&get);
+        assert!(
+            String::from_utf8_lossy(&get.stdout).contains(&format!("\"value\":\"{canonical}\""))
+        );
+    }
+    let show = workspace.run(&["config", "show", "--json"]);
+    succeeded(&show);
+    let json = String::from_utf8_lossy(&show.stdout);
+    assert!(json.contains("\"pdf_line_height\":2.5"));
+    assert!(json.contains("\"pdf_table_cell_padding_x_em\":1.25"));
+    assert!(json.contains("\"pdf_table_cell_padding_y_em\":0"));
+    let get = workspace.run(&["config", "get", "pdf_theme_spacing", "--json"]);
+    succeeded(&get);
+    assert!(String::from_utf8_lossy(&get.stdout).contains("\"value\":\"true\""));
+
+    let expected = render_pdf(SOURCE, &numeric_options()).unwrap();
+    assert!(workspace.pdf(&[]) == expected);
+    let legacy = render_pdf(SOURCE, &options(false)).unwrap();
+    assert!(workspace.pdf(&["--pdf-theme-spacing=false"]) == legacy);
+    assert!(workspace.pdf(&["--no-config"]) == legacy);
+    let mut overridden = numeric_options();
+    overridden.theme.spacing.line_height = 1.25;
+    let overridden = render_pdf(SOURCE, &overridden).unwrap();
+    assert!(workspace.pdf(&["--pdf-line-height=1.25"]) == overridden);
+
+    succeeded(&workspace.run(&["document.md", "--to", "both", "--out", "configured.html"]));
+    assert!(fs::read(workspace.0.join("configured.pdf")).unwrap() == expected);
+    succeeded(&workspace.run(&["document.md", "--out", "plain.html", "--no-config"]));
+    assert!(
+        fs::read(workspace.0.join("configured.html")).unwrap()
+            == fs::read(workspace.0.join("plain.html")).unwrap()
+    );
+
+    // Verification is reproducible from explicit layout options alone.
+    let configured_verification = workspace.run(&["verify", "document.md", "--json"]);
+    assert_eq!(
+        configured_verification.status.code(),
+        verification.status.code()
+    );
+    assert_eq!(configured_verification.stdout, verification.stdout);
+
+    succeeded(&workspace.run(&["config", "set", "pdf_theme_spacing", "false"]));
+    assert!(workspace.pdf(&[]) == legacy);
+    assert!(workspace.pdf(&["--pdf-theme-spacing"]) == expected);
+    assert!(workspace.pdf(&["--pdf-line-height=1.25"]) == overridden);
+    let get = workspace.run(&["config", "get", "pdf_theme_spacing", "--json"]);
+    succeeded(&get);
+    assert!(String::from_utf8_lossy(&get.stdout).contains("\"value\":\"false\""));
+}
+
+#[test]
+fn invalid_numeric_config_preserves_the_previous_settings() {
+    let workspace = Workspace::new();
+    fs::write(workspace.0.join("config"), NUMERIC_CONFIG).unwrap();
+    let saved = fs::read(workspace.0.join("config")).unwrap();
+    for (key, value) in [
+        ("pdf_line_height", "0.9999999999"),
+        ("pdf_line_height", "4.0000000001"),
+        ("pdf_line_height", "NaN"),
+        ("pdf_table_cell_padding_x_em", "8.0000000001"),
+        ("pdf_table_cell_padding_y_em", "-0.000001"),
+        ("pdf_table_cell_padding_y_em", "inf"),
+    ] {
+        let invalid = workspace.run(&["config", "set", key, value]);
+        assert!(!invalid.status.success());
+        assert_eq!(fs::read(workspace.0.join("config")).unwrap(), saved);
+    }
+    assert!(workspace.pdf(&[]) == render_pdf(SOURCE, &numeric_options()).unwrap());
+}
+
+#[test]
+fn book_inherits_numeric_config_and_allows_independent_overrides() {
+    let workspace = Workspace::new();
+    fs::create_dir_all(workspace.0.join("book")).unwrap();
+    fs::write(workspace.0.join("book/chapter.md"), SOURCE).unwrap();
+    fs::write(workspace.0.join("config"), NUMERIC_CONFIG).unwrap();
+    let inputs = [BookInput {
+        path: "chapter.md".into(),
+        source: SOURCE.into(),
+    }];
+    let book = BookRenderer::new(&inputs).unwrap();
+    let mut overridden = numeric_options();
+    overridden.theme.spacing.table_cell_padding_y_em = 0.75;
+    for (mut expected, flags) in [
+        (numeric_options(), vec![]),
+        (overridden, vec!["--pdf-table-cell-padding-y-em=0.75"]),
+        (options(false), vec!["--pdf-theme-spacing=false"]),
+    ] {
+        let output = workspace
+            .command()
+            .args([
+                "book",
+                "book",
+                "--to",
+                "pdf",
+                "--out",
+                "book.pdf",
+                "--toc=false",
+                "--pdf-page-numbers=false",
+            ])
+            .args(flags)
+            .output()
+            .unwrap();
+        succeeded(&output);
+        expected.title = Some("Shared spacing".into());
+        assert!(
+            fs::read(workspace.0.join("book.pdf")).unwrap()
+                == book
+                    .render_pdf_with_options(&expected, PdfASettings::OFF)
+                    .unwrap()
+        );
+    }
+}
+
+#[test]
+fn watch_reloads_numeric_defaults_and_retains_explicit_overrides() {
+    let workspace = Workspace::new();
+    fs::write(workspace.0.join("config"), NUMERIC_CONFIG).unwrap();
+    let mut child = Watch(
+        workspace
+            .command()
+            .args([
+                "watch",
+                "document.md",
+                "--to",
+                "pdf",
+                "--out",
+                "watched.pdf",
+                "--pdf-table-cell-padding-x-em=0.25",
+                "--interval",
+                "25",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let wait = |child: &mut Watch, options: &PdfOptions| {
+        let expected = render_pdf(SOURCE, options).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !fs::read(workspace.0.join("watched.pdf")).is_ok_and(|bytes| bytes == expected) {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "watch exited before publication"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "watch did not apply numeric spacing"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let mut expected = numeric_options();
+    expected.theme.spacing.table_cell_padding_x_em = 0.25;
+    wait(&mut child, &expected);
+    fs::write(
+        workspace.0.join("config"),
+        NUMERIC_CONFIG.replace("pdf_line_height=2.5", "pdf_line_height=1.25"),
+    )
+    .unwrap();
+    expected.theme.spacing.line_height = 1.25;
+    wait(&mut child, &expected);
+}
+
+#[cfg(feature = "batch")]
+#[test]
+fn batch_inherits_numeric_config_and_overrides_individual_values() {
+    let workspace = Workspace::new();
+    fs::write(workspace.0.join("config"), NUMERIC_CONFIG).unwrap();
+    succeeded(&workspace.run(&[
+        "batch",
+        "document.md",
+        "--to",
+        "pdf",
+        "--out-dir",
+        "batch",
+        "--workers",
+        "1",
+        "--pdf-line-height=1.25",
+    ]));
+    let mut expected = numeric_options();
+    expected.theme.spacing.line_height = 1.25;
+    assert!(
+        fs::read(workspace.0.join("batch/document.pdf")).unwrap()
+            == render_pdf(SOURCE, &expected).unwrap()
+    );
+}
+
 #[test]
 fn numeric_controls_match_native_pdf_and_leave_paired_html_alone() {
     let workspace = Workspace::new();

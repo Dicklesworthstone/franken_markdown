@@ -147,7 +147,7 @@ pub(super) struct Publishing {
     pub font_embedding: crate::FontEmbedding,
     pub pdf_a: PdfASettings,
     pub remote_image_timeout_secs: Option<u64>,
-    spacing: crate::cli::pdf_spacing::PdfSpacingArgs,
+    spacing: crate::cli::pdf_spacing::ResolvedPdfSpacing,
     explicit_toc: Option<bool>,
     configured_toc: Option<bool>,
     pdf: PdfOptions,
@@ -248,6 +248,13 @@ pub(super) fn prepare(
         },
         _ => MicrotypeOptions::DISABLED,
     };
+    let spacing = if target.wants_pdf() {
+        args.spacing
+            .resolve(defaults)
+            .map_err(|message| error(64, "invalid_theme_spacing", message))?
+    } else {
+        crate::cli::pdf_spacing::ResolvedPdfSpacing::default()
+    };
     let pdf = PdfOptions {
         microtype,
         gradual_demerits: args
@@ -278,10 +285,7 @@ pub(super) fn prepare(
             .pdf_split_footnotes
             .or(defaults.pdf_split_footnotes)
             .unwrap_or(false),
-        use_theme_spacing: args
-            .spacing
-            .enabled(defaults.pdf_theme_spacing)
-            .map_err(|message| error(64, "invalid_theme_spacing", message))?,
+        use_theme_spacing: spacing.enabled,
         page_numbers: args
             .pdf_page_numbers
             .or(defaults.pdf_page_numbers)
@@ -356,7 +360,7 @@ pub(super) fn prepare(
             args.remote_image_timeout_secs
                 .unwrap_or(crate::cli::DEFAULT_REMOTE_IMAGE_TIMEOUT_SECS),
         ),
-        spacing: args.spacing,
+        spacing,
         explicit_toc: args.toc,
         configured_toc: defaults.toc,
         pdf,

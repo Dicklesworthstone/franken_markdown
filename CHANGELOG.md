@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native configuration accepts PDF body line height and horizontal/vertical
+  table padding. Render, watch, batch and book inherit each value independently;
+  explicit flags override defaults, and disabling spacing preserves legacy PDF
+  layout. Combined HTML output and explicit-only verification remain unchanged.
 - Flow Canvas can verify the configured PDF layout, cancel verification, and
   download the full native report. Verification uses publication's source,
   settings, fonts and authorized images; edited documents retire stale reports.

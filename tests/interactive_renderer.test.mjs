@@ -28,12 +28,43 @@ test('emphasis, strike, escapes and intraword underscores', () => {
 
 test('all heading levels, setext headings and unique Unicode anchors', () => {
   const html = render('# Café\n\n# Café\n\n## Café-1\n\n# Café\n\n#### Four\n\n##### Five\n\n###### Six\n\nTitle\n=====\n\nSub\n---');
-  for (const id of ['café', 'café-1', 'café-1-1', 'café-2', 'four', 'five', 'six', 'title', 'sub']) assert.match(html, new RegExp('id="' + id + '"'));
+  for (const id of ['café', 'café-1', 'café-2', 'café-3', 'four', 'five', 'six', 'title', 'sub']) assert.match(html, new RegExp('id="' + id + '"'));
   assert.match(html, /<h6 id="six">Six<\/h6>/);
 });
 
 test('heading hashes without separating whitespace remain text', () => {
-  assert.equal(render('# word#\n\n## word ##'), '<h1 id="word">word#</h1>\n<h2 id="word-1">word</h2>\n');
+  assert.equal(render('# word#\n\n## word ##'), '<h1 id="word">word#</h1>\n<h2 id="word-2">word</h2>\n');
+});
+
+test('offline heading fragments follow native separators, scalar case and duplicate allocation', () => {
+  const html = render('[jump](#api-reference)\n\n# API_reference\n\n# API--reference\n\n# API reference-2\n\n# _API reference_\n\n# ΟΣ\u00a0中٢42');
+  assert.match(html, /<a href="#api-reference">jump<\/a>/);
+  assert.deepEqual([...html.matchAll(/<h1 id="([^"]+)"/g)].map(match => match[1]),
+    ['api-reference', 'api-reference-2', 'api-reference-2-2', 'api-reference-3', 'οσ中42']);
+});
+
+test('heading IDs use image descriptions, link labels, code and literal HTML ownership', () => {
+  const source = '# [![CPU **Chart**](plot.png)](/target "Title")<!-- hidden --> <b>today</b>\n\n'
+    + '> ![CPU **Chart**](blocked:plot) today\n> ===\n\n'
+    + '# `<b>` &amp; &#65; <custom>\n\n'
+    + '# [Résultat](guide.md) and $x_1$';
+  const html = render(source);
+  assert.deepEqual([...html.matchAll(/<h1 id="([^"]+)"/g)].map(match => match[1]),
+    ['cpu-chart-today', 'cpu-chart-today-2', 'b-a-custom', 'résultat-and-x-1']);
+  assert.match(html, /alt="CPU Chart"/);
+  assert.match(html, /&lt;!-- hidden --&gt; &lt;b&gt;today&lt;\/b&gt;/);
+});
+
+test('footnotes reserve the same heading anchor before and after editing', () => {
+  const html = render('Read[^name].\n\n# fn_![name](plot.svg)[^name]\n\n[^name]: note');
+  assert.match(html, /<h1 id="fn-name">/);
+  assert.match(html, /<li id="fn-name-2">/);
+  assert.equal((html.match(/href="#fn-name-2" role="doc-noteref"/g) || []).length, 2);
+});
+
+test('CommonMark 79 empty ATX headings and literal Unicode edge whitespace', () => {
+  assert.equal(render('## \n#\n### ###\n'), '<h2 id="section"></h2>\n<h1 id="section-2"></h1>\n<h3 id="section-3"></h3>\n');
+  assert.equal(render('# \u00a0Text\u00a0 ###'), '<h1 id="text">\u00a0Text\u00a0</h1>\n');
 });
 
 test('ordered lists preserve start numbers and nested lists', () => {
@@ -202,7 +233,7 @@ test('heading and footnote IDs cannot collide', () => {
     const gap = ' '.repeat(100000);
     assert.equal(render('# x' + gap + 'z'), '<h1 id="x-z">x' + gap + 'z</h1>\n');
     assert.equal(render('# x' + gap + '### \t'), '<h1 id="x">x</h1>\n');
-    assert.equal(render('# x###\n\n# ###'), '<h1 id="x">x###</h1>\n<h1 id="section">###</h1>\n');
+    assert.equal(render('# x###\n\n# ###'), '<h1 id="x">x###</h1>\n<h1 id="section"></h1>\n');
   });
 
   test('indexed brackets preserve nested pairs and escaped opening/closing delimiters', () => {

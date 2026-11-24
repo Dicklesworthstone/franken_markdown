@@ -799,11 +799,6 @@ function parseMarkdownClient(source, imageAssets, profile) {
     const value = characterReferenceValue(match[1]);
     return value === null ? null : {value, end: start + match[0].length};
   }
-  const decode = text => {
-    charge(text.length);
-    return text.replace(/&(#(?:[xX][0-9a-fA-F]{1,6}|[0-9]{1,7})|[A-Za-z][A-Za-z0-9]{0,30});/g,
-      (all, body) => characterReferenceValue(body) ?? all);
-  };
   // Consume escapes and references together. Removing escapes first would
   // incorrectly activate an authored \&copy; in a destination, title or info
   // string. A decoded backslash likewise cannot escape the following source.
@@ -972,10 +967,10 @@ function parseMarkdownClient(source, imageAssets, profile) {
     return pairs;
   }
   function uniqueId(slug) {
-    let id = slug, suffix = headings.get(slug) || 0;
+    let id = slug, suffix = headings.get(slug) || 1;
     while (headings.has(id)) { charge(id.length + 1); id = slug + '-' + (++suffix); }
     allocate();
-    headings.set(slug, suffix); headings.set(id, 0);
+    headings.set(id, 1); headings.set(slug, suffix);
     return id;
   }
   function reserveNoteId(id) {
@@ -1493,9 +1488,15 @@ function parseMarkdownClient(source, imageAssets, profile) {
     }
     return events;
   }
-  function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false, noteLinks = links) {
+  function inline(text, depth = 0, links = true, footnotes = true, images = true, table = false, noteLinks = links, heading = null) {
     charge(text.length + 1);
-    if (depth > MAX_DEPTH) return escape(text);
+    // A heading collects semantic text during its existing inline walk. Link targets,
+    // image bindings, generated tags and citation numbers never enter the anchor.
+    const visible = value => {
+      if (heading) heading.text = append(heading.text, value);
+      return value;
+    };
+    if (depth > MAX_DEPTH) return escape(visible(text));
     const atoms = inlineIndex(text, links), emphasis = emphasisIndex(text, atoms);
     let out = '', i = 0, styles = 0;
     // Only prose newlines discard continuation indentation. Atomic code,
@@ -1511,7 +1512,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
         if (event.open && depth + styles >= MAX_DEPTH) {
           // The complete deeper span stays literal, including its delimiters
           // and atoms. Never activate links/notes beyond the nesting policy.
-          out = append(out, escape(text.slice(i, event.closeEnd)));
+          out = append(out, escape(visible(text.slice(i, event.closeEnd))));
           i = event.closeEnd; continue;
         }
         styles += event.open ? 1 : -1;
@@ -1524,12 +1525,17 @@ function parseMarkdownClient(source, imageAssets, profile) {
           let code = text.slice(atom.content, atom.close).replace(/\n/g, ' ');
           if (code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
           if (table) code = code.replace(/\\\|/g, '|');
-          out = append(out, '<code>' + escape(code) + '</code>');
+          out = append(out, '<code>' + escape(visible(code)) + '</code>');
         } else if (atom.kind === 'html' || atom.kind === 'math') {
-          out = append(out, escape(text.slice(i, atom.end)));
+          const literal = text.slice(i, atom.end);
+          if (heading && (atom.kind === 'math' || (images && headingRetainsHtml(literal)))) visible(literal);
+          out = append(out, escape(literal));
         } else if (atom.kind === 'note') {
+          // The native image alt text retains a literal citation label.
+          if (!images) visible(text.slice(i, atom.end));
           out = append(out, footnotes ? noteReference(atom.label, noteLinks) : escape(text.slice(i, atom.end)));
         } else if (atom.kind === 'autolink') {
+          visible(atom.label);
           const url = links ? safeUrl(atom.url, false, true) : null;
           out = append(out, !links ? escape(atom.label) : url === null ? escape(text.slice(i, atom.end))
             : '<a href="' + escape(url) + '">' + escape(atom.label) + '</a>');
@@ -1541,7 +1547,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
           // removes the enclosing link, the citation keeps its own destination.
           // Image descriptions stay plain alt text and never activate notes.
           const content = inline(text.slice(atom.labelStart, atom.labelEnd), depth + styles + 1,
-            false, footnotes && !image, images && !image, table, noteLinks && url === null && !image);
+            false, footnotes && !image, images && !image, table, noteLinks && url === null && !image, heading);
           // Only emitted images consult embedded assets. Nested images in alt
           // text contribute their own readable labels without hidden expansion.
           if (image && images) url = safeUrl(atom.url, true);
@@ -1554,32 +1560,32 @@ function parseMarkdownClient(source, imageAssets, profile) {
         i = atom.end; continue;
       }
       const ch = text[i];
-      if (ch === '\\' && text[i + 1] === '\n') { out = append(out, '<br>\n'); i = afterLineBreak(i + 2); continue; }
-      if (ch === '\n') { out = append(out, '\n'); i = afterLineBreak(i + 1); continue; }
+      if (ch === '\\' && text[i + 1] === '\n') { visible(' '); out = append(out, '<br>\n'); i = afterLineBreak(i + 2); continue; }
+      if (ch === '\n') { visible(' '); out = append(out, '\n'); i = afterLineBreak(i + 1); continue; }
       if (ch === '\\' && escapable(text[i + 1])) {
-        out = append(out, escape(text[i + 1])); i += 2; continue;
+        out = append(out, escape(visible(text[i + 1]))); i += 2; continue;
       }
       if (ch === ' ') {
         const end = runEnd(text, i, ' '), run = text.slice(i, end);
-        if (text[end] === '\n') { out = append(out, run.length >= 2 ? '<br>\n' : '\n'); i = afterLineBreak(end + 1); continue; }
-        out = append(out, run); i = end; continue;
+        if (text[end] === '\n') { visible(' '); out = append(out, run.length >= 2 ? '<br>\n' : '\n'); i = afterLineBreak(end + 1); continue; }
+        out = append(out, visible(run)); i = end; continue;
       }
       if (ch === '`') {
         const marker = text.slice(i, runEnd(text, i, '`'));
-        out = append(out, marker); i += marker.length; continue;
+        out = append(out, visible(marker)); i += marker.length; continue;
       }
       if ('*_~'.includes(ch)) {
         // Emit only the unresolved part of this run; a later offset in the
         // same run can still open a matched style (for example **foo*).
         let end = i + 1;
         while (text[end] === ch && !emphasis.has(end)) { charge(); end++; }
-        out = append(out, text.slice(i, end)); i = end; continue;
+        out = append(out, visible(text.slice(i, end))); i = end; continue;
       }
       if (ch === '&') {
         const entity = characterReference(text, i);
-        if (entity) { out = append(out, escape(entity.value)); i = entity.end; continue; }
+        if (entity) { out = append(out, escape(visible(entity.value))); i = entity.end; continue; }
       }
-      out = append(out, escape(ch)); i++;
+      out = append(out, escape(visible(ch))); i++;
     }
     return out;
   }
@@ -1683,7 +1689,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
   const rule = line => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line);
   // These are already LF-delimited Markdown lines. Unicode line/paragraph
   // separators belong to the payload, so dot captures must retain them.
-  const headingMarker = line => line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/s);
+  const headingMarker = line => line.match(/^ {0,3}(#{1,6})([ \t].*|$)/s);
   const setextLevel = line => /^ {0,3}=+[ \t]*$/.test(line) ? 1 : /^ {0,3}-+[ \t]*$/.test(line) ? 2 : 0;
   const footnoteMarker = line => line.match(/^ {0,3}\[\^([^\]]+)\]:[ \t]*(.*)$/s);
   function indentation(line, startColumn = 0) {
@@ -1870,7 +1876,7 @@ function parseMarkdownClient(source, imageAssets, profile) {
       while (hashes > 0 && /[ \t]/.test(text[hashes - 1])) hashes--;
       text = text.slice(0, hashes);
     }
-    return text.trim();
+    return trimSpaceTab(text);
   }
   // Reference definitions have a different grammar from inline destinations:
   // their label, destination and title can continue onto subsequent lines. A
@@ -2448,19 +2454,44 @@ function parseMarkdownClient(source, imageAssets, profile) {
     }
     return out;
   }
-  function headingSlug(content) {
-    // Native heading identity omits citation marks. Remove only our generated
-    // superscripts; escaped/code source remains visible text.
-    charge(content.length);
-    const title = content.replace(/<sup class="footnote-ref" id="[^"]*">(?:<a href="[^"]*" role="doc-noteref">)?[0-9]+(?:<\/a>)?<\/sup>/g, '');
-    return decode(title.replace(/<[^>]*>/g, '')).toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu, '').trim().replace(/\s+/g, '-') || 'section';
+  // Native safe_html::visible_text omits recognized tags and comments, while
+  // retaining the literal text of unknown tags. The preview still escapes all
+  // raw markup. Code spans and escaped text never consult this classifier.
+  const hiddenHeadingTags = new Set((
+    'a abbr b bdi bdo big blockquote br caption center cite code col colgroup data dd del details dfn div dl dt em ' +
+    'figcaption figure font h1 h2 h3 h4 h5 h6 hr i img ins kbd label li mark nobr ol p picture pre q rp rt ruby ' +
+    's samp small source span strike strong sub summary sup table tbody td tfoot th thead time tr track tt u ul var wbr'
+  ).split(' '));
+  function headingRetainsHtml(literal) {
+    if (literal.startsWith('<!') || literal.startsWith('<?')) return false;
+    const tag = /^<\/?([A-Za-z][A-Za-z0-9-]*)/.exec(literal);
+    return !tag || !hiddenHeadingTags.has(tag[1].toLowerCase());
+  }
+  function headingSlug(text) {
+    // Match anchors::push_slug_char, including Unicode Alphabetic (not all
+    // numbers) and per-scalar lowercasing, independent of adjacent letters.
+    charge(text.length);
+    let slug = '', separator = false;
+    for (const scalar of text) {
+      if (/[0-9\p{Alphabetic}]/u.test(scalar)) {
+        slug = append(slug, (separator && slug ? '-' : '') + scalar.toLowerCase());
+        separator = false;
+      } else if (scalar === ' ' || scalar === '-' || scalar === '_') separator = true;
+    }
+    return slug || 'section';
+  }
+  function renderHeading(node, footnotes = true) {
+    const heading = node.headingId ? null : {text: ''};
+    const content = inline(node.title, 0, true, footnotes, true, false, true, heading);
+    if (heading) node.headingId = uniqueId(headingSlug(heading.text));
+    return content;
   }
   function planNoteAnchors(nodes) {
     for (const node of nodes) {
       charge();
       switch (node.kind) {
         case 'heading':
-          node.headingId = uniqueId(headingSlug(inline(node.title))); break;
+          renderHeading(node); break;
         case 'paragraph':
           inline(node.text); break;
         case 'definition-list':
@@ -2510,8 +2541,8 @@ function parseMarkdownClient(source, imageAssets, profile) {
         case 'math':
           out = append(out, '<pre class="math-source">' + escape(node.text) + '</pre>\n'); break;
         case 'heading': {
-          const content = inline(node.title, 0, true, footnotes);
-          const id = node.headingId || uniqueId(headingSlug(content));
+          const content = renderHeading(node, footnotes);
+          const id = node.headingId;
           out = append(out, '<h' + node.level + ' id="' + escape(id) + '">' + content + '</h' + node.level + '>\n'); break;
         }
         case 'rule': out = append(out, '<hr>\n'); break;

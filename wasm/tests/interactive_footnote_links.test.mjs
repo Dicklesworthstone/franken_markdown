@@ -204,9 +204,9 @@ test('ill-formed UTF-16 note names cannot redirect citations to another note', (
 test('heading fragments ignore generated note numbers without changing literal code', () => {
   for (const prefix of ['', 'Earlier[^prior].\n\n']) {
     const html = render(prefix + '# [Claim[^n]](/source)\n\n## Claim[^n]\n\n'
-      + '[Go](#claim) [Again](#claim-1)\n\n[^n]: Evidence.\n\n[^prior]: Earlier evidence.');
+      + '[Go](#claim) [Again](#claim-2)\n\n[^n]: Evidence.\n\n[^prior]: Earlier evidence.');
     assert.ok(html.includes('<h1 id="claim"><a href="/source">Claim<sup class="footnote-ref"'));
-    assert.ok(html.includes('<h2 id="claim-1">Claim<sup class="footnote-ref"'));
+    assert.ok(html.includes('<h2 id="claim-2">Claim<sup class="footnote-ref"'));
     const number = prefix ? 2 : 1;
     assert.ok(html.includes(`id="fnref-${number}">${number}</sup></a>`));
     assertNoNestedAnchors(html);
@@ -273,9 +273,9 @@ test('heading allocation follows body and referenced-note order rather than defi
   const definitions = '[^a]: # Same\n\n[^b]: # Same\n\n[^hidden]: # Same\n';
   const html = render('Use[^b] then[^a].\n\n# Same\n\n' + definitions);
   assert.ok(html.includes('<h1 id="same">Same</h1>'));
-  assert.ok(html.includes('<li id="fn-b"><h1 id="same-1">Same</h1>'));
-  assert.ok(html.includes('<li id="fn-a"><h1 id="same-2">Same</h1>'));
-  assert.doesNotMatch(html, /same-3|id="fn-hidden"/);
+  assert.ok(html.includes('<li id="fn-b"><h1 id="same-2">Same</h1>'));
+  assert.ok(html.includes('<li id="fn-a"><h1 id="same-3">Same</h1>'));
+  assert.doesNotMatch(html, /same-4|id="fn-hidden"/);
   assertFragmentTargets(html);
 });
 

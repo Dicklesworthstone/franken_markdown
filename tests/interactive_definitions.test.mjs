@@ -163,7 +163,7 @@ test('definition collection does not consume heading or footnote render identiti
   const ids = [...html.matchAll(/ id="([^"]+)"/g)].map(match => match[1]);
   assert.equal(new Set(ids).size, ids.length);
   assert.match(html, /id="guide"><a href="\/manual">Guide<\/a>/);
-  assert.match(html, /id="guide-1">Guide/);
+  assert.match(html, /id="guide-2">Guide/);
   for (const match of html.matchAll(/href="#([^"]+)"/g)) assert.ok(ids.includes(match[1]));
 });
 

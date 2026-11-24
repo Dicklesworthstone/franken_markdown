@@ -141,3 +141,28 @@ full PDF structural/accessibility validation.
 No unresolved bug-type Beads were found in the canonical JSONL inventory.
 The two unresolved entries are existing feature work (`ihx0`, `wplv`), preserved
 without closure claims.
+
+## 2026-11-24 semver lock refresh
+
+Starting source `4e1e1a2f`. `cargo update` within the manifest's ranges, with
+the Rust 1.88 minimum respected, moved five packages. All of them are reached
+only through `asupersync`, so only `--features batch` builds change; the
+default library, CLI and WASM builds resolve the same packages as before.
+
+| Package | Old → new | Reached through |
+| --- | --- | --- |
+| `anyhow` | `1.0.104` → `1.0.105` | `prost-derive` (proc macro) ← `prost` ← `asupersync` |
+| `crc32fast` | `1.5.5` → `1.5.6` | `asupersync` |
+| `hashbrown` | `0.17.1` → `0.17.2` | `asupersync` |
+| `zerocopy`, `zerocopy-derive` | `0.8.63` → `0.8.65` | `ppv-lite86` ← `rand_chacha` ← `rand 0.8` ← `nkeys` ← `asupersync` |
+
+`fuzz/Cargo.lock` only records the crate's own version, `0.8.0` → `0.8.1`,
+which the v0.8.1 version bump left behind.
+
+Held: `asupersync` `0.6.2` → `0.7.0`. Its changelog reports no removed or
+changed public items (the minor bump is for lost `UnwindSafe` /
+`RefUnwindSafe` auto traits on nine types this crate does not use), but it is
+the batch runtime and no batch throughput benchmark exists to compare
+against, so it waits for a measured A/B.
+
+`cargo audit` (1566 advisories, 2026-11-24): no findings in `Cargo.lock`.

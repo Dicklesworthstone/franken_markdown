@@ -58,6 +58,33 @@ family, navigation, metadata and PDF/A settings remain available for rendering.
 Invalid numeric input is refused rather than silently narrowed or clamped by
 this adapter. In paired exports, PDF paper/size fields do not change HTML.
 
+## Body leading and table padding
+
+The same PDF rendering and verification routes accept the shared theme spacing
+controls used by the native and browser renderer:
+
+| Option | Meaning |
+|---|---|
+| `themeSpacing` | Enable theme leading and table padding. Omission or `false` keeps historical PDF spacing unless a numeric spacing value is supplied. |
+| `lineHeight` | Body and table leading as a font-size multiplier, from `1` through `4`. |
+| `tableCellPaddingXEm` | Padding on each horizontal side of a table cell, from `0` through `8` em. |
+| `tableCellPaddingYEm` | Padding above and below each logical table row, from `0` through `8` em. |
+
+For example, add `"lineHeight": 2`, `"tableCellPaddingXEm": 1.25`, and
+`"tableCellPaddingYEm": 0.75` to a PDF request or its verification. Any numeric
+spacing option enables the policy; combining it with `themeSpacing: false`
+returns `invalid_theme_spacing` before file I/O or publication. Wrong JSON types
+and out-of-range values return `invalid_params` instead of being clamped.
+`themeSpacing: true` without overrides uses the theme's default leading and
+padding, which changes the density of the historical PDF layout.
+
+These controls affect measured wrapping, table widths, row heights and page
+planning, so verification must use the same values as rendering. PDF-only
+spacing does not alter HTML in a paired file export or EPUB/site artifacts in
+an all-target book publication. HTML, EPUB, SVG and site-only requests reject
+these fields, including an explicit `false`. See [shared PDF theme spacing](PDF_THEME_SPACING.md)
+for nominal line boxes, repeated rows, baseline grids and layout admission.
+
 ## Baseline grids and strict pagination
 
 All PDF routes above, including `fmd.verify`, accept these two controls:

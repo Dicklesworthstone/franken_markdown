@@ -126,6 +126,26 @@ const PDF_FIELDS: &[Field] = &[
         "Nominal table size in points (5..24), capped by the renderer to the body size",
     ),
     (
+        "themeSpacing",
+        "boolean",
+        "Use shared theme leading and table padding for PDF layout; numeric spacing values imply true and cannot be combined with false",
+    ),
+    (
+        "lineHeight",
+        "number",
+        "PDF body and table leading as a font-size multiplier (1..4); enables themeSpacing",
+    ),
+    (
+        "tableCellPaddingXEm",
+        "number",
+        "PDF table padding on each horizontal side in em (0..8); enables themeSpacing",
+    ),
+    (
+        "tableCellPaddingYEm",
+        "number",
+        "PDF table padding above and below each logical row in em (0..8); enables themeSpacing",
+    ),
+    (
         "images",
         "array",
         "Explicit image bytes keyed by Markdown destination; never fetched",
@@ -348,6 +368,8 @@ fn number_bounds(name: &str) -> Option<(f64, f64)> {
         "baseFontSize" => Some((6.0, 24.0)),
         "headingScale" => Some((1.05, 2.0)),
         "tableFontSize" => Some((5.0, 24.0)),
+        "lineHeight" => Some((1.0, 4.0)),
+        "tableCellPaddingXEm" | "tableCellPaddingYEm" => Some((0.0, 8.0)),
         "baselineGridPt" => Some((0.0, 144.0)),
         _ => None,
     }
@@ -698,6 +720,31 @@ fn epub_options(args: &JsonValue) -> Result<HtmlOptions, ToolError> {
     Ok(options)
 }
 
+/// Match the explicit-spacing contract used by native and browser rendering.
+/// Keep these PDF-only values out of the shared HTML theme in paired exports.
+fn pdf_theme_spacing(args: &JsonValue, theme: &mut Theme) -> Result<bool, ToolError> {
+    let explicit = ["lineHeight", "tableCellPaddingXEm", "tableCellPaddingYEm"]
+        .iter()
+        .any(|name| args.get(name).is_some());
+    let enabled = args.get("themeSpacing").and_then(JsonValue::as_bool);
+    if explicit && enabled == Some(false) {
+        return Err(invalid_options(
+            "Numeric PDF spacing requires themeSpacing; omit themeSpacing or set it to true",
+            "invalid_theme_spacing",
+        ));
+    }
+    if let Some(value) = args.get("lineHeight").and_then(JsonValue::as_f64) {
+        theme.spacing.line_height = value as f32;
+    }
+    if let Some(value) = args.get("tableCellPaddingXEm").and_then(JsonValue::as_f64) {
+        theme.spacing.table_cell_padding_x_em = value as f32;
+    }
+    if let Some(value) = args.get("tableCellPaddingYEm").and_then(JsonValue::as_f64) {
+        theme.spacing.table_cell_padding_y_em = value as f32;
+    }
+    Ok(enabled.unwrap_or(explicit))
+}
+
 fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError> {
     let microtype = match string(args, "microtype")
         .unwrap_or("off")
@@ -748,6 +795,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
         ));
     }
     let mut theme = theme(args)?;
+    let use_theme_spacing = pdf_theme_spacing(args, &mut theme)?;
     if let Some(page) = page::parse(args.get("page"))? {
         theme.page = page;
     }
@@ -769,6 +817,7 @@ fn pdf_options(args: &JsonValue) -> Result<(PdfOptions, PdfASettings), ToolError
     Ok((
         PdfOptions {
             theme,
+            use_theme_spacing,
             profile: authoring_profile(args)?,
             base_font_size: args
                 .get("baseFontSize")

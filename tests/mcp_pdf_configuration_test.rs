@@ -155,6 +155,302 @@ fn verification_uses_the_configured_pagination_not_default_paper() {
 }
 
 #[test]
+fn theme_spacing_matches_native_pdf_and_the_configured_verification_report() {
+    let source = format!(
+        "# Shared spacing\n\n{}\n| Item | Value |\n|---|---|\n| First | Measured table content |\n| Second | More content |\n",
+        "A paragraph whose leading changes the measured page count and final layout.\n\n"
+            .repeat(16),
+    );
+    let config = r#"{"page":{"size":{"widthPt":300,"heightPt":300},"margins":20},"baseFontSize":12,"tableFontSize":10,"lineHeight":2.5,"tableCellPaddingXEm":1.25,"tableCellPaddingYEm":0.75}"#;
+    let mut options = PdfOptions {
+        theme: Theme {
+            page: custom_page(),
+            ..Default::default()
+        },
+        base_font_size: Some(12.0),
+        table_font_size: Some(10.0),
+        use_theme_spacing: true,
+        ..Default::default()
+    };
+    options.theme.spacing.line_height = 2.5;
+    options.theme.spacing.table_cell_padding_x_em = 1.25;
+    options.theme.spacing.table_cell_padding_y_em = 0.75;
+    let doc = parse_markdown(&source);
+    let expected = franken_markdown::render_pdf_document(&doc, &options).unwrap();
+    let report = franken_markdown::verify::verify_pdf(&doc, &options).unwrap();
+    let mut legacy = options.clone();
+    legacy.use_theme_spacing = false;
+    assert_ne!(
+        expected,
+        franken_markdown::render_pdf_document(&doc, &legacy).unwrap()
+    );
+    assert!(
+        report.page_count
+            > franken_markdown::verify::verify_pdf(&doc, &legacy)
+                .unwrap()
+                .page_count
+    );
+    // Numeric spacing implies the policy, and explicit true has identical output.
+    for enabled in [false, true] {
+        let mut arguments = args(config, &source);
+        if enabled {
+            arguments.insert("themeSpacing".into(), JsonValue::Bool(true));
+        }
+        assert_eq!(
+            content(&call("fmd.render_pdf", arguments.clone()).unwrap()),
+            base64_encode(&expected)
+        );
+        assert_eq!(
+            content(&call("fmd.verify", arguments).unwrap()),
+            franken_markdown::verify::to_json(&report)
+        );
+    }
+}
+
+#[test]
+fn theme_spacing_switch_preserves_defaults_and_accepts_literal_boundaries() {
+    let source = "A paragraph with shared spacing.\n\n| Item |\n|---|\n| Value |\n";
+    for enabled in [false, true] {
+        let options = PdfOptions {
+            use_theme_spacing: enabled,
+            ..Default::default()
+        };
+        assert_eq!(
+            content(
+                &call(
+                    "fmd.render_pdf",
+                    args(&format!("{{\"themeSpacing\":{enabled}}}"), source)
+                )
+                .unwrap()
+            ),
+            base64_encode(&franken_markdown::render_pdf(source, &options).unwrap())
+        );
+    }
+    for (leading, padding) in [(1.0, 0.0), (4.0, 8.0)] {
+        let mut options = PdfOptions {
+            use_theme_spacing: true,
+            ..Default::default()
+        };
+        options.theme.spacing.line_height = leading;
+        options.theme.spacing.table_cell_padding_x_em = padding;
+        options.theme.spacing.table_cell_padding_y_em = padding;
+        let config = format!(
+            "{{\"lineHeight\":{leading},\"tableCellPaddingXEm\":{padding},\"tableCellPaddingYEm\":{padding}}}"
+        );
+        assert_eq!(
+            content(&call("fmd.render_pdf", args(&config, source)).unwrap()),
+            base64_encode(&franken_markdown::render_pdf(source, &options).unwrap())
+        );
+    }
+}
+
+#[test]
+fn file_and_book_publication_apply_pdf_spacing_without_changing_html_or_epub() {
+    let source = "# Publication\n\nBody content.\n\n| Item |\n|---|\n| Value |\n";
+    let root = scratch();
+    let input = root.join("chapter.md");
+    std::fs::write(&input, source).unwrap();
+    let config = r#"{"title":"Edition","lineHeight":2.25,"tableCellPaddingXEm":1.5,"tableCellPaddingYEm":0.8}"#;
+    let mut options = PdfOptions {
+        title: Some("Edition".into()),
+        use_theme_spacing: true,
+        ..Default::default()
+    };
+    options.theme.spacing.line_height = 2.25;
+    options.theme.spacing.table_cell_padding_x_em = 1.5;
+    options.theme.spacing.table_cell_padding_y_em = 0.8;
+    let mut arguments = args(config, source);
+    arguments.remove("markdown");
+    arguments.insert("to".into(), JsonValue::String("both".into()));
+    arguments.insert(
+        "path".into(),
+        JsonValue::String(input.to_string_lossy().into_owned()),
+    );
+    let result = call("fmd.render_file", arguments).unwrap();
+    let receipt = parse_json(content(&result)).unwrap();
+    let JsonValue::Array(outputs) = receipt.get("outputs").unwrap() else {
+        panic!("file outputs")
+    };
+    assert_eq!(
+        outputs[0].get("data").unwrap().as_str().unwrap(),
+        franken_markdown::render_html(
+            source,
+            &HtmlOptions {
+                title: Some("Edition".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        outputs[1].get("data").unwrap().as_str().unwrap(),
+        base64_encode(&franken_markdown::render_pdf(source, &options).unwrap())
+    );
+    let chapters = JsonValue::Array(vec![JsonValue::Object(BTreeMap::from([
+        ("path".into(), JsonValue::String("chapter.md".into())),
+        ("markdown".into(), JsonValue::String(source.into())),
+    ]))]);
+    let mut arguments = args(config, source);
+    arguments.remove("markdown");
+    arguments.insert("chapters".into(), chapters.clone());
+    arguments.insert("to".into(), JsonValue::String("all".into()));
+    let configured = call("fmd.render_book", arguments).unwrap();
+    let configured = parse_json(content(&configured)).unwrap();
+    let defaults = call(
+        "fmd.render_book",
+        BTreeMap::from([
+            ("chapters".into(), chapters),
+            ("to".into(), JsonValue::String("all".into())),
+            ("title".into(), JsonValue::String("Edition".into())),
+        ]),
+    )
+    .unwrap();
+    let defaults = parse_json(content(&defaults)).unwrap();
+    let (JsonValue::Array(configured), JsonValue::Array(defaults)) = (
+        configured.get("outputs").unwrap(),
+        defaults.get("outputs").unwrap(),
+    ) else {
+        panic!("book outputs")
+    };
+    let book = BookRenderer::from_sources(
+        &[BookInput {
+            path: "chapter.md".into(),
+            source: source.into(),
+        }],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        configured[0].get("data").unwrap().as_str().unwrap(),
+        base64_encode(
+            &book
+                .render_pdf_with_options(&options, franken_markdown::PdfASettings::OFF)
+                .unwrap()
+        )
+    );
+    assert_ne!(configured[0].get("data"), defaults[0].get("data"));
+    assert_eq!(&configured[1..], &defaults[1..]);
+}
+
+#[test]
+fn invalid_or_unconsumed_theme_spacing_is_rejected_before_source_io() {
+    for config in [
+        r#"{"themeSpacing":null}"#,
+        r#"{"themeSpacing":"true"}"#,
+        r#"{"lineHeight":0.99}"#,
+        r#"{"lineHeight":4.01}"#,
+        r#"{"lineHeight":"2"}"#,
+        r#"{"tableCellPaddingXEm":-0.01}"#,
+        r#"{"tableCellPaddingXEm":8.01}"#,
+        r#"{"tableCellPaddingYEm":-0.01}"#,
+        r#"{"tableCellPaddingYEm":8.01}"#,
+        r#"{"tableCellPaddingYEm":false}"#,
+    ] {
+        for tool in ["fmd.render_pdf", "fmd.verify"] {
+            assert_eq!(
+                call(tool, args(config, "text")).unwrap_err().2,
+                "invalid_params",
+                "{config}"
+            );
+        }
+    }
+    let root = scratch();
+    let missing = root.join("missing.md");
+    let output = root.join("existing.pdf");
+    std::fs::write(&output, "previous artifact").unwrap();
+    for field in ["lineHeight", "tableCellPaddingXEm", "tableCellPaddingYEm"] {
+        let config = format!("{{\"themeSpacing\":false,\"{field}\":2}}");
+        for tool in ["fmd.render_pdf", "fmd.verify"] {
+            assert_eq!(
+                call(tool, args(&config, "text")).unwrap_err().2,
+                "invalid_theme_spacing"
+            );
+        }
+        let mut arguments = args(&config, "");
+        arguments.remove("markdown");
+        arguments.insert(
+            "path".into(),
+            JsonValue::String(missing.to_string_lossy().into_owned()),
+        );
+        arguments.insert(
+            "out".into(),
+            JsonValue::String(output.to_string_lossy().into_owned()),
+        );
+        arguments.insert("to".into(), JsonValue::String("pdf".into()));
+        assert_eq!(
+            call("fmd.render_file", arguments).unwrap_err().2,
+            "invalid_theme_spacing"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&output).unwrap(),
+        "previous artifact"
+    );
+    assert!(!missing.exists());
+    for target in ["html", "epub", "svg"] {
+        let mut arguments = args(r#"{"themeSpacing":false}"#, "");
+        arguments.remove("markdown");
+        arguments.insert(
+            "path".into(),
+            JsonValue::String(missing.to_string_lossy().into_owned()),
+        );
+        arguments.insert("to".into(), JsonValue::String(target.into()));
+        assert_eq!(
+            call("fmd.render_file", arguments).unwrap_err().2,
+            "unsupported_target_option"
+        );
+    }
+}
+
+#[test]
+fn discovery_advertises_pdf_spacing_types_ranges_and_target_scope() {
+    let list = tools_list_result();
+    let JsonValue::Array(tools) = list.get("tools").unwrap() else {
+        panic!("tools")
+    };
+    for tool in tools {
+        let name = tool.get("name").unwrap().as_str().unwrap();
+        let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
+        if matches!(
+            name,
+            "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
+        ) {
+            assert_eq!(
+                properties
+                    .get("themeSpacing")
+                    .unwrap()
+                    .get("type")
+                    .unwrap()
+                    .as_str(),
+                Some("boolean")
+            );
+            for (field, minimum, maximum) in [
+                ("lineHeight", 1.0, 4.0),
+                ("tableCellPaddingXEm", 0.0, 8.0),
+                ("tableCellPaddingYEm", 0.0, 8.0),
+            ] {
+                let schema = properties.get(field).unwrap();
+                assert_eq!(schema.get("type").unwrap().as_str(), Some("number"));
+                assert_eq!(schema.get("minimum").unwrap().as_f64(), Some(minimum));
+                assert_eq!(schema.get("maximum").unwrap().as_f64(), Some(maximum));
+            }
+        } else {
+            for field in [
+                "themeSpacing",
+                "lineHeight",
+                "tableCellPaddingXEm",
+                "tableCellPaddingYEm",
+            ] {
+                assert!(
+                    properties.get(field).is_none(),
+                    "{name} must not advertise {field}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn verification_keeps_supplied_images_and_font_faces() {
     let source = "# Assets\n\n![plot](plot.svg)\n\nProportional text to measure.";
     let image = base64_encode(SVG);

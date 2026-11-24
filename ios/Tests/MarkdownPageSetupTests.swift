@@ -158,4 +158,128 @@ final class MarkdownPageSetupTests: XCTestCase {
             XCTAssertEqual(error as? MarkdownPageSetup.ValidationError, .contentWidth)
         }
     }
+
+    @MainActor
+    func testCollectionPDFReceivesTheConfiguredDocumentPrintSettings() throws {
+        let model = try bookSettingsModel()
+        model.fontFamily = "serif"
+        model.renderFontScale = 1.15
+        model.documentTitle = "Collected notes"
+        model.documentAuthor = "Ada e\u{301}"
+        model.language = "fr"
+        model.darkMode = "disabled"
+        model.allowRawHtml = true
+        model.toc = true
+        model.tocDepth = 4
+        model.pageNumbers = true
+        model.codeLineNumbers = true
+        model.microtypeProtrusion = true
+        model.fitToPages = 7
+        model.customizePDFTypography = true
+        model.pdfBaseFontSize = 13
+        model.pdfHeadingScale = 1.4
+        model.pdfTableFontSize = 9.5
+        model.pdfPageSetup = .init(paper: .a5, orientation: .landscape)
+
+        let options = try model.bookOptions(for: .pdf)
+        XCTAssertEqual(options["font"] as? String, "serif")
+        XCTAssertEqual(options["fontScale"] as? Double, 1.15)
+        XCTAssertEqual(options["title"] as? String, "Collected notes")
+        XCTAssertEqual((options["author"] as? String).map { Data($0.utf8) }, Data("Ada e\u{301}".utf8))
+        XCTAssertEqual(options["lang"] as? String, "fr")
+        XCTAssertEqual(options["darkMode"] as? String, "disabled")
+        XCTAssertEqual(options["allowRawHtml"] as? Bool, true)
+        XCTAssertEqual(options["toc"] as? Bool, true)
+        XCTAssertEqual(options["tocDepth"] as? Int, 4)
+        XCTAssertEqual(options["pageNumbers"] as? Bool, true)
+        XCTAssertEqual(options["codeLineNumbers"] as? Bool, true)
+        XCTAssertEqual(options["microtype"] as? String, "protrusion")
+        XCTAssertEqual(options["fitToPages"] as? Int, 7)
+        XCTAssertEqual(options["baseFontSize"] as? Double, 13)
+        XCTAssertEqual(options["headingScale"] as? Double, 1.4)
+        XCTAssertEqual(options["tableFontSize"] as? Double, 9.5)
+        let page = try XCTUnwrap(options["page"] as? [String: Any])
+        XCTAssertEqual(page["size"] as? [String: Double],
+                       try model.pdfPageSetup.bridgePage()?["size"] as? [String: Double])
+    }
+
+    @MainActor
+    func testCollectionDefaultsAndSiteOptionsStayIndependentOfPDFControls() throws {
+        let model = try bookSettingsModel()
+        let defaults = try model.bookOptions(for: .pdf)
+        XCTAssertEqual(defaults["pageNumbers"] as? Bool, false)
+        XCTAssertEqual(defaults["codeLineNumbers"] as? Bool, false)
+        XCTAssertEqual(defaults["microtype"] as? String, "disabled")
+        for key in ["page", "fitToPages", "baseFontSize", "headingScale", "tableFontSize"] {
+            XCTAssertNil(defaults[key], key)
+        }
+
+        model.customCSS = "body { color: #123456; }"
+        model.codeLineNumbers = true
+        model.microtypeProtrusion = true
+        model.fitToPages = 3
+        model.customizePDFTypography = true
+        model.pdfBaseFontSize = 12
+        model.pdfTableFontSize = 15
+        XCTAssertEqual(try model.bookOptions(for: .pdf)["tableFontSize"] as? Double, 12,
+                       "Collection tables use the same body-size cap as ordinary PDFs")
+
+        model.pdfPageSetup.margins.leftPt = 14_400
+        XCTAssertThrowsError(try model.bookOptions(for: .pdf)) { error in
+            XCTAssertEqual(error as? MarkdownPageSetup.ValidationError, .contentWidth)
+        }
+        let site = try model.bookOptions(for: .site)
+        XCTAssertEqual(site["customCss"] as? String, model.customCSS)
+        for key in ["page", "pageNumbers", "codeLineNumbers", "microtype", "fitToPages",
+                    "baseFontSize", "headingScale", "tableFontSize"] {
+            XCTAssertNil(site[key], "\(key) must not enter the strict site API")
+        }
+    }
+
+    @MainActor
+    func testCollectionPrintOptionsRemainCapturedWhileTheEditorChanges() throws {
+        let model = try bookSettingsModel()
+        model.pageNumbers = true
+        model.codeLineNumbers = true
+        model.microtypeProtrusion = true
+        model.fitToPages = 4
+        model.customizePDFTypography = true
+        model.pdfBaseFontSize = 13
+        model.pdfHeadingScale = 1.4
+        model.pdfTableFontSize = 10
+        model.pdfPageSetup = .init(paper: .a4)
+        let captured = try model.bookOptions(for: .pdf)
+
+        model.pageNumbers = false
+        model.codeLineNumbers = false
+        model.microtypeProtrusion = false
+        model.fitToPages = 0
+        model.customizePDFTypography = false
+        model.pdfBaseFontSize = 9
+        model.pdfHeadingScale = 1.1
+        model.pdfTableFontSize = 8
+        model.pdfPageSetup = .standard
+
+        XCTAssertEqual(captured["pageNumbers"] as? Bool, true)
+        XCTAssertEqual(captured["codeLineNumbers"] as? Bool, true)
+        XCTAssertEqual(captured["microtype"] as? String, "protrusion")
+        XCTAssertEqual(captured["fitToPages"] as? Int, 4)
+        XCTAssertEqual(captured["baseFontSize"] as? Double, 13)
+        XCTAssertEqual(captured["headingScale"] as? Double, 1.4)
+        XCTAssertEqual(captured["tableFontSize"] as? Double, 10)
+        XCTAssertNotNil(captured["page"])
+        let next = try model.bookOptions(for: .pdf)
+        for key in ["page", "fitToPages", "baseFontSize", "headingScale", "tableFontSize"] {
+            XCTAssertNil(next[key], key)
+        }
+    }
+
+    @MainActor
+    private func bookSettingsModel() throws -> MarkdownRendererModel {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return MarkdownRendererModel(draftStore: MarkdownDraftStore(
+            fileURL: directory.appendingPathComponent("draft.json")
+        ))
+    }
 }

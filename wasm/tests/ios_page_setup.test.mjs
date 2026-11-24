@@ -12,7 +12,8 @@ import { uploadSource } from "./support/ios_source_upload.mjs";
 // This proves the native export contract, not SwiftUI or device qualification.
 const packageRoot = new URL("../../ios/Renderer/", import.meta.url);
 const caseNames = ["default geometry", "paper presets and orientation", "independent margins",
-  "collection PDF geometry", "invalid geometry and transfer recovery"];
+  "collection PDF geometry", "collection PDF typography", "collection code line numbers",
+  "collection optical margins", "collection page fitting", "invalid geometry and transfer recovery"];
 
 async function probeInWorker() {
   const worker = new Worker(new URL(import.meta.url));
@@ -55,7 +56,8 @@ function inspectPdf(bytes) {
     const positions = [...commands.matchAll(/1 0 0 1\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm\b/g)]
       .map(position => ({x: Number(position[1]), y: Number(position[2])}));
     assert.ok(positions.length, "page contains positioned text");
-    pages.push({width: Number(box[1]), height: Number(box[2]), positions});
+    const fontSizes = [...commands.matchAll(/\/F[\w]+\s+([\d.]+)\s+Tf\b/g)].map(size => Number(size[1]));
+    pages.push({width: Number(box[1]), height: Number(box[2]), positions, fontSizes});
   }
   assert.ok(pages.length > 0);
   return pages;
@@ -124,6 +126,11 @@ if (isMainThread) {
     const settings = page === undefined ? options : {...options, page};
     return readExport(await window.frankenExportPdf({requestID, sourceID, options: settings}), requestID);
   };
+  const bookPdf = async (source, configured = {}) => {
+    const requestID = nextRequest++;
+    return readExport(await window.frankenBook({requestID, format: "pdf",
+      files: [{path: "chapter.md", source}], options: {...options, toc: false, ...configured}}), requestID);
+  };
   const page = (widthPt, heightPt, margins = {topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 72}) =>
     ({size: {widthPt, heightPt}, margins});
   const checks = [
@@ -175,6 +182,43 @@ if (isMainThread) {
         assert.equal(sheet.width, 620); assert.equal(sheet.height, 450);
         assert.ok(sheet.positions.some(position => position.x === 60), "every chapter uses the selected left margin");
       }
+    }],
+    ["collection PDF typography", async () => {
+      const source = "# Collection heading\n\nBody text keeps its explicitly selected size.\n\n"
+        + "| Column | Value |\n| --- | --- |\n| Cell | 123 |\n";
+      const defaults = await bookPdf(source);
+      const explicitDefaults = await bookPdf(source, {codeLineNumbers: false, microtype: "disabled"});
+      assert.deepEqual(explicitDefaults, defaults, "newly forwarded inactive controls preserve default bytes");
+      const configured = inspectPdf(await bookPdf(source, {baseFontSize: 14, headingScale: 1.6, tableFontSize: 9}));
+      const sizes = configured.flatMap(sheet => sheet.fontSizes);
+      assert.ok(sizes.includes(14), "the book body uses the requested 14 pt size");
+      assert.ok(sizes.includes(9), "table text uses the independently requested 9 pt size");
+      assert.ok(Math.max(...sizes) > Math.max(...inspectPdf(defaults).flatMap(sheet => sheet.fontSizes)),
+        "the selected heading scale changes actual heading text");
+    }],
+    ["collection code line numbers", async () => {
+      const source = "~~~\nalpha();\nbeta();\ngamma();\n~~~\n";
+      const plain = inspectPdf(await bookPdf(source, {codeLineNumbers: false}));
+      const numbered = inspectPdf(await bookPdf(source, {codeLineNumbers: true}));
+      assert.equal(numbered.length, plain.length);
+      assert.ok(numbered.flatMap(sheet => sheet.positions).length > plain.flatMap(sheet => sheet.positions).length,
+        "code line numbers add positioned text to the collection PDF");
+    }],
+    ["collection optical margins", async () => {
+      const source = "\"Quoted prose,\" a reader says.\n";
+      const ordinary = inspectPdf(await bookPdf(source, {microtype: "disabled"}));
+      const protruding = inspectPdf(await bookPdf(source, {microtype: "protrusion"}));
+      const firstX = pages => Math.min(...pages.flatMap(sheet => sheet.positions.map(position => position.x)));
+      assert.ok(firstX(protruding) < firstX(ordinary), "opening punctuation uses the selected optical margin");
+    }],
+    ["collection page fitting", async () => {
+      const source = Array.from({length: 35}, (_, i) =>
+        "Paragraph " + (i + 1) + ". Collection pagination honors the selected page target while keeping the complete source available.")
+        .join("\n\n");
+      const original = inspectPdf(await bookPdf(source));
+      const fitted = inspectPdf(await bookPdf(source, {fitToPages: 1}));
+      assert.ok(original.length > 1, "the unchanged source starts as a multi-page book");
+      assert.equal(fitted.length, 1, "the supported one-page target reaches the actual book renderer");
     }],
     ["invalid geometry and transfer recovery", async () => {
       for (const invalid of [page(143, 792), page(612, 792, {leftPt: 600}),

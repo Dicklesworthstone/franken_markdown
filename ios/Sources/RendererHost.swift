@@ -1194,6 +1194,15 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         return result
     }
 
+    /// Capture print settings through the same path as a single-document PDF.
+    /// Sites keep their own HTML settings and do not depend on valid PDF setup.
+    func bookOptions(for format: BookArtifactFormat) throws -> [String: Any] {
+        switch format {
+        case .pdf: return try pdfOptions()
+        case .site: return sharedOptions
+        }
+    }
+
     func exportBook(
         files: [BookSourceFile],
         format: BookArtifactFormat
@@ -1201,9 +1210,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         // Book collections keep their existing inline API; the single-source
         // cache is reserved for document preview, analysis and ordinary export.
         let filePayload = files.map { ["path": $0.path, "source": $0.source] }
-        var options = sharedOptions
-        options["pageNumbers"] = pageNumbers
-        if format == .pdf, let page = try pdfPageSetup.bridgePage() { options["page"] = page }
+        let options = try bookOptions(for: format)
         return try await exportFile(
             function: "return await window.frankenBook(command)",
             command: ["format": format.rawValue, "files": filePayload, "options": options],

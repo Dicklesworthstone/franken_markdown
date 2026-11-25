@@ -5,12 +5,13 @@ import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
 import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES } from "./book_source_diagnostics.mjs";
 import { bookInspectionOptions } from "./book_inspection.mjs";
 import { BOOK_SOURCE_RENAME_MAX_BYTES, prepareBookSourceRename, parseBookSourceRename } from "./book_source_rename.mjs";
+import { BOOK_PDF_VERIFICATION_MAX_BYTES, parseBookPdfVerificationReport } from "./book_pdf_verification.mjs";
 export { createRetainedBook } from "./book_retained.mjs";
 
 const LIMIT = 128 * 1024 * 1024;
 const FONT_COLLECTION_LIMIT = 32 * 1024 * 1024;
 const FONT_COLLECTION_FORMAT = "font-collection";
-const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview"]);
+const retainedFormats = new Set(["pdf", "epub", "site", "preview", "chapter-preview", "pdf-verification"]);
 const sourceFormats = new Set(["links", "diagnostics", "source-rename"]);
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 const formats = Object.freeze({
@@ -22,13 +23,14 @@ const formats = Object.freeze({
   inspection: ["inspectBook", "application/json", "json"],
   links: ["checkBookLinks", "application/json", "json"],
   diagnostics: ["checkBookSourceDiagnostics", "application/json", "json"],
+  "pdf-verification": ["verifyBookPdf", "application/json", "json"],
   "source-rename": ["renameBookSource", "application/json", "json"],
   [FONT_COLLECTION_FORMAT]: ["extractFontCollectionFace", "font/sfnt", "sfnt"],
 });
 export const bookError = (code, message) => Object.assign(new Error(message), { code });
 function formatInfo(format) {
   if (!Object.hasOwn(formats, format))
-    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection, links or diagnostics.");
+    throw bookError("INVALID_FORMAT", "Choose pdf, epub, site, preview, chapter-preview, inspection, links, diagnostics or pdf-verification.");
   return formats[format];
 }
 
@@ -41,9 +43,25 @@ function renameSelection(format, value) {
   return { oldPath: data.oldPath, newPath: data.newPath };
 }
 function sourceOutputLimit(format, maximum) {
+  if (format === "pdf-verification") return Math.min(maximum, BOOK_PDF_VERIFICATION_MAX_BYTES);
   if (!sourceFormats.has(format)) return maximum;
   return Math.min(maximum, format === "source-rename" ? BOOK_SOURCE_RENAME_MAX_BYTES
     : format === "diagnostics" ? BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES : BOOK_LINK_REPORT_MAX_BYTES);
+}
+
+// These identities come from an owned source capture, never a worker reply.
+// Keep them separate from request containers exposed to custom postMessage
+// adapters so a response cannot silently verify a different book or source size.
+function pdfVerificationCapture(files, includes) {
+  return {
+    paths: files.map(file => file.path),
+    sourceLength: [...files, ...includes].reduce((size, file) => size + bookTextBytes(file.source), 0),
+  };
+}
+function checkedPdfVerification(result, expected) {
+  if (result.sourceLength !== expected.sourceLength)
+    throw bookError("WORKER_PROTOCOL_ERROR", "PDF verification replied for a different source size.");
+  parseBookPdfVerificationReport(result.bytes, expected.paths);
 }
 
 // Selection is an operation argument, not a presentation option or retained
@@ -405,6 +423,7 @@ export function createBookWorkerClient({
         chapterCount = null,
         collectionIndex = null,
         collectionBytes = null,
+        verificationCapture = null,
         renameCapture = null,
         renameSourceLength = null;
       const onAbort = () =>
@@ -466,6 +485,8 @@ export function createBookWorkerClient({
             const detail = diagnostic(data.error);
             if (extractingFont && detail.code === "INVALID_FORMAT")
               throw bookError("UNSUPPORTED_WASM_PACKAGE", "Font collections require the matching renderer and book worker package.");
+            if (format === "pdf-verification" && detail.code === "INVALID_FORMAT")
+              throw bookError("UNSUPPORTED_BOOK_PDF_VERIFICATION", "Book PDF verification requires the matching renderer and book worker package.");
             throw bookError(detail.code, detail.message);
           }
           if (extractingFont) {
@@ -504,6 +525,7 @@ export function createBookWorkerClient({
             fontFormats.has(format) && fontEmbedding === "full" ? "full" : "subset");
           checkedOutput(data.bytes, data.sourceLength, sourceOutputLimit(format, maxOutputBytes));
           checkedLinkAllowance(data.bytes, format);
+          if (verificationCapture) checkedPdfVerification(data, verificationCapture);
           const renameReport = renameCapture ? parseBookSourceRename(data.bytes, renameCapture) : null;
           if (renameCapture && data.sourceLength !== renameSourceLength)
             throw bookError("WORKER_PROTOCOL_ERROR", "Source rename replied for a different input size.");
@@ -520,7 +542,7 @@ export function createBookWorkerClient({
               format: `book-${format}`,
               bytes,
               sourceLength: data.sourceLength,
-              ...(format === "pdf" && archive ? archive : {}),
+              ...(["pdf", "pdf-verification"].includes(format) && archive ? archive : {}),
               ...fontReceipt, ...profileReceipt, ...renderReceipt,
               ...(renameReport ? { report: renameReport } : {}),
               ...(selected === undefined ? {} : { selectedChapter: selected, previewMode: data.previewMode }),
@@ -607,6 +629,10 @@ export function createBookWorkerClient({
         if (!sourceOnly && !extractingFont) fontEmbedding = input.options.fontEmbedding;
         if (!sourceOnly && !extractingFont) authoringProfile = input.options.profile;
         if (!sourceOnly && retaining) sources = captureSources(input);
+        if (format === "pdf-verification") {
+          const captured = sourceOnly ? sources : { files: input.files, includeSources: input.options.includeSources };
+          verificationCapture = pdfVerificationCapture(captured.files, captured.includeSources);
+        }
         if (selected !== undefined) {
           chapterCount = (sourceOnly ? sources.files : input.files).length;
           chapterSelection(format, selected, chapterCount);
@@ -798,6 +824,10 @@ export function installBookWorker(scope, engine) {
       if (selected !== undefined) args.push(selected);
       if (rename && typeof engine[method] !== "function")
         throw bookError("UNSUPPORTED_BOOK_SOURCE_RENAME", "Rebuild the matching book worker and renderer for source renaming.");
+      if (data.format === "pdf-verification" && typeof engine[method] !== "function")
+        throw bookError("UNSUPPORTED_BOOK_PDF_VERIFICATION", "Rebuild the matching book worker and renderer for assembled PDF verification.");
+      const verificationCapture = data.format === "pdf-verification"
+        ? pdfVerificationCapture(input.files, input.options.includeSources) : null;
       const result = await engine[method](...args);
       const profileReceipt = bookAuthoringProfileReceipt(result,
         retainedFormats.has(data.format) || data.format === "inspection" ? authoringProfile : undefined);
@@ -805,17 +835,18 @@ export function installBookWorker(scope, engine) {
         fontFormats.has(data.format) && fontEmbedding === "full" ? "full" : "subset");
       checkedOutput(result.bytes, result.sourceLength, sourceOutputLimit(data.format, data.maxOutputBytes));
       checkedLinkAllowance(result.bytes, data.format);
+      if (verificationCapture) checkedPdfVerification(result, verificationCapture);
       if (rename) parseBookSourceRename(result.bytes, input);
       const renderReceipt = bookRenderDiagnosticsReceipt(result, data.format);
-      if (data.format === "pdf") {
+      if (["pdf", "pdf-verification"].includes(data.format)) {
         if (archive && (result.pdfA !== archive.pdfA || result.pdfAStrict !== archive.pdfAStrict))
           throw bookError("UNSUPPORTED_BOOK_PDFA", "The renderer did not acknowledge the requested PDF/A emission policy.");
         if (!archive && (result.pdfA !== undefined || result.pdfAStrict !== undefined))
           throw bookError("WORKER_PROTOCOL_ERROR", "The renderer returned an unrequested PDF/A emission policy.");
       }
-      // This acknowledges captured settings, not PDF/A certification. For PDF
-      // it additionally requires the actual exporter receipt, never an echo of
-      // unconsumed options. Non-PDF outputs do not receive public PDF metadata.
+      // This acknowledges captured settings, not PDF/A certification. PDF and
+      // its verification require an actual native receipt, never an echo of
+      // unconsumed options. Other outputs do not receive public PDF metadata.
       if (archive) {
         envelope.bookPdfA = archive.pdfA; envelope.bookPdfAStrict = archive.pdfAStrict;
       }

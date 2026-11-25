@@ -2,8 +2,10 @@
 // transport; only the native BookSession parses Markdown or resolves includes.
 import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
 import { bookRenderDiagnosticsByteLength, bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
+import { BOOK_PDF_VERIFICATION_MAX_BYTES, parseBookPdfVerificationReport } from "./book_pdf_verification.mjs";
 const error = (code, message) => Object.assign(new Error(message), { code });
-const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks" });
+const methods = Object.freeze({ pdf: "renderPdf", epub: "renderEpub", site: "renderSite", links: "validateLinks",
+  "pdf-verification": "verifyPdf" });
 const fontFormats = new Set(["epub", "site", "preview", "chapter-preview"]);
 
 function samePaths(left, right) {
@@ -81,7 +83,7 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
   async function render(files, options, format = "preview", selected = 0) {
     if (busy) throw error("BOOK_BUSY", "A retained book is already rendering.");
     if (format !== "preview" && format !== "chapter-preview" && !Object.hasOwn(methods, format))
-      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site, preview, chapter-preview or links.");
+      throw error("INVALID_FORMAT", "Retained books support pdf, epub, site, preview, chapter-preview, links or pdf-verification.");
     if (format === "chapter-preview") {
       if (typeof renderChapterPreview !== "function")
         throw error("UNSUPPORTED_BOOK_CHAPTER_PREVIEW", "Rebuild the matching worker for chapter previews.");
@@ -108,6 +110,8 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
       const session = cached.session;
       if (format === "links" && typeof session.validateLinks !== "function")
         throw error("UNSUPPORTED_BOOK_LINKS", "Rebuild the matching native book for retained navigation checks.");
+      if (format === "pdf-verification" && typeof session.verifyPdf !== "function")
+        throw error("UNSUPPORTED_BOOK_PDF_VERIFICATION", "Rebuild the matching native book for assembled PDF verification.");
       // Native exporters still own every byte. Legacy preview keeps its full
       // ZIP contract; selected previews render one chapter on capable packages.
       // This raw adapter retains no output; the worker cache below owns wire bytes.
@@ -118,7 +122,7 @@ export function createRetainedBook(engine, renderPreview, renderChapterPreview) 
           : await session[methods[format]]();
       if (ticket !== generation)
         throw error("EXPORT_CANCELLED", "Retained book was released during export.");
-      if (format === "pdf" && options.pdfA === "2b"
+      if (["pdf", "pdf-verification"].includes(format) && options.pdfA === "2b"
           && (result.pdfA !== "2b" || result.pdfAStrict !== options.pdfAStrict))
         throw error("UNSUPPORTED_BOOK_PDFA", "The book renderer did not acknowledge the requested PDF/A emission policy.");
       bookFontEmbeddingReceipt(result,
@@ -173,14 +177,17 @@ function outputCacheLimits(value) {
   }
   return limits;
 }
-function workerOutput(result, format, embedding, profile) {
+function workerOutput(result, format, embedding, profile, paths) {
   const bytes = result?.bytes, sourceLength = result?.sourceLength;
   if (!(bytes instanceof Uint8Array)
       || Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]"
       || !Number.isSafeInteger(sourceLength) || sourceLength < 0 || sourceLength > 64 * 1024 * 1024)
     throw error("WORKER_PROTOCOL_ERROR", "Invalid book output envelope.");
-  if (!bytes.byteLength || bytes.byteLength > (format === "links" ? 4 : 128) * 1024 * 1024)
+  const maximum = format === "pdf-verification" ? BOOK_PDF_VERIFICATION_MAX_BYTES
+    : (format === "links" ? 4 : 128) * 1024 * 1024;
+  if (!bytes.byteLength || bytes.byteLength > maximum)
     throw error("OUTPUT_LIMIT", "Book output is empty or exceeds the output byte limit.");
+  if (format === "pdf-verification") parseBookPdfVerificationReport(bytes, paths);
   const previewMode = format === "chapter-preview" ? result.previewMode : undefined;
   if (format === "chapter-preview" && !["native-chapter", "site-fallback"].includes(previewMode))
     throw error("WORKER_PROTOCOL_ERROR", "Invalid chapter-preview capability receipt.");
@@ -188,7 +195,7 @@ function workerOutput(result, format, embedding, profile) {
   // its closures, and never return them with an unrelated cloned byte view.
   const archive = {};
   if (result.pdfA !== undefined || result.pdfAStrict !== undefined) {
-    if (format !== "pdf" || result.pdfA !== "2b" || typeof result.pdfAStrict !== "boolean")
+    if (!["pdf", "pdf-verification"].includes(format) || result.pdfA !== "2b" || typeof result.pdfAStrict !== "boolean")
       throw error("WORKER_PROTOCOL_ERROR", "Invalid book PDF/A emission receipt.");
     archive.pdfA = result.pdfA; archive.pdfAStrict = result.pdfAStrict;
   }
@@ -290,7 +297,8 @@ export function createCachedBookRenderer(renderer, renderPreview, requestedLimit
           }
         }
         misses++;
-        const output = workerOutput(await produce(), kind, options.fontEmbedding, options.profile);
+        const output = workerOutput(await produce(), kind, options.fontEmbedding, options.profile,
+          kind === "pdf-verification" ? files.map(file => file.path) : undefined);
         fence();
         const size = output.bytes.byteLength + bookRenderDiagnosticsByteLength(output.diagnostics);
         if (cacheable && size <= limits.maxEntryBytes && size <= limits.maxBytes) {

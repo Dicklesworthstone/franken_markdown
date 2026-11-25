@@ -1,6 +1,6 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookSourceDiagnosticsOutput, BookSourceRenameOptions, BookSourceRenameOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookPdfVerificationOutput, BookSourceDiagnosticsOutput, BookSourceRenameOptions, BookSourceRenameOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
-export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links" | "diagnostics";
+export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links" | "diagnostics" | "pdf-verification";
 /** A transport capture revision is local to this worker client, not a native
  * source revision. Present only when the worker negotiated source deltas. */
 export interface BookWorkerCapture {
@@ -33,6 +33,10 @@ export interface BookChapterWorkerOutput extends Omit<BookChapterPreviewOutput, 
 }
 /** Navigation report from an explicitly revision-fenced retained source operation. */
 export interface BookRetainedLinksOutput extends Omit<BookLinksOutput, "filename">, BookWorkerCapture {}
+/** Complete assembled-publication verification, bound to the requested chapter
+ * order and captured source size. PDF/A settings describe emission policy,
+ * never independent conformance certification. */
+export interface BookPdfVerificationWorkerOutput extends Omit<BookPdfVerificationOutput, "filename">, BookWorkerCapture {}
 export interface BookInspectionOutput {
   readonly format: "book-inspection";
   /** Verified source dialect; absent when the legacy default was requested. */
@@ -133,6 +137,17 @@ export interface BookWorker {
     options?: BookOptions,
     request?: { signal?: AbortSignal },
   ): Promise<Omit<BookSourceDiagnosticsOutput, "filename">>;
+  /** Verify actual assembled PDF layout/navigation with the same captured
+   * typography, page, includes, images and fonts as publication. Complete JSON
+   * is capped at min(maxOutputBytes, 8 MiB); missing native support, malformed
+   * or mismatched reports and strict pagination failures never fall back to
+   * source-only checks. Cancellation/timeout terminates the owned worker. */
+  render(
+    files: readonly BookFile[],
+    format: "pdf-verification",
+    options?: BookOptions,
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPdfVerificationWorkerOutput>;
   render(
     files: readonly BookFile[],
     format: BookWorkerFormat,
@@ -145,11 +160,14 @@ export interface BookWorker {
     | BookInspectionOutput
     | Omit<BookLinksOutput, "filename">
     | Omit<BookSourceDiagnosticsOutput, "filename">
+    | BookPdfVerificationWorkerOutput
   >;
   /** Export after selective text changes to exact retained chapter/include keys.
    * Sends only changes; no settings, unchanged sources, image or font bytes.
    * [] re-exports unchanged source. "links" calls native validation without
    * rerendering or reparsing; its response is capped at 4 MiB.
+   * "pdf-verification" runs the assembled publication verifier under the
+   * retained settings/resources, with a separate 8 MiB report ceiling.
    * Paths/order/roles/resources cannot change.
    * Requires a negotiated idle retainedInputRevision. Stale local revisions
    * fail without discarding the newer capture. After expiry/worker failure,
@@ -158,10 +176,16 @@ export interface BookWorker {
    * timeout still terminate synchronous rendering. Output is always complete. */
   renderSourceUpdate(
     changes: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview" | "links",
+    format: "pdf-verification",
+    options: { expectedRevision: number },
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPdfVerificationWorkerOutput>;
+  renderSourceUpdate(
+    changes: readonly BookFile[],
+    format: BookFormat | "preview" | "chapter-preview" | "links" | "pdf-verification",
     options: { expectedRevision: number },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput | BookPdfVerificationWorkerOutput>;
   /** Capture complete current chapter/include text, then send only changed
    * strings against the idle source baseline. No images/fonts/settings are
    * read or transferred. Membership/order/roles must remain identical; use
@@ -169,10 +193,16 @@ export interface BookWorker {
    * shares the idle worker lifetime and is released on expiry/cancellation. */
   renderSources(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview" | "links",
+    format: "pdf-verification",
+    options: { expectedRevision: number; includeSources?: readonly BookFile[] },
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPdfVerificationWorkerOutput>;
+  renderSources(
+    files: readonly BookFile[],
+    format: BookFormat | "preview" | "chapter-preview" | "links" | "pdf-verification",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput | BookPdfVerificationWorkerOutput>;
   /** Replace the COMPLETE chapter/include collection against an idle capture.
    * Supports additions, removals, reordering and chapter/include role changes.
    * includeSources defaults to [] and revokes every previous include resource.
@@ -185,10 +215,16 @@ export interface BookWorker {
    * expiry and failure handling match renderSourceUpdate(). */
   renderSourceSet(
     files: readonly BookFile[],
-    format: BookFormat | "preview" | "chapter-preview" | "links",
+    format: "pdf-verification",
+    options: { expectedRevision: number; includeSources?: readonly BookFile[] },
+    request?: { signal?: AbortSignal },
+  ): Promise<BookPdfVerificationWorkerOutput>;
+  renderSourceSet(
+    files: readonly BookFile[],
+    format: BookFormat | "preview" | "chapter-preview" | "links" | "pdf-verification",
     options: { expectedRevision: number; includeSources?: readonly BookFile[] },
     request?: BookChapterPreviewRequest,
-  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput>;
+  ): Promise<(Omit<BookOutput, "filename"> & BookWorkerCapture) | BookPreviewOutput | BookChapterWorkerOutput | BookRetainedLinksOutput | BookPdfVerificationWorkerOutput>;
   /** Terminates running AND retained idle workers. The client can render again. */
   cancel(): void;
   /** Cancel in-flight work, but keep an already-idle book. Hosts must use
@@ -207,7 +243,8 @@ export function createBookWorker(options?: {
    * Source edits use native transactions; settings/assets changes reconstruct.
    * render() sends a full snapshot; renderSourceUpdate() sends only changes. */
   retainPreview?: boolean;
-  /** Opt in to one native session across PDF, EPUB, site and preview exports.
+  /** Opt in to one native session across PDF, EPUB, site, preview and assembled
+   * PDF verification outputs.
    * Takes precedence over retainPreview. Text edits use updateSources; source
    * membership/order changes use replaceSources. Old edit APIs reconstruct from
    * the current snapshot. Settings or assets changes also reconstruct.

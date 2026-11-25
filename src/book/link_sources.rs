@@ -1,7 +1,7 @@
 //! Source ownership retained separately from the public, source-less link AST.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use super::{Json, LinkReport, check_book_links_inner, invalid};
@@ -110,7 +110,7 @@ impl ChapterLinkSources {
                     destinations.push(match &node {
                         Node::Link(_, destination) => capture.link_range(destination),
                         Node::Html(html, index, _) => capture.html_range(html, *index),
-                        Node::Note(_) => None,
+                        Node::Note(_, _) => None,
                     });
                     parsed_destinations.push(node.destination().and_then(|destination| {
                         if destination.len() > MAX_PARSED_DESTINATION
@@ -280,6 +280,9 @@ pub(crate) struct PdfReferenceSource {
     pub destination: String,
     pub parsed_destination: Option<String>,
     pub note: bool,
+    /// A note citation outside an existing link can own a generated return
+    /// action. Nested citations retain their enclosing link instead.
+    pub linked_note: bool,
     pub html: bool,
     pub source: LinkSourceLocation,
 }
@@ -294,55 +297,69 @@ pub(crate) fn pdf_references(
     let mut references = Vec::new();
     let mut bytes = 0usize;
     let mut source_bytes = 0usize;
+    // PDF publishes the first definition of each source ID, including
+    // otherwise dormant notes. Keep structural source indices unchanged, but
+    // do not inventory references in duplicate bodies that are never painted.
+    let mut retained_notes = Some(BTreeSet::new());
     for (owner, block) in blocks.iter().enumerate() {
-        let complete = walk_blocks(std::slice::from_ref(block), 0, &mut |node| {
-            let index = indices
-                .as_ref()
-                .and_then(|indices| indices.get(&node.key()).copied());
-            let (destination, note, html) = match node {
-                Node::Link(_, destination) => (Cow::Borrowed(destination), false, false),
-                Node::Note(Inline::FootnoteRef { id }) => (Cow::Borrowed(id.as_str()), true, false),
-                Node::Note(_) => return true,
-                Node::Html(_, _, destination) => (Cow::Owned(destination), false, true),
-            };
-            if references.len() >= 16_384
-                || destination.len() > 8192
-                || destination.len() > (1024 * 1024usize).saturating_sub(bytes)
-            {
-                return false;
-            }
-            bytes += destination.len();
-            let mut source = sources.map_or_else(
-                || LinkSourceLocation {
-                    precision: LinkSourcePrecision::Block,
-                    source: BookSourceLocation::Unavailable("ownership_unavailable"),
-                },
-                |sources| sources.location(owner, index),
-            );
-            let retained = match &source.source {
-                BookSourceLocation::Mapped(ranges) => ranges
-                    .iter()
-                    .map(|range| range.path.len().saturating_add(32))
-                    .sum::<usize>(),
-                BookSourceLocation::Unavailable(_) => 0,
-            };
-            if retained > MAX_PROVENANCE_BYTES.saturating_sub(source_bytes) {
-                source.source = BookSourceLocation::Unavailable("provenance_limit");
-            } else {
-                source_bytes += retained;
-            }
-            let parsed_destination = sources
-                .and_then(|sources| index.and_then(|index| sources.parsed_destinations.get(index)))
-                .and_then(Clone::clone);
-            references.push(PdfReferenceSource {
-                destination: destination.into_owned(),
-                parsed_destination,
-                note,
-                html,
-                source,
-            });
-            true
-        });
+        let complete = walk_blocks_with_notes(
+            std::slice::from_ref(block),
+            0,
+            &mut retained_notes,
+            &mut |node| {
+                let index = indices
+                    .as_ref()
+                    .and_then(|indices| indices.get(&node.key()).copied());
+                let (destination, note, linked_note, html) = match node {
+                    Node::Link(_, destination) => (Cow::Borrowed(destination), false, false, false),
+                    Node::Note(Inline::FootnoteRef { id }, linked) => {
+                        (Cow::Borrowed(id.as_str()), true, linked, false)
+                    }
+                    Node::Note(_, _) => return true,
+                    Node::Html(_, _, destination) => (Cow::Owned(destination), false, false, true),
+                };
+                if references.len() >= 16_384
+                    || destination.len() > 8192
+                    || destination.len() > (1024 * 1024usize).saturating_sub(bytes)
+                {
+                    return false;
+                }
+                bytes += destination.len();
+                let mut source = sources.map_or_else(
+                    || LinkSourceLocation {
+                        precision: LinkSourcePrecision::Block,
+                        source: BookSourceLocation::Unavailable("ownership_unavailable"),
+                    },
+                    |sources| sources.location(owner, index),
+                );
+                let retained = match &source.source {
+                    BookSourceLocation::Mapped(ranges) => ranges
+                        .iter()
+                        .map(|range| range.path.len().saturating_add(32))
+                        .sum::<usize>(),
+                    BookSourceLocation::Unavailable(_) => 0,
+                };
+                if retained > MAX_PROVENANCE_BYTES.saturating_sub(source_bytes) {
+                    source.source = BookSourceLocation::Unavailable("provenance_limit");
+                } else {
+                    source_bytes += retained;
+                }
+                let parsed_destination = sources
+                    .and_then(|sources| {
+                        index.and_then(|index| sources.parsed_destinations.get(index))
+                    })
+                    .and_then(Clone::clone);
+                references.push(PdfReferenceSource {
+                    destination: destination.into_owned(),
+                    parsed_destination,
+                    note,
+                    linked_note,
+                    html,
+                    source,
+                });
+                true
+            },
+        );
         if !complete {
             return Err(crate::RenderError::InvalidInput(
                 "book_pdf_verification_limit: reference inventory exceeds depth or report limits"
@@ -359,13 +376,13 @@ pub(crate) fn pdf_references(
 pub(super) type NodeKey = (u8, usize, usize);
 enum Node<'a> {
     Link(&'a Inline, &'a str),
-    Note(&'a Inline),
+    Note(&'a Inline, bool),
     Html(&'a str, usize, String),
 }
 impl Node<'_> {
     fn key(&self) -> NodeKey {
         match self {
-            Self::Link(node, _) | Self::Note(node) => inline_key(node),
+            Self::Link(node, _) | Self::Note(node, _) => inline_key(node),
             Self::Html(html, index, _) => html_key(html, *index),
         }
     }
@@ -373,8 +390,8 @@ impl Node<'_> {
     fn destination(&self) -> Option<&str> {
         match self {
             Self::Link(_, destination) => Some(destination),
-            Self::Note(Inline::FootnoteRef { id }) => Some(id),
-            Self::Note(_) => None,
+            Self::Note(Inline::FootnoteRef { id }, _) => Some(id),
+            Self::Note(_, _) => None,
             Self::Html(_, _, destination) => Some(destination),
         }
     }
@@ -395,6 +412,7 @@ fn walk_html<'a>(html: &'a str, visit: &mut impl FnMut(Node<'a>) -> bool) -> boo
 fn walk_inlines<'a>(
     inlines: &'a [Inline],
     depth: usize,
+    enclosing_link: bool,
     visit: &mut impl FnMut(Node<'a>) -> bool,
 ) -> bool {
     if depth > 128 {
@@ -402,12 +420,12 @@ fn walk_inlines<'a>(
     }
     inlines.iter().all(|inline| match inline {
         Inline::Link { dest, content, .. } => {
-            visit(Node::Link(inline, dest)) && walk_inlines(content, depth + 1, visit)
+            visit(Node::Link(inline, dest)) && walk_inlines(content, depth + 1, true, visit)
         }
-        Inline::FootnoteRef { .. } => visit(Node::Note(inline)),
+        Inline::FootnoteRef { .. } => visit(Node::Note(inline, !enclosing_link)),
         Inline::Html(html) => walk_html(html, visit),
         Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-            walk_inlines(inner, depth + 1, visit)
+            walk_inlines(inner, depth + 1, enclosing_link, visit)
         }
         _ => true,
     })
@@ -417,31 +435,48 @@ fn walk_blocks<'a>(
     depth: usize,
     visit: &mut impl FnMut(Node<'a>) -> bool,
 ) -> bool {
+    walk_blocks_with_notes(blocks, depth, &mut None, visit)
+}
+
+fn walk_blocks_with_notes<'a>(
+    blocks: &'a [Block],
+    depth: usize,
+    retained_notes: &mut Option<BTreeSet<&'a str>>,
+    visit: &mut impl FnMut(Node<'a>) -> bool,
+) -> bool {
     if depth > 128 {
         return false;
     }
     blocks.iter().all(|block| match block {
         Block::Heading { inlines, .. } | Block::Paragraph(inlines) => {
-            walk_inlines(inlines, depth + 1, visit)
+            walk_inlines(inlines, depth + 1, false, visit)
         }
         Block::HtmlBlock(html) => walk_html(html, visit),
-        Block::BlockQuote(inner) | Block::FootnoteDefinition { blocks: inner, .. } => {
-            walk_blocks(inner, depth + 1, visit)
+        Block::BlockQuote(inner) => walk_blocks_with_notes(inner, depth + 1, retained_notes, visit),
+        Block::FootnoteDefinition { id, blocks: inner } => {
+            if retained_notes
+                .as_mut()
+                .is_some_and(|notes| !notes.insert(id.as_str()))
+            {
+                true
+            } else {
+                walk_blocks_with_notes(inner, depth + 1, retained_notes, visit)
+            }
         }
         Block::List(list) => list
             .items
             .iter()
-            .all(|item| walk_blocks(&item.blocks, depth + 1, visit)),
+            .all(|item| walk_blocks_with_notes(&item.blocks, depth + 1, retained_notes, visit)),
         Block::Table(table) => table
             .head
             .iter()
             .chain(table.rows.iter().flatten())
-            .all(|cell| walk_inlines(cell, depth + 1, visit)),
+            .all(|cell| walk_inlines(cell, depth + 1, false, visit)),
         Block::DefinitionList(items) => items.iter().all(|item| {
             item.terms
                 .iter()
                 .chain(&item.definitions)
-                .all(|inlines| walk_inlines(inlines, depth + 1, visit))
+                .all(|inlines| walk_inlines(inlines, depth + 1, false, visit))
         }),
         _ => true,
     })

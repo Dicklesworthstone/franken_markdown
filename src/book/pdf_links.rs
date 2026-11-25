@@ -718,6 +718,9 @@ fn verification_references(
     let mut bytes = 0usize;
     let mut parsed_bytes = 0usize;
     let mut source_bytes = 0usize;
+    let note_ids = options
+        .footnote_backlinks
+        .then(|| crate::footnotes::page_note_ids(document));
     for (index, chapter) in book.chapters.iter().enumerate() {
         let original = pdf_references(&chapter.doc.blocks, Some(metadata.chapter(index)))?;
         let mut originals = BTreeMap::<(bool, String), VecDeque<_>>::new();
@@ -806,8 +809,15 @@ fn verification_references(
                 };
                 (target, checked, "link")
             };
+            // Match note preparation: citations inside existing links have
+            // no independent return target, and undefined notes retain their
+            // literal source. Keep those authored references in the report;
+            // only the generated action depends on this eligibility.
             let return_target = if options.footnote_backlinks
-                && reference.note
+                && reference.linked_note
+                && note_ids
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains_key(&reference.destination))
                 && returns.insert(reference.destination.clone())
             {
                 Some(Target::FootnoteReference(reference.destination.clone()))

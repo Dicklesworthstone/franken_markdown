@@ -243,3 +243,160 @@ fn ambiguous_repeated_html_destinations_do_not_invent_precise_source_ownership()
     }
     assert_eq!(report.navigation.report().finding_count(), 2);
 }
+
+#[test]
+fn return_navigation_requires_a_citation_with_its_own_note_link() {
+    let source = "# Start\n\n[Ordinary link with a citation[^hidden]](https://example.com).\n\n[^hidden]: A complete retained note.\n";
+    let book = BookRenderer::new(&[input("one.md", source)]).unwrap();
+    let without = PdfOptions::default();
+    let with = PdfOptions {
+        footnote_backlinks: true,
+        ..PdfOptions::default()
+    };
+    // A nested citation retains its enclosing action; there is no separate
+    // note link or generated return label to verify. This uses actual PDF
+    // bytes as a negative control, independently of the report inventory.
+    assert_eq!(
+        book.render_pdf_with_options(&with, PdfASettings::OFF)
+            .unwrap(),
+        book.render_pdf_with_options(&without, PdfASettings::OFF)
+            .unwrap(),
+    );
+    let report = book.verify_pdf_with_options(&with, PdfASettings::OFF).unwrap();
+    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    assert_eq!(report.destinations.len(), 2);
+    assert_eq!(report.destinations[0].status, "unchecked");
+    assert_eq!(report.destinations[1].kind, "footnote");
+    assert_eq!(report.destinations[1].status, "resolved");
+    assert!(
+        report
+            .destinations
+            .iter()
+            .all(|reference| reference.kind != "footnote_backreference")
+    );
+}
+
+#[test]
+fn repeated_note_returns_keep_a_linked_source_and_missing_author_targets() {
+    let nested = "[Nested citation[^n]](https://example.com).";
+    let linked = "Actual linked citation[^n].";
+    let source = format!(
+        "# Start\n\n{nested}\n\n{linked}\n\nAnother linked citation[^n]. [Missing](#absent).\n\n[^n]: Retained note.\n"
+    );
+    let book = BookRenderer::new(&[input("one.md", &source)]).unwrap();
+    let options = PdfOptions {
+        footnote_backlinks: true,
+        ..PdfOptions::default()
+    };
+    let report = book
+        .verify_pdf_with_options(&options, PdfASettings::OFF)
+        .unwrap();
+    let returns: Vec<_> = report
+        .destinations
+        .iter()
+        .filter(|reference| reference.kind == "footnote_backreference")
+        .collect();
+    assert_eq!(returns.len(), 1, "one generated label per note");
+    assert_eq!(returns[0].status, "resolved");
+    let BookSourceLocation::Mapped(ranges) = &returns[0].source.source else {
+        panic!("linked citation provenance must be retained");
+    };
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(&source[ranges[0].start..ranges[0].end], linked);
+    assert_eq!(
+        report
+            .destinations
+            .iter()
+            .filter(|reference| reference.kind == "footnote")
+            .count(),
+        3
+    );
+    assert_eq!(report.layout.anchors_unresolved, ["one.md: #absent"]);
+    assert_eq!(
+        report
+            .destinations
+            .iter()
+            .filter(|reference| reference.status == "unresolved")
+            .count(),
+        1
+    );
+    assert_eq!(report.layout.verdict, "findings");
+}
+
+#[test]
+fn note_only_cycles_and_forward_citations_keep_their_real_return_destinations() {
+    let source = "# Start\n\nBody.\n\n[^first]: Forward citation[^second].\n\n[^second]: Back citation[^first]. [Nested-only citation[^hidden]](https://example.com).\n\n[^hidden]: Nested note.\n";
+    let book = BookRenderer::new(&[input("one.md", source)]).unwrap();
+    let options = PdfOptions {
+        footnote_backlinks: true,
+        ..PdfOptions::default()
+    };
+    let report = book
+        .verify_pdf_with_options(&options, PdfASettings::OFF)
+        .unwrap();
+    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    let returns: Vec<_> = report
+        .destinations
+        .iter()
+        .filter(|reference| reference.kind == "footnote_backreference")
+        .collect();
+    assert_eq!(returns.len(), 2);
+    assert_eq!(
+        returns
+            .iter()
+            .map(|reference| reference.destination.as_str())
+            .collect::<Vec<_>>(),
+        ["second", "first"]
+    );
+    for reference in returns {
+        assert_eq!(reference.status, "resolved");
+        assert!(reference.page.is_some() && reference.y.is_some());
+    }
+    assert!(
+        report
+            .destinations
+            .iter()
+            .filter(|reference| reference.kind == "footnote")
+            .all(|reference| reference.status == "resolved")
+    );
+}
+
+#[test]
+fn discarded_duplicate_definitions_do_not_invent_published_references() {
+    let source = "# Start\n\nBody[^n].\n\n[^n]: Selected first definition.\n\n[^n]: [Discarded link](#missing).\n";
+    let book = BookRenderer::new(&[input("one.md", source)]).unwrap();
+    assert_eq!(book.validate_links().unwrap().finding_count(), 0);
+    let report = book.verify_pdf().unwrap();
+    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    assert_eq!(report.destinations.len(), 1);
+    assert_eq!(report.destinations[0].kind, "footnote");
+    assert_eq!(report.destinations[0].destination, "n");
+    assert_eq!(report.destinations[0].status, "resolved");
+    let text = report
+        .layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .map(|run| run.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("Selected first definition"));
+    assert!(!text.contains("Discarded link"));
+
+    let source = "# Start\n\nBody[^n].\n\n[^n]: [Selected link](#missing).\n\n[^n]: [Discarded link](#missing).\n";
+    let book = BookRenderer::new(&[input("one.md", source)]).unwrap();
+    let report = book.verify_pdf().unwrap();
+    assert_eq!(report.layout.verdict, "findings");
+    let unresolved: Vec<_> = report
+        .destinations
+        .iter()
+        .filter(|reference| reference.status == "unresolved")
+        .collect();
+    assert_eq!(unresolved.len(), 1, "the published broken link remains");
+    assert_eq!(unresolved[0].destination, "#missing");
+    let BookSourceLocation::Mapped(ranges) = &unresolved[0].source.source else {
+        panic!("the first definition retains exact source ownership");
+    };
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].start, source.find("#missing").unwrap());
+    assert_eq!(&source[ranges[0].start..ranges[0].end], "#missing");
+}

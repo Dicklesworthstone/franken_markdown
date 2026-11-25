@@ -215,5 +215,8 @@ fn every_resource_consumer_advertises_the_same_bounded_face_selector() {
         let image = fields.get("images").unwrap().get("items").unwrap();
         assert!(image.get("properties").unwrap().get("faceIndex").is_none());
     }
-    assert_eq!(checked, 7, "all six publication tools and PDF verification");
+    assert_eq!(
+        checked, 8,
+        "all six publication tools, document verification and book PDF verification"
+    );
 }

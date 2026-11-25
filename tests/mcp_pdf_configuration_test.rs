@@ -413,7 +413,11 @@ fn discovery_advertises_pdf_spacing_types_ranges_and_target_scope() {
         let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
         if matches!(
             name,
-            "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
+            "fmd.render_pdf"
+                | "fmd.render_file"
+                | "fmd.render_book"
+                | "fmd.verify"
+                | "fmd.verify_book"
         ) {
             assert_eq!(
                 properties
@@ -798,7 +802,11 @@ fn discovery_exposes_page_shape_and_auditable_resources_without_pdfa_claims() {
         let props = tool.get("inputSchema").unwrap().get("properties").unwrap();
         if matches!(
             name,
-            "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
+            "fmd.render_pdf"
+                | "fmd.render_file"
+                | "fmd.render_book"
+                | "fmd.verify"
+                | "fmd.verify_book"
         ) {
             let page = props.get("page").unwrap();
             assert_eq!(page.get("type").unwrap().as_str(), Some("object"));

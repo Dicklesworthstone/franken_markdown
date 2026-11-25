@@ -2,10 +2,12 @@
 
 `fmd.verify_book` accepts the same ordered `chapters` and optional
 `includeSources` as `fmd.render_book`, with exactly the same source admission,
-logical path rules and bounded include expansion. It returns the existing
-`BookRenderer::validate_links` report without loading fonts or images,
-rendering pages, opening files, fetching URLs, or inventing a second Markdown
-link grammar.
+logical path rules and bounded include expansion. The default
+`target: "navigation"` returns the existing source-navigation report without
+loading fonts or images or rendering pages. Explicit `target: "pdf"` verifies
+the assembled PDF through the same configured publication plan, fonts,
+resources, fitting and final page emission as `fmd.render_book`. Neither mode
+opens files or fetches URLs.
 
 Both tools accept the same optional authoring `profile`: `"commonmark-gfm"`
 or `"gfm-plus"`. Supply the same value when checking and publishing an edition.
@@ -51,12 +53,93 @@ not a clean bill of health: callers must inspect the counts and findings.
 Invalid sources or an incomplete analysis instead return a JSON-RPC error,
 never an empty or truncated report that resembles success.
 
-The tool accepts only source fields. Render options, asset payloads, output
-paths and `strictLinks` are rejected rather than silently ignored. Its source
-limit remains the smaller of the MCP server limit and 64 MiB, including logical
-path bytes. The shared validator independently limits AST size/depth, findings
+Default navigation mode accepts source fields, `target` and `maxReportBytes`.
+PDF options and resource payloads require explicit `target: "pdf"`; supplying
+them to navigation mode is an argument error even when their values are empty
+or false. Output paths, `to` and `strictLinks` are not verification arguments.
+The source limit remains the smaller of the MCP server limit and 64 MiB,
+including logical path bytes. The shared validator independently limits AST size/depth, findings
 and report bytes. Includes are checked after expansion, in the containing
 chapter's navigation context, and include-only sources do not become chapters.
+
+## Verify the assembled PDF
+
+Use the same sources and PDF options that will be published:
+
+```json
+{
+  "name": "fmd.verify_book",
+  "arguments": {
+    "target": "pdf",
+    "chapters": [
+      {"path": "one.md", "markdown": "# Shared\n\n[Next](two.md#shared). Note[^n].\n\n[^n]: First note."},
+      {"path": "two.md", "markdown": "# Shared\n\n[Back](one.md#shared)"}
+    ],
+    "page": {"size": "a5", "margins": 36},
+    "toc": true,
+    "pageNumbers": true,
+    "footnoteBacklinks": true,
+    "running": {
+      "header": {"left": "{chapter}", "right": "{page}/{pages}"}
+    },
+    "maxReportBytes": 16777216
+  }
+}
+```
+
+The first text-content item has schema `fmd-book-pdf-verification-v1`:
+
+| Field | Meaning |
+|---|---|
+| `layout` | Final physical pages and positioned text, plus render, accessibility and overflow findings |
+| `navigation` | The existing source-navigation report, including original chapter/include locations for broken links |
+| `destinations` | Authored references and their actual PDF destination status, physical page and vertical position |
+| `pagination` | The final writer's exact or fallback pagination provenance |
+
+Text capture occurs inside final page emission. It includes generated contents,
+repeated table headers, continued footnotes and fitted running text. Chapter
+language overrides, duplicate heading names, note identities and target
+bindings therefore follow the actual book pipeline. Page numbers are one-based;
+vertical coordinates use PDF points measured upward from the page bottom.
+An unresolved authored destination retains its original identity instead of
+exposing a temporary internal link token.
+
+All PDF fields advertised by `fmd.render_book` are accepted, including
+paper/margins, typography, baseline grids, fitting, running content, explicit
+`images`/`fonts` bytes, pagination and archival writer settings. The same
+option parser and resource budgets apply. `strictPagination` preserves typed
+errors such as `pagination_infeasible`; it never produces a successful report
+for weaker fallback pagination. `pdfA` and `pdfAStrict` select the publication
+writer and its admission policy; this report is not independent PDF/A or
+PDF/UA certification.
+
+The core PDF report is bounded to 8 MiB. `maxReportBytes` applies to the combined
+UTF-8 text of all returned report items, including parser diagnostics. It accepts
+1 through 16,777,216 bytes and defaults to 16 MiB. Exceeding it returns
+`report_too_large`, without a partial report. The larger combined ceiling leaves
+room for the existing separately bounded source-diagnostic sidecar. Navigation
+and diagnostic reports retain their own existing limits.
+
+### Rust API
+
+```rust
+use franken_markdown::{PdfASettings, PdfOptions};
+use franken_markdown::book::{BookInput, BookRenderer};
+
+let renderer = BookRenderer::new(&[
+    BookInput { path: "one.md".into(), source: "# One".into() },
+    BookInput { path: "two.md".into(), source: "# Two".into() },
+])?;
+let report = renderer.verify_pdf_with_options(
+    &PdfOptions::default(),
+    PdfASettings::OFF,
+)?;
+let json = report.to_json()?;
+```
+
+`BookRenderer::verify_pdf()` uses the renderer's retained options.
+`verify_pdf_with_options` applies options to that call. Both return a
+`BookPdfVerificationReport`; neither publishes an artifact or performs host I/O.
 
 ## Refuse broken editions before rendering
 
@@ -74,33 +157,28 @@ Omitting `strictLinks` or setting it to false retains the ordinary non-strict
 publication behavior. Successful requests still obey the aggregate artifact
 limit described in `MCP_BOOK_PUBLISHING.md`.
 
-This is source-navigation verification, **not** PDF/A, PDF/UA, EPUB validation,
-asset-availability validation, or a network link checker. External URLs and
+The default navigation check and `strictLinks` guard are source-navigation
+verification, **not** PDF/A, PDF/UA, EPUB validation, asset-availability
+validation, or a network link checker. External URLs and
 non-chapter downloads remain explicitly counted as unverified. Headings and
 referenced footnote anchors use their actual publication IDs; code examples,
 images, raw HTML IDs and unpublished note bodies are outside this check.
 No source spans are invented for text that may have moved through includes.
 
-## Tests and execution status
+## Regression coverage
 
-Sixteen new Rust integration tests cover shared report equality, include
-context, finding taxonomy, external/unchecked distinctions, all strict output
-modes, ordering before resource decoding, unchanged successful bytes, Unicode,
-reference-style links, footnote collisions, narrow schemas, input/analysis
-limits and fresh requests. Two cases run through the real framed MCP server
-loop: refusal followed by repair/publication, and tool notifications producing
-no reply. They use the repository parser, validator and renderers, not doubles.
-The thirteen publication tests remain, for 29 new tests across the two files.
+The source-navigation and strict-publication suites preserve default report
+bytes, include provenance, finding taxonomy, external/unchecked distinctions,
+resource admission ordering and successful publication bytes. The PDF
+verification suite covers configured source/resource parity, source-only
+compatibility, option admission, strict pagination, report limits, included
+source locations, archival writer settings and recovery through framed MCP
+requests.
 
-**These Rust tests have not been run in the authoring environment.** Rust,
-Cargo, rustfmt and an admitted DSR/RCH host are unavailable. Source hash,
-lexical/delimiter, whitespace and JSON-fixture checks are not compilation,
-runtime execution or a full repository pass. No GitHub Actions was used.
-
-Run through the project's admitted build environment:
+Run the complete affected suites and required repository gates:
 
 ```sh
-cargo test --locked --features mcp --test mcp_book_test --test mcp_book_verify_test --test mcp_test
+cargo test --locked --features mcp --test book_pdf_verification --test book_pdf_verification_edges --test mcp_book_pdf_verify_test --test mcp_book_verify_test --test mcp_book_pdfa_test --test mcp_book_test --test mcp_resources_test --test mcp_pdf_configuration_test --test mcp_pagination_test --test mcp_font_collections
 cargo check --locked --all-targets --features mcp
 cargo clippy --locked --all-targets --features mcp -- -D warnings
 cargo build --locked --no-default-features

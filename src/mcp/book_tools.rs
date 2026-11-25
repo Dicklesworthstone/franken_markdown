@@ -22,6 +22,22 @@ const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
 pub(super) const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+// Accommodates the bounded 8 MiB PDF report plus the existing source diagnostic
+// sidecar (up to 6 MiB), without narrowing default source-only admission.
+pub(super) const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+
+const VERIFICATION_FIELDS: &[Field] = &[
+    (
+        "target",
+        "string",
+        "Verification scope: navigation (default) or pdf for the actual assembled publication",
+    ),
+    (
+        "maxReportBytes",
+        "integer",
+        "Combined UTF-8 report and source-diagnostic bytes, 1..16777216; default 16777216; never truncates findings",
+    ),
+];
 
 pub(super) const SOURCE_FIELDS: &[Field] = &[
     AUTHORING_PROFILE,
@@ -85,8 +101,55 @@ pub(super) fn fields() -> Vec<Field> {
     fields.into_values().collect()
 }
 
+pub(super) fn verification_fields() -> Vec<Field> {
+    let mut fields = BTreeMap::new();
+    for &field in SOURCE_FIELDS
+        .iter()
+        .chain(VERIFICATION_FIELDS)
+        .chain(PDF_FIELDS)
+    {
+        if field.0 != "markdown" {
+            fields.entry(field.0).or_insert(field);
+        }
+    }
+    fields.into_values().collect()
+}
+
+/// Discovery expresses the same conditional admission as `verify`: PDF
+/// options and resources require an explicit PDF target, even when empty.
+pub(super) fn verification_admission_schema() -> Json {
+    let pdf_only = PDF_FIELDS
+        .iter()
+        .filter(|field| {
+            field.0 != "markdown" && !SOURCE_FIELDS.iter().any(|source| source.0 == field.0)
+        })
+        .map(|field| (field.0.to_string(), Json::Bool(false)))
+        .collect();
+    object([
+        (
+            "if",
+            object([
+                ("required", Json::Array(vec![text("target")])),
+                (
+                    "properties",
+                    object([("target", object([("const", text("pdf"))]))]),
+                ),
+            ]),
+        ),
+        ("else", object([("properties", Json::Object(pdf_only))])),
+    ])
+}
+
 pub(super) fn schema(name: &str) -> Option<Json> {
     match name {
+        "target" => Some(object([
+            ("type", text("string")),
+            (
+                "enum",
+                Json::Array(["navigation", "pdf"].map(text).to_vec()),
+            ),
+            ("default", text("navigation")),
+        ])),
         "chapters" | "includeSources" => Some(object([
             ("type", text("array")),
             ("minItems", number(usize::from(name == "chapters"))),
@@ -333,18 +396,97 @@ fn link_report(renderer: &BookRenderer) -> Result<LinkReport, ToolError> {
     renderer.validate_links().map_err(link_analysis_error)
 }
 
-/// Source-only navigation verification. Findings are successful report data;
-/// an admission/analysis failure is an error, never an empty clean report.
-pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
-    let renderer = renderer(args, limit)?;
-    let report = renderer
-        .validate_links_with_sources()
-        .map_err(link_analysis_error)?;
-    let json = report.to_json();
-    if renderer.source_diagnostics().is_empty() {
-        return Ok(wrap_text_content(&json));
+pub(super) fn verification_target(args: &Json) -> Result<bool, ToolError> {
+    let pdf = match string(args, "target").unwrap_or("navigation") {
+        "navigation" => false,
+        "pdf" => true,
+        _ => {
+            return Err(invalid_options(
+                "Book verification target must be navigation or pdf",
+                "unsupported_target",
+            ));
+        }
+    };
+    if !pdf && let Some(fields) = args.as_object() {
+        for name in fields.keys() {
+            if !SOURCE_FIELDS
+                .iter()
+                .chain(VERIFICATION_FIELDS)
+                .any(|field| field.0 == name.as_str())
+            {
+                return Err((
+                    super::INVALID_PARAMS,
+                    format!("Book verification argument '{name}' requires target='pdf'"),
+                    "invalid_params",
+                ));
+            }
+        }
     }
-    // Preserve the narrow navigation report as the first content item. Parser
+    Ok(pdf)
+}
+
+/// Source navigation remains the default. PDF verification uses exactly the
+/// configured book publication pipeline, never a flattened document estimate.
+/// Findings are successful report data; admission failures never become clean
+/// or truncated reports.
+pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
+    let pdf = verification_target(args)?;
+    let report_limit = args
+        .get("maxReportBytes")
+        .map(Json::as_u64)
+        .unwrap_or(Some(MAX_REPORT_BYTES))
+        .filter(|limit| (1..=MAX_REPORT_BYTES).contains(limit))
+        .and_then(|limit| usize::try_from(limit).ok())
+        .ok_or_else(|| {
+            invalid_options("maxReportBytes must be 1..16777216", "invalid_report_limit")
+        })?;
+    // Shared option admission precedes source expansion and resource decoding,
+    // just as it does for fmd.render_book.
+    let configured = pdf.then(|| pdf_options(args)).transpose()?;
+    let renderer = renderer(args, limit)?;
+    let json = if let Some((mut options, settings)) = configured {
+        let assets = resources::parse(args)?;
+        options.font_assets = assets.fonts;
+        options.image_assets = assets.images;
+        renderer
+            .verify_pdf_with_options(&options, settings)
+            .and_then(|report| report.to_json())
+            .map_err(|error| {
+                engine_failure(error, "Book PDF verification failed", "book_pdf_verify_failed")
+            })?
+    } else {
+        renderer
+            .validate_links_with_sources()
+            .map_err(link_analysis_error)?
+            .to_json()
+    };
+    verification_response(&renderer, json, report_limit)
+}
+
+fn verification_response(
+    renderer: &BookRenderer,
+    json: String,
+    limit: usize,
+) -> Result<Json, ToolError> {
+    let diagnostics = (!renderer.source_diagnostics().is_empty())
+        .then(|| renderer.source_diagnostics().to_json());
+    if json.len() > limit
+        || diagnostics
+            .as_ref()
+            .is_some_and(|report| report.len() > limit.saturating_sub(json.len()))
+    {
+        return Err((
+            ERROR_RENDER_FAILED,
+            format!(
+                "Book verification reports exceed the {limit}-byte limit; no partial report returned"
+            ),
+            "report_too_large",
+        ));
+    }
+    let Some(diagnostics) = diagnostics else {
+        return Ok(wrap_text_content(&json));
+    };
+    // Keep the requested verification report as the first content item. Parser
     // findings have their own schema and coordinate space, never guessed link
     // findings or offsets into an original include file.
     Ok(object([
@@ -352,10 +494,7 @@ pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
             "content",
             Json::Array(vec![
                 object([("type", text("text")), ("text", text(&json))]),
-                object([
-                    ("type", text("text")),
-                    ("text", text(&renderer.source_diagnostics().to_json())),
-                ]),
+                object([("type", text("text")), ("text", text(&diagnostics))]),
             ]),
         ),
         ("isError", Json::Bool(false)),

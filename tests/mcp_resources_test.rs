@@ -279,7 +279,7 @@ fn discovery_exposes_nested_resource_fields_on_render_and_verify_tools() {
     for tool in tools {
         let name = tool.get("name").unwrap().as_str().unwrap();
         let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
-        if name.starts_with("fmd.render_") || name == "fmd.verify" {
+        if name.starts_with("fmd.render_") || matches!(name, "fmd.verify" | "fmd.verify_book") {
             for field in ["images", "fonts"] {
                 let schema = properties.get(field).unwrap();
                 assert_eq!(schema.get("type").unwrap().as_str(), Some("array"));

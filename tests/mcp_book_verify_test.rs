@@ -270,6 +270,7 @@ fn verification_accepts_only_explicit_source_fields() {
     for (key, value) in [
         ("images", Json::Array(Vec::new())),
         ("fonts", Json::Array(Vec::new())),
+        ("appearance", text("unknown")),
         ("out", text("/not-written/book.pdf")),
         ("to", text("pdf")),
         ("pageNumbers", Json::Bool(false)),
@@ -356,7 +357,7 @@ fn repeated_requests_cannot_reuse_a_previous_books_successful_check() {
 }
 
 #[test]
-fn discovery_keeps_verification_narrow_and_advertises_strict_publication() {
+fn discovery_keeps_navigation_default_and_advertises_explicit_pdf_verification() {
     let list = tools_list_result();
     let tools = array(list.get("tools").unwrap());
     let lookup = |name| {
@@ -367,10 +368,29 @@ fn discovery_keeps_verification_narrow_and_advertises_strict_publication() {
     };
     let schema = lookup("fmd.verify_book").get("inputSchema").unwrap();
     let fields = schema.get("properties").and_then(Json::as_object).unwrap();
+    for name in [
+        "chapters",
+        "includeSources",
+        "profile",
+        "target",
+        "maxReportBytes",
+    ] {
+        assert!(fields.contains_key(name), "{name}");
+    }
+    assert_eq!(fields["target"].get("default"), Some(&text("navigation")));
     assert_eq!(
-        fields.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["chapters", "includeSources", "profile"]
+        array(fields["target"].get("enum").unwrap()),
+        [text("navigation"), text("pdf")]
     );
+    let admission = &array(schema.get("allOf").unwrap())[0];
+    let source_only = admission.get("else").unwrap().get("properties").unwrap();
+    for name in ["images", "fonts", "page", "pageNumbers", "pdfA", "appearance"] {
+        assert!(fields.contains_key(name), "{name}");
+        assert_eq!(source_only.get(name), Some(&Json::Bool(false)), "{name}");
+    }
+    for name in ["out", "to", "strictLinks", "markdown"] {
+        assert!(!fields.contains_key(name), "{name}");
+    }
     assert_eq!(schema.get("additionalProperties"), Some(&Json::Bool(false)));
     assert_eq!(array(schema.get("required").unwrap()), [text("chapters")]);
     assert_eq!(

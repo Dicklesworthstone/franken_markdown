@@ -306,7 +306,7 @@ const TOOLS: &[ToolSpec] = &[
     ),
     (
         "fmd.verify_book",
-        "Check chapter, heading and footnote navigation in explicitly supplied chapters/include sources. Returns the shared expanded-html-navigation report; no rendering, assets, file reads or network requests. Findings are report data, not a PDF/EPUB conformance claim.",
+        "Check chapter, heading and footnote navigation in explicitly supplied chapters/include sources. Default target=navigation returns the existing source report; target=pdf audits the actual assembled PDF with publication options, explicit resources, final positioned text and destinations. Findings are report data, not PDF/A or PDF/UA certification. No file or network access.",
         book_tools::SOURCE_FIELDS,
         &["chapters"],
     ),
@@ -364,6 +364,7 @@ fn integer_bounds(name: &str) -> (u64, u64) {
     match name {
         "tocDepth" => (1, 6),
         "maxOutputBytes" => (1, book_tools::MAX_OUTPUT_BYTES),
+        "maxReportBytes" => (1, book_tools::MAX_REPORT_BYTES),
         "fitToPages" => (1, MAX_SAFE_INTEGER.min(usize::MAX as u64)),
         _ => (0, MAX_SAFE_INTEGER),
     }
@@ -391,6 +392,9 @@ fn fields_for(name: &str, base: &[Field]) -> Vec<Field> {
     }
     if name == "fmd.render_book" {
         return book_tools::fields();
+    }
+    if name == "fmd.verify_book" {
+        return book_tools::verification_fields();
     }
     if name == "fmd.render_file" {
         return file_options::fields();
@@ -529,6 +533,12 @@ pub fn tools_list_result() -> JsonValue {
                             .map(|name| JsonValue::String((*name).to_string()))
                             .collect(),
                     ),
+                );
+            }
+            if *name == "fmd.verify_book" {
+                schema.insert(
+                    "allOf".to_string(),
+                    JsonValue::Array(vec![book_tools::verification_admission_schema()]),
                 );
             }
             JsonValue::Object(BTreeMap::from([
@@ -946,6 +956,11 @@ pub fn handle_tool_call(
     let args = params.get("arguments").unwrap_or(&default_args);
     let fields = fields_for(name, fields);
     validate_arguments(args, &fields, required)?;
+    if name == "fmd.verify_book" {
+        // Reject PDF-only fields in default navigation mode before parsing any
+        // rendering option, preserving the existing source-only error contract.
+        book_tools::verification_target(args)?;
+    }
     // Validate the dialect before source or resource admission. Interactive
     // HTML retains it in an owned manifest for subsequent offline edits.
     let _ = authoring_profile(args)?;

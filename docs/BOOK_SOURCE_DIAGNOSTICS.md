@@ -154,9 +154,10 @@ report on stderr. Its exit status still describes the requested navigation
 check. Likewise, `--deny-broken-links` remains a navigation guard; recoverable
 parser warnings are observable without changing that flag's scope.
 
-`fmd.verify_book` keeps the original navigation report as its first MCP text
-content item. If parser findings exist, a second text content item contains the
-source diagnostic report. A source warning is report data, not a transport
+Default `fmd.verify_book` keeps the original navigation report as its first MCP
+text content item. Explicit `target: "pdf"` returns the assembled-PDF report in
+that position. In either mode, if parser findings exist, a second text content
+item contains the source diagnostic report. A source warning is report data, not a transport
 failure. `fmd.render_book` adds a separate `sourceDiagnostics` object to its
 publication receipt when findings exist, for every output format. These reports
 describe the same parsed revision used for verification and publication.

@@ -70,7 +70,9 @@ The existing option parser validates the profile and strictness before source
 processing or asset decoding. The parsed profile is retained and passed to the
 same book renderer; it is never discarded or replaced by a flat-document path.
 Both fields require a PDF consumer; even `pdfA: "off"` on EPUB/site-only requests
-is refused. `fmd.verify_book` remains source-only and accepts neither flag.
+is refused. Default `fmd.verify_book` remains source-only and accepts neither
+flag. Its explicit `target: "pdf"` mode accepts both to audit the same actual
+book emission and admission policy; it does not certify PDF/A conformance.
 
 `strictLinks` and `pdfAStrict` are independent. The former checks the expanded
 book's navigation before assets or rendering; the latter applies the PDF/A

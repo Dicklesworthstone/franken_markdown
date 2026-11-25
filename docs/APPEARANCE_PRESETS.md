@@ -59,8 +59,9 @@ existing accessibility or conformance scope.
 Paired file exports and complete book editions share the selected palette across
 their outputs. Invalid names are rejected with `invalid_appearance` before source
 reads or resource decoding. Wrong JSON types are protocol argument errors.
-`fmd.verify_book` checks navigation without rendering and accepts no appearance
-option.
+Default `fmd.verify_book` checks navigation without rendering and accepts no
+appearance option. With explicit `target: "pdf"`, it accepts the same appearance
+and typography options as PDF book publication.
 
 ## Rust
 

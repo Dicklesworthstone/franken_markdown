@@ -537,7 +537,11 @@ fn discovery_advertises_the_executable_grid_range_and_strict_policy() {
         let properties = tool.get("inputSchema").unwrap().get("properties").unwrap();
         let accepts_pdf = matches!(
             name,
-            "fmd.render_pdf" | "fmd.render_file" | "fmd.render_book" | "fmd.verify"
+            "fmd.render_pdf"
+                | "fmd.render_file"
+                | "fmd.render_book"
+                | "fmd.verify"
+                | "fmd.verify_book"
         );
         if accepts_pdf {
             let strict = properties.get("strictPagination").unwrap();

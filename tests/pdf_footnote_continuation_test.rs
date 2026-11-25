@@ -560,11 +560,35 @@ fn destinations(pdf: &[u8], pages: &[PaintedPage]) -> Vec<(usize, f64)> {
 }
 
 fn assert_destinations(pdf: &[u8], pages: &[PaintedPage], targets: &[&str]) {
+    assert_destinations_below_margin(pdf, pages, targets, f64::NEG_INFINITY);
+}
+
+/// Every PDF destination sits `0.9 * size` above its line's baseline, clamped
+/// to the page's top margin (`(y + size * 0.9).min(page.top_y())`, unchanged
+/// since before v0.8.1). Only the topmost text line on a page can reach it.
+fn assert_destinations_below_margin(
+    pdf: &[u8],
+    pages: &[PaintedPage],
+    targets: &[&str],
+    top_margin: f64,
+) {
     let mut actual = destinations(pdf, pages);
     assert_eq!(actual.len(), targets.len());
     for marker in targets {
         let (page, run) = locate(pages, marker);
-        let y = run.y + run.size * 0.9;
+        let mut y = run.y + run.size * 0.9;
+        let top = pages[page].height - top_margin;
+        if y > top {
+            assert!(
+                pages[page]
+                    .runs
+                    .iter()
+                    .filter(|other| !other.artifact)
+                    .all(|other| other.y < run.y + PRECISION),
+                "only a page's topmost line reaches the top-margin clamp: {marker}"
+            );
+            y = top;
+        }
         let index = actual
             .iter()
             .position(|&(target_page, target_y)| {
@@ -901,7 +925,14 @@ fn oversubscribed_first_fragments_keep_complete_notes_and_real_destinations() {
         assert!(text(&pages).contains("Notes"));
         assert_geometry(&pages, &options);
         let target_refs: Vec<_> = targets.iter().map(String::as_str).collect();
-        assert_destinations(bytes, &pages, &target_refs);
+        // Tight explicit leading can put a fallback note's first line at a
+        // page top, where its destination meets the top-margin clamp.
+        assert_destinations_below_margin(
+            bytes,
+            &pages,
+            &target_refs,
+            f64::from(options.theme.page.margins.top_pt),
+        );
         assert_eq!(
             String::from_utf8_lossy(bytes).matches("/S /Note ").count(),
             9

@@ -167,8 +167,21 @@ fn nested_and_referenced_note_headings_use_real_owners_not_text_search() {
             character: 0
         }))
     );
-    let ambiguous = buffers(&[("untitled:collision", "# fn-n\n\nUse[^n].\n\n[^n]: note")]);
-    assert!(search(&ambiguous, "fn-n").is_empty());
+    // Since e670d7f4 the heading keeps `#fn-n` when a referenced note collides
+    // with it (the note becomes `#fn-n-2`), so the heading is one uniquely
+    // addressed symbol and the note body is not a heading symbol.
+    let collision = buffers(&[("untitled:collision", "# fn-n\n\nUse[^n].\n\n[^n]: note")]);
+    let items = search(&collision, "fn-n");
+    assert_eq!(names(&items), ["fn-n"]);
+    assert_eq!(
+        location(&items[0])
+            .get("range")
+            .and_then(|r| r.get("start")),
+        Some(&position(Position {
+            line: 0,
+            character: 0
+        }))
+    );
 }
 
 #[test]

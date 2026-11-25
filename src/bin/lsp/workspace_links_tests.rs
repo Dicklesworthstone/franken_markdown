@@ -383,12 +383,26 @@ fn referenced_notes_and_nested_target_headings_keep_publication_semantics() {
         ),
         Json::Null
     );
+    // Since e670d7f4 the heading keeps `#fn-n` and the referenced note it
+    // collides with is published as `#fn-n-2`; an unallocated suffix has no owner.
     server.documents.get_mut(TARGET).unwrap().text = "# fn-n\n\nUse[^n].\n\n[^n]: note\n".into();
+    for (fragment, line) in [("fn-¦n", 0), ("fn-¦n-2", 4)] {
+        let result = call(
+            &mut server,
+            "textDocument/definition",
+            &format!("[go](../Other%20chapter.md#{fragment})"),
+        );
+        assert_eq!(
+            result.get("range").and_then(|r| r.get("start")),
+            Some(&position(Position { line, character: 0 })),
+            "{fragment}"
+        );
+    }
     assert_eq!(
         call(
             &mut server,
             "textDocument/definition",
-            "[go](../Other%20chapter.md#fn-¦n)"
+            "[go](../Other%20chapter.md#fn-¦n-99)"
         ),
         Json::Null
     );

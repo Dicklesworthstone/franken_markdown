@@ -66,16 +66,21 @@ fn safe_html_and_nested_note_cycles_share_public_note_targets() {
 }
 
 #[test]
-fn ambiguous_note_ids_remain_unresolved_even_when_a_heading_matches() {
+fn colliding_headings_keep_their_ids_and_unpublished_note_ids_remain_unresolved() {
+    // Since e670d7f4 headings keep `#fn-n` and `#fnref-1`; the colliding note
+    // and its return are published as `#fn-n-2` and `#fnref-1-2`. Unreferenced,
+    // missing and never-allocated note IDs still resolve to nothing.
     let source = "# fn-n\n\n## fnref-1\n\n\
-                  Cited.[^n] [Ambiguous note](#fn-n) [Ambiguous return](#fnref-1) \
-                  [Unreferenced note](#fn-unused) [Missing note](#fn-missing)\n\n\
+                  Cited.[^n] [Heading](#fn-n) [Heading return](#fnref-1) \
+                  [Note](#fn-n-2) [Return](#fnref-1-2) \
+                  [Unreferenced note](#fn-unused) [Missing note](#fn-missing) \
+                  [Unallocated suffix](#fn-n-99)\n\n\
                   ## fn-heading\n\n[Ordinary heading](#fn-heading)\n\n\
                   [^n]: Referenced note.\n\n[^unused]: Unreferenced note.\n";
     assert_links(
         &verify(source, &PdfOptions::default()),
-        2,
-        &["fn-n", "fnref-1", "fn-unused", "fn-missing"],
+        6,
+        &["fn-unused", "fn-missing", "fn-n-99"],
     );
 }
 

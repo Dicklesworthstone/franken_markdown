@@ -358,17 +358,34 @@ fn adjacent_ambiguity_probes_do_not_grant_navigation_to_images_or_literal_source
 }
 
 #[test]
-fn missing_malformed_and_ambiguous_targets_never_fabricate_a_definition() {
+fn missing_and_malformed_targets_never_fabricate_a_definition() {
+    // Since e670d7f4 a heading keeps `#fn-n` and its colliding note is
+    // published as `#fn-n-2`, so the old ambiguous spelling has one owner. A
+    // suffix that was never allocated still has none.
     for destination in [
         "#missing",
         "#%zz",
-        "#fn-n",
+        "#fn-n-99",
         "https://example.invalid/#target",
     ] {
         let source = format!("# fn-n\n\nUse[^n]. [go][i¦d]\n\n[^n]: note\n\n[id]: {destination}\n");
         assert_eq!(
             call("textDocument/definition", &source),
             Json::Null,
+            "{destination}"
+        );
+    }
+    for (destination, line) in [("#fn-n", 0), ("#fn-n-2", 4), ("#fnref-1", 2)] {
+        let source = format!("# fn-n\n\nUse[^n]. [go][i¦d]\n\n[^n]: note\n\n[id]: {destination}\n");
+        let result = call("textDocument/definition", &source);
+        assert_eq!(
+            result.get("uri").and_then(Json::as_str),
+            Some(URI),
+            "{destination}"
+        );
+        assert_eq!(
+            start(&result),
+            Some(&position(Position { line, character: 0 })),
             "{destination}"
         );
     }

@@ -95,7 +95,19 @@ def main():
         calls = page.evaluate('settingsProbe.renderCalls')
         original_preview = page.locator('#fmd-content').inner_html()
         native_text = page.locator('#fmd-native-runtime').text_content()
+        # Opening another project can leave document-specific diagnostics in
+        # a live modal. The recovery serializer may run while it is open.
+        page.evaluate('''() => {
+          const dialog = document.createElement('dialog');
+          dialog.id = 'fmd-open-source-project';
+          dialog.textContent = 'private diagnostic from separately opened manuscript';
+          document.body.appendChild(dialog);
+          dialog.showModal();
+        }''')
         recovered = save(page)
+        assert b'private diagnostic from separately opened manuscript' not in recovered
+        assert page.locator('#fmd-open-source-project').is_visible()
+        page.locator('#fmd-open-source-project').evaluate('(dialog) => {dialog.close(); dialog.remove()}')
         assert page.evaluate('settingsProbe.renderCalls') == calls
         assert page.locator('#fmd-content').inner_html() == original_preview
         assert page.locator('#fmd-native-runtime').text_content() == native_text

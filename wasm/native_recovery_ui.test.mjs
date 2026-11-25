@@ -153,3 +153,16 @@ test('storage denial is reported after an explicit action and leaves the documen
   h.click('Show saved copies'); await settle(); assert.ok(h.byText('storage denied'));
   assert.equal(h.source, '\ufeff# exact\r\n');
 });
+
+test('an immediate reopen releases a validated download before the old close event arrives', async () => {
+  const h = fixture(); h.records = [saved]; h.open(); h.click('Show saved copies'); await settle();
+  h.validation = deferred(); h.click('Prepare download'); await settle();
+  h.validation.resolve({blob: 'first project', filename: 'first.fmd.json'}); await settle();
+  const dialog = find(h.root, node => node.tag === 'dialog');
+  dialog.close = () => { dialog.open = false; }; // Native close event is queued.
+  h.click('Close'); h.open();
+  assert.equal(h.link.hidden, true); assert.equal(h.link.href, undefined);
+  assert.deepEqual(h.revoked, ['blob:recovery']); assert.equal(h.byText('Prepare download'), undefined);
+  h.click('Show saved copies'); await settle(); dialog.emit('close');
+  assert.ok(h.byText('Prepare download')); // Late event cannot erase the new visit.
+});

@@ -373,6 +373,15 @@ function fmdReadAuthoringProfile(doc) {
     copy.querySelector('body > .fmd-app-header #btn-document-lab')?.remove();
     // Proofs are temporary native output, not editable workspace resources.
     // Do not serialize Blob URLs, rendered PDF viewers or proof diagnostics.
+    // Project-opening findings describe a separately chosen document. Keep
+    // that dialog, file details and the local draft catalog out of either
+    // kind of saved HTML, including saves from the keyboard with a panel open.
+    copy.querySelector('body > dialog#fmd-open-source-project')?.remove();
+    copy.querySelector('body > .fmd-app-header #btn-open-source-project')?.remove();
+    copy.querySelector('body > .fmd-app-header #fmd-project-open-notice')?.remove();
+    copy.querySelector('body > .fmd-app-header #fmd-source-project-controls')?.remove();
+    copy.querySelector('head > style#fmd-project-open-style')?.remove();
+    copy.querySelector('body > .fmd-app-header #fmd-local-recovery')?.remove();
     copy.querySelector('body > dialog#fmd-pdf-proof')?.remove();
     copy.querySelector('body > .fmd-app-header #btn-pdf-proof')?.remove();
     copy.querySelector('head > style#fmd-pdf-proof-style')?.remove();

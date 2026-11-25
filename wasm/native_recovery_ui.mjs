@@ -31,7 +31,10 @@ export function installNativeRecovery(parts, host, doc = document) {
     }
     element('style', root, ':host{display:inline-flex}button,a{font:inherit}button{cursor:pointer}dialog{width:min(38rem,88vw);max-height:80vh;overflow:auto;box-sizing:border-box;border:1px solid #888;border-radius:8px;padding:1.2rem;background:var(--bg-primary,Canvas);color:var(--fg-primary,CanvasText)}dialog::backdrop{background:#0006}li,p{overflow-wrap:anywhere}button,a{margin:.2em} @media print{:host{display:none}}');
     const toggle = button(root, 'Local recovery', () => {
-      if (!disposed && !suspended && !dialog.open) { dialog.showModal(); enable.focus(); }
+      if (disposed || suspended || dialog.open) return;
+      // The browser queues the dialog's close event. A new visit must
+      // retire the previous catalog even if that event has not arrived.
+      resetBrowse(); dialog.showModal(); enable.focus();
     });
     toggle.setAttribute('aria-haspopup', 'dialog');
     const dialog = element('dialog', root);

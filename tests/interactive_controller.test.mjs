@@ -29,7 +29,7 @@ function element() {
   };
 }
 function setup({source = '# Original', title = 'Document', scale = '', read = false, fail = '', normalizeTextarea = false, native = null,
-  imageAssets = null, initialPreview = null, actualRenderer = null} = {}) {
+  imageAssets = null, initialPreview = null, actualRenderer = null, projectControls = {}} = {}) {
   const elements = new Map(ids.map(id => [id, element()]));
   // The JSON script's id is in an escaped Rust string, rather than a raw literal.
   elements.set('fmd-raw-source', {...element(), textContent: JSON.stringify(source)});
@@ -99,6 +99,11 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
           ['#editor-pane > .fmd-pane-header > #fmd-save-status', status]
         ]);
         if (assets) nodes.set('body > script#fmd-image-assets[type="application/json"]', assets);
+        const transient = Object.entries(projectControls).map(([selector, textContent]) => {
+          const node = {...element(), textContent};
+          nodes.set(selector, node);
+          return node;
+        });
         const copy = {...element(), data, textarea, status, drawer, preview, assets,
           // The clone holds only the template's static elements. Controls the
           // controller adds at runtime are absent from it and resolve to null;
@@ -111,6 +116,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
           },
           get outerHTML() { return '<html><body><textarea>' + escape(textarea.textContent) + '</textarea><main>' + preview
             + '</main><script type="application/json" id="fmd-raw-source">' + data.textContent + '</script>'
+            + transient.filter(node => !node.removed).map(node => '<aside>' + escape(node.textContent) + '</aside>').join('')
             + (assets ? '<script type="application/json" id="fmd-image-assets">' + assets.textContent + '</script>' : '') + '</body></html>'; }
         };
         copies.push(copy); return copy;
@@ -294,6 +300,22 @@ test('browser newline normalization never dirties or rewrites untouched source b
   s.click('btn-save-markdown');
   assert.equal(await s.downloads[2].blob.text(), original);
   assert.match(s.get('fmd-content').innerHTML, /native-diagram/);
+});
+
+test('Save HTML excludes findings and controls from a separately opened source project', async () => {
+  const source = '# My current document';
+  const s = setup({source, initialPreview: '<p>Current preview</p>', projectControls: {
+    'body > dialog#fmd-open-source-project': 'Other project: private chapter path',
+    'body > .fmd-app-header #fmd-project-open-notice': 'Other project: private open error',
+    'body > .fmd-app-header #fmd-source-project-controls': 'Other project: private status',
+    'body > .fmd-app-header #fmd-local-recovery': 'Other project: recovery catalog',
+  }});
+  assert.ok(s.fire('keydown', {key: 'S', shiftKey: true, metaKey: true}).prevented);
+  assert.equal(s.downloads.length, 1);
+  const html = await s.downloads[0].blob.text();
+  assert.doesNotMatch(html, /Other project:/);
+  assert.ok(html.includes('<p>Current preview</p>'));
+  assert.equal(JSON.parse(s.copies[0].data.textContent), source);
 });
 
 function nativeAdapter() {

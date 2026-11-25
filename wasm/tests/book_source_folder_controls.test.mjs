@@ -136,7 +136,11 @@ test("identical project replacement, composition and lifecycle changes invalidat
   await h.ui.review(); h.el("chapter-source").emit("compositionstart");
   assert.equal(h.el("book-source-folder-review").disabled, true);
   await assert.rejects(h.ui.restore(), { code: "STALE_SOURCE" });
-  h.el("chapter-source").emit("compositionend"); await h.ui.review();
+  h.el("chapter-source").emit("compositionend");
+  // The final composition input still owns the source until the next task.
+  await assert.rejects(h.ui.review(), { code: "BOOK_BUSY" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.ui.review();
   h.ui.suspend(); assert.equal(h.input.files.length, 0); assert.equal(h.el("book-source-folder-review").disabled, true);
   h.ui.resume(); h.choose(await exportedFolder()); await h.ui.review(); h.ui.dispose();
   await assert.rejects(h.ui.restore(), { code: "STALE_SOURCE" }); assert.equal(h.replacements, 0);

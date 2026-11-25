@@ -110,7 +110,11 @@ test("composition, cancellation and page suspension retire only source ZIP state
   h.el("chapter-source").emit("compositionstart"); await rejected;
   assert(h.el("book-source-archive-prepare").disabled);
   await assert.rejects(h.ui.prepareArchive(), { code: "BOOK_BUSY" });
-  h.el("chapter-source").emit("compositionend"); await h.ui.prepareArchive();
+  h.el("chapter-source").emit("compositionend");
+  // The final composition input still owns the source until the next task.
+  await assert.rejects(h.ui.prepareArchive(), { code: "BOOK_BUSY" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.ui.prepareArchive();
   h.el("book-source-archive-cancel").click(); assert.equal(h.live.size, 0);
   const next = h.ui.prepareArchive(), stopped = assert.rejects(next, { code: "EXPORT_CANCELLED" });
   h.ui.suspend(); await stopped; assert.equal(h.live.size, 0);

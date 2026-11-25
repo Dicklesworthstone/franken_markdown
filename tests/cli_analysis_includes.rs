@@ -125,7 +125,8 @@ fn stats_counts_nested_selected_content_and_resolves_its_headings() {
         "{{#include unselected-missing.md}}\n<!-- ANCHOR: section -->\n## Included\n\n{{#include more.md:2:3}}\n\n[Chapter](chapter.md#topic)\n<!-- ANCHOR_END: section -->\nignored\n",
     );
     dir.write("parts/more.md", "ignored\nSelected prose.\n\nignored\n");
-    let expanded = "# Main\n\n[Read](#included)\n\n## Included\n\nSelected prose.\n\n\n[Chapter](parts/chapter.md#topic)\n";
+    // Rebased include destinations are written in angle brackets (1c8b0008).
+    let expanded = "# Main\n\n[Read](#included)\n\n## Included\n\nSelected prose.\n\n\n[Chapter](<parts/chapter.md#topic>)\n";
     let reported = text(dir.run(&["stats", "main.md", "--expand-includes", "--json"], None));
     assert_eq!(reported, stats(expanded, None));
     assert!(reported.contains("\"headings_total\":2"), "{reported}");

@@ -243,7 +243,10 @@ fn optional_target_budget_is_shared_across_chapters_without_losing_navigation_or
 #[test]
 fn workspace_recaptures_limited_targets_when_remaining_allowance_changes() {
     fn spelling(length: usize) -> String {
-        let base = "target.md#target";
+        // Two-byte `./` padding keeps the base's parity. The budget below uses
+        // odd lengths, so pad the 13-byte extensionless spelling of the same
+        // chapter target (the 16-byte `target.md#target` cannot reach them).
+        let base = "target#target";
         let value = format!("{}{}", "./".repeat((length - base.len()) / 2), base);
         assert_eq!(value.len(), length);
         value

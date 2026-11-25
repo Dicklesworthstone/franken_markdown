@@ -251,15 +251,26 @@ fn render_and_staging_failures_preserve_previous_companions() {
     dir.write("source.md", SIMPLE);
     dir.write("edition.html", b"previous HTML");
     dir.write("edition.pdf", b"previous PDF");
+    // 83f2b91b made split footnotes compatible with optimal pagination, so that
+    // pair no longer fails. Three 24 pt hard-break lines in a 72 pt strict body
+    // cannot be paginated, which is still a render failure.
+    dir.write("infeasible.md", "A  \nB  \nC");
     let output = dir.run(&[
-        "source.md",
+        "infeasible.md",
         "--to",
         "pdf",
         "--interactive-html",
         "--out",
         "edition.pdf",
-        "--pdf-split-footnotes",
-        "--pdf-optimal-pagination",
+        "--pdf-strict-pagination",
+        "--page-size",
+        "letter",
+        "--margin-top-pt",
+        "360",
+        "--margin-bottom-pt",
+        "360",
+        "--pdf-base-font-size",
+        "24",
     ]);
     assert_eq!(output.status.code(), Some(70));
     assert!(output.stdout.is_empty());

@@ -199,22 +199,33 @@ fn incompatible_multiple_documents_are_refused_before_reading_input() {
 #[test]
 fn render_and_sidecar_failures_leave_binary_stdout_empty() {
     let cwd = scratch("failed-publication");
+    // 83f2b91b made split footnotes compatible with optimal pagination, so that
+    // pair no longer fails. Three 24 pt hard-break lines in a 72 pt strict body
+    // cannot be paginated, which is still a render failure.
     let output = run(
         &cwd,
         &[
             "--text",
-            SOURCE,
+            "A  \nB  \nC",
             "--to",
             "pdf",
             "--out",
             "-",
-            "--pdf-split-footnotes",
-            "--pdf-optimal-pagination",
+            "--pdf-strict-pagination",
+            "--page-size",
+            "letter",
+            "--margin-top-pt",
+            "360",
+            "--margin-bottom-pt",
+            "360",
+            "--pdf-base-font-size",
+            "24",
             "--json",
         ],
         None,
     );
     assert_eq!(output.status.code(), Some(70));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("\"code\":\"pagination_infeasible\""));
     assert!(output.stdout.is_empty());
 
     fs::write(cwd.join("blocked"), "not a directory").unwrap();

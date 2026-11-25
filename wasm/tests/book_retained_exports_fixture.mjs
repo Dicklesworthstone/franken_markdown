@@ -81,7 +81,11 @@ export function fixture({ counters, old = false, noSets = false, pdfEnvelope = f
     renderPdfWithPage(page) { return this.payload("pdf", [...page]); }
     renderEpub() { return this.payload("epub"); }
     renderSite() { return this.payload("site"); }
-    validateLinks() { return JSON.stringify({ fixture: "links" }); }
+    // The facade admits only the native link-report contract, one entry per chapter.
+    validateLinks() {
+      return JSON.stringify({ schema: "fmd-book-link-report-v1", scope: "expanded-html-navigation",
+        chapters: this.files.map(f => ({ path: f.path, checked: 0, external: 0, unchecked: 0, findings: [] })) });
+    }
     free() { assert(!this.dead, "double free"); this.dead = true; bump("frees", 3); }
   }
   if (old) NativeBook.prototype.updateSources = undefined;

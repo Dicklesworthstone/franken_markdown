@@ -167,7 +167,9 @@ test("retiring a proof releases idle ownership before callbacks can start a newe
 test("publisher bootstrap opts in exactly the independent publication and proof workers", async () => {
   const original = await readFile(new URL("../demo/book.js", import.meta.url), "utf8");
   const source = original.replace(/^import[\s\S]*?from "[^\"]+";\n/gm, "");
-  assert(!source.includes("import "));
+  // Every static import declaration was stripped. User-facing status prose may
+  // mention "import", so match declarations rather than the bare word.
+  assert.doesNotMatch(source, /^\s*import[\s{*"']/m);
   const workers = [], instances = new Map(), events = new Map();
   const sandbox = {
     document: { querySelector: () => ({}) },
@@ -175,22 +177,30 @@ test("publisher bootstrap opts in exactly the independent publication and proof 
     createBookCollection: () => ({}),
     createBookWorker(options = {}) { const worker = { options, dispose() { this.disposed = true; } }; workers.push(worker); return worker; },
   };
-  for (const name of ["Controls", "ImageControls", "FontControls", "InspectionControls", "LinkControls", "LibraryControls", "PdfControls", "PreviewControls", "SearchControls"]) {
+  for (const name of ["Controls", "ImageControls", "FontControls", "InspectionControls", "LinkControls", "LibraryControls", "PdfControls", "PreviewControls", "SearchControls", "SourceDiagnosticsControls", "SourceRenameControls"]) {
     sandbox[`createBook${name}`] = options => {
       const instance = { options, suspended: 0, resumed: 0, disposed: 0,
         suspend() { this.suspended++; }, resume() { this.resumed++; }, dispose() { this.disposed++; } };
       instances.set(name, instance); return instance;
     };
   }
-  for (const name of ["Image", "Font", "Inspection", "Link", "Pdf"]) sandbox[`createBook${name}Panel`] = () => {};
+  for (const name of ["Image", "Font", "Inspection", "Link", "Pdf", "SourceDiagnostics"]) sandbox[`createBook${name}Panel`] = () => {};
   vm.runInNewContext(source, sandbox);
-  assert.equal(workers.length, 6);
+  // One client per worker-owning component: publication, source rename, preview,
+  // PDF proof, fonts, inspection, links and parser diagnostics. None falls back.
+  assert.equal(workers.length, 8);
+  assert(workers.every(w => !w.disposed));
   assert.equal(workers.filter(w => w.options.retainBook === true).length, 2);
+  assert.equal(workers.filter(w => w.options.retainPreview === true).length, 1);
   assert.equal(instances.get("Controls").options.worker.options.retainBook, true);
   assert.equal(instances.get("PdfControls").options.worker.options.retainBook, true);
   assert.equal(instances.get("PreviewControls").options.worker.options.retainPreview, true);
   assert.notEqual(instances.get("Controls").options.worker, instances.get("PdfControls").options.worker);
   assert.equal(instances.get("FontControls").options.worker.options.retainBook, undefined);
+  for (const name of ["SourceRenameControls", "SourceDiagnosticsControls"]) {
+    const { options } = instances.get(name).options.worker;
+    assert.equal(options.retainBook, undefined); assert.equal(options.retainPreview, undefined);
+  }
   events.get("pagehide")({ persisted: true });
   assert([...instances.values()].every(i => i.suspended === 1));
   events.get("pageshow")({ persisted: true }); assert.equal(instances.get("PdfControls").resumed, 1);

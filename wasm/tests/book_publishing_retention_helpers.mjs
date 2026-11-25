@@ -20,6 +20,7 @@ export async function publisherModule(path = new URL("../demo/book_controls.mjs"
   const imports = {
     "../book_worker.mjs": new URL("../book_worker.mjs", import.meta.url).href,
     "../pdf_page.mjs": new URL("../pdf_page.mjs", import.meta.url).href,
+    "../book_render_diagnostics.mjs": new URL("../book_render_diagnostics.mjs", import.meta.url).href,
     "./book_collection.mjs": host,
     "./book_source_search.mjs": dataModule("export const bookEditorOffset = (_, offset) => offset;"),
   };

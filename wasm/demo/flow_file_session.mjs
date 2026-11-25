@@ -195,22 +195,39 @@ export function createFileDocumentSession({
   }
   async function run(kind, work) {
     alive();
-    if (active || isBlocked())
+    // Host access and snapshot callbacks can synchronously detach, edit or start
+    // another file request. Capture ownership before either callback and never
+    // borrow the resulting revision or replace another active transaction.
+    const initial = { revision, identity };
+    if (active)
+      throw error("FILE_BUSY", "Finish the current file operation or text composition first.");
+    const blocked = isBlocked();
+    alive();
+    if (active)
+      throw error("FILE_BUSY", "Finish the current file operation first.");
+    if (!currentJob(initial) || revision !== initial.revision)
+      throw error("STALE_SOURCE", "The editor or file connection changed before file access could start.");
+    if (blocked)
       throw error("FILE_BUSY", "Finish the current file operation or text composition first.");
     const job = {
       kind,
+      ...initial,
       document: read(),
-      revision,
-      identity,
       stream: null,
       closing: false,
       verified: false,
       associated: false,
     };
+    alive();
+    if (active)
+      throw error("FILE_BUSY", "Finish the current file operation first.");
+    if (!currentJob(job) || revision !== job.revision)
+      throw error("STALE_SOURCE", "The editor or file connection changed while capturing source.");
     active = job;
     message = `${kind} in progress. Source editing remains available.`;
     announce();
     try {
+      fence(job);
       return await work(job);
     } catch (cause) {
       let detail = publicError(cause);

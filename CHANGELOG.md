@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Markdown and book file sessions retain the initiating document's identity
+  across access checks, source capture and startup observers. Stale requests
+  cannot acquire a file picker or replace a nested operation's ownership;
+  fresh user actions still work after completed editor access changes.
+
 - Book source reconciliation requires explicit review when concurrent edits
   reuse removed or inserted line values. Repeated-line deletions and moved text
   retain their complete versions instead of silently losing or restoring source;

@@ -121,9 +121,23 @@ export function createBookFileSession({ read, decode, replace, isBlocked = () =>
   }
   async function run(kind, work) {
     alive();
-    if (active || isBlocked()) throw fail("FILE_BUSY", "Finish file access, importing or text composition first.");
-    const job = { kind, snapshot: snapshot(), revision, identity, stream: null, closing: false,
+    // Host access and snapshot callbacks can synchronously detach, edit or start
+    // another file request. Capture ownership before either callback and never
+    // borrow the resulting revision or replace another active transaction.
+    const initial = { revision, identity };
+    if (active) throw fail("FILE_BUSY", "Finish file access, importing or text composition first.");
+    const blocked = isBlocked();
+    alive();
+    if (active) throw fail("FILE_BUSY", "Finish the current project file operation first.");
+    if (!owned(initial) || revision !== initial.revision)
+      throw fail("STALE_SOURCE", "The book or file connection changed before file access could start.");
+    if (blocked) throw fail("FILE_BUSY", "Finish file access, importing or text composition first.");
+    const job = { kind, ...initial, snapshot: snapshot(), stream: null, closing: false,
       verified: false, associated: false, abortPromise: null };
+    alive();
+    if (active) throw fail("FILE_BUSY", "Finish the current project file operation first.");
+    if (!owned(job) || revision !== job.revision)
+      throw fail("STALE_SOURCE", "The book or file connection changed while capturing source.");
     // Validate outgoing Unicode/size BEFORE offering a picker or touching disk.
     job.bytes = utf8(job.snapshot.source, maxBytes);
     active = job; lastError = null; message = `${kind} in progress. Editing remains available.`; announce();

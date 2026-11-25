@@ -154,6 +154,9 @@ export function createFileControls({
       `Replace the editor with ${name}? Current unsaved edits and undo history will be replaced, and image access revoked. Prepare a recovery download first to keep a separate copy.`,
     );
   function open() {
+    // Consume access changes from before this explicit action, before the file
+    // session captures its owner. Its fences still catch changes during access.
+    access.synchronize();
     return session.open(
       canOpen
         ? () => window.showOpenFilePicker({ multiple: false, excludeAcceptAllOption: true, types })
@@ -162,6 +165,7 @@ export function createFileControls({
     );
   }
   function saveAs() {
+    access.synchronize();
     return session.saveAs(
       canChoose
         ? (name) => {
@@ -189,9 +193,14 @@ export function createFileControls({
       "Recovery Markdown prepared. Click the source Download link to save it. This has not overwritten a file or marked the current file saved.";
   }
   function save() {
+    access.synchronize();
     const state = session.state;
     if (state.filename && state.phase !== "renamed") return session.save();
     return canChoose ? saveAs() : backup();
+  }
+  function reload() {
+    access.synchronize();
+    return session.reload(confirmation);
   }
   function report(error) {
     if (disposed) return;
@@ -237,7 +246,7 @@ export function createFileControls({
   listen(
     el["file-reload"],
     "click",
-    run(() => session.reload(confirmation)),
+    run(reload),
   );
   listen(
     el["file-disconnect"],
@@ -272,7 +281,7 @@ export function createFileControls({
     open,
     save,
     saveAs,
-    reload: () => session.reload(confirmation),
+    reload,
     backup,
     disconnect: () => session.detach(),
     get state() {

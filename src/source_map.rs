@@ -17,6 +17,8 @@
 
 use std::fmt;
 
+mod inline;
+
 use crate::ast::{Block, Inline, List, Table};
 use crate::html::inlines_to_plain;
 use crate::span::{
@@ -74,6 +76,10 @@ impl TextSelectionRange {
 /// Errors arising during source mapping or copy operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceMapError {
+    /// The supplied AST or source bounds do not belong to this source capture.
+    SourceMismatch,
+    /// The parser could not retain complete inline provenance within its bounds.
+    InlineSourceUnavailable,
     /// Provided selection range is invalid (reversed, out of bounds, or splits UTF-8).
     InvalidSelectionRange {
         start: usize,
@@ -99,6 +105,14 @@ pub enum SourceMapError {
 impl fmt::Display for SourceMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SourceMismatch => write!(
+                f,
+                "document and source do not match; parse this exact source before building its source map"
+            ),
+            Self::InlineSourceUnavailable => write!(
+                f,
+                "complete inline source provenance is unavailable within the parser's tracking limits"
+            ),
             Self::InvalidSelectionRange { start, end, max } => {
                 write!(
                     f,
@@ -198,12 +212,21 @@ pub struct DocumentSourceMap {
 }
 
 impl DocumentSourceMap {
-    /// Build an authoritative document source map from a spanned document and source text.
+    /// Build a document source map from matching parsed nodes and source text.
+    ///
+    /// Inline ranges come from the normal parser's accepted tokens, including
+    /// complete escapes/entities and disjoint container source slices. Generated
+    /// list markers have no exact editable ranges; enclosing-block copy remains
+    /// available. An AST or block span that disagrees with this source returns
+    /// [`SourceMapError::SourceMismatch`] instead of assigning bytes by searching
+    /// display text. This proves structural agreement, not capture identity:
+    /// differently spelled sources may legitimately parse to the same nodes.
     pub fn from_spanned_document(
         doc: &SpannedDocument,
         source: &str,
     ) -> Result<Self, SourceMapError> {
-        let mut builder = SourceMapBuilder::new(doc.source_len);
+        let inline_sources = inline::InlineSources::capture(doc, source)?;
+        let mut builder = SourceMapBuilder::new(doc.source_len, inline_sources);
         builder.build(doc, source)?;
         builder.finish()
     }
@@ -502,6 +525,7 @@ impl DocumentSourceMap {
 // ---------------------------------------------------------------------------
 
 struct SourceMapBuilder {
+    inline_sources: inline::InlineSources,
     rendered_text: String,
     elements: Vec<RenderedElement>,
     headings: Vec<HeadingSourceAnchor>,
@@ -513,8 +537,9 @@ struct SourceMapBuilder {
 }
 
 impl SourceMapBuilder {
-    fn new(source_len: usize) -> Self {
+    fn new(source_len: usize, inline_sources: inline::InlineSources) -> Self {
         Self {
+            inline_sources,
             rendered_text: String::new(),
             elements: Vec::new(),
             headings: Vec::new(),
@@ -534,6 +559,7 @@ impl SourceMapBuilder {
         for (block_idx, block) in doc.iter_blocks().enumerate() {
             self.build_block(block_idx, block, source)?;
         }
+        self.inline_sources.finish()?;
         Ok(())
     }
 
@@ -661,7 +687,7 @@ impl SourceMapBuilder {
                 let end_rendered = self.rendered_text.len();
 
                 let elem_id = self.next_id();
-                let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, block_span)?;
+                let ranges = DisjointSourceRanges::empty(SourceOrigin::Primary);
                 self.elements.push(RenderedElement {
                     id: elem_id,
                     rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
@@ -1055,29 +1081,12 @@ impl SourceMapBuilder {
             self.append_rendered_str(&marker);
             let end_rendered = self.rendered_text.len();
 
-            let marker_pat = marker.trim();
-            let marker_span = if *search_cursor < block_span.end {
-                let slice = source.get(*search_cursor..block_span.end).unwrap_or("");
-                if let Some(pos) = slice.find(marker_pat) {
-                    let m_start = *search_cursor + pos;
-                    let m_end = (m_start + marker.len()).min(block_span.end);
-                    *search_cursor = m_end;
-                    SourceSpan::new(m_start, m_end)
-                } else {
-                    let m_start = *search_cursor;
-                    let m_end = (m_start + 1).min(block_span.end);
-                    *search_cursor = m_end;
-                    SourceSpan::new(m_start, m_end)
-                }
-            } else {
-                SourceSpan::new(
-                    (*search_cursor).min(block_span.end),
-                    (*search_cursor).min(block_span.end),
-                )
-            };
-
+            // Display numbering and task markers are generated. Their exact
+            // spelling may differ from the authored marker, so searching for
+            // that spelling can only invent source ownership (including inside
+            // an earlier image title). Enclosing-block copy remains available.
             let marker_id = self.next_id();
-            let marker_ranges = DisjointSourceRanges::single(SourceOrigin::Primary, marker_span)?;
+            let marker_ranges = DisjointSourceRanges::empty(SourceOrigin::Primary);
             let marker_elem = RenderedElement {
                 id: marker_id,
                 rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
@@ -1232,121 +1241,15 @@ impl SourceMapBuilder {
         block_children: &mut Vec<NestedProvenanceNode>,
         search_cursor: &mut usize,
     ) -> Result<(), SourceMapError> {
+        use crate::parse::InlineSourceKind;
+        use std::borrow::Cow;
+
         for inline in inlines {
-            match inline {
-                Inline::Text(text) => {
-                    let text_span =
-                        Self::find_in_source(source, *search_cursor, block_span.end, text)
-                            .unwrap_or_else(|| {
-                                let start = *search_cursor;
-                                let end = start
-                                    .saturating_add(text.len())
-                                    .min(block_span.end)
-                                    .max(start);
-                                SourceSpan::new(start, end)
-                            });
-                    *search_cursor = text_span.end;
-
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(text);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, text_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges.clone(),
-                        relation: ProvenanceRelation::Literal,
-                        rendered_text: text.clone(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-
-                    let node = NestedProvenanceNode::leaf(
-                        elem_id,
-                        ProvenanceKind::Inline,
-                        ProvenanceRelation::Literal,
-                        ranges,
-                    )?;
-                    block_children.push(node);
-                }
-                Inline::Emphasis(inner) => {
-                    self.append_inlines_at(
-                        block_idx,
-                        inner,
-                        block_span,
-                        source,
-                        block_children,
-                        search_cursor,
-                    )?;
-                }
-                Inline::Strong(inner) => {
-                    self.append_inlines_at(
-                        block_idx,
-                        inner,
-                        block_span,
-                        source,
-                        block_children,
-                        search_cursor,
-                    )?;
-                }
-                Inline::Strikethrough(inner) => {
-                    self.append_inlines_at(
-                        block_idx,
-                        inner,
-                        block_span,
-                        source,
-                        block_children,
-                        search_cursor,
-                    )?;
-                }
-                Inline::Code(code) => {
-                    let code_span =
-                        Self::find_in_source(source, *search_cursor, block_span.end, code)
-                            .unwrap_or_else(|| {
-                                let start = *search_cursor;
-                                let end = start
-                                    .saturating_add(code.len())
-                                    .min(block_span.end)
-                                    .max(start);
-                                SourceSpan::new(start, end)
-                            });
-                    *search_cursor = code_span.end;
-
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(code);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, code_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges.clone(),
-                        relation: ProvenanceRelation::StrippedDelimiter {
-                            delimiter: "`".to_string(),
-                        },
-                        rendered_text: code.clone(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-
-                    let node = NestedProvenanceNode::leaf(
-                        elem_id,
-                        ProvenanceKind::Inline,
-                        ProvenanceRelation::StrippedDelimiter {
-                            delimiter: "`".to_string(),
-                        },
-                        ranges,
-                    )?;
-                    block_children.push(node);
-                }
-                Inline::Link {
-                    content,
-                    dest,
-                    title,
-                } => {
+            let (kind, text): (InlineSourceKind, Cow<'_, str>) = match inline {
+                Inline::Emphasis(content)
+                | Inline::Strong(content)
+                | Inline::Strikethrough(content)
+                | Inline::Link { content, .. } => {
                     self.append_inlines_at(
                         block_idx,
                         content,
@@ -1355,163 +1258,48 @@ impl SourceMapBuilder {
                         block_children,
                         search_cursor,
                     )?;
-                    let _ = (dest, title);
-                    if *search_cursor < block_span.end
-                        && let Some(rest) = source.get(*search_cursor..block_span.end)
-                        && let Some(bracket_pos) = rest.find(']')
-                    {
-                        let after_bracket = *search_cursor + bracket_pos + 1;
-                        if after_bracket < block_span.end {
-                            let next_byte = source.as_bytes()[after_bracket];
-                            if next_byte == b'(' {
-                                if let Some(close_paren) =
-                                    source[after_bracket..block_span.end].find(')')
-                                {
-                                    *search_cursor = after_bracket + close_paren + 1;
-                                } else {
-                                    *search_cursor = after_bracket;
-                                }
-                            } else if next_byte == b'[' {
-                                if let Some(close_bracket) =
-                                    source[after_bracket..block_span.end].find(']')
-                                {
-                                    *search_cursor = after_bracket + close_bracket + 1;
-                                } else {
-                                    *search_cursor = after_bracket;
-                                }
-                            } else {
-                                *search_cursor = after_bracket;
-                            }
-                        } else {
-                            *search_cursor = after_bracket;
-                        }
-                    }
+                    continue;
                 }
-                Inline::Image { alt, .. } => {
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(alt);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let start = *search_cursor;
-                    let end = start
-                        .saturating_add(alt.len())
-                        .min(block_span.end)
-                        .max(start);
-                    let img_span = SourceSpan::new(start, end);
-                    *search_cursor = end;
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, img_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges.clone(),
-                        relation: ProvenanceRelation::Literal,
-                        rendered_text: alt.clone(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-                }
-                Inline::SoftBreak => {
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(" ");
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(
-                        SourceOrigin::Primary,
-                        SourceSpan::new(
-                            *search_cursor,
-                            (*search_cursor).saturating_add(1).min(block_span.end),
-                        ),
-                    )?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges,
-                        relation: ProvenanceRelation::SoftBreak,
-                        rendered_text: " ".to_string(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-                }
-                Inline::HardBreak => {
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str("\n");
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(
-                        SourceOrigin::Primary,
-                        SourceSpan::new(
-                            *search_cursor,
-                            (*search_cursor).saturating_add(1).min(block_span.end),
-                        ),
-                    )?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges,
-                        relation: ProvenanceRelation::HardBreak,
-                        rendered_text: "\n".to_string(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-                }
+                Inline::Text(text) => (InlineSourceKind::Text, Cow::Borrowed(text)),
+                Inline::Code(code) => (InlineSourceKind::Code, Cow::Borrowed(code)),
+                Inline::Image { alt, .. } => (InlineSourceKind::Image, Cow::Borrowed(alt)),
+                Inline::Math(math) => (InlineSourceKind::Math, Cow::Borrowed(math)),
+                Inline::DisplayMath(math) => (InlineSourceKind::DisplayMath, Cow::Borrowed(math)),
+                Inline::Html(html) => (InlineSourceKind::Html, Cow::Borrowed(html)),
                 Inline::FootnoteRef { id } => {
-                    let ref_text = format!("[^{}]", id);
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(&ref_text);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, block_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges,
-                        relation: ProvenanceRelation::ReferenceDefinition {
-                            label: id.clone(),
-                            definition_span: block_span,
-                        },
-                        rendered_text: ref_text,
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
+                    (InlineSourceKind::Footnote, Cow::Owned(format!("[^{id}]")))
                 }
-                Inline::Math(math) | Inline::DisplayMath(math) => {
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(math);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, block_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges,
-                        relation: ProvenanceRelation::Literal,
-                        rendered_text: math.clone(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-                }
-                Inline::Html(html) => {
-                    let start_rendered = self.rendered_text.len();
-                    self.append_rendered_str(html);
-                    let end_rendered = self.rendered_text.len();
-
-                    let elem_id = self.next_id();
-                    let ranges = DisjointSourceRanges::single(SourceOrigin::Primary, block_span)?;
-                    self.elements.push(RenderedElement {
-                        id: elem_id,
-                        rendered_range: TextSelectionRange::new(start_rendered, end_rendered),
-                        source_ranges: ranges,
-                        relation: ProvenanceRelation::Literal,
-                        rendered_text: html.clone(),
-                        is_generated: false,
-                        block_index: block_idx,
-                    });
-                }
+                Inline::SoftBreak => (InlineSourceKind::SoftBreak, Cow::Borrowed(" ")),
+                Inline::HardBreak => (InlineSourceKind::HardBreak, Cow::Borrowed("\n")),
+            };
+            for atom in self.inline_sources.take(kind, &text, block_span, source)? {
+                *search_cursor = (*search_cursor).max(atom.end);
+                let start = self.rendered_text.len();
+                self.append_rendered_str(&atom.text);
+                let end = self.rendered_text.len();
+                let id = self.next_id();
+                let ranges = DisjointSourceRanges::try_new(SourceOrigin::Primary, atom.ranges)?;
+                let generated = ranges.is_empty();
+                let node = NestedProvenanceNode::leaf(
+                    id,
+                    if generated {
+                        ProvenanceKind::Generated
+                    } else {
+                        ProvenanceKind::Inline
+                    },
+                    atom.relation.clone(),
+                    ranges.clone(),
+                )?;
+                self.elements.push(RenderedElement {
+                    id,
+                    rendered_range: TextSelectionRange::new(start, end),
+                    source_ranges: ranges,
+                    relation: atom.relation,
+                    rendered_text: atom.text,
+                    is_generated: generated,
+                    block_index: block_idx,
+                });
+                block_children.push(node);
             }
         }
         Ok(())

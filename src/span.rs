@@ -773,6 +773,11 @@ pub enum ProvenanceRelation {
     /// HTML/XML character entity (e.g. `&amp;` -> `&`, `&#169;` -> `©`).
     /// Source span covers `&...;`; rendered output is the decoded character.
     Entity { decoded: char, raw_entity: String },
+    /// A source token normalized to a string rather than a single scalar.
+    /// Multi-scalar character references and NUL replacement stay atomic: their
+    /// complete source spelling must not be split into overlapping ranges or
+    /// described as a byte-for-byte literal mapping.
+    DecodedText { source: String, decoded: String },
     /// Stripped delimiter syntax (e.g. `*` for emphasis, `**` for strong, `~~` for strike, `` ` `` for inline code).
     /// The delimiter bytes are present in the enclosing element's source span but excluded from the inner text.
     StrippedDelimiter { delimiter: String },
@@ -989,6 +994,8 @@ pub struct ProvenanceAuditReport {
     pub escape_nodes: usize,
     /// Count of entity nodes.
     pub entity_nodes: usize,
+    /// Source runs normalized to multiple scalars or replacement text.
+    pub decoded_text_nodes: usize,
     /// Count of stripped delimiter nodes.
     pub stripped_delimiter_nodes: usize,
     /// Count of dedented code nodes.
@@ -1020,6 +1027,7 @@ impl ProvenanceOracle {
             literal_nodes: 0,
             escape_nodes: 0,
             entity_nodes: 0,
+            decoded_text_nodes: 0,
             stripped_delimiter_nodes: 0,
             dedentation_nodes: 0,
             generated_marker_nodes: 0,
@@ -1095,6 +1103,27 @@ impl ProvenanceOracle {
                                 actual: slice.to_string(),
                             });
                         }
+                    }
+                }
+            }
+            ProvenanceRelation::DecodedText { source, .. } => {
+                report.decoded_text_nodes += 1;
+                if let Some(src) = source_text {
+                    let mut actual = String::new();
+                    for span in node.source_ranges.spans() {
+                        let slice =
+                            span.slice(src)
+                                .ok_or(ProvenanceError::SourceOffsetOutOfBounds {
+                                    offset: span.end,
+                                    source_len: src.len(),
+                                })?;
+                        actual.push_str(slice);
+                    }
+                    if actual != *source {
+                        return Err(ProvenanceError::InvalidRelationSyntax {
+                            expected: source.clone(),
+                            actual,
+                        });
                     }
                 }
             }

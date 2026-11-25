@@ -5,8 +5,122 @@
 //! this collector is active. There is no second Markdown grammar or source-text
 //! search, so equal-looking links in different includes keep distinct origins.
 
+use super::inline_sources::InlineSourceCapture;
 use super::*;
+use crate::span::ProvenanceRelation;
 use std::collections::BTreeMap;
+
+// A sorted physical-terminator index uses at most 4 MiB on 64-bit targets.
+// Refusing optional reading capture does not restrict the canonical parser.
+const MAX_READING_LINE_BREAKS: usize = 262_144;
+
+/// Readable source ownership captured by the canonical parser in the same pass
+/// as its spanned AST. Failure to retain bounded metadata never changes parsing.
+pub(crate) fn inline_source_capture(
+    src: &str,
+    profile: Option<crate::Profile>,
+) -> (SpannedDocument, Option<Vec<InlineSourceAtom>>) {
+    let source = normalized::NormalizedSource::new(src);
+    let (document, _, atoms) = parse_document_spanned_inner_captured(
+        source.as_str(),
+        &mut ParseProfiler::disabled().with_profile(profile),
+        false,
+        true,
+    );
+    let atoms = atoms.and_then(|atoms| {
+        let mut restored = InlineSourceCapture::new();
+        for mut atom in atoms {
+            for span in &mut atom.ranges {
+                let range = source.original_range(span.start..span.end);
+                *span = SourceSpan::new(range.start, range.end);
+            }
+            atom.end = source.original_range(atom.end..atom.end).end;
+            if atom.relation == ProvenanceRelation::Literal {
+                let raw: String = atom
+                    .ranges
+                    .iter()
+                    .filter_map(|span| span.slice(src))
+                    .collect();
+                if raw != atom.text {
+                    // NUL and logical-line normalization are atomic, while
+                    // adjacent unchanged text keeps its byte-for-byte mapping.
+                    if atom.kind == InlineSourceKind::Text
+                        && atom.ranges.len() == 1
+                        && raw
+                            .replace('\0', "\u{fffd}")
+                            .replace("\r\n", "\n")
+                            .replace('\r', "\n")
+                            == atom.text
+                    {
+                        let base = atom.ranges[0].start;
+                        let mut start = 0;
+                        let mut chars = raw.char_indices().peekable();
+                        while let Some((index, ch)) = chars.next() {
+                            if ch != '\0' && ch != '\r' {
+                                continue;
+                            }
+                            if start < index {
+                                restored.push(
+                                    InlineSourceAtom {
+                                        kind: InlineSourceKind::Text,
+                                        text: raw[start..index].to_string(),
+                                        ranges: vec![SourceSpan::new(base + start, base + index)],
+                                        relation: ProvenanceRelation::Literal,
+                                        end: base + index,
+                                    },
+                                    true,
+                                );
+                            }
+                            let mut end = index + 1;
+                            if ch == '\r' && chars.peek().is_some_and(|(_, ch)| *ch == '\n') {
+                                let _ = chars.next();
+                                end += 1;
+                            }
+                            let decoded = if ch == '\0' { "\u{fffd}" } else { "\n" };
+                            restored.push(
+                                InlineSourceAtom {
+                                    kind: InlineSourceKind::Text,
+                                    text: decoded.to_string(),
+                                    ranges: vec![SourceSpan::new(base + index, base + end)],
+                                    relation: ProvenanceRelation::DecodedText {
+                                        source: raw[index..end].to_string(),
+                                        decoded: decoded.to_string(),
+                                    },
+                                    end: base + end,
+                                },
+                                false,
+                            );
+                            start = end;
+                        }
+                        if start < raw.len() {
+                            restored.push(
+                                InlineSourceAtom {
+                                    kind: InlineSourceKind::Text,
+                                    text: raw[start..].to_string(),
+                                    ranges: vec![SourceSpan::new(base + start, base + raw.len())],
+                                    relation: ProvenanceRelation::Literal,
+                                    end: atom.end,
+                                },
+                                true,
+                            );
+                        } else if let Some(last) = restored.atoms.last_mut() {
+                            last.end = atom.end;
+                        }
+                        continue;
+                    }
+                    atom.relation = ProvenanceRelation::DecodedText {
+                        source: raw,
+                        decoded: atom.text.clone(),
+                    };
+                }
+            }
+            // Do not coalesce across AST boundaries after delimiter resolution.
+            restored.push(atom, false);
+        }
+        (!restored.exhausted).then_some(restored.atoms)
+    });
+    (source.restore_spanned(document), atoms)
+}
 
 /// One exact destination token in the source passed to [`super::destination_spans`].
 /// A token can supply an inline link, image or reference definition; its source
@@ -327,6 +441,39 @@ struct CharMap {
 }
 
 impl CharMap {
+    /// Project accepted tokens through container copies without assigning the
+    /// removed prefix between two lines to their readable text.
+    fn source_ranges(&self, token: Range<usize>) -> Vec<SourceSpan> {
+        let mut ranges: Vec<SourceSpan> = Vec::new();
+        let first = self
+            .runs
+            .partition_point(|run| run.chars.end <= token.start);
+        for run in &self.runs[first..] {
+            if run.chars.start >= token.end {
+                break;
+            }
+            let start = token.start.max(run.chars.start);
+            let end = token.end.min(run.chars.end);
+            let original = run.original.start
+                + self.widths[run.chars.start..start]
+                    .iter()
+                    .map(|width| usize::from(*width))
+                    .sum::<usize>();
+            let length = self.widths[start..end]
+                .iter()
+                .map(|width| usize::from(*width))
+                .sum::<usize>();
+            if let Some(last) = ranges.last_mut()
+                && last.end == original
+            {
+                last.end += length;
+            } else {
+                ranges.push(SourceSpan::new(original, original + length));
+            }
+        }
+        ranges
+    }
+
     fn push(&mut self, width: usize, original: Option<Range<usize>>) {
         let index = self.widths.len();
         self.widths.push(width as u8);
@@ -415,6 +562,8 @@ pub(super) struct DestinationTracker {
     directive_lines: Vec<Range<usize>>,
     diagnostics: Option<DiagnosticState>,
     navigation: Option<NavigationCapture>,
+    reading: Option<InlineSourceCapture>,
+    reading_line_breaks: Vec<Range<usize>>,
 }
 
 impl DestinationTracker {
@@ -433,6 +582,8 @@ impl DestinationTracker {
             directive_lines: Vec::new(),
             diagnostics: None,
             navigation: None,
+            reading: None,
+            reading_line_breaks: Vec::new(),
         }
     }
 
@@ -465,7 +616,7 @@ impl DestinationTracker {
     }
 
     pub(super) fn diagnostics_only(&self) -> bool {
-        self.diagnostics.is_some() && self.navigation.is_none()
+        self.diagnostics.is_some() && self.navigation.is_none() && self.reading.is_none()
     }
 
     pub(super) fn enable_navigation(&mut self) {
@@ -474,6 +625,252 @@ impl DestinationTracker {
 
     pub(super) fn take_navigation(&mut self) -> NavigationCapture {
         self.navigation.take().unwrap_or_default()
+    }
+
+    pub(super) fn enable_reading(&mut self, source: &str) {
+        self.reading = Some(InlineSourceCapture::new());
+        let mut offset = 0;
+        for line in logical_lines_inclusive(source) {
+            let content_end = offset + logical_line_content(line).len();
+            offset += line.len();
+            if content_end < offset {
+                if self.reading_line_breaks.len() == MAX_READING_LINE_BREAKS {
+                    if let Some(capture) = &mut self.reading {
+                        capture.refuse();
+                    }
+                    self.reading_line_breaks.clear();
+                    return;
+                }
+                self.reading_line_breaks.push(content_end..offset);
+            }
+        }
+    }
+
+    pub(super) fn take_reading(&mut self) -> Option<Vec<InlineSourceAtom>> {
+        let capture = self.reading.take()?;
+        (!capture.exhausted).then(|| {
+            capture
+                .atoms
+                .into_iter()
+                .filter(|atom| atom.kind != InlineSourceKind::Text || !atom.text.is_empty())
+                .collect()
+        })
+    }
+
+    pub(super) fn reading_enabled(&self) -> bool {
+        self.reading
+            .as_ref()
+            .is_some_and(|capture| !capture.exhausted)
+    }
+
+    fn reading_push(
+        &mut self,
+        kind: InlineSourceKind,
+        text: String,
+        ranges: Vec<SourceSpan>,
+        relation: ProvenanceRelation,
+        merge: bool,
+    ) -> Option<usize> {
+        let capture = self.reading.as_mut()?;
+        let end = ranges.last().map_or_else(
+            || capture.atoms.last().map_or(0, |atom| atom.end),
+            |range| range.end,
+        );
+        capture.push(
+            InlineSourceAtom {
+                kind,
+                text,
+                ranges,
+                relation,
+                end,
+            },
+            merge,
+        )
+    }
+
+    pub(super) fn reading_plain_text(&mut self, text: &str) {
+        if !self.reading_enabled() || text.is_empty() {
+            return;
+        }
+        if let Some(range) = self.text_range(text) {
+            self.reading_push(
+                InlineSourceKind::Text,
+                text.to_string(),
+                vec![SourceSpan::new(range.start, range.end)],
+                ProvenanceRelation::Literal,
+                true,
+            );
+            return;
+        }
+        // Copied definition-list text can include parser-inserted separators.
+        // Preserve their reading text but never invent editable source bytes.
+        for (index, ch) in text.char_indices() {
+            let raw = &text[index..index + ch.len_utf8()];
+            let ranges = self
+                .text_range(raw)
+                .into_iter()
+                .map(|range| SourceSpan::new(range.start, range.end))
+                .collect::<Vec<_>>();
+            let relation = if ranges.is_empty() {
+                ProvenanceRelation::DecodedText {
+                    source: String::new(),
+                    decoded: raw.to_string(),
+                }
+            } else {
+                ProvenanceRelation::Literal
+            };
+            self.reading_push(
+                InlineSourceKind::Text,
+                raw.to_string(),
+                ranges,
+                relation,
+                true,
+            );
+        }
+    }
+
+    pub(super) fn reading_literal(
+        &mut self,
+        chars: &[char],
+        token: Range<usize>,
+        merge: bool,
+    ) -> Option<usize> {
+        if !self.reading_enabled() || token.is_empty() {
+            return None;
+        }
+        if let Some(range) = self.char_range(chars, token.clone()) {
+            return self.reading.as_mut()?.literal_chars(
+                &chars[token],
+                SourceSpan::new(range.start, range.end),
+                merge,
+            );
+        }
+        let mut last = None;
+        for index in token {
+            let ranges = self.reading_ranges(chars, index..index + 1)?;
+            let text = chars[index].to_string();
+            let relation = if ranges.is_empty() {
+                ProvenanceRelation::DecodedText {
+                    source: String::new(),
+                    decoded: text.clone(),
+                }
+            } else {
+                ProvenanceRelation::Literal
+            };
+            last = self.reading_push(InlineSourceKind::Text, text, ranges, relation, merge);
+        }
+        last
+    }
+
+    pub(super) fn reading_token(
+        &mut self,
+        chars: &[char],
+        token: Range<usize>,
+        kind: InlineSourceKind,
+        text: &str,
+        relation: ProvenanceRelation,
+    ) {
+        if !self.reading_enabled() {
+            return;
+        }
+        let Some(ranges) = self.reading_ranges(chars, token) else {
+            return;
+        };
+        self.reading_push(kind, text.to_string(), ranges, relation, false);
+    }
+
+    pub(super) fn reading_delimited(
+        &mut self,
+        chars: &[char],
+        token: Range<usize>,
+        kind: InlineSourceKind,
+        text: &str,
+        delimiter: &str,
+    ) {
+        if !self.reading_enabled() {
+            return;
+        }
+        self.reading_token(
+            chars,
+            token,
+            kind,
+            text,
+            ProvenanceRelation::StrippedDelimiter {
+                delimiter: delimiter.to_string(),
+            },
+        );
+    }
+
+    pub(super) fn reading_entity(&mut self, chars: &[char], token: Range<usize>, text: &str) {
+        if !self.reading_enabled() {
+            return;
+        }
+        let raw: String = chars[token.clone()].iter().collect();
+        let mut decoded = text.chars();
+        let first = decoded.next();
+        let relation = match (first, decoded.next()) {
+            (Some(decoded), None) => ProvenanceRelation::Entity {
+                decoded,
+                raw_entity: raw,
+            },
+            _ => ProvenanceRelation::DecodedText {
+                source: raw,
+                decoded: text.to_string(),
+            },
+        };
+        self.reading_token(chars, token, InlineSourceKind::Text, text, relation);
+    }
+
+    pub(super) fn reading_escape(&mut self, chars: &[char], start: usize) {
+        if !self.reading_enabled() {
+            return;
+        }
+        let escaped_char = chars[start + 1];
+        self.reading_token(
+            chars,
+            start..start + 2,
+            InlineSourceKind::Text,
+            &escaped_char.to_string(),
+            ProvenanceRelation::Escape { escaped_char },
+        );
+    }
+
+    pub(super) fn reading_trim(&mut self, count: usize) {
+        if let Some(capture) = &mut self.reading {
+            capture.trim_literal_suffix(count);
+        }
+    }
+
+    pub(super) fn reading_end(&mut self, chars: &[char], token: Range<usize>) {
+        if !self.reading_enabled() {
+            return;
+        }
+        let start = self.char_range(chars, token.start..token.start + 1);
+        let range = token
+            .end
+            .checked_sub(1)
+            .and_then(|start| self.char_range(chars, start..token.end));
+        if let (Some(start), Some(range), Some(capture)) = (start, range, &mut self.reading)
+            && let Some(last) = capture
+                .atoms
+                .iter_mut()
+                .rev()
+                .find(|atom| atom.kind != InlineSourceKind::Text || !atom.text.is_empty())
+            && last.end > start.start
+        {
+            last.end = last.end.max(range.end);
+        }
+    }
+
+    pub(super) fn reading_consume_delimiter(
+        &mut self,
+        index: Option<usize>,
+        count: usize,
+        opener: bool,
+    ) {
+        if let (Some(index), Some(capture)) = (index, &mut self.reading) {
+            capture.consume_delimiter(index, count, opener);
+        }
     }
 
     pub(super) fn navigation_link(&mut self, chars: &[char], token: Range<usize>, dest: &str) {
@@ -837,7 +1234,15 @@ impl DestinationTracker {
         };
         for (index, line) in lines.iter().enumerate() {
             if index > 0 {
-                map.push(1, None);
+                let terminator = self.reading.as_ref().and_then(|_| {
+                    let end = self.text_envelope(lines[index - 1])?.end;
+                    let index = self
+                        .reading_line_breaks
+                        .binary_search_by_key(&end, |range| range.start)
+                        .ok()?;
+                    self.reading_line_breaks.get(index).cloned()
+                });
+                map.push(terminator.as_ref().map_or(1, Range::len), terminator);
             }
             let text = inline_source_line(line, index == 0, index + 1 == lines.len(), padding);
             self.append_chars(&mut map, text);
@@ -895,6 +1300,32 @@ impl DestinationTracker {
                 .then_some((map, offset))
         })?;
         map.source_range(offset + token.start..offset + token.end)
+    }
+
+    fn reading_ranges(&mut self, chars: &[char], token: Range<usize>) -> Option<Vec<SourceSpan>> {
+        let address = chars.as_ptr() as usize;
+        let char_size = std::mem::size_of::<char>();
+        let ranges = self.chars.iter().rev().find_map(|map| {
+            let bytes = address.checked_sub(map.address)?;
+            if bytes % char_size != 0 {
+                return None;
+            }
+            let offset = bytes / char_size;
+            if offset > map.widths.len()
+                || chars.len() > map.widths.len() - offset
+                || token.start > token.end
+                || token.end > chars.len()
+            {
+                return None;
+            }
+            Some(map.source_ranges(offset + token.start..offset + token.end))
+        });
+        if ranges.is_none()
+            && let Some(capture) = &mut self.reading
+        {
+            capture.refuse();
+        }
+        ranges
     }
 
     /// Called only after a reference use survives speculative link parsing.
@@ -1133,19 +1564,26 @@ impl ParseProfiler {
         }
     }
 
-    pub(super) fn destination_mark(&self) -> (usize, usize, usize) {
-        self.destinations.as_ref().map_or((0, 0, 0), |tracker| {
+    pub(super) fn destination_mark(&mut self) -> (usize, usize, usize, usize) {
+        self.destinations.as_mut().map_or((0, 0, 0, 0), |tracker| {
             (
                 tracker.spans.len(),
                 tracker.labels.as_ref().map_or(0, Vec::len),
                 tracker.inline_code.as_ref().map_or(0, Vec::len),
+                tracker
+                    .reading
+                    .as_mut()
+                    .map_or(0, InlineSourceCapture::checkpoint),
             )
         })
     }
 
-    pub(super) fn destination_rollback(&mut self, mark: (usize, usize, usize)) {
+    pub(super) fn destination_rollback(&mut self, mark: (usize, usize, usize, usize)) {
         if let Some(tracker) = &mut self.destinations {
             tracker.spans.truncate(mark.0);
+            if let Some(capture) = &mut tracker.reading {
+                capture.rollback(mark.3);
+            }
             if let Some(labels) = &mut tracker.labels {
                 labels.truncate(mark.1);
             }
@@ -1158,9 +1596,12 @@ impl ParseProfiler {
     /// Image alt text flattens its inline nodes, so their URLs are not emitted
     /// destinations. Accepted reference labels still determine that text and
     /// need coordinated source edits when their definitions are renamed.
-    pub(super) fn destination_tokens_rollback(&mut self, mark: (usize, usize, usize)) {
+    pub(super) fn destination_tokens_rollback(&mut self, mark: (usize, usize, usize, usize)) {
         if let Some(tracker) = &mut self.destinations {
             tracker.spans.truncate(mark.0);
+            if let Some(capture) = &mut tracker.reading {
+                capture.rollback(mark.3);
+            }
         }
     }
 }

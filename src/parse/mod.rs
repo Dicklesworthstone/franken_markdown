@@ -29,13 +29,16 @@ pub use frontmatter::{Frontmatter, split_frontmatter};
 pub(crate) use page_breaks::{PAGE_BREAK_MARKER, is_page_break_marker};
 
 mod destinations;
+mod inline_sources;
 mod navigation_sources;
 mod reference_labels;
 pub use destinations::DestinationSpan;
+pub(crate) use destinations::inline_source_capture;
 pub(crate) use destinations::{
     DestinationSyntax, resource_destination_spans, resource_destination_spans_with_profile,
 };
 pub(crate) use destinations::{transclusion_code_ranges, transclusion_code_ranges_with_profile};
+pub(crate) use inline_sources::{InlineSourceAtom, InlineSourceKind};
 pub(crate) use navigation_sources::NavigationCapture;
 pub use reference_labels::{ReferenceLabelForm, ReferenceLabelSpan};
 
@@ -889,10 +892,28 @@ fn parse_document_spanned_inner_with_navigation(
     profiler: &mut ParseProfiler,
     capture_navigation: bool,
 ) -> (SpannedDocument, NavigationCapture) {
+    let (document, navigation, _) =
+        parse_document_spanned_inner_captured(src, profiler, capture_navigation, false);
+    (document, navigation)
+}
+
+fn parse_document_spanned_inner_captured(
+    src: &str,
+    profiler: &mut ParseProfiler,
+    capture_navigation: bool,
+    capture_reading: bool,
+) -> (
+    SpannedDocument,
+    NavigationCapture,
+    Option<Vec<InlineSourceAtom>>,
+) {
     let source_lines = source_lines(src);
     profiler.destinations = Some(destinations::DestinationTracker::for_diagnostics(src));
     if capture_navigation && let Some(tracker) = &mut profiler.destinations {
         tracker.enable_navigation();
+    }
+    if capture_reading && let Some(tracker) = &mut profiler.destinations {
+        tracker.enable_reading(src);
     }
     profiler.block_spans = Some(BlockSpanTracker {
         lines: source_lines
@@ -928,6 +949,9 @@ fn parse_document_spanned_inner_with_navigation(
         .as_mut()
         .map(destinations::DestinationTracker::take_navigation)
         .unwrap_or_default();
+    let reading = diagnostics
+        .as_mut()
+        .and_then(destinations::DestinationTracker::take_reading);
     (
         SpannedDocument {
             blocks,
@@ -940,6 +964,7 @@ fn parse_document_spanned_inner_with_navigation(
             source_len: src.len(),
         },
         navigation,
+        reading,
     )
 }
 
@@ -2552,7 +2577,12 @@ fn parse_lines_as_inlines(
         _ => {
             let started = profiler.checkpoint();
             let scan = scan_multiline_inline_lines(lines);
-            if !scan.needs_full_parse {
+            if !scan.needs_full_parse
+                && !profiler
+                    .destinations
+                    .as_ref()
+                    .is_some_and(destinations::DestinationTracker::reading_enabled)
+            {
                 let (inlines, char_count) =
                     plain_multiline_inline_fast_path(lines, profiler.enabled);
                 profiler.record_since(
@@ -5119,6 +5149,9 @@ fn record_plain_inline_parse(
     profiler: &mut ParseProfiler,
     started: Option<ParseStageStart>,
 ) -> Vec<Inline> {
+    if let Some(tracker) = &mut profiler.destinations {
+        tracker.reading_plain_text(text);
+    }
     let inlines = if text.is_empty() {
         Vec::new()
     } else {
@@ -5187,6 +5220,9 @@ fn record_plain_inline_chars_parse(
     profiler: &mut ParseProfiler,
     started: Option<ParseStageStart>,
 ) -> Vec<Inline> {
+    if let Some(tracker) = &mut profiler.destinations {
+        tracker.reading_literal(chars, 0..chars.len(), true);
+    }
     let inlines = if chars.is_empty() {
         Vec::new()
     } else {
@@ -5361,6 +5397,9 @@ fn parse_inlines_chars_with_refs_profiled(
         let c = bytes[i];
         match c {
             '\\' if i + 1 < bytes.len() && is_ascii_punct(bytes[i + 1]) => {
+                if let Some(tracker) = &mut profiler.destinations {
+                    tracker.reading_escape(bytes, i);
+                }
                 buf.push(bytes[i + 1]);
                 i += 2;
             }
@@ -5377,6 +5416,25 @@ fn parse_inlines_chars_with_refs_profiled(
                     % 2
                     == 1;
                 let hard = trailing_spaces >= 2 || hard_backslash;
+                if let Some(tracker) = &mut profiler.destinations {
+                    let syntax = trailing_spaces + usize::from(hard_backslash);
+                    tracker.reading_trim(syntax);
+                    tracker.reading_token(
+                        bytes,
+                        i - syntax..i + 1,
+                        if hard {
+                            InlineSourceKind::HardBreak
+                        } else {
+                            InlineSourceKind::SoftBreak
+                        },
+                        if hard { "\n" } else { " " },
+                        if hard {
+                            crate::span::ProvenanceRelation::HardBreak
+                        } else {
+                            crate::span::ProvenanceRelation::SoftBreak
+                        },
+                    );
+                }
                 for _ in 0..trailing_spaces {
                     buf.pop();
                 }
@@ -5415,9 +5473,21 @@ fn parse_inlines_chars_with_refs_profiled(
                     } else {
                         code
                     };
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_delimited(
+                            bytes,
+                            i..end + n,
+                            InlineSourceKind::Code,
+                            &code,
+                            "`",
+                        );
+                    }
                     els.push(InlineEl::Node(Inline::Code(code)));
                     i = end + n;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + n, true);
+                    }
                     for _ in 0..n {
                         buf.push('`');
                     }
@@ -5444,23 +5514,38 @@ fn parse_inlines_chars_with_refs_profiled(
                         tracker.record(bytes, token, &dest);
                     }
                     flush(&mut buf, &mut els);
-                    els.push(InlineEl::Node(Inline::Image {
-                        dest,
-                        title,
-                        alt: inlines_to_plain(&alt),
-                    }));
+                    let alt = inlines_to_plain(&alt);
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_delimited(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Image,
+                            &alt,
+                            "![",
+                        );
+                    }
+                    els.push(InlineEl::Node(Inline::Image { dest, title, alt }));
                     i = next;
                 } else if let Some((alt, dest, title, next)) =
                     parse_reference_link_like(bytes, i + 1, close, refs, profiler, true)
                 {
                     flush(&mut buf, &mut els);
-                    els.push(InlineEl::Node(Inline::Image {
-                        dest,
-                        title,
-                        alt: inlines_to_plain(&alt),
-                    }));
+                    let alt = inlines_to_plain(&alt);
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_delimited(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Image,
+                            &alt,
+                            "![",
+                        );
+                    }
+                    els.push(InlineEl::Node(Inline::Image { dest, title, alt }));
                     i = next;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + 1, true);
+                    }
                     buf.push(c);
                     i += 1;
                 }
@@ -5496,6 +5581,9 @@ fn parse_inlines_chars_with_refs_profiled(
                         title,
                         content,
                     }));
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_end(bytes, i..next);
+                    }
                     i = next;
                 } else if let Some((content, dest, title, next)) =
                     parse_reference_link_like(bytes, i, close, refs, profiler, false)
@@ -5506,6 +5594,9 @@ fn parse_inlines_chars_with_refs_profiled(
                         title,
                         content,
                     }));
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_end(bytes, i..next);
+                    }
                     i = next;
                 } else if bytes.get(i + 1) == Some(&'^')
                     && let Some((id, next)) = parse_footnote_ref_id(bytes, i + 2)
@@ -5515,6 +5606,17 @@ fn parse_inlines_chars_with_refs_profiled(
                     // citation; undefined notes remain visible literal text
                     // during rendering, as before.
                     flush(&mut buf, &mut els);
+                    if let Some(tracker) = &mut profiler.destinations
+                        && tracker.reading_enabled()
+                    {
+                        tracker.reading_token(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Footnote,
+                            &format!("[^{id}]"),
+                            crate::span::ProvenanceRelation::Literal,
+                        );
+                    }
                     els.push(InlineEl::Node(Inline::FootnoteRef { id }));
                     i = next;
                 } else if let Some((html, next)) =
@@ -5522,11 +5624,21 @@ fn parse_inlines_chars_with_refs_profiled(
                 {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.inline_html(bytes, i, &html);
+                        tracker.reading_token(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Html,
+                            &html,
+                            crate::span::ProvenanceRelation::Literal,
+                        );
                     }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + 1, true);
+                    }
                     buf.push(c);
                     i += 1;
                 }
@@ -5537,6 +5649,16 @@ fn parse_inlines_chars_with_refs_profiled(
                 {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.navigation_reference(&dest, None);
+                        let start = if bytes[i] == '<' { i + 1 } else { i };
+                        let end = if bytes[i] == '<' { next - 1 } else { next };
+                        tracker.reading_token(
+                            bytes,
+                            start..end,
+                            InlineSourceKind::Text,
+                            &label,
+                            crate::span::ProvenanceRelation::Literal,
+                        );
+                        tracker.reading_end(bytes, i..next);
                     }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -5550,20 +5672,36 @@ fn parse_inlines_chars_with_refs_profiled(
                 {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.inline_html(bytes, i, &html);
+                        tracker.reading_token(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Html,
+                            &html,
+                            crate::span::ProvenanceRelation::Literal,
+                        );
                     }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Html(html)));
                     i = next;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + 1, true);
+                    }
                     buf.push(c);
                     i += 1;
                 }
             }
             '&' => {
                 if let Some((decoded, next)) = parse_character_reference(bytes, i) {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_entity(bytes, i..next, &decoded);
+                    }
                     buf.push_str(&decoded);
                     i = next;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + 1, true);
+                    }
                     buf.push(c);
                     i += 1;
                 }
@@ -5577,6 +5715,15 @@ fn parse_inlines_chars_with_refs_profiled(
                         parse_math_delim(bytes, i, 2, &mut profiler.inline_work)
                 {
                     flush(&mut buf, &mut els);
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_delimited(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::DisplayMath,
+                            &inner,
+                            "$$",
+                        );
+                    }
                     els.push(InlineEl::Node(Inline::DisplayMath(inner)));
                     i = next;
                     continue;
@@ -5586,9 +5733,21 @@ fn parse_inlines_chars_with_refs_profiled(
                         parse_math_delim(bytes, i, 1, &mut profiler.inline_work)
                 {
                     flush(&mut buf, &mut els);
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_delimited(
+                            bytes,
+                            i..next,
+                            InlineSourceKind::Math,
+                            &inner,
+                            "$",
+                        );
+                    }
                     els.push(InlineEl::Node(Inline::Math(inner)));
                     i = next;
                     continue;
+                }
+                if let Some(tracker) = &mut profiler.destinations {
+                    tracker.reading_literal(bytes, i..i + 1, true);
                 }
                 buf.push(c);
                 i += 1;
@@ -5631,16 +5790,24 @@ fn parse_inlines_chars_with_refs_profiled(
                 let supported_run = c != '~' || n == 2;
                 if supported_run && (can_open || can_close) {
                     flush(&mut buf, &mut els);
+                    let capture = profiler
+                        .destinations
+                        .as_mut()
+                        .and_then(|tracker| tracker.reading_literal(bytes, i..i + n, false));
                     els.push(InlineEl::Delim {
                         ch: c,
                         count: n,
                         orig: n,
                         can_open,
                         can_close,
+                        capture,
                     });
                     has_emphasis_delimiters = true;
                 } else {
                     // An inert run (e.g. an intraword `_`) is literal text.
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + n, true);
+                    }
                     for _ in 0..n {
                         buf.push(c);
                     }
@@ -5664,6 +5831,16 @@ fn parse_inlines_chars_with_refs_profiled(
                 if let Some((label, dest, next)) = bare_autolink {
                     if let Some(tracker) = &mut profiler.destinations {
                         tracker.navigation_reference(&dest, None);
+                        let start = if bytes[i] == '<' { i + 1 } else { i };
+                        let end = if bytes[i] == '<' { next - 1 } else { next };
+                        tracker.reading_token(
+                            bytes,
+                            start..end,
+                            InlineSourceKind::Text,
+                            &label,
+                            crate::span::ProvenanceRelation::Literal,
+                        );
+                        tracker.reading_end(bytes, i..next);
                     }
                     flush(&mut buf, &mut els);
                     els.push(InlineEl::Node(Inline::Link {
@@ -5673,6 +5850,9 @@ fn parse_inlines_chars_with_refs_profiled(
                     }));
                     i = next;
                 } else {
+                    if let Some(tracker) = &mut profiler.destinations {
+                        tracker.reading_literal(bytes, i..i + 1, true);
+                    }
                     buf.push(c);
                     i += 1;
                 }
@@ -5692,6 +5872,9 @@ fn parse_inlines_chars_with_refs_profiled(
     // Count source spaces here so decoded character references stay literal.
     if context == InlineContext::Prose {
         let trailing_spaces = bytes.iter().rev().take_while(|&&ch| ch == ' ').count();
+        if let Some(tracker) = &mut profiler.destinations {
+            tracker.reading_trim(trailing_spaces);
+        }
         for _ in 0..trailing_spaces {
             buf.pop();
         }
@@ -5703,7 +5886,7 @@ fn parse_inlines_chars_with_refs_profiled(
         0
     };
     let out = if has_emphasis_delimiters {
-        let (out, limit) = resolve_emphasis(els);
+        let (out, limit) = resolve_emphasis(els, profiler.destinations.as_mut());
         if let Some(limit) = limit {
             profiler.inline_work.limit.get_or_insert(limit);
         }
@@ -5777,6 +5960,7 @@ enum InlineEl {
         orig: usize,
         can_open: bool,
         can_close: bool,
+        capture: Option<usize>,
     },
 }
 
@@ -5897,13 +6081,16 @@ impl EmphasisArena {
 
 /// Resolve a flat token list into a nested inline tree using the CommonMark
 /// "process emphasis" delimiter-stack algorithm, then linearize what remains.
-fn resolve_emphasis(els: Vec<InlineEl>) -> (Vec<Inline>, Option<InlineLimit>) {
+fn resolve_emphasis(
+    els: Vec<InlineEl>,
+    tracker: Option<&mut destinations::DestinationTracker>,
+) -> (Vec<Inline>, Option<InlineLimit>) {
     let n = els.len();
     let mut els = els;
     let mut arena = EmphasisArena::new(n);
     let mut head: Option<usize> = (n > 0).then_some(0);
 
-    let limit = process_emphasis(&mut els, &mut arena, &mut head);
+    let limit = process_emphasis(&mut els, &mut arena, &mut head, tracker);
 
     let mut out = Vec::new();
     let mut idx = head;
@@ -5947,6 +6134,7 @@ fn process_emphasis(
     els: &mut Vec<InlineEl>,
     arena: &mut EmphasisArena,
     head: &mut Option<usize>,
+    mut tracker: Option<&mut destinations::DestinationTracker>,
 ) -> Option<InlineLimit> {
     let mut openers_bottom = [None; OPENERS_BOTTOM_LEN];
     let step_budget = els.len().saturating_mul(64).max(4096);
@@ -6064,11 +6252,17 @@ fn process_emphasis(
             Inline::Emphasis(content)
         };
 
-        if let InlineEl::Delim { count, .. } = &mut els[o] {
+        if let InlineEl::Delim { count, capture, .. } = &mut els[o] {
             *count -= use_delims;
+            if let Some(tracker) = &mut tracker {
+                tracker.reading_consume_delimiter(*capture, use_delims, true);
+            }
         }
-        if let InlineEl::Delim { count, .. } = &mut els[c] {
+        if let InlineEl::Delim { count, capture, .. } = &mut els[c] {
             *count -= use_delims;
+            if let Some(tracker) = &mut tracker {
+                tracker.reading_consume_delimiter(*capture, use_delims, false);
+            }
         }
 
         // Splice the new node between the (possibly shortened) opener and closer.

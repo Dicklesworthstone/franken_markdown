@@ -257,10 +257,14 @@ fn paired_file_exports_share_the_palette_and_invalid_presets_preserve_outputs() 
         ("appearance".into(), text("high-contrast-dark")),
     ]);
     call("fmd.render_file", request.clone()).unwrap();
+    // File exports keep the documented filename-stem title when none is given
+    // (docs/MCP_FILE_OPTIONS.md), unlike in-memory renders of the same source.
+    let title = Some("document".to_string());
     let expected_html = franken_markdown::render_html(
         SOURCE,
         &HtmlOptions {
             theme: Theme::high_contrast_dark(),
+            title: title.clone(),
             ..Default::default()
         },
     )
@@ -269,6 +273,7 @@ fn paired_file_exports_share_the_palette_and_invalid_presets_preserve_outputs() 
         SOURCE,
         &PdfOptions {
             theme: Theme::high_contrast_dark(),
+            title: title.clone(),
             ..Default::default()
         },
     )
@@ -312,6 +317,7 @@ fn paired_file_exports_share_the_palette_and_invalid_presets_preserve_outputs() 
         &parse_markdown(SOURCE),
         &HtmlOptions {
             theme: Theme::high_contrast_dark(),
+            title,
             ..Default::default()
         },
     )

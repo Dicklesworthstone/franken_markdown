@@ -337,6 +337,8 @@ fn evaluate_measured(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // A single paragraph span is an expected value here, not a mistyped `(a..b).collect()`.
+    #![allow(clippy::single_range_in_vec_init)]
 
     use super::*;
 

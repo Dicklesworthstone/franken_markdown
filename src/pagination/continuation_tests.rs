@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// One-fragment cases are data under test: a note kept whole is a single range.
+#![allow(clippy::single_range_in_vec_init)]
 
 use super::*;
 

@@ -23364,6 +23364,15 @@ fn gap(out: &mut [Line], amount: f32) {
 
 // ---- pagination + serialization --------------------------------------------
 
+/// What `serialize` returns: the PDF bytes, the page-break report, the outline,
+/// and the text layer when verification data was requested.
+type SerializedPdf = (
+    Vec<u8>,
+    PdfPageBreakReport,
+    Vec<OutlineEntry>,
+    Option<VerifyTextLayer>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn serialize(
     lines: &[Line],
@@ -23377,12 +23386,7 @@ fn serialize(
     languages: &language::Scopes,
     chapter_titles: &chapters::Titles,
     collect_verification: bool,
-) -> Result<(
-    Vec<u8>,
-    PdfPageBreakReport,
-    Vec<OutlineEntry>,
-    Option<VerifyTextLayer>,
-)> {
+) -> Result<SerializedPdf> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_theme(&opts.theme);

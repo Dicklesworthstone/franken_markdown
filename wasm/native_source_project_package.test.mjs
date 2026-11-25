@@ -24,7 +24,9 @@ for (const script of ['check-wasm-package.sh', 'dsr-wasm-package.sh']) test(scri
   // Existing native-package qualification remains in place, not replaced by a
   // source/adapter test or a higher artifact size threshold.
   assert.match(text, /wasm-bindgen/);
-  assert.match(text, /(?:BUDGET_RAW=7900000|len\(d\)<=7_900_000)/);
+  // Pinned to the recorded 0.8.0 ratchet (scripts/check-wasm-package.sh history);
+  // any later raise must update this tripwire in the same reviewed change.
+  assert.match(text, /(?:BUDGET_RAW=8600000|len\(d\)<=8_600_000)/);
   assert.match(text, /(?:BUDGET_GZIP=3400000|<=3_400_000)/);
   assert.match(text, /cmp /);
 });

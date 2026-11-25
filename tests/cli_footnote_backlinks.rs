@@ -373,9 +373,11 @@ fn strict_continuation_failure_preserves_paired_outputs_and_source() {
         "--out",
         "edition.html",
         "--pdf-strict-pagination",
+        // Human-readable refusals omit error codes; the typed code is in the JSON error.
+        "--json",
     ]);
     assert_eq!(output.status.code(), Some(70));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("pagination_infeasible"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("\"code\":\"pagination_infeasible\""));
     assert!(output.stdout.is_empty());
     assert_eq!(
         fs::read(workspace.0.join("edition.html")).unwrap(),

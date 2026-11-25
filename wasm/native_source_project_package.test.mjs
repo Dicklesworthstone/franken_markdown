@@ -3,7 +3,8 @@ import {test} from 'node:test';
 import {readFile} from 'node:fs/promises';
 const read = name => readFile(new URL(name, import.meta.url), 'utf8');
 const required = ['native_source_project.mjs', 'native_source_project_ui.mjs', 'NATIVE_SOURCE_PROJECT.md',
-  'native_workspace_publisher.mjs', 'native_source_project_open_worker.mjs', 'native_source_project_open_ui.mjs'];
+  'native_workspace_publisher.mjs', 'native_source_project_open_worker.mjs', 'native_source_project_open_ui.mjs',
+  'native_recovery_ui.mjs', 'native_recovery_session.mjs', 'native_recovery_store.mjs', 'native_recovery_worker.mjs', 'NATIVE_RECOVERY.md'];
 
 test('project modules and guide are included in the existing public exporter package', async () => {
   const manifest = JSON.parse(await read('./package.json'));

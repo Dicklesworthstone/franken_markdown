@@ -95,6 +95,8 @@ test('bootstrap contains self-contained project code and remains valid JavaScrip
   const html = await nativeSourceProjectFixture();
   assert.ok(html.includes('function installNativeSourceProjectDownload'));
   assert.ok(html.includes('function createNativeSourceProjectCodec'));
+  for (const name of ['installNativeRecovery', 'createNativeRecoverySession', 'createNativeRecoveryStore', 'createNativeRecoveryEncoder'])
+    assert.ok(html.includes('function ' + name + '('), name);
   assert.ok(html.includes('function(host)'));
   const bootstrap = html.match(/<script id="fmd-native-bootstrap">([\s\S]*?)<\/script>/)[1];
   new Script(bootstrap);

@@ -89,10 +89,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // The exact explicit adapters used by projectExporterFixtureModule, also useful
 // when executing the shared assembler inside a real disposable worker.
 export async function projectFixtureParts() {
-  const [runtime, preview, proof, proofUI, project, projectUI, openWorker, openUI] = await Promise.all([
+  const [runtime, preview, proof, proofUI, project, projectUI, openWorker, openUI,
+    recoveryUI, session, store, encoder] = await Promise.all([
     import(runtimeAdapter), import(previewAdapter), import(proofAdapter),
     import('./native_pdf_proof_ui.mjs'), import('./native_source_project.mjs'), import('./native_source_project_ui.mjs'),
     import('./native_source_project_open_worker.mjs'), import('./native_source_project_open_ui.mjs'),
+    import('./native_recovery_ui.mjs'), import('./native_recovery_session.mjs'),
+    import('./native_recovery_store.mjs'), import('./native_recovery_worker.mjs'),
   ]);
   return {bootNativeWorkspace: runtime.bootNativeWorkspace,
     createNativeWorkspaceRenderer: runtime.createNativeWorkspaceRenderer,
@@ -101,7 +104,9 @@ export async function projectFixtureParts() {
     createNativeSourceProjectCodec: project.createNativeSourceProjectCodec,
     installNativeSourceProjectDownload: projectUI.installNativeSourceProjectDownload,
     createNativeSourceProjectOpenWorker: openWorker.createNativeSourceProjectOpenWorker,
-    installNativeSourceProjectOpen: openUI.installNativeSourceProjectOpen};
+    installNativeSourceProjectOpen: openUI.installNativeSourceProjectOpen,
+    installNativeRecovery: recoveryUI.installNativeRecovery, createNativeRecoverySession: session.createNativeRecoverySession,
+    createNativeRecoveryStore: store.createNativeRecoveryStore, createNativeRecoveryEncoder: encoder.createNativeRecoveryEncoder};
 }
 
 // Executable, explicitly fake wasm-bindgen module for reopening transport tests.

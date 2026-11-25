@@ -13,12 +13,18 @@ import {createNativeWorkspacePublisher} from './native_workspace_publisher.mjs';
 import {createNativeSourceProjectOpenWorker} from './native_source_project_open_worker.mjs';
 import {installNativeSourceProjectOpen} from './native_source_project_open_ui.mjs';
 
+import {installNativeRecovery} from './native_recovery_ui.mjs';
+import {createNativeRecoverySession} from './native_recovery_session.mjs';
+import {createNativeRecoveryStore} from './native_recovery_store.mjs';
+import {createNativeRecoveryEncoder} from './native_recovery_worker.mjs';
+
 export {readNativeSourceProject, NATIVE_SOURCE_PROJECT_LIMITS} from './native_source_project.mjs';
 const sourceProjects = createNativeSourceProjectCodec();
 const publisher = createNativeWorkspacePublisher({bootNativeWorkspace, createNativeWorkspaceRenderer,
   createWorkspacePreviewWorker, createNativePdfProof, registerNativePdfProof,
   installNativeSourceProjectDownload, createNativeSourceProjectCodec,
-  createNativeSourceProjectOpenWorker, installNativeSourceProjectOpen});
+  createNativeSourceProjectOpenWorker, installNativeSourceProjectOpen,
+  installNativeRecovery, createNativeRecoverySession, createNativeRecoveryStore, createNativeRecoveryEncoder});
 
 const MiB = 1024 * 1024;
 const SLOTS = ['body-regular', 'body-bold', 'body-italic', 'body-bold-italic', 'mono-regular'];

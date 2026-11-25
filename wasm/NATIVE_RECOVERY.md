@@ -8,8 +8,30 @@ Unlike normal **Save HTML**, it does not call, await or cancel the renderer.
 This closes a data-retention gap: Markdown alone does not contain separately
 embedded image/font bytes, while ordinary Save HTML waits for a current preview.
 A failed or stalled engine must not trap those resources inside the open editor.
-Recovery remains an explicit local download; no browser-storage write or network
-upload is introduced.
+The recovery HTML download works independently of the optional autosave controls.
+
+## Local recovery in an exported workspace
+
+Open **Local recovery** and choose **Enable autosave** to store the current
+data-only project in this browser. Further edits and committed settings or asset
+changes are saved after a short idle period. **Save now** flushes a pending
+edit. The status changes to “Current project stored locally” after the storage
+transaction completes. Suspending the page turns autosave off. Returning to it
+requires enabling autosave again. The browser may restrict or clear local
+storage, particularly for files and private windows.
+
+To recover a revision, open **Local recovery** in a workspace on the same
+browser origin, select **Show saved copies**, then **Prepare download**. Once
+validation completes, choose **Download recovered project**. The resulting
+`.fmd.json` can be opened using **Open source project** in a compatible
+workspace. Stored projects contain the exact Markdown, committed options, images
+and fonts. The engine comes from the workspace used to reopen them. The catalog
+and its titles stay inside the recovery panel when saving or sharing HTML.
+
+The catalog holds up to eight copies and 256 MiB total. **Delete copy**
+asks for confirmation and only deletes the listed revision. Conflicts, quota
+errors and storage failures are reported. Downloads remain available when
+autosave stops.
 
 ## What the recovery copy preserves
 

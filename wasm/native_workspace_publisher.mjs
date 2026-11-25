@@ -5,7 +5,8 @@ export function createNativeWorkspacePublisher(dependencies) {
   const names = ['bootNativeWorkspace', 'createNativeWorkspaceRenderer',
     'createWorkspacePreviewWorker', 'createNativePdfProof', 'registerNativePdfProof',
     'installNativeSourceProjectDownload', 'createNativeSourceProjectCodec'];
-  const optional = ['createNativeSourceProjectOpenWorker', 'installNativeSourceProjectOpen'];
+  const optional = ['createNativeSourceProjectOpenWorker', 'installNativeSourceProjectOpen',
+    'installNativeRecovery', 'createNativeRecoverySession', 'createNativeRecoveryStore', 'createNativeRecoveryEncoder'];
   const parts = Object.freeze(Object.fromEntries([...names, ...optional]
     .filter(name => dependencies[name] !== undefined).map(name => [name, dependencies[name]])));
   for (const name of names) if (typeof parts[name] !== 'function') throw new TypeError('Missing workspace implementation: ' + name);
@@ -21,6 +22,7 @@ export function createNativeWorkspacePublisher(dependencies) {
     parts.registerNativePdfProof(parts.createNativePdfProof, window.__fmdNativeRuntime, function(host) {
       parts.installNativeSourceProjectDownload(parts.createNativeSourceProjectCodec, window.__fmdNativeRuntime, host);
       parts.installNativeSourceProjectOpen?.(createPublisher, parts, window.__fmdNativeRuntime, host);
+      parts.installNativeRecovery?.(parts, host);
     });
   }
   function textSize(text, maximum, label) {

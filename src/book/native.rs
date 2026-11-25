@@ -158,6 +158,9 @@ pub(crate) struct BookArgs {
     /// Maximum bytes per explicit or automatically loaded image (ceiling: 32 MiB).
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     max_pdf_image_bytes: u64,
+    // Shared PDF leading and table padding, outside `book_publishing` (see there).
+    #[command(flatten)]
+    pdf_spacing: crate::cli::pdf_spacing::PdfSpacingArgs,
     #[command(flatten)]
     publishing: publishing::PublishingArgs,
 }
@@ -345,7 +348,8 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
                 .ok_or_else(|| error(64, "usage_error", "font must be sans or serif"))?,
         );
     }
-    let publication = publishing::prepare(&args.publishing, args.to, &config.render)?;
+    let publication =
+        publishing::prepare(&args.publishing, &args.pdf_spacing, args.to, &config.render)?;
     let typography = options::prepare(&args, theme, &config.render)?;
     let (mut loaded, link_check) = if args.deny_broken_links {
         let mut loaded = inputs::load_sources(&args.input, args.max_input_bytes, args.profile)

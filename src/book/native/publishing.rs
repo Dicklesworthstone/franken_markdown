@@ -16,6 +16,9 @@ use crate::{
 };
 
 /// One argument group lets source-only checking reject every publishing flag.
+/// Keep this struct free of `#[command(flatten)]` fields: clap's derive leaves a
+/// group empty when its struct flattens another, which silently re-admits every
+/// flag below with `--check-links`. Shared PDF spacing flags sit beside it.
 #[derive(Args)]
 #[group(id = "book_publishing", multiple = true)]
 pub(super) struct PublishingArgs {
@@ -55,8 +58,6 @@ pub(super) struct PublishingArgs {
     /// Supports optimal/strict pagination and baseline grids.
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pdf_split_footnotes: Option<bool>,
-    #[command(flatten)]
-    spacing: crate::cli::pdf_spacing::PdfSpacingArgs,
     /// Fit the assembled PDF, including contents and chapter breaks, to N pages.
     #[arg(long, visible_alias = "target-pages", value_name = "PAGES")]
     pub(super) fit_to_pages: Option<usize>,
@@ -156,6 +157,7 @@ pub(super) struct Publishing {
 
 pub(super) fn prepare(
     args: &PublishingArgs,
+    spacing_args: &crate::cli::pdf_spacing::PdfSpacingArgs,
     target: BookTarget,
     defaults: &RenderDefaults,
 ) -> Result<Publishing, Failure> {
@@ -184,7 +186,7 @@ pub(super) fn prepare(
             || args.pdf_strict_pagination.is_some()
             || args.pdf_footnote_backlinks.is_some()
             || args.pdf_split_footnotes.is_some()
-            || args.spacing.is_explicit()
+            || spacing_args.is_explicit()
             || args.fit_to_pages.is_some()
             || args.pdf_base_font_size.is_some()
             || args.pdf_heading_scale.is_some()
@@ -249,7 +251,7 @@ pub(super) fn prepare(
         _ => MicrotypeOptions::DISABLED,
     };
     let spacing = if target.wants_pdf() {
-        args.spacing
+        spacing_args
             .resolve(defaults)
             .map_err(|message| error(64, "invalid_theme_spacing", message))?
     } else {

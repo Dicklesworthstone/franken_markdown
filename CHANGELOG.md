@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local recovery keeps one owned autosave operation even when status callbacks
+  fail or reenter. Disabling recovery, detaching its target, composing text or
+  editing source/settings during notification now prevents an undispatched stale
+  save; transactions already started still retain their truthful receipts.
+
 - Bracket links inside image descriptions now deactivate enclosing Markdown
   links before alternative text is flattened. Valid image links containing
   angle autolinks remain supported, and source destination inventories no

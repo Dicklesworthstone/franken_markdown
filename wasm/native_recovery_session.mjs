@@ -9,7 +9,11 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
     return Object.freeze({enabled, dirty, busy: pending !== null, phase: pending?.phase ?? 'idle',
       id: target?.id ?? null, revision: target?.revision ?? 0, savedAt, message});
   }
-  function publish() { if (!disposed) notify(state()); }
+  function publish() {
+    if (disposed) return;
+    try { notify(state()); }
+    catch { /* UI observers cannot interrupt recovery ownership or storage settlement. */ }
+  }
   function usable() { try { return !disposed && ready() === true; } catch { return false; } }
   function clearTimer() { if (timer !== null) unschedule(timer); timer = null; }
   function queue() {
@@ -31,7 +35,7 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
     if (pending) return pending.promise;
     if (!enabled || !usable() || !dirty) return Promise.resolve(false);
     const job = {phase: 'encoding', epoch, snapshot: null, operation: null, promise: null};
-    pending = job; message = 'Preparing local recovery copy…'; publish();
+    pending = job; message = 'Preparing local recovery copy…';
     job.promise = Promise.resolve().then(() => {
       if (!enabled || !usable() || epoch !== job.epoch) return null;
       if (!target) target = {id: randomId(), revision: 0};
@@ -42,6 +46,10 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
     }).then(project => {
       if (!project || !same(job)) return null;
       job.phase = 'writing'; message = 'Writing local recovery copy…'; publish();
+      // Observers may edit, suspend or detach recovery synchronously. A
+      // notification is not a dispatched transaction: recheck authority before
+      // giving the store any bytes, while retaining already-started receipts.
+      if (!same(job) || target !== job.target) return null;
       // The store compares revisions inside the same read/write transaction.
       return store.write({...project, id: job.target.id, expectedRevision: job.target.revision});
     }).then(receipt => {
@@ -66,6 +74,9 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
       if (pending === job) pending = null;
       publish(); queue();
     });
+    // Publish only after the shared promise exists. A synchronous observer
+    // may call flush(), and must join this job rather than receive null.
+    publish();
     return job.promise;
   }
   return Object.freeze({
@@ -86,6 +97,6 @@ export function createNativeRecoverySession({store, encoder, capture, ready = ()
       if (target?.id === id) { stop('Recovery target detached; explicitly enable to create a new copy.'); target = null; savedAt = null; publish(); }
     },
     suspend() { stop('Workspace suspended; enable local recovery again after returning.'); },
-    dispose() { stop('Local recovery is off.'); disposed = true; },
+    dispose() { if (disposed) return; disposed = true; stop('Local recovery is off.'); },
   });
 }

@@ -43,13 +43,12 @@
 //! one timestamp-shaped field the EPUB 3 schema mandates
 //! (`dcterms:modified`) is pinned to the constant `1970-01-01T00:00:00Z`.
 
-use std::collections::BTreeMap;
-
-use franken_markdown::ast::{Block, Document, Inline};
+use franken_markdown::ast::{Block, Document};
 use franken_markdown::{
     HtmlOptions, RenderError, Result, find_html_text_escape, find_xml_attr_escape,
 };
 
+use crate::html::{TocEntry as NavHeading, collect_toc_entries as collect_headings};
 use crate::zip::ZipWriter;
 
 // Explicit paths also support the standalone #[path] integration harness.
@@ -123,11 +122,6 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     let profiled = franken_markdown::apply_profile(doc, opts.profile);
     let doc = profiled.as_ref();
     let mut repertoire = embedded_fonts::Repertoire::new(embedded_fonts::enabled(opts)?);
-    let title = opts
-        .title
-        .clone()
-        .or_else(|| first_heading_text(doc))
-        .unwrap_or_else(|| "Document".to_string());
     let lang = opts.lang.clone().unwrap_or_else(|| "en".to_string());
     let css = theme::stylesheet(opts);
 
@@ -142,6 +136,11 @@ pub fn render_epub(doc: &Document, opts: &HtmlOptions) -> Result<Vec<u8>> {
     // remain, escaped) so chapter XHTML stays well-formed and valid. Navigation
     // must use these same nodes: a raw HTML heading consumes an emitted ID too.
     let (mut lowered, origins) = crate::safe_html::lower_with_heading_origins(doc);
+    let title = opts
+        .title
+        .clone()
+        .or_else(|| crate::html::first_heading_text(&lowered))
+        .unwrap_or_else(|| "Document".to_string());
     let links = heading_links::HeadingLinks::from_lowered(doc, &lowered, origins.as_deref())?;
     if !links.is_empty() {
         crate::safe_html::visit_destinations(&mut lowered.to_mut().blocks, &mut |dest, kind| {
@@ -590,122 +589,6 @@ fn content_identifier(title: &str, lang: &str, chapter: &str) -> String {
         b >> 48,
         b & 0xFFFF_FFFF_FFFF
     )
-}
-
-// ---------------------------------------------------------------------------
-// Heading walk for the nav document — mirrors the HTML renderer's TOC walk
-// and anchor-id assignment exactly, so nav links match the chapter's `id`
-// attributes by construction.
-
-struct NavHeading {
-    level: u8,
-    text: String,
-    id: String,
-}
-
-fn collect_headings(blocks: &[Block]) -> Vec<NavHeading> {
-    let mut suffixes: BTreeMap<String, usize> = BTreeMap::new();
-    let mut out = Vec::new();
-    walk_headings(blocks, &mut suffixes, &mut out);
-    out
-}
-
-/// Container-aware walk matching `html.rs` `collect_toc_entries`: block
-/// quotes and list items recurse; footnote definitions are skipped (they are
-/// rendered outside the body flow and never receive body heading ids).
-fn walk_headings(
-    blocks: &[Block],
-    suffixes: &mut BTreeMap<String, usize>,
-    out: &mut Vec<NavHeading>,
-) {
-    for block in blocks {
-        match block {
-            Block::Heading { level, inlines } => {
-                out.push(NavHeading {
-                    level: *level,
-                    text: inlines_to_plain(inlines),
-                    id: assign_heading_id(inlines, suffixes),
-                });
-            }
-            Block::BlockQuote(inner) => walk_headings(inner, suffixes, out),
-            Block::List(list) => {
-                for item in &list.items {
-                    walk_headings(&item.blocks, suffixes, out);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Mirror of the renderer's `push_heading_id_from_inlines`: first occurrence
-/// gets the bare slug; later collisions get `-2`, `-3`, … suffixes.
-fn assign_heading_id(inlines: &[Inline], suffixes: &mut BTreeMap<String, usize>) -> String {
-    let mut base = slug_inlines(inlines);
-    if base.is_empty() {
-        base.push_str("section");
-    }
-    let mut suffix = suffixes.get(base.as_str()).copied().unwrap_or(1);
-    loop {
-        if suffix == 1 {
-            suffix += 1;
-            if !suffixes.contains_key(base.as_str()) {
-                suffixes.insert(base.clone(), suffix);
-                return base;
-            }
-            continue;
-        }
-        let candidate = format!("{base}-{suffix}");
-        suffix += 1;
-        if !suffixes.contains_key(candidate.as_str()) {
-            suffixes.insert(candidate.clone(), 1);
-            suffixes.insert(base, suffix);
-            return candidate;
-        }
-    }
-}
-
-fn slug_inlines(inlines: &[Inline]) -> String {
-    franken_markdown::anchors::heading_slug(inlines)
-}
-
-/// Mirror of the renderer's `inlines_to_plain`: visible text with breaks as
-/// spaces, footnote refs as `[^id]`, image alt text inlined.
-fn inlines_to_plain(inlines: &[Inline]) -> String {
-    let mut s = String::new();
-    push_inlines_to_plain(inlines, &mut s);
-    s
-}
-
-fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
-    for inl in inlines {
-        match inl {
-            Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::DisplayMath(t) => {
-                out.push_str(t);
-            }
-            Inline::FootnoteRef { id } => {
-                out.push_str("[^");
-                out.push_str(id);
-                out.push(']');
-            }
-            Inline::Emphasis(c) | Inline::Strong(c) | Inline::Strikethrough(c) => {
-                push_inlines_to_plain(c, out);
-            }
-            Inline::Link { content, .. } => push_inlines_to_plain(content, out),
-            Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::SoftBreak | Inline::HardBreak => out.push(' '),
-            Inline::Html(html) => out.push_str(html),
-        }
-    }
-}
-
-/// Mirror of the renderer's title fallback: the first top-level heading's
-/// plain text.
-fn first_heading_text(doc: &Document) -> Option<String> {
-    doc.blocks.iter().find_map(|b| match b {
-        Block::Heading { inlines, .. } => Some(inlines_to_plain(inlines)),
-        _ => None,
-    })
 }
 
 #[cfg(test)]

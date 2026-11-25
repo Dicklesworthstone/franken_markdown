@@ -57,6 +57,35 @@ pub fn lower(doc: &Document) -> Cow<'_, Document> {
     })
 }
 
+/// Find a top-level publication title using the same supported HTML blocks and
+/// inline contents as export. Skip containers such as quotes and lists, and
+/// stop as soon as the caller accepts a heading. Ordinary Markdown headings
+/// are borrowed without rebuilding the document.
+pub(crate) fn first_heading_text(
+    doc: &Document,
+    mut title: impl FnMut(&[Inline]) -> Option<String>,
+) -> Option<String> {
+    for block in &doc.blocks {
+        let candidate = match block {
+            Block::Heading { inlines, .. } if inlines_have_html(inlines) => {
+                title(&trim_inlines(lower_inlines(inlines)))
+            }
+            Block::Heading { inlines, .. } => title(inlines),
+            Block::HtmlBlock(raw) if raw.contains("<h") || raw.contains("<H") => {
+                lower_html_block(raw).iter().find_map(|block| match block {
+                    Block::Heading { inlines, .. } => title(inlines),
+                    _ => None,
+                })
+            }
+            _ => None,
+        };
+        if candidate.is_some() {
+            return candidate;
+        }
+    }
+    None
+}
+
 /// The same lowering pass, with provenance for publication-owned heading IDs.
 /// Each lowered heading records its original native-heading ordinal, in an
 /// all-container source walk including note definitions. Headings introduced

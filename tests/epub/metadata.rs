@@ -344,3 +344,86 @@ fn mcp_source_and_file_epub_preserve_creator_and_publication_identity() {
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), SOURCE);
 }
+
+#[test]
+fn publication_titles_follow_visible_top_level_headings_in_source_order() {
+    let sources = [
+        "<H1>Printed &amp; <em>bound</em></H1>\n\n## Later heading",
+        "# Printed &amp; <em>bound</em>\n\n## Later heading",
+        "> # Quoted title\n\n<!-- <h1>Comment title</h1> -->\n\n\
+         <pre>literal &lt;h1&gt;</pre>\n\n<h2>Printed &amp; bound</h2>",
+    ];
+    let expected = "<title>Printed &amp; bound</title>";
+    for source in sources {
+        for profile in [
+            None,
+            Some(franken_markdown::Profile::GfmPlus),
+            Some(franken_markdown::Profile::CommonMarkGfm),
+        ] {
+            let options = HtmlOptions {
+                profile,
+                custom_css: Some(String::new()),
+                ..HtmlOptions::default()
+            };
+            let doc = franken_markdown::parse_markdown_with_profile(source, profile);
+            let html = franken_markdown::render_html_document(&doc, &options).unwrap();
+            let mut streamed = Vec::new();
+            franken_markdown::render_html_document_to_writer(&doc, &options, &mut streamed)
+                .unwrap();
+            assert_eq!(html.as_bytes(), streamed);
+            assert!(html.contains(expected), "{source}");
+            let bytes = render_epub(&doc, &options).unwrap();
+            for member in ["OEBPS/nav.xhtml", "OEBPS/chapter-1.xhtml"] {
+                let xhtml = entry_text(&bytes, member);
+                assert_well_formed_xml(&xhtml);
+                assert!(xhtml.contains(expected), "{source}: {member}");
+            }
+            let opf = entry_text(&bytes, "OEBPS/content.opf");
+            assert!(
+                opf.contains("<dc:title>Printed &amp; bound</dc:title>"),
+                "{source}"
+            );
+            let nav = entry_text(&bytes, "OEBPS/nav.xhtml");
+            assert!(nav.contains(">Printed &amp; bound</a>"), "{source}");
+        }
+    }
+}
+
+#[test]
+fn inferred_titles_preserve_document_book_and_explicit_metadata_precedence() {
+    let source = "<h1>First <strong>edition</strong></h1>\n\n# Later";
+    let book = build_book(&[
+        BookInput {
+            path: "first.md".into(),
+            source: source.into(),
+        },
+        BookInput {
+            path: "second.md".into(),
+            source: format!("---\ntitle: Source metadata\n---\n{source}"),
+        },
+        BookInput {
+            path: "third.md".into(),
+            source: "<blockquote><h2>Quoted heading</h2></blockquote>".into(),
+        },
+    ])
+    .unwrap();
+    let options = HtmlOptions {
+        title: Some("Publication override".into()),
+        custom_css: Some(String::new()),
+        ..HtmlOptions::default()
+    };
+    let edition = franken_markdown::epub::render_book_epub(&book, &options).unwrap();
+    for (index, expected) in ["First edition", "Source metadata", "third"].iter().enumerate() {
+        let chapter = entry_text(&edition, &format!("OEBPS/chapter-{}.xhtml", index + 1));
+        assert!(chapter.contains(&format!("<title>{expected}</title>")));
+    }
+    let doc = render_epub(&parse_markdown(source), &options).unwrap();
+    for bytes in [&edition, &doc] {
+        assert!(
+            entry_text(bytes, "OEBPS/content.opf")
+                .contains("<dc:title>Publication override</dc:title>")
+        );
+    }
+    let nested = render_epub(&book.chapters[2].doc, &HtmlOptions::default()).unwrap();
+    assert!(entry_text(&nested, "OEBPS/content.opf").contains("<dc:title>Document</dc:title>"));
+}

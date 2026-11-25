@@ -237,15 +237,10 @@ fn path_stem(path: &str) -> String {
 
 #[inline(always)]
 fn first_heading_text(doc: &Document) -> Option<String> {
-    for block in &doc.blocks {
-        if let Block::Heading { inlines, .. } = block {
-            let text = plain_inlines(inlines);
-            if !text.trim().is_empty() {
-                return Some(text);
-            }
-        }
-    }
-    None
+    crate::safe_html::first_heading_text(doc, |inlines| {
+        let text = plain_inlines(inlines);
+        (!text.trim().is_empty()).then_some(text)
+    })
 }
 
 #[inline(always)]

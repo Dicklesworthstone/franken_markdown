@@ -416,10 +416,7 @@ fn sanitize_custom_css(css: &str) -> String {
 }
 
 pub(crate) fn first_heading_text(doc: &Document) -> Option<String> {
-    doc.blocks.iter().find_map(|b| match b {
-        Block::Heading { inlines, .. } => Some(inlines_to_plain(inlines)),
-        _ => None,
-    })
+    crate::safe_html::first_heading_text(doc, |inlines| Some(inlines_to_plain(inlines)))
 }
 
 /// One TOC row: heading level, plain text, and the anchor id the heading
@@ -1751,7 +1748,7 @@ pub(crate) fn slug_inlines(inlines: &[Inline]) -> String {
 /// mirroring the block renderer's recursion) and compute each heading's
 /// anchor id with a fresh collision-suffix state — the exact walk the
 /// heading renderer performs, so ids match render-time assignment.
-fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
+pub(crate) fn collect_toc_entries(blocks: &[Block]) -> Vec<TocEntry> {
     // Uses a throwaway RenderState so the TOC's anchor ids are produced by
     // the SAME assignment code the heading renderer runs — identical ids by
     // construction, no mirror to drift.

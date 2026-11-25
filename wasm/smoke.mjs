@@ -69,6 +69,15 @@ console.log("smoke: invalid authoring profiles rejected before initialization/re
 
 // Load the GENERATED module from its real .wasm bytes (not the native adapter).
 const wasmBytes = readFileSync(wasmPath);
+// The interactive workspace scripts are stored once in the module. A literal that
+// repeats one (a concatenation of two scripts, say) silently ships its size twice.
+for (const script of ["interactive_renderer.js", "interactive_controller.js"]) {
+  const source = readFileSync(new URL(`../src/${script}`, import.meta.url));
+  const first = wasmBytes.indexOf(source);
+  if (first < 0) fail(`${script} is not embedded in the generated module`);
+  if (wasmBytes.indexOf(source, first + 1) >= 0) fail(`${script} is embedded more than once`);
+}
+console.log("smoke: interactive workspace scripts are embedded once");
 await mod.init(wasmBytes);
 console.log(`smoke: loaded generated module (${wasmBytes.byteLength} wasm bytes)`);
 

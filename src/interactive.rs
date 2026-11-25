@@ -222,13 +222,18 @@ fn render_workspace(
     // Client-side JavaScript
     out.push_str("<script>\n");
     if styled {
-        out.push_str(include_str!("interactive_renderer.js"));
+        out.push_str(INTERACTIVE_RENDERER_JS);
         out.push('\n');
         out.push_str(include_str!("interactive/presentation.js"));
         out.push('\n');
         out.push_str(INTERACTIVE_CONTROLLER_JS);
     } else {
-        out.push_str(INTERACTIVE_JS);
+        // Same bytes as one concatenated script. Reserving the total first keeps
+        // the single growth step that one push of the concatenation would take.
+        out.reserve(INTERACTIVE_RENDERER_JS.len() + 1 + INTERACTIVE_CONTROLLER_JS.len());
+        out.push_str(INTERACTIVE_RENDERER_JS);
+        out.push('\n');
+        out.push_str(INTERACTIVE_CONTROLLER_JS);
     }
     out.push_str("\n</script>\n</body>\n</html>\n");
 
@@ -554,17 +559,10 @@ aside.callout-caution { border-left-color: #cf222e; }
 
 // Compile the runtime assets into the existing single script element: no fetches,
 // package installation, generated WASM or external scripts are needed offline.
-const INTERACTIVE_JS: &str = concat!(
-    include_str!("interactive_renderer.js"),
-    "\n",
-    include_str!("interactive_controller.js"),
-    "\n",
-    include_str!("interactive_import.js"),
-    "\n",
-    include_str!("interactive_search.js"),
-    "\n",
-    include_str!("interactive_fonts.js"),
-);
+// Each source is stored once. A `concat!` of the renderer with the controller
+// would be one more literal that stores both sources a second time in every
+// binary, including the browser package, so the workspace appends the pieces.
+const INTERACTIVE_RENDERER_JS: &str = include_str!("interactive_renderer.js");
 
 const INTERACTIVE_CONTROLLER_JS: &str = concat!(
     include_str!("interactive_controller.js"),
@@ -580,6 +578,45 @@ const INTERACTIVE_CONTROLLER_JS: &str = concat!(
 mod tests {
     use super::*;
     use crate::parse_markdown;
+
+    // The runtime script is byte-identical to the former single concatenated
+    // literals; only the binary stores each source once.
+    #[test]
+    fn workspace_scripts_keep_the_concatenated_runtime_bytes() {
+        const PLAIN: &str = concat!(
+            include_str!("interactive_renderer.js"),
+            "\n",
+            include_str!("interactive_controller.js"),
+            "\n",
+            include_str!("interactive_import.js"),
+            "\n",
+            include_str!("interactive_search.js"),
+            "\n",
+            include_str!("interactive_fonts.js"),
+        );
+        const STYLED: &str = concat!(
+            include_str!("interactive_renderer.js"),
+            "\n",
+            include_str!("interactive/presentation.js"),
+            "\n",
+            include_str!("interactive_controller.js"),
+            "\n",
+            include_str!("interactive_import.js"),
+            "\n",
+            include_str!("interactive_search.js"),
+            "\n",
+            include_str!("interactive_fonts.js"),
+        );
+        let md = "# Title\n\nBody text.";
+        let doc = parse_markdown(md);
+        let tail = |script: &str| format!("<script>\n{script}\n</script>\n</body>\n</html>\n");
+        let plain = render_interactive_html(&doc, md, &HtmlOptions::default());
+        assert!(plain.ends_with(&tail(PLAIN)));
+        assert_eq!(plain.matches(PLAIN).count(), 1);
+        let styled = render_interactive_html_advanced(&doc, md, &HtmlOptions::default());
+        assert!(styled.ends_with(&tail(STYLED)));
+        assert_eq!(styled.matches(STYLED).count(), 1);
+    }
 
     #[test]
     fn render_interactive_html_contains_all_components() {

@@ -10,8 +10,30 @@ import {
   discardPortableBookProject,
 } from "./book_collection.mjs";
 import { bookEditorOffset } from "./book_source_search.mjs";
+import { parseBookPdfVerificationReport } from "../book_pdf_verification.mjs";
 
 const DEFAULT_CONFIRMATION = () => true;
+const PUBLICATION_FORMATS = ["pdf", "epub", "site", "pdf-verification"];
+
+// Book workers return the complete bounded report for the captured chapter order.
+// Keep the downloadable bytes intact and limit the amount of text put into the DOM.
+function verificationOutput(result, paths, name) {
+  if (result?.format !== "book-pdf-verification" || result.mimeType !== "application/json"
+      || result.extension !== "json")
+    throw bookError("INVALID_BOOK_PDF_VERIFICATION", "Expected a book PDF verification report.");
+  const bytes = result.bytes;
+  const { layout, destinations, navigation, pagination } = parseBookPdfVerificationReport(bytes, paths);
+  const counts = { resolved: 0, unresolved: 0, unchecked: 0 };
+  for (const item of destinations) counts[item.status]++;
+  const details = layout.findings.slice(0, 3).map(item =>
+    `${item.code.slice(0, 100)}: ${item.detail.slice(0, 240)}`);
+  const summary = `PDF verification: ${layout.page_count} physical page(s), ${layout.findings.length} layout finding(s). `
+    + `PDF destinations: ${counts.resolved} resolved, ${counts.unresolved} unresolved, ${counts.unchecked} unchecked. `
+    + `Expanded HTML navigation: ${navigation.summary.findings} finding(s). Pagination: ${pagination.strategy}.`
+    + (pagination.fallback ? ` Fallback: ${pagination.fallback.code}.` : "")
+    + (details.length ? ` ${details.join(" · ")}` : "");
+  return { filename: `${name}.pdf-verification.json`, blob: new Blob([bytes], { type: "application/json" }), summary };
+}
 
 /** UI orchestration is separately testable; the host supplies the real worker.
  * Nothing in this controller parses Markdown or inserts rendered HTML.
@@ -61,6 +83,9 @@ export function createBookControls({
   const el = Object.fromEntries(ids.map((id) => [id, root.querySelector(`#${id}`)]));
   if (Object.values(el).some((value) => !value))
     throw new Error("Book controls are missing required elements.");
+  // Embedded hosts using the older markup can still publish ordinary formats.
+  el["export-pdf-verification"] = root.querySelector("#export-pdf-verification");
+  const formats = PUBLICATION_FORMATS.filter(format => el[`export-${format}`]);
   installPortableBookPanel(root);
   for (const id of ["save-portable", "open-portable", "cancel-portable", "portable-review"])
     el[id] = root.querySelector(`#${id}`);
@@ -134,7 +159,7 @@ export function createBookControls({
     el["chapter-path"].disabled = el["chapter-source"].disabled = count === 0;
     el["source-role"].disabled = count === 0 || composing || reading;
     el["revoke-images"].disabled = collection.images.length === 0;
-    for (const kind of ["pdf", "epub", "site"])
+    for (const kind of formats)
       el[`export-${kind}`].disabled = !hasChapters || preparing || busy;
     for (const kind of [
       "import-files",
@@ -162,6 +187,7 @@ export function createBookControls({
     }
   }
   function revoke() {
+    if (published?.verification) el.status.textContent = "Verification report cleared. Verify the current book again to review its layout and destinations.";
     published = null;
     el.download.hidden = true;
     el.download.removeAttribute("href");
@@ -244,12 +270,13 @@ export function createBookControls({
     }
     revoke();
     url = urls.createObjectURL(output.blob);
-    published = { revision, view };
+    published = { revision, view, verification: Boolean(output.summary) };
     el.download.href = url;
     el.download.download = output.filename;
     el.download.textContent = `Download ${output.filename}`;
     el.download.hidden = false;
     el.status.textContent = `Prepared ${output.filename}. Click Download to save it. Preparation alone has not saved any file.`;
+    if (output.summary) el.status.textContent += ` ${output.summary}`;
     if (output.pdf) {
       const findings = output.diagnostics;
       el.status.textContent += findings === undefined
@@ -272,17 +299,21 @@ export function createBookControls({
       ticket = ++generation;
       preparing = true;
       buttons();
-      el.status.textContent = `Preparing ${format.toUpperCase()} in the worker. Editing or cancelling terminates this export.`;
+      const verifying = format === "pdf-verification";
+      el.status.textContent = verifying
+        ? "Checking the assembled PDF layout and destinations in the book worker…"
+        : `Preparing ${format.toUpperCase()} in the worker. Editing or cancelling terminates this export.`;
+      const name = input.options.title.replace(/[^a-z0-9_-]+/gi, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 80) || "book";
+      const paths = verifying ? input.files.map(file => file.path) : null;
       const result = await input.render(format);
-      const name =
-        (input.options.title
-          .replace(/[^a-z0-9_-]+/gi, "-")
-          .replace(/^-+|-+$/g, "")
-          .slice(0, 80) || "book") +
-        "." +
-        result.extension;
-      const renderReceipt = bookRenderDiagnosticsReceipt(result, format);
-      publish({ filename: name, blob: result.blob(), pdf: format === "pdf", ...renderReceipt }, ticket, revision, view);
+      if (verifying) {
+        publish(verificationOutput(result, paths, name), ticket, revision, view);
+      } else {
+        const renderReceipt = bookRenderDiagnosticsReceipt(result, format);
+        publish({ filename: `${name}.${result.extension}`, blob: result.blob(),
+          pdf: format === "pdf", ...renderReceipt }, ticket, revision, view);
+      }
     } catch (error) {
       if (ticket === null || ticket === generation) report(error);
       throw error;
@@ -615,7 +646,7 @@ export function createBookControls({
   });
   on("save-project", "click", () => invoke(() => prepareSource(true)));
   on("save-chapter", "click", () => invoke(() => prepareSource(false)));
-  for (const format of ["pdf", "epub", "site"])
+  for (const format of formats)
     on(`export-${format}`, "click", () => {
       void prepare(format).catch(() => {});
     });

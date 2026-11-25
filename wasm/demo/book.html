@@ -94,10 +94,11 @@ a { color: #0550ae; } :focus-visible { outline: 3px solid #bf8700; outline-offse
 <section aria-labelledby="publish-title"><h2 id="publish-title">4. Prepare and download</h2>
 <div class="grid"><div><label for="title">Book title</label><input id="title" type="text" maxlength="1024"><label for="author">Author</label><input id="author" type="text" maxlength="1024"><label for="lang">Language tag</label><input id="lang" type="text" maxlength="64"></div>
 <div><label for="font">Font family</label><select id="font"><option value="sans">Sans</option><option value="serif">Serif</option></select><label for="dark-mode">HTML/EPUB theme</label><select id="dark-mode"><option value="disabled">Light</option><option value="auto">Follow system</option><option value="light">Light (alias)</option><option value="system">System (alias)</option></select><label for="font-scale">Font scale</label><input id="font-scale" type="number" min="0.5" max="3" step="0.05"><label><input id="toc" type="checkbox"> Table of contents</label><label><input id="page-numbers" type="checkbox"> PDF page numbers</label></div></div>
-<p><button id="export-pdf" type="button">Prepare book PDF</button><button id="export-epub" type="button">Prepare EPUB</button><button id="export-site" type="button">Prepare site ZIP</button><button id="cancel-export" type="button">Cancel export</button></p>
+<p><button id="export-pdf" type="button">Prepare book PDF</button><button id="export-epub" type="button">Prepare EPUB</button><button id="export-site" type="button">Prepare site ZIP</button><button id="export-pdf-verification" type="button" aria-describedby="pdf-verification-help">Verify book PDF</button><button id="cancel-export" type="button">Cancel export</button></p>
 <p><button id="save-project" type="button">Prepare source project</button></p>
 <p id="status" role="status">Add chapters or create a new one. Saving source projects and individual source files does not require WASM.</p>
 <p><a id="download" hidden>Download</a></p>
+<p id="pdf-verification-help">Verify book PDF checks physical pages and destinations using the applied publication settings. The JSON download includes the positioned text of the book.</p>
 <p>Preparation does not save a file automatically. Edits, source-role changes, chapter order changes, and image revocation invalidate the download. An export failure never replaces your source. Unresolved links, assets, or unsupported content are subject to the engine's book-format validation.</p>
 </section>
 <script type="module" src="./book.js"></script>

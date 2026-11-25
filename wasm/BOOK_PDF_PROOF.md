@@ -62,6 +62,14 @@ and destination checks.
 
 ## Verify assembled PDF layout and navigation
 
+In the book publisher’s **Prepare and download** section, choose **Verify book PDF**.
+It uses the current chapters, includes, fonts, images and applied publication
+settings. The status gives the physical page count, layout findings, PDF
+destination counts, expanded HTML navigation findings and pagination strategy.
+Download the JSON report to inspect every finding and the positioned text.
+Edits and cancellation retire this download. The PDF viewer remains available
+independently. A matching worker and engine with book verification are required.
+
 The book API can verify the same configured publication used by PDF export:
 
 ```js

@@ -8,6 +8,7 @@ import test from "node:test";
 import { createBookCollection } from "../demo/book_collection.mjs";
 import { createBookControls } from "../demo/book_controls.mjs";
 import { createBookSourceHistoryControls } from "../demo/book_source_history.mjs";
+import { verificationReport } from "./book_pdf_verification_worker_fixture.mjs";
 
 const gate = () => {
   let resolve;
@@ -647,4 +648,92 @@ test("real workbench entry saves source with no WASM or Worker and preserves it 
   await assert.rejects(fetch(href));
   f.el["save-chapter"].click();
   assert.equal(await (await fetch(f.el.download.href)).text(), "# Source without WASM");
+});
+
+function pdfCheckResult(paths, edit = () => {}) {
+  const report = verificationReport(paths);
+  edit(report);
+  const bytes = new TextEncoder().encode(JSON.stringify(report));
+  return {
+    format: "book-pdf-verification", extension: "json", mimeType: "application/json",
+    bytes, blob: () => new Blob([bytes], { type: "application/json" }),
+  };
+}
+
+test("Verify book PDF runs the configured publication and offers its complete report", async t => {
+  const f = setup(t);
+  assert(f.el["export-pdf-verification"].disabled);
+  await initial(f);
+  type(f.el.title, "My Manual");
+  f.collection.append({ chapters: [], includeSources: [{ path: "part.md", source: "included" }],
+    images: [{ destination: "diagram.png", bytes: new Uint8Array([1, 2]) }] });
+  f.collection.configure({ ...f.collection.options, profile: "commonmark-gfm",
+    page: { size: "a4" } });
+  f.el["export-pdf-verification"].click();
+  const [job] = f.jobs;
+  assert.equal(job.format, "pdf-verification");
+  assert.equal(job.options.profile, "commonmark-gfm");
+  assert.deepEqual(job.options.page, f.collection.options.page);
+  assert.equal(job.options.includeSources[0].source, "included");
+  assert.deepEqual(job.options.images[0].bytes, new Uint8Array([1, 2]));
+  assert(f.el["export-pdf-verification"].disabled);
+  const result = pdfCheckResult(["one.md", "two.md"], report => {
+    report.layout.findings.push({ code: "missing_destination", detail: "Missing chapter target" });
+    report.layout.verdict = "findings";
+    report.layout.anchors.unresolved.push("one.md: two.md#missing");
+    report.destinations.push({ chapter: "one.md", destination: "two.md#missing", parsedDestination: "#missing",
+      status: "unresolved", page: null, y: null, kind: "link",
+      source: { status: "unavailable", precision: "destination", reason: "no_source" } });
+  });
+  job.resolve(result);
+  await tick();
+  assert.match(f.el.status.textContent, /1 physical page\(s\), 1 layout finding\(s\)/);
+  assert.match(f.el.status.textContent, /0 resolved, 1 unresolved, 0 unchecked/);
+  assert.match(f.el.status.textContent, /missing_destination: Missing chapter target/);
+  assert.equal(f.el.download.download, "My-Manual.pdf-verification.json");
+  assert.equal(f.el.download.click().defaultPrevented, false);
+  const response = await fetch(f.el.download.href);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), result.bytes);
+  type(f.el["chapter-source"], "# Changed after verification");
+  assert.match(f.el.status.textContent, /Verification report cleared/);
+  assert(f.el.download.hidden);
+  assert(f.el.download.click().defaultPrevented);
+});
+
+test("publisher refuses a malformed or different book PDF report and allows a fresh check", async t => {
+  const f = setup(t);
+  await initial(f);
+  for (const result of [
+    { ...pdfCheckResult(["one.md", "two.md"]), format: "book-pdf" },
+    pdfCheckResult(["two.md", "one.md"]),
+    pdfCheckResult(["one.md", "two.md"], report => report.layout.page_count++),
+  ]) {
+    const checking = f.controls.prepare("pdf-verification");
+    f.jobs.at(-1).resolve(result);
+    await assert.rejects(checking, code("INVALID_BOOK_PDF_VERIFICATION"));
+    assert(f.el.download.hidden);
+  }
+  const retry = f.controls.prepare("pdf-verification");
+  f.jobs.at(-1).resolve(pdfCheckResult(["one.md", "two.md"]));
+  await retry;
+  assert.match(f.el.status.textContent, /0 layout finding\(s\)/);
+  assert.equal(f.el.download.click().defaultPrevented, false);
+});
+
+test("a cancelled PDF check cannot replace a newer prepared book export", async t => {
+  const f = setup(t);
+  await initial(f);
+  const stale = f.controls.prepare("pdf-verification");
+  const check = assert.rejects(stale, code("STALE_SOURCE"));
+  f.el["cancel-export"].click();
+  const active = f.controls.prepare("epub");
+  f.jobs[1].resolve(f.output("epub"));
+  await active;
+  const current = f.el.download.href, status = f.el.status.textContent;
+  f.jobs[0].resolve(pdfCheckResult(["one.md", "two.md"]));
+  await check;
+  assert.equal(f.el.download.href, current);
+  assert.equal(f.el.status.textContent, status);
+  assert.match(f.el.download.download, /\.epub$/);
 });

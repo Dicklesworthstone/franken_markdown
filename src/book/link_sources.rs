@@ -13,6 +13,10 @@ use crate::{Block, Document, Inline, Result};
 
 const MAX_METADATA: usize = 65_536;
 pub(super) const MAX_PROVENANCE_BYTES: usize = 2 * 1024 * 1024;
+// Optional parser-decoded spellings are independent of source-coordinate
+// admission. Exhaustion never removes an otherwise valid navigation location.
+pub(crate) const MAX_PARSED_DESTINATION_BYTES: usize = 1024 * 1024;
+const MAX_PARSED_DESTINATION: usize = 8192;
 
 /// Precision of the parser-owned expanded range projected into original files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +82,11 @@ pub(crate) struct ChapterLinkSources {
     length: usize,
     blocks: Vec<SourceSpan>,
     destinations: Vec<Option<Range<usize>>>,
+    /// Captured in structural order before chapter URL canonicalization.
+    parsed_destinations: Vec<Option<String>>,
+    /// The allowance that discarded captured values; repeated admission cannot
+    /// recover them. A workspace must recapture before changing this allowance.
+    parsed_truncation_allowance: Option<usize>,
     map: SourceMap,
     reason: Option<&'static str>,
 }
@@ -89,6 +98,8 @@ impl ChapterLinkSources {
         path: &str,
     ) -> Self {
         let mut destinations = Vec::new();
+        let mut parsed_destinations = Vec::new();
+        let mut parsed_bytes = 0usize;
         let mut complete = parsed.blocks.len() <= MAX_METADATA;
         if complete {
             for block in &parsed.blocks {
@@ -96,11 +107,21 @@ impl ChapterLinkSources {
                     if destinations.len() == MAX_METADATA {
                         return false;
                     }
-                    destinations.push(match node {
+                    destinations.push(match &node {
                         Node::Link(_, destination) => capture.link_range(destination),
-                        Node::Html(html, index) => capture.html_range(html, index),
+                        Node::Html(html, index, _) => capture.html_range(html, *index),
                         Node::Note(_) => None,
                     });
+                    parsed_destinations.push(node.destination().and_then(|destination| {
+                        if destination.len() > MAX_PARSED_DESTINATION
+                            || destination.len()
+                                > MAX_PARSED_DESTINATION_BYTES.saturating_sub(parsed_bytes)
+                        {
+                            return None;
+                        }
+                        parsed_bytes += destination.len();
+                        Some(destination.to_owned())
+                    }));
                     true
                 }) {
                     complete = false;
@@ -116,6 +137,12 @@ impl ChapterLinkSources {
                 Vec::new()
             },
             destinations: if complete { destinations } else { Vec::new() },
+            parsed_destinations: if complete {
+                parsed_destinations
+            } else {
+                Vec::new()
+            },
+            parsed_truncation_allowance: None,
             map: SourceMap::identity(path, parsed.source_len),
             reason: (!complete).then_some("provenance_limit"),
         }
@@ -126,9 +153,47 @@ impl ChapterLinkSources {
             length,
             blocks: Vec::new(),
             destinations: Vec::new(),
+            parsed_destinations: Vec::new(),
+            parsed_truncation_allowance: None,
             map: SourceMap::unavailable(length, "not_captured"),
             reason: Some("not_captured"),
         }
+    }
+
+    /// Apply existing coordinate admission before spending the independent
+    /// parsed-target allowance. Discarded chapters must not consume that pool.
+    pub(crate) fn admit_metadata(&mut self, units: &mut usize, parsed_bytes: &mut usize) {
+        let count = self.blocks.len().saturating_add(self.destinations.len());
+        if count > MAX_METADATA.saturating_sub(*units) {
+            self.blocks.clear();
+            self.destinations.clear();
+            self.parsed_destinations.clear();
+            self.reason = Some("provenance_limit");
+        } else {
+            *units += count;
+        }
+        self.admit_parsed_destinations(parsed_bytes);
+    }
+
+    fn admit_parsed_destinations(&mut self, used: &mut usize) {
+        let allowance = MAX_PARSED_DESTINATION_BYTES.saturating_sub(*used);
+        for destination in &mut self.parsed_destinations {
+            if let Some(value) = destination {
+                if value.len() > MAX_PARSED_DESTINATION_BYTES.saturating_sub(*used) {
+                    self.parsed_truncation_allowance.get_or_insert(allowance);
+                    *destination = None;
+                } else {
+                    *used += value.len();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn needs_parsed_destination_refresh(&self, used: usize) -> bool {
+        self.reason.is_none()
+            && self.parsed_truncation_allowance.is_some_and(|previous| {
+                previous != MAX_PARSED_DESTINATION_BYTES.saturating_sub(used)
+            })
     }
 
     fn location(&self, owner: usize, index: Option<usize>) -> LinkSourceLocation {
@@ -178,19 +243,10 @@ pub(crate) struct BookLinkSources {
 impl BookLinkSources {
     pub(crate) fn new(mut chapters: Vec<ChapterLinkSources>) -> Self {
         let mut units = 0;
+        let mut parsed_bytes = 0usize;
         let mut maps = SourceMapBudget::default();
         for chapter in &mut chapters {
-            let count = chapter
-                .blocks
-                .len()
-                .saturating_add(chapter.destinations.len());
-            if count > MAX_METADATA - units {
-                chapter.blocks.clear();
-                chapter.destinations.clear();
-                chapter.reason = Some("provenance_limit");
-            } else {
-                units += count;
-            }
+            chapter.admit_metadata(&mut units, &mut parsed_bytes);
             let placeholder = SourceMap::unavailable(chapter.length, "not_captured");
             chapter.map = maps.admit(std::mem::replace(&mut chapter.map, placeholder));
         }
@@ -222,6 +278,7 @@ impl BookLinkSources {
 /// Parser-owned references, including dormant notes retained by PDF endnotes.
 pub(crate) struct PdfReferenceSource {
     pub destination: String,
+    pub parsed_destination: Option<String>,
     pub note: bool,
     pub html: bool,
     pub source: LinkSourceLocation,
@@ -239,19 +296,14 @@ pub(crate) fn pdf_references(
     let mut source_bytes = 0usize;
     for (owner, block) in blocks.iter().enumerate() {
         let complete = walk_blocks(std::slice::from_ref(block), 0, &mut |node| {
-            let (destination, note, html) = match &node {
-                Node::Link(_, destination) => (Cow::Borrowed(*destination), false, false),
+            let index = indices
+                .as_ref()
+                .and_then(|indices| indices.get(&node.key()).copied());
+            let (destination, note, html) = match node {
+                Node::Link(_, destination) => (Cow::Borrowed(destination), false, false),
                 Node::Note(Inline::FootnoteRef { id }) => (Cow::Borrowed(id.as_str()), true, false),
                 Node::Note(_) => return true,
-                Node::Html(html, index) => {
-                    let Some(span) = crate::safe_html::url_spans(html)
-                        .filter(|span| span.kind == crate::safe_html::UrlKind::Link)
-                        .nth(*index)
-                    else {
-                        return false;
-                    };
-                    (Cow::Owned(span.destination), false, true)
-                }
+                Node::Html(_, _, destination) => (Cow::Owned(destination), false, true),
             };
             if references.len() >= 16_384
                 || destination.len() > 8192
@@ -265,14 +317,7 @@ pub(crate) fn pdf_references(
                     precision: LinkSourcePrecision::Block,
                     source: BookSourceLocation::Unavailable("ownership_unavailable"),
                 },
-                |sources| {
-                    sources.location(
-                        owner,
-                        indices
-                            .as_ref()
-                            .and_then(|indices| indices.get(&node.key()).copied()),
-                    )
-                },
+                |sources| sources.location(owner, index),
             );
             let retained = match &source.source {
                 BookSourceLocation::Mapped(ranges) => ranges
@@ -286,8 +331,12 @@ pub(crate) fn pdf_references(
             } else {
                 source_bytes += retained;
             }
+            let parsed_destination = sources
+                .and_then(|sources| index.and_then(|index| sources.parsed_destinations.get(index)))
+                .and_then(Clone::clone);
             references.push(PdfReferenceSource {
                 destination: destination.into_owned(),
+                parsed_destination,
                 note,
                 html,
                 source,
@@ -311,13 +360,22 @@ pub(super) type NodeKey = (u8, usize, usize);
 enum Node<'a> {
     Link(&'a Inline, &'a str),
     Note(&'a Inline),
-    Html(&'a str, usize),
+    Html(&'a str, usize, String),
 }
 impl Node<'_> {
     fn key(&self) -> NodeKey {
         match self {
             Self::Link(node, _) | Self::Note(node) => inline_key(node),
-            Self::Html(html, index) => html_key(html, *index),
+            Self::Html(html, index, _) => html_key(html, *index),
+        }
+    }
+
+    fn destination(&self) -> Option<&str> {
+        match self {
+            Self::Link(_, destination) => Some(destination),
+            Self::Note(Inline::FootnoteRef { id }) => Some(id),
+            Self::Note(_) => None,
+            Self::Html(_, _, destination) => Some(destination),
         }
     }
 }
@@ -332,7 +390,7 @@ fn walk_html<'a>(html: &'a str, visit: &mut impl FnMut(Node<'a>) -> bool) -> boo
     crate::safe_html::url_spans(html)
         .filter(|span| span.kind == crate::safe_html::UrlKind::Link)
         .enumerate()
-        .all(|(index, _)| visit(Node::Html(html, index)))
+        .all(|(index, span)| visit(Node::Html(html, index, span.destination)))
 }
 fn walk_inlines<'a>(
     inlines: &'a [Inline],

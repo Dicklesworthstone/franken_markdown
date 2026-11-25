@@ -298,6 +298,7 @@ fn render_plan_complete_inner(
             destinations.push(BookPdfDestination {
                 chapter: reference.chapter.clone(),
                 destination: reference.destination.clone(),
+                parsed_destination: reference.parsed_destination.clone(),
                 kind: reference.kind,
                 source: reference.source.clone(),
                 status: if target.is_some() {
@@ -333,6 +334,7 @@ struct Plan {
 struct VerificationReference {
     chapter: String,
     destination: String,
+    parsed_destination: Option<String>,
     kind: &'static str,
     source: crate::book::LinkSourceLocation,
     checked: bool,
@@ -710,10 +712,11 @@ fn verification_references(
     ranges: &[Range<usize>],
     metadata: &crate::book::validation::link_sources::BookLinkSources,
 ) -> Result<Vec<VerificationReference>> {
-    use crate::book::validation::link_sources::pdf_references;
+    use crate::book::validation::link_sources::{MAX_PARSED_DESTINATION_BYTES, pdf_references};
     use std::collections::VecDeque;
     let mut out = Vec::new();
     let mut bytes = 0usize;
+    let mut parsed_bytes = 0usize;
     let mut source_bytes = 0usize;
     for (index, chapter) in book.chapters.iter().enumerate() {
         let original = pdf_references(&chapter.doc.blocks, Some(metadata.chapter(index)))?;
@@ -749,6 +752,9 @@ fn verification_references(
             let original = originals
                 .get_mut(&(reference.note, reference.destination.clone()))
                 .and_then(VecDeque::pop_front);
+            let parsed_destination = original
+                .as_ref()
+                .and_then(|original| original.parsed_destination.as_deref());
             let source = original.as_ref().map_or_else(
                 || reference.source.clone(),
                 |original| original.source.clone(),
@@ -833,9 +839,18 @@ fn verification_references(
                 } else {
                     source_bytes += retained;
                 }
+                let parsed_destination = parsed_destination
+                    .filter(|value| {
+                        value.len() <= MAX_PARSED_DESTINATION_BYTES.saturating_sub(parsed_bytes)
+                    })
+                    .map(|value| {
+                        parsed_bytes += value.len();
+                        value.to_owned()
+                    });
                 out.push(VerificationReference {
                     chapter: sources[index].clone(),
                     destination: destination.clone(),
+                    parsed_destination,
                     kind,
                     source,
                     checked,

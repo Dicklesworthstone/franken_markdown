@@ -104,6 +104,14 @@ vertical coordinates use PDF points measured upward from the page bottom.
 An unresolved authored destination retains its original identity instead of
 exposing a temporary internal link token.
 
+Within each `destinations` entry, `destination` is the canonical book URL used
+for binding. `parsedDestination` optionally retains the parser-decoded target
+before chapter URL canonicalization. Includes can already have rebased URLs
+before parsing, so consumers use `source` ranges to select the original token.
+The optional parsed-target sidecar admits 8192 bytes per target and 1 MiB across
+the book; exhausted or ambiguous ownership produces `null` while preserving
+canonical binding and the independently bounded source locations.
+
 All PDF fields advertised by `fmd.render_book` are accepted, including
 paper/margins, typography, baseline grids, fitting, running content, explicit
 `images`/`fonts` bytes, pagination and archival writer settings. The same

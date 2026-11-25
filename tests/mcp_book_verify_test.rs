@@ -384,7 +384,14 @@ fn discovery_keeps_navigation_default_and_advertises_explicit_pdf_verification()
     );
     let admission = &array(schema.get("allOf").unwrap())[0];
     let source_only = admission.get("else").unwrap().get("properties").unwrap();
-    for name in ["images", "fonts", "page", "pageNumbers", "pdfA", "appearance"] {
+    for name in [
+        "images",
+        "fonts",
+        "page",
+        "pageNumbers",
+        "pdfA",
+        "appearance",
+    ] {
         assert!(fields.contains_key(name), "{name}");
         assert_eq!(source_only.get(name), Some(&Json::Bool(false)), "{name}");
     }

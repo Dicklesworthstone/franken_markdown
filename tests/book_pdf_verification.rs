@@ -102,8 +102,7 @@ fn dormant_pdf_endnotes_have_pdf_findings_without_changing_html_navigation() {
         panic!("dormant note source is still owned");
     };
     assert!(ranges.iter().any(|range| {
-        range.path == "one.md"
-            && &source[range.start..range.end] == "#missing-note-target"
+        range.path == "one.md" && &source[range.start..range.end] == "#missing-note-target"
     }));
     assert!(report.layout.findings.iter().any(|finding| {
         finding.code == "unresolved_pdf_destination"
@@ -179,11 +178,8 @@ fn strict_pagination_and_archival_admission_keep_the_publishers_specific_failure
 
 #[test]
 fn resource_admission_and_chapter_relative_image_findings_match_publication() {
-    let book = BookRenderer::new(&[input(
-        "guide/one.md",
-        "# One\n\n![Chart](chart.png)\n",
-    )])
-    .unwrap();
+    let book =
+        BookRenderer::new(&[input("guide/one.md", "# One\n\n![Chart](chart.png)\n")]).unwrap();
     let mut options = PdfOptions::default();
     options
         .image_assets

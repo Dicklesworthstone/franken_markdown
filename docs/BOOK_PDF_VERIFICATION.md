@@ -41,6 +41,19 @@ The report contains:
   page and vertical destination; unbound targets have `null` coordinates.
   Each entry distinguishes resolved, unresolved and unchecked resources.
 
+Each destination retains two distinct spellings. `destination` is the canonical
+book URL used for binding, such as `/guide/next.md#next`. Optional
+`parsedDestination` is the parser-decoded target captured before chapter URL
+canonicalization, such as `next.md#next`. Include expansion may already have
+rebased that value before parsing. The `source` ranges identify the original
+chapter or include-file token, including its quoting or entity spelling; the
+parsed value is not a replacement for those ranges.
+
+Parsed targets have an independent 1 MiB allowance across the book and an
+8192-byte limit per target. Exhaustion or ambiguous ownership after HTML
+lowering sets `parsedDestination` to `null`. Canonical destination binding,
+source navigation and independently available source ranges remain intact.
+
 The native check exits with `0` when it has no PDF findings, source-navigation
 findings or parser diagnostics, and `65` when a complete check reports any of
 those. Invalid arguments exit `64`; unreadable source/configuration/resources

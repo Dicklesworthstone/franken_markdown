@@ -1,8 +1,10 @@
 //! Transactional source revisions for a retained, parsed book.
 //!
 //! Text updates reuse the shared bounded expansion engine, compare the exact
-//! resulting chapter text, and reparse only changed chapters. Whole-source-set
-//! transactions also support chapter membership and reading-order changes.
+//! resulting chapter text, and reparse changed chapters. An unchanged chapter
+//! also refreshes when previously discarded optional target spellings need a
+//! different aggregate allowance. Whole-source-set transactions additionally
+//! support chapter membership and reading-order changes.
 //! Rendering options and authorized image/font bytes survive every revision.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -219,10 +221,12 @@ impl BookWorkspace {
     ///
     /// Every requested source and the projected complete source budget is
     /// validated before copying. Include expansion finishes before any parsing.
-    /// Exact expanded-text equality skips parsing, including edits to unused
-    /// resources or unselected snippets. Changed ASTs and their full-book link
-    /// bindings publish together; unrelated AST allocations and all render
-    /// options/assets are retained.
+    /// Exact expanded-text equality normally skips parsing, including edits to
+    /// unused resources or unselected snippets. An unchanged chapter with
+    /// previously exhausted optional target metadata is reparsed only when its
+    /// available allowance changes; the receipt counts that parser invocation.
+    /// Changed ASTs and their full-book link bindings publish together; other
+    /// AST allocations and all render options/assets are retained.
     ///
     /// # Errors
     /// Rejects empty/oversized batches, unknown or duplicate paths, source or
@@ -340,18 +344,21 @@ impl BookWorkspace {
         let mut replacements = Vec::with_capacity(chapters.len());
         let mut diagnostics = Vec::with_capacity(chapters.len());
         let mut link_sources = Vec::with_capacity(chapters.len());
+        let mut link_metadata_units = 0usize;
+        let mut parsed_destination_bytes = 0usize;
         let mut reparsed = Vec::new();
         for (index, (new, old)) in next.iter().zip(previous).enumerate() {
-            if new.source == old.source {
+            let previous_sources = self
+                .renderer
+                .source_diagnostics()
+                .link_sources()
+                .chapter(index);
+            if new.source == old.source
+                && !previous_sources.needs_parsed_destination_refresh(parsed_destination_bytes)
+            {
                 replacements.push(None);
                 diagnostics.push(self.renderer.source_diagnostics().chapters()[index].clone());
-                link_sources.push(
-                    self.renderer
-                        .source_diagnostics()
-                        .link_sources()
-                        .chapter(index)
-                        .clone(),
-                );
+                link_sources.push(previous_sources.clone());
             } else {
                 let (chapter, report, sources) = parse_chapter(
                     new,
@@ -362,6 +369,9 @@ impl BookWorkspace {
                 diagnostics.push(report);
                 link_sources.push(sources);
                 reparsed.push(index);
+            }
+            if let Some(sources) = link_sources.last_mut() {
+                sources.admit_metadata(&mut link_metadata_units, &mut parsed_destination_bytes);
             }
         }
         // Admit the complete report before publishing either AST or source.

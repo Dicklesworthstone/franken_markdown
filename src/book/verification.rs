@@ -12,8 +12,13 @@ const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 pub struct BookPdfDestination {
     /// The published chapter containing this source reference.
     pub chapter: String,
-    /// Parser-decoded URL or original footnote label, never an internal token.
+    /// Canonical chapter URL or original footnote label, never an internal token.
     pub destination: String,
+    /// Parser-decoded target before chapter URL canonicalization. Includes may
+    /// already have rebased URLs before parsing; original authored token bytes
+    /// belong to `source` ranges. None means bounded capture or normalized
+    /// reference ownership is unavailable, never a guessed target spelling.
+    pub parsed_destination: Option<String>,
     /// "link", "footnote", or the generated return action "footnote_backreference".
     pub kind: &'static str,
     /// Original chapter/include source ownership; absence is explicit.
@@ -65,6 +70,12 @@ impl BookPdfVerificationReport {
             json.string(&destination.chapter)?;
             json.raw(",\"destination\":")?;
             json.string(&destination.destination)?;
+            json.raw(",\"parsedDestination\":")?;
+            if let Some(parsed) = &destination.parsed_destination {
+                json.string(parsed)?;
+            } else {
+                json.raw("null")?;
+            }
             json.raw(",\"kind\":")?;
             json.string(destination.kind)?;
             json.raw(",\"source\":")?;

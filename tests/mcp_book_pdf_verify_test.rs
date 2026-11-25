@@ -6,8 +6,8 @@ use std::io::Cursor;
 
 use franken_markdown::book::{BookInput, BookRenderer};
 use franken_markdown::mcp::{
-    DEFAULT_MAX_INPUT_BYTES, JsonValue as Json, MAX_FRAME_BYTES, base64_encode,
-    handle_tool_call, parse_json, read_frame, serve_stdio, write_frame,
+    DEFAULT_MAX_INPUT_BYTES, JsonValue as Json, MAX_FRAME_BYTES, base64_encode, handle_tool_call,
+    parse_json, read_frame, serve_stdio, write_frame,
 };
 use franken_markdown::{
     FontAssetSlot, FontAssets, PageMargins, PageSize, PageStyle, PdfASettings, PdfImageAsset,
@@ -17,7 +17,8 @@ use franken_markdown::{
 type Failure = (i32, String, &'static str);
 const ONE: &str = "---\nlang: de\n---\n# Shared\n\n{{#include ../parts/body.md}}\n";
 const TWO: &str = "---\nlang: en\n---\n# Shared\n\n[Return](guide/one.md#shared). Another note[^n].\n\n[^n]: Second chapter note.";
-const INCLUDED: &str = "[Next](../two.md#shared). First note[^n].\n\n![Plot](plot.svg)\n\n[^n]: First chapter note.";
+const INCLUDED: &str =
+    "[Next](../two.md#shared). First note[^n].\n\n![Plot](plot.svg)\n\n[^n]: First chapter note.";
 const SVG: &[u8] = br##"<svg width="40" height="20" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="20" fill="#246"/></svg>"##;
 
 fn object<const N: usize>(fields: [(&str, Json); N]) -> Json {
@@ -249,10 +250,7 @@ fn pdf_options_and_source_limits_precede_resource_decoding() {
     assert_eq!(verify(request.clone()).unwrap_err().2, "invalid_resources");
     set(&mut request, "baselineGridPt", Json::Number(12.0));
     set(&mut request, "fitToPages", Json::Number(1.0));
-    assert_eq!(
-        verify(request).unwrap_err().2,
-        "baseline_grid_incompatible"
-    );
+    assert_eq!(verify(request).unwrap_err().2, "baseline_grid_incompatible");
 
     let mut request = args("# Top");
     set(
@@ -298,11 +296,13 @@ fn report_limit_counts_all_content_items_and_never_returns_a_prefix() {
             .iter()
             .map(|item| item.get("text").and_then(Json::as_str).unwrap().len())
             .sum();
-        assert!(items[1]
-            .get("text")
-            .and_then(Json::as_str)
-            .unwrap()
-            .contains("unclosed_fence"));
+        assert!(
+            items[1]
+                .get("text")
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("unclosed_fence")
+        );
 
         set(&mut request, "maxReportBytes", Json::Number(bytes as f64));
         assert_eq!(verify(request.clone()).unwrap(), complete);
@@ -344,10 +344,7 @@ fn missing_links_keep_original_include_provenance_in_the_pdf_report() {
 
 #[test]
 fn archival_options_reuse_the_real_book_writer_without_claiming_certification() {
-    for (mode, settings) in [
-        ("off", PdfASettings::OFF),
-        ("2b", PdfASettings::a2b()),
-    ] {
+    for (mode, settings) in [("off", PdfASettings::OFF), ("2b", PdfASettings::a2b())] {
         let markdown = "# Archive\n\nBody[^n].\n\n[^n]: Complete note.";
         let mut request = args(markdown);
         set(&mut request, "pdfA", text(mode));

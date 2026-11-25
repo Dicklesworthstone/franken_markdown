@@ -129,7 +129,10 @@ fn unicode_map(objects: &Objects<'_>, font: usize) -> BTreeMap<u16, String> {
                 .iter()
                 .map(|unit| u16::from_str_radix(std::str::from_utf8(unit).unwrap(), 16).unwrap())
                 .collect();
-            assert!(map.insert(cid, String::from_utf16(&units).unwrap()).is_none());
+            assert!(
+                map.insert(cid, String::from_utf16(&units).unwrap())
+                    .is_none()
+            );
         }
     }
     assert!(!map.is_empty());
@@ -328,7 +331,10 @@ fn assert_painted_text_matches(
             assert_eq!(reported.text, painted.text, "page {}", index + 1);
             assert!(close(reported.x, painted.x), "{reported:?} != {painted:?}");
             assert!(close(reported.y, painted.y), "{reported:?} != {painted:?}");
-            assert!(close(reported.size, painted.size), "{reported:?} != {painted:?}");
+            assert!(
+                close(reported.size, painted.size),
+                "{reported:?} != {painted:?}"
+            );
             let kind = match reported.kind {
                 "running_header" | "running_footer" => reported.kind,
                 _ => "body",
@@ -363,14 +369,10 @@ fn narrow_options() -> PdfOptions {
 
 #[test]
 fn chapter_scoped_report_destinations_match_actual_pdf_link_objects() {
-    let renderer = BookRenderer::new(&[
-        input(
-            "one.md",
-            "# Same\n\n[LOCAL](#same) [CROSS](two.md#same) [LAND](two.md) [BROKEN](#absent)",
-        ),
-        input("two.md", "# Same\n\n[SELF](#same) [BACK](one.md#same)"),
-    ])
-    .unwrap();
+    const FIRST: &str =
+        "# Same\n\n[LOCAL](#same) [CROSS](two.md#same) [LAND](two.md) [BROKEN](#absent)";
+    const SECOND: &str = "# Same\n\n[SELF](#same) [BACK](one.md#same)";
+    let renderer = BookRenderer::new(&[input("one.md", FIRST), input("two.md", SECOND)]).unwrap();
     for toc in [false, true] {
         let options = PdfOptions {
             toc,
@@ -389,13 +391,13 @@ fn chapter_scoped_report_destinations_match_actual_pdf_link_objects() {
         assert!(annotations.len() >= 6);
         let authored = &annotations[annotations.len() - 6..];
         assert_eq!(report.destinations.len(), 6);
-        for ((chapter, destination), emitted) in [
-            ("one.md", "#same"),
-            ("one.md", "two.md#same"),
-            ("one.md", "two.md"),
-            ("one.md", "#absent"),
-            ("two.md", "#same"),
-            ("two.md", "one.md#same"),
+        for ((chapter, destination, parsed), emitted) in [
+            ("one.md", "#same", "#same"),
+            ("one.md", "/two.md#same", "two.md#same"),
+            ("one.md", "/two.md", "two.md"),
+            ("one.md", "#absent", "#absent"),
+            ("two.md", "#same", "#same"),
+            ("two.md", "/one.md#same", "one.md#same"),
         ]
         .into_iter()
         .zip(authored)
@@ -405,10 +407,27 @@ fn chapter_scoped_report_destinations_match_actual_pdf_link_objects() {
                 .iter()
                 .find(|target| target.chapter == chapter && target.destination == destination)
                 .unwrap();
+            assert_eq!(reported.parsed_destination.as_deref(), Some(parsed));
+            assert_eq!(
+                reported.source.precision,
+                franken_markdown::book::LinkSourcePrecision::Destination
+            );
+            let franken_markdown::book::BookSourceLocation::Mapped(ranges) =
+                &reported.source.source
+            else {
+                panic!("authored link token must retain its source");
+            };
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].path, chapter);
+            let source = if chapter == "one.md" { FIRST } else { SECOND };
+            assert_eq!(&source[ranges[0].start..ranges[0].end], parsed);
             if let Some(emitted) = emitted {
                 assert_eq!(reported.status, "resolved", "{reported:?}");
                 assert_eq!(reported.page, Some(emitted.page), "{reported:?}");
-                assert!(close(reported.y.unwrap(), emitted.y), "{reported:?} != {emitted:?}");
+                assert!(
+                    close(reported.y.unwrap(), emitted.y),
+                    "{reported:?} != {emitted:?}"
+                );
             } else {
                 assert_eq!(reported.status, "unresolved", "{reported:?}");
                 assert_eq!(reported.page, None);
@@ -416,9 +435,15 @@ fn chapter_scoped_report_destinations_match_actual_pdf_link_objects() {
             }
         }
         assert_eq!(authored[0], authored[5], "back-link retains first chapter");
-        assert_eq!(authored[1], authored[4], "forward-link retains second chapter");
+        assert_eq!(
+            authored[1], authored[4],
+            "forward-link retains second chapter"
+        );
         assert!(authored[0].unwrap().page < authored[4].unwrap().page);
-        assert!(authored[3].is_none(), "missing link must not invent a destination");
+        assert!(
+            authored[3].is_none(),
+            "missing link must not invent a destination"
+        );
     }
 }
 
@@ -460,13 +485,13 @@ fn fitted_multilingual_contents_and_running_bands_match_painted_text() {
     assert!(runs.iter().any(|run| run.text == "German chapter"));
     assert!(runs.iter().any(|run| run.text == "Dutch chapter"));
     assert!(
-        runs.iter().any(|run| {
-            run.kind == "paragraph" && run.text.starts_with("German chapter")
-        }),
+        runs.iter()
+            .any(|run| { run.kind == "paragraph" && run.text.starts_with("German chapter") }),
         "generated contents must be present in the captured body"
     );
     assert!(
-        runs.iter().any(|run| run.kind == "paragraph" && run.size < 12.0),
+        runs.iter()
+            .any(|run| run.kind == "paragraph" && run.size < 12.0),
         "the fixture must exercise actual fitting, not only the option"
     );
     for page in &report.layout.pages {

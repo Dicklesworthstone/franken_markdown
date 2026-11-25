@@ -452,7 +452,11 @@ pub(super) fn verify(args: &Json, limit: u64) -> Result<Json, ToolError> {
             .verify_pdf_with_options(&options, settings)
             .and_then(|report| report.to_json())
             .map_err(|error| {
-                engine_failure(error, "Book PDF verification failed", "book_pdf_verify_failed")
+                engine_failure(
+                    error,
+                    "Book PDF verification failed",
+                    "book_pdf_verify_failed",
+                )
             })?
     } else {
         renderer

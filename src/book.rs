@@ -181,10 +181,14 @@ fn build_book_inner(
     }
     let paths = paths::input_paths(inputs)?;
     let mut chapters = Vec::with_capacity(inputs.len());
+    let mut link_metadata_units = 0usize;
+    let mut parsed_destination_bytes = 0usize;
     for (input, path) in inputs.iter().zip(paths) {
         let (frontmatter, _) = parse::split_frontmatter(&input.source);
         let doc = if let Some(reports) = diagnostics.as_deref_mut() {
-            let (doc, report, sources) = self::diagnostics::parse_chapter(input, &path, profile);
+            let (doc, report, mut sources) =
+                self::diagnostics::parse_chapter(input, &path, profile);
+            sources.admit_metadata(&mut link_metadata_units, &mut parsed_destination_bytes);
             reports.push((report, sources));
             doc
         } else {

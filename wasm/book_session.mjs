@@ -1,5 +1,8 @@
-import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, createBookSourceLocationReader, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
+import { BOOK_LINK_REPORT_MAX_BYTES, bookTextBytes, validateBookLinkReportBytes } from "./book_link_report.mjs";
+export { BOOK_LINK_REPORT_MAX_BYTES, bookTextBytes, parseBookLinkReport, validateBookLinkReportBytes } from "./book_link_report.mjs";
+import { BOOK_SOURCE_DIAGNOSTICS_MAX_BYTES, parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 import { consumeBookPdfResult } from "./book_render_diagnostics.mjs";
+import { BOOK_PDF_VERIFICATION_MAX_BYTES, parseBookPdfVerificationReport } from "./book_pdf_verification.mjs";
 export { parseBookSourceDiagnosticsReport } from "./book_source_diagnostics.mjs";
 // Pure adapter logic. Engine loading is injected so lifecycle and validation
 // can be tested without replacing the production renderer or its WASM binary.
@@ -7,7 +10,6 @@ import { normalizePdfPage, pdfPageGeometry } from "./pdf_page.mjs";
 import { normalizeAuthoringProfile, normalizeBaselineGridPt, normalizeFontEmbedding, normalizePdfPaginationError, normalizePdfTypographyToken, validateBaselineGridFit } from "./render_typography.mjs";
 
 const MAX_CHAPTERS = 4096;
-export const BOOK_LINK_REPORT_MAX_BYTES = 6 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
@@ -24,27 +26,6 @@ function record(value, name) {
     throw new TypeError(`${name} must be an object`);
   }
   return value;
-}
-
-// Count without a lossy TextEncoder allocation: unpaired surrogates must never
-// turn into U+FFFD at the WASM boundary. Kept independent of the 4 MiB flow API.
-export function bookTextBytes(value, maximum = MAX_SOURCE_BYTES) {
-  if (typeof value !== "string") throw new TypeError("book text must be a string");
-  if (value.length > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
-  let bytes = 0;
-  for (let i = 0; i < value.length; i++) {
-    const c = value.charCodeAt(i);
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = value.charCodeAt(++i);
-      if (!(next >= 0xdc00 && next <= 0xdfff))
-        throw new TypeError("book text contains malformed Unicode");
-      bytes += 4;
-    } else if (c >= 0xdc00 && c <= 0xdfff)
-      throw new TypeError("book text contains malformed Unicode");
-    else bytes += c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
-    if (bytes > maximum) throw new RangeError("book text exceeds its UTF-8 budget");
-  }
-  return bytes;
 }
 
 function optionalString(value, name) {
@@ -451,6 +432,7 @@ function output(bytes, kind, sourceLength, archive = {}) {
     epub: ["book-epub", "application/epub+zip", "epub"],
     site: ["book-site", "application/zip", "zip"],
     chapterPreview: ["book-chapter-preview", "application/json", "json"],
+    pdfVerification: ["book-pdf-verification", "application/json", "json"],
   }[kind];
   return Object.freeze({
     format,
@@ -617,9 +599,11 @@ export function createBookBindings(loadBookClass) {
     #pdfOptions;
     #htmlReceipt;
     #profileReceipt;
+    #chapterPaths;
     #updating = false;
-    constructor(raw, settings) {
+    constructor(raw, settings, paths) {
       this.#raw = raw;
+      this.#chapterPaths = [...paths];
       this.#profileReceipt = Object.freeze(bookAuthoringProfileReceipt(settings));
       this.#htmlReceipt = Object.freeze({ ...this.#profileReceipt,
         ...(settings.fontEmbedding === "full" ? { fontEmbedding: "full" } : {}) });
@@ -708,7 +692,9 @@ export function createBookBindings(loadBookClass) {
           throw error;
         }
         try {
-          return sourceSetReport(json, before, submitted, this.#live());
+          const report = sourceSetReport(json, before, submitted, this.#live());
+          this.#chapterPaths = [...chapters.paths];
+          return report;
         } catch (error) {
           try { this.dispose(); } catch { /* Keep the raw handle retired. */ }
           if (error?.code === "INVALID_BOOK_SOURCE_SET_REPORT") throw error;
@@ -790,6 +776,34 @@ export function createBookBindings(loadBookClass) {
         throw error;
       }
       return output(bytes, "pdf", raw.sourceLength, this.#profileReceipt);
+    }
+    verifyPdf(options = {}) {
+      this.#live();
+      if (this.#updating) throw updateError("BOOK_BUSY", "A book source update is already being admitted.");
+      const { page, ...archive } = exportPdfOptions(options, this.#pdfOptions);
+      // Admission can invoke Proxy traps; reacquire the handle and current
+      // chapter capture after caller code, as for PDF publication.
+      const raw = this.#live();
+      if (typeof raw.verifyPdf !== "function") {
+        throw updateError("UNSUPPORTED_BOOK_PDF_VERIFICATION",
+          "this WASM build lacks FmdBook.verifyPdf; rebuild the matching package for assembled book PDF verification");
+      }
+      let json;
+      try {
+        json = raw.verifyPdf(archive.pdfA ?? "off", archive.pdfAStrict ?? false, pdfPageGeometry(page));
+      } catch (error) {
+        error = normalizePdfPaginationError(error);
+        if (typeof error === "string") throw new Error(error.slice(0, 2048));
+        throw error;
+      }
+      try { bookTextBytes(json, BOOK_PDF_VERIFICATION_MAX_BYTES); }
+      catch { throw updateError("INVALID_BOOK_PDF_VERIFICATION", "Book PDF verification must return complete bounded UTF-8 JSON."); }
+      const bytes = new TextEncoder().encode(json);
+      const report = parseBookPdfVerificationReport(bytes, this.#chapterPaths);
+      if (report.navigation.chapters.length !== raw.chapterCount) {
+        throw updateError("INVALID_BOOK_PDF_VERIFICATION", "PDF verification does not match the retained chapter count.");
+      }
+      return output(bytes, "pdfVerification", raw.sourceLength, { ...archive, ...this.#profileReceipt });
     }
     renderEpub() {
       const raw = this.#live();
@@ -961,7 +975,7 @@ export function createBookBindings(loadBookClass) {
         raw.setFont(font.slot, font.bytes);
         if (font.weight !== undefined) raw.setFontWeight(font.slot, font.weight);
       }
-      return new BookSession(raw, settings);
+      return new BookSession(raw, settings, normalized.paths);
     } catch (error) {
       raw.free();
       if (typeof error === "string") throw new Error(error.slice(0, 2048));
@@ -981,6 +995,7 @@ export function createBookBindings(loadBookClass) {
   return Object.freeze({
     createBook,
     renderBookPdf: (files, options) => once(files, options, "renderPdf"),
+    verifyBookPdf: (files, options) => once(files, options, "verifyPdf"),
     renderBookEpub: (files, options) => once(files, options, "renderEpub"),
     renderBookSite: (files, options) => once(files, options, "renderSite"),
     renderBookChapterPreview: async (files, selected = 0, options = {}) => {
@@ -998,122 +1013,6 @@ export function createBookBindings(loadBookClass) {
       once(files, bookLinkOptions(options), "sourceDiagnostics"),
   });
 }
-
-/** Decode a link report against canonical chapter paths from a captured host
- * collection. This validates the wire contract, not Markdown. Summary totals
- * are recomputed; no engine-supplied optimistic verdict reaches the reader. */
-export function parseBookLinkReport(bytes, expectedPaths) {
-  if (!Array.isArray(expectedPaths) || !expectedPaths.length || expectedPaths.length > MAX_CHAPTERS)
-    throw invalidLinkReport();
-  return validateBookLinkReportBytes(bytes, expectedPaths);
-}
-
-function invalidLinkReport() {
-  return Object.assign(new Error("The book link checker returned an invalid or mismatched report."), {
-    code: "INVALID_LINK_REPORT",
-  });
-}
-
-/** Internal native/worker wire admission. The public report reader additionally
- * requires the host's chapter identities. Separate provenance cannot enlarge
- * the existing 4 MiB base-report budget, on either worker endpoint. */
-export function validateBookLinkReportBytes(bytes, expectedPaths) {
-  const invalid = invalidLinkReport;
-  const maximum = BOOK_LINK_REPORT_MAX_BYTES;
-  if (
-    !(bytes instanceof Uint8Array) ||
-    Object.prototype.toString.call(bytes.buffer) !== "[object ArrayBuffer]" ||
-    bytes.byteLength === 0 ||
-    bytes.byteLength > maximum
-  )
-    throw invalid();
-  const integer = (value) => {
-    if (!Number.isSafeInteger(value) || value < 0 || value > 250000) throw invalid();
-    return value;
-  };
-  const text = (value, limit) => {
-    try {
-      bookTextBytes(value, limit);
-    } catch {
-      throw invalid();
-    }
-    return value;
-  };
-  const codes = new Set([
-    "missing_chapter",
-    "missing_anchor",
-    "ambiguous_anchor",
-    "invalid_fragment",
-    "invalid_local_destination",
-    "missing_footnote",
-  ]);
-  let value;
-  try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch {
-    throw invalid();
-  }
-  if (
-    !value ||
-    value.schema !== "fmd-book-link-report-v1" ||
-    value.scope !== "expanded-html-navigation" ||
-    !Array.isArray(value.chapters) || !value.chapters.length || value.chapters.length > MAX_CHAPTERS ||
-    (expectedPaths !== undefined && value.chapters.length !== expectedPaths.length)
-  )
-    throw invalid();
-  const seen = new Set(),
-    summary = {
-      chapters: value.chapters.length,
-      checked: 0,
-      external: 0,
-      unchecked: 0,
-      findings: 0,
-    };
-  const sourceReader = createBookSourceLocationReader(invalid, { link: true });
-  const chapters = Array.from(value.chapters, (chapter, index) => {
-    if (!chapter || typeof chapter !== "object") throw invalid();
-    const path = text(chapter.path, 4096);
-    if (!path || (expectedPaths !== undefined && path !== expectedPaths[index]) || seen.has(path)) throw invalid();
-    seen.add(path);
-    const checked = integer(chapter.checked),
-      external = integer(chapter.external),
-      unchecked = integer(chapter.unchecked);
-    if (
-      !Array.isArray(chapter.findings) ||
-      chapter.findings.length > checked ||
-      chapter.findings.length > 4096
-    )
-      throw invalid();
-    const findings = Array.from(chapter.findings, (finding) => {
-      if (!finding || !codes.has(finding.code)) throw invalid();
-      const destination = text(finding.destination, 8192),
-        message = text(finding.message, 1024);
-      if (!message) throw invalid();
-      const source = sourceReader.read(finding.source);
-      return Object.freeze({ code: finding.code, destination, message,
-        ...(source === undefined ? {} : { source }) });
-    });
-    for (const [key, count] of Object.entries({
-      checked,
-      external,
-      unchecked,
-      findings: findings.length,
-    })) {
-      summary[key] = integer(summary[key] + count);
-    }
-    if (summary.findings > 4096 || summary.checked + summary.external + summary.unchecked > 250000)
-      throw invalid();
-    return Object.freeze({ path, checked, external, unchecked, findings: Object.freeze(findings) });
-  });
-  if (bytes.byteLength - sourceReader.bytes > 4 * 1024 * 1024) throw invalid();
-  return Object.freeze({
-    schema: value.schema,
-    scope: value.scope,
-    chapters: Object.freeze(chapters),
-    summary: Object.freeze(summary),
-  });
-}
-
 
 function chapterPreviewIndex(value, count) {
   if (!Number.isInteger(value) || value < 0 || value >= count) {

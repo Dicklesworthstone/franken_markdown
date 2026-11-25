@@ -314,8 +314,10 @@ test("actual worker bootstrap installs the cache for both book and preview reten
     const entry=module(fs.readFileSync(${JSON.stringify(entry.pathname)},'utf8'),'entry');
     const modules={ './book_retained.mjs':cache,
       './book_session.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_session.mjs', import.meta.url).pathname)},'utf8'),'session'),
+      './book_link_report.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_link_report.mjs', import.meta.url).pathname)},'utf8'),'link-report'),
       './book_source_diagnostics.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_source_diagnostics.mjs', import.meta.url).pathname)},'utf8'),'diagnostics'),
       './book_render_diagnostics.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_render_diagnostics.mjs', import.meta.url).pathname)},'utf8'),'render-diagnostics'),
+      './book_pdf_verification.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../book_pdf_verification.mjs', import.meta.url).pathname)},'utf8'),'pdf-verification'),
       './pdf_page.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../pdf_page.mjs', import.meta.url).pathname)},'utf8'),'page'),
       './render_typography.mjs':module(fs.readFileSync(${JSON.stringify(new URL('../render_typography.mjs', import.meta.url).pathname)},'utf8'),'typography'),
       './book_worker.mjs':module('export const installBookWorker=globalThis.install','worker'),

@@ -116,7 +116,7 @@ def run():
                 "helper": (ROOT / "tests/book_pdf_proof_helpers.mjs").read_text(),
                 "pdf": base64.b64encode(expected).decode(),
                 "dependencies": {name: (ROOT / name).read_text() for name in [
-                    "pdf_page.mjs", "render_typography.mjs", "book_source_diagnostics.mjs", "book_render_diagnostics.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
+                    "pdf_page.mjs", "render_typography.mjs", "book_source_diagnostics.mjs", "book_link_report.mjs", "book_pdf_verification.mjs", "book_render_diagnostics.mjs", "book_session.mjs", "book_retained.mjs", "book_worker.mjs",
                     "demo/book_font_assets.mjs", "demo/book_collection.mjs",
                 ]}})
 

@@ -12,6 +12,7 @@ const bindings = createBookBindings(async () => {
 
 export const createBook = bindings.createBook;
 export const renderBookPdf = bindings.renderBookPdf;
+export const verifyBookPdf = bindings.verifyBookPdf;
 export const renderBookEpub = bindings.renderBookEpub;
 export const renderBookSite = bindings.renderBookSite;
 export const renderBookChapterPreview = bindings.renderBookChapterPreview;
@@ -22,3 +23,4 @@ export const renameBookSource = createBookSourceRename(async () => {
   return engine.renameBookSource;
 });
 export { parseBookLinkReport, parseBookChapterPreview, parseBookSourceDiagnosticsReport } from "./book_session.mjs";
+export { parseBookPdfVerificationReport } from "./book_pdf_verification.mjs";

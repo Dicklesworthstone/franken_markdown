@@ -149,7 +149,7 @@ def main():
                             "coordinator": (ROOT / 'wasm/book_publication.mjs').read_text(), "script": script,
                             "dependencies": {**{'book_zip.mjs': (ROOT / 'wasm/demo/book_zip.mjs').read_text()}, **{name: (ROOT / 'wasm' / name).read_text() for name in [
                                 'pdf_page.mjs', 'render_typography.mjs', 'book_source_diagnostics.mjs',
-                                'book_render_diagnostics.mjs', 'book_session.mjs',
+                                'book_link_report.mjs', 'book_pdf_verification.mjs', 'book_render_diagnostics.mjs', 'book_session.mjs',
                             ]}}})
                 else:
                     page.goto(f"http://127.0.0.1:{server.server_port}/fixture")

@@ -8,7 +8,7 @@ import test from "node:test";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, "wasm/package.json"), "utf8"));
-const required = ["book-worker.js", "book-worker.d.ts", "book_publication.mjs", "BOOK_PUBLICATION.md"];
+const required = ["book-worker.js", "book-worker.d.ts", "book_publication.mjs", "book_link_report.mjs", "book_pdf_verification.mjs", "BOOK_PUBLICATION.md"];
 
 test("existing book-worker package entry includes the additive publication API and runtime", () => {
   assert.equal(manifest.exports["./book-worker"].import, "./book-worker.js");

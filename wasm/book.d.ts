@@ -1,4 +1,4 @@
-import type { FmdAuthoringProfile, FmdDiagnostic, FmdPdfPage, FmdPdfRunningImage } from "./franken_markdown.js";
+import type { FmdAuthoringProfile, FmdDiagnostic, FmdPdfPage, FmdPdfRunningImage, FmdPdfVerificationReport } from "./franken_markdown.js";
 
 /** One chapter. Array order is reading order; paths are book-relative. */
 export interface BookFile {
@@ -245,6 +245,12 @@ export interface BookSession {
    * Unsupported archival bindings and strict failures never fall back to PDF.
    */
   renderPdf(options?: Pick<BookOptions, "page" | "pdfA" | "pdfAStrict">): BookOutput;
+  /** Verify actual assembled PDF layout, navigation and pagination using the
+   * same retained settings/assets and export-local overrides as renderPdf.
+   * Synchronous; use the worker pdf-verification route for cancellation.
+   * Requires FmdBook.verifyPdf; older packages fail explicitly. No source
+   * mutation, PDF download or independent archival certification is implied. */
+  verifyPdf(options?: Pick<BookOptions, "page" | "pdfA" | "pdfAStrict">): BookPdfVerificationOutput;
   renderEpub(): BookOutput;
   renderSite(): BookOutput;
   /** Whether this live WASM book implements the additive chapter-preview ABI. */
@@ -273,6 +279,10 @@ export function renderBookPdf(
   files: readonly BookFile[],
   options?: BookOptions,
 ): Promise<BookOutput>;
+/** Create, verify and dispose one configured book, including on failure. */
+export function verifyBookPdf(
+  files: readonly BookFile[], options?: BookOptions,
+): Promise<BookPdfVerificationOutput>;
 export function renderBookEpub(
   files: readonly BookFile[],
   options?: BookOptions,
@@ -397,6 +407,76 @@ export function parseBookLinkReport(
   bytes: Uint8Array,
   expectedPaths: readonly string[],
 ): BookLinkReport;
+
+export interface BookPdfVerificationDestination {
+  readonly chapter: string;
+  /** Canonical chapter target or original note label. */
+  readonly destination: string;
+  /** Parser-decoded target before chapter canonicalization, or explicit null
+   * when bounded capture/ownership is unavailable. Original spelling belongs
+   * to source ranges, including rebased include targets. */
+  readonly parsedDestination: string | null;
+  readonly kind: "link" | "footnote" | "footnote_backreference";
+  readonly source: BookLinkSourceLocation & Readonly<{ precision: "destination" | "block" }>;
+  readonly status: "resolved" | "unresolved" | "unchecked";
+  /** One-based physical page and bottom-origin points, or null for unbound
+   * references. External URLs/resources are unchecked; no network is used. */
+  readonly page: number | null;
+  readonly y: number | null;
+}
+export interface BookPdfPaginationFailure {
+  readonly code: "budget_exceeded" | "infeasible" | "invalid_input" | "cost_overflow" | "invalid_plan";
+  readonly detail: string;
+}
+export interface BookPdfVerificationReport {
+  readonly schema: "fmd-book-pdf-verification-v1";
+  readonly scope: "assembled-pdf-publication";
+  /** Complete report from the chapter-aware writer's actual positioned text. */
+  readonly layout: FmdPdfVerificationReport;
+  /** Source navigation retains its separate expanded-HTML scope; dormant PDF
+   * notes can add findings in layout/destinations without changing this member. */
+  readonly navigation: BookLinkReport;
+  readonly destinations: readonly BookPdfVerificationDestination[];
+  readonly pagination: Readonly<{
+    requestedOptimal: boolean;
+    strategy: "greedy" | "exact_height" | "legacy";
+    fallback: BookPdfPaginationFailure | null;
+    paragraphVariants: Readonly<{
+      status: "not_requested" | "unsupported_typography" | "unprepared_footnotes" |
+        "continued_footnotes" | "no_alternatives" | "planned" | "rejected";
+      attemptedParagraphs: number;
+      limitedParagraphs: number;
+      offeredParagraphs: number;
+      selectedAlternatives: number;
+      paragraphItemLimit: boolean;
+      retainedLineLimit: boolean;
+      measurementWorkLimit: boolean;
+      candidateStateLimit: boolean;
+      failure: BookPdfPaginationFailure | null;
+    }>;
+  }>;
+}
+export interface BookPdfVerificationOutput {
+  readonly format: "book-pdf-verification";
+  readonly mimeType: "application/json";
+  readonly extension: "json";
+  readonly sourceLength: number;
+  readonly profile?: FmdAuthoringProfile;
+  /** Requested emission policy, not independent PDF/A certification. */
+  readonly pdfA?: "2b";
+  readonly pdfAStrict?: boolean;
+  /** Complete owned UTF-8 report, at most 8 MiB; never truncated. */
+  readonly bytes: Uint8Array;
+  blob(): Blob;
+  filename(baseName?: string): string;
+}
+/** Validate complete native report bytes and freeze the result. Optional
+ * chapter paths bind identity/order after native-compatible normalization of
+ * logical dot segments and backslashes. Does not parse Markdown or certify
+ * a PDF standard. The original report digest is retained unchanged. */
+export function parseBookPdfVerificationReport(
+  bytes: Uint8Array, expectedPaths?: readonly string[],
+): BookPdfVerificationReport;
 
 /** Metadata for every chapter, in Rust-defined reading order. */
 export interface BookChapterPreviewPage {

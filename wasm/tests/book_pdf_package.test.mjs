@@ -10,7 +10,7 @@ const repo = dirname(wasm.replace(/[\\/]$/, ''));
 const read = path => readFileSync(path, 'utf8');
 // The proof helpers' full relative import closure, plus their documentation.
 const required = [
-  'book_pdf_proof.mjs', 'book_session.mjs', 'book_source_diagnostics.mjs', 'book_source_rename.mjs', 'book_render_diagnostics.mjs', 'book_worker.mjs', 'book_inspection.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
+  'book_pdf_proof.mjs', 'book_session.mjs', 'book_link_report.mjs', 'book_source_diagnostics.mjs', 'book_source_rename.mjs', 'book_render_diagnostics.mjs', 'book_pdf_verification.mjs', 'book_worker.mjs', 'book_inspection.mjs', 'book_retained.mjs', 'pdf_page.mjs', 'render_typography.mjs',
   // book_pdf_controls.mjs reads publishing-profile fields from the collection
   // module (a3ca221), which in turn uses the font asset store.
   'demo/book_pdf_controls.mjs', 'demo/book_collection.mjs', 'demo/book_font_assets.mjs', 'BOOK_PDF_PROOF.md',
@@ -49,6 +49,16 @@ test('PDF proof staging refuses a missing transitive typography helper', async (
   }
   await assert.rejects(import(pathToFileURL(join(stage, 'demo/book_pdf_controls.mjs'))), error =>
     error.code === 'ERR_MODULE_NOT_FOUND' && error.url.endsWith('/render_typography.mjs'));
+});
+
+test('PDF proof staging refuses a missing transitive book PDF verifier', async () => {
+  const stage = mkdtempSync(join(tmpdir(), 'fmd-book-pdf-missing-verifier-'));
+  for (const path of required.filter(path => path !== 'book_pdf_verification.mjs')) {
+    mkdirSync(dirname(join(stage, path)), { recursive: true });
+    copyFileSync(join(wasm, path), join(stage, path));
+  }
+  await assert.rejects(import(pathToFileURL(join(stage, 'demo/book_pdf_controls.mjs'))), error =>
+    error.code === 'ERR_MODULE_NOT_FOUND' && error.url.endsWith('/book_pdf_verification.mjs'));
 });
 
 async function bootstrap(fail = false) {

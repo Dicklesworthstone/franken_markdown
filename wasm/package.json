@@ -110,6 +110,8 @@
     "book.js",
     "book.d.ts",
     "book_session.mjs",
+    "book_link_report.mjs",
+    "book_pdf_verification.mjs",
     "book_source_diagnostics.mjs",
     "book_source_rename.mjs",
     "book_render_diagnostics.mjs",

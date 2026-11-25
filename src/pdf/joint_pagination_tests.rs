@@ -77,6 +77,7 @@ fn baseline_pdf(lines: &[Line], opts: &PdfOptions, faces: &Faces, page: PageGeom
         &mut PdfProfiler::disabled(),
         &crate::pdf::language::EMPTY.scopes,
         &crate::pdf::language::EMPTY.chapters,
+        false,
     )
     .unwrap()
     .0
@@ -854,6 +855,7 @@ fn quoted_joint_selection_saves_a_page_without_losing_quote_tags() {
             &mut PdfProfiler::disabled(),
             &crate::pdf::language::EMPTY.scopes,
             &crate::pdf::language::EMPTY.chapters,
+            false,
         )
         .unwrap()
         .0

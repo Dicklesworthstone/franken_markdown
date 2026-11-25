@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Source formatting preserves a leading UTF-8 BOM outside headings, lists,
+  quotes, emphasis and code fences. Select All and a caret before the marker
+  now edit only document content; mixed line endings and interior U+FEFF remain
+  unchanged in browser and bundled native editing.
+
 - Local recovery keeps one owned autosave operation even when status callbacks
   fail or reenter. Disabling recovery, detaching its target, composing text or
   editing source/settings during notification now prevents an undispatched stale

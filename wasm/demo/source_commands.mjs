@@ -37,8 +37,9 @@ function longestTicks(text) {
   return longest;
 }
 function lineRange(source, start, end) {
+  const sourceStart = source.startsWith("\ufeff") ? 1 : 0;
   let left = start, right = end;
-  while (left > 0 && !/[\r\n]/u.test(source[left - 1])) left--;
+  while (left > sourceStart && !/[\r\n]/u.test(source[left - 1])) left--;
   // A selection ending at the next line's start must not format that line.
   if (end > start && /[\r\n]/u.test(source[end - 1])) {
     right = end - (source.slice(end - 2, end) === "\r\n" ? 2 : 1);
@@ -68,10 +69,16 @@ function rows(text) {
 export function planSourceCommand(source, selection, command) {
   if (!COMMANDS.has(command)) fail("UNKNOWN_COMMAND", "Unknown Markdown source command.");
   const sourceBytes = byteLength(source);
-  const { start, end, direction = "none" } = selection ?? {};
+  let { start, end, direction = "none" } = selection ?? {};
   if (!boundary(source, start) || !boundary(source, end) || start > end
       || !["none", "forward", "backward"].includes(direction)) {
     fail("INVALID_SELECTION", "Select UTF-16 scalar boundaries without splitting CRLF.");
+  }
+  // A leading BOM is document metadata, never part of generated Markdown.
+  // Select All and a caret before the marker operate on the content after it.
+  if (source.startsWith("\ufeff")) {
+    start = Math.max(start, 1);
+    end = Math.max(end, 1);
   }
   const finish = (from, to, text, a, b) => {
     if (sourceBytes - byteLength(source.slice(from, to)) + byteLength(text) > MAX_BYTES)

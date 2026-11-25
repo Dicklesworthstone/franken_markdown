@@ -22,6 +22,10 @@ range is untouched. Source and results are bounded to 4 MiB UTF-8; line commands
 admit at most 10000 selected lines. Malformed Unicode, scalar/surrogate interiors,
 CRLF interiors and invalid selection coordinates are rejected before publication.
 
+A leading UTF-8 BOM stays at the start of the document, outside generated
+Markdown. Select All and a caret before the marker format the content after it;
+interior U+FEFF characters remain ordinary selected text.
+
 Emphasis commands toggle literal selected or immediately surrounding delimiters.
 Nested strong/emphasis uses three stars without stripping half a strong delimiter.
 Leading/trailing selection whitespace stays outside new emphasis. An empty caret

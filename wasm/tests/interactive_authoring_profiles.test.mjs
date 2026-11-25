@@ -148,6 +148,56 @@ test('blank boundaries protect real reference definitions but not literal term l
     dl(pair('Term', 'first') + pair('[^n]: body', 'second')) + '<p>Use[^n].</p>\n');
 });
 
+test('footnote-shaped terms retain source ownership across blank runs and line endings', () => {
+  for (const profile of plusProfiles) {
+    for (const newline of ['\n', '\r\n', '\r']) {
+      for (const id of ['n', 'Café', 'quoted"name', 'a&b']) {
+        for (const body of ['', 'body', '/evidence "Title"', '<evidence>', 'several words']) {
+          const term = '[^' + id + ']:' + (body ? ' ' + body : '');
+          const source = 'Term\n: first\n\n \t\n' + term + '\nAlias\n: second\n\nUse[^' + id + '].';
+          assert.equal(render(source.replace(/\n/g, newline), profile),
+            dl(pair('Term', 'first') + '<dt>' + escape(term) + '</dt>\n' + pair('Alias', 'second'))
+              + '<p>Use[^' + escape(id) + '].</p>\n',
+            JSON.stringify({profile, newline, term}));
+        }
+      }
+    }
+  }
+});
+
+test('nested definition lists keep footnote-shaped terms out of the document note registry', () => {
+  const source = 'Term\n: first\n\n[^inner]: body\n: second';
+  const expected = dl(pair('Term', 'first') + pair('[^inner]: body', 'second'));
+  for (const profile of plusProfiles) {
+    for (const container of [
+      value => value.split('\n').map(line => '> ' + line).join('\n'),
+      value => '- ' + value.replace(/\n/g, '\n  '),
+      value => 'See[^outer].\n\n[^outer]: ' + value.replace(/\n/g, '\n    '),
+    ]) {
+      const html = render(container(source) + '\n\nUse[^inner].', profile);
+      assert.ok(html.includes(expected.trimEnd()), html);
+      assert.match(html, /<p>Use\[\^inner\]\.<\/p>/);
+      assert.doesNotMatch(html, /id="fn-inner"|href="#fn-inner"/);
+    }
+  }
+});
+
+test('real notes and non-note reference labels keep their block-start precedence', () => {
+  for (const profile of plusProfiles) {
+    const html = render('Term\n: first\n\n[^n]: body\n\nUse[^n].', profile);
+    assert.ok(html.startsWith(dl(pair('Term', 'first'))));
+    assert.match(html, /href="#fn-n" role="doc-noteref"/);
+    assert.match(html, /<li id="fn-n"><p>body<\/p>/);
+    assert.equal(render('Term\n: first\n\n[^has space]: /real\n: second\n\n[^has space]', profile),
+      dl(pair('Term', 'first')) + '<p>: second</p>\n<p><a href="/real">^has space</a></p>\n');
+  }
+  const common = render('Term\n: first\n\n[^n]: body\n: second\n\nUse[^n].', 'commonmark-gfm');
+  assert.ok(common.startsWith('<p>Term\n: first</p>\n<p>: second</p>\n'));
+  assert.match(common, /href="#fn-n" role="doc-noteref"/);
+  assert.match(common, /<li id="fn-n"><p>body<\/p>/);
+  assert.doesNotMatch(common, /<dl>/);
+});
+
 test('paragraph interruption keeps headings, lists, quotes, fences and HTML outside definitions', () => {
   for (const [block, opening] of [
     ['# Heading', '<h1'], ['---', '<hr>'], ['> Quote', '<blockquote>'],

@@ -2469,7 +2469,11 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
             // Native reference collection removes real block-start prefixes
             // before list parsing. Let our shared block path collect them too;
             // a reference-shaped term without this blank remains literal.
-            if (next < lines.length && referenceDefinition(lines, next)) break;
+            // Footnote definitions are not link-reference prefixes. A complete
+            // following term still belongs to this list even when its spelling
+            // could also parse as a link definition, such as "[^n]: body".
+            if (next < lines.length && !footnoteMarker(lines[next])
+                && referenceDefinition(lines, next)) break;
           }
           term = definitionTermEnd(next);
           if (term >= 0) i = next;

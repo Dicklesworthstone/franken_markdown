@@ -50,6 +50,19 @@ struct MarkdownSourceFingerprint: Equatable, Sendable {
     let hasByteOrderMark: Bool
 }
 
+/// The file version against which a particular recovery snapshot was edited.
+struct MarkdownDraftFileBaseline: Codable, Equatable, Sendable {
+    let documentIdentity: UUID
+    let sourceDigest: Data
+    let diskDigest: Data
+
+    init(document: MarkdownSourceDocument, documentIdentity: UUID) {
+        self.documentIdentity = documentIdentity
+        sourceDigest = document.sourceDigest
+        diskDigest = document.diskFingerprint.digest
+    }
+}
+
 struct MarkdownRecentDocument: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let bookmarkData: Data
@@ -68,6 +81,10 @@ private struct MarkdownActiveDocumentReference: Codable, Equatable, Sendable {
 struct MarkdownRestoredDocument: Equatable, Sendable {
     let document: MarkdownSourceDocument
     let documentIdentity: UUID
+
+    func publicationTitle(draftTitle: String, draftIdentity: UUID?) -> String {
+        draftIdentity == documentIdentity ? draftTitle : document.suggestedTitle
+    }
 }
 
 enum MarkdownDocumentRestoration: Equatable, Sendable {
@@ -103,6 +120,8 @@ final class MarkdownDocumentSession: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var attention: MarkdownDocumentAttention?
     @Published private(set) var currentDocumentIdentity: UUID?
+
+    @Published private(set) var fileBaseline: MarkdownDraftFileBaseline?
 
     private var untitledBaseline: String
     private var activeDocumentReference: MarkdownActiveDocumentReference?
@@ -226,6 +245,7 @@ final class MarkdownDocumentSession: ObservableObject {
     private func beginDocumentTransition() {
         cancelPendingDocumentRequests()
         documentGeneration = UUID()
+        fileBaseline = nil
         let previous = activeSave
         let queued = queuedSave
         activeSave = nil
@@ -314,6 +334,7 @@ final class MarkdownDocumentSession: ObservableObject {
     func restoreActiveDocument(
         recoveredSource: String?,
         recoveredDocumentIdentity: UUID?,
+        recoveredBaseline: MarkdownDraftFileBaseline? = nil,
         isCurrentSource: () -> Bool = { true }
     ) async throws -> MarkdownDocumentRestoration {
         guard !explicitDocumentRequested, let reference = activeDocumentReference else { return .none }
@@ -344,10 +365,21 @@ final class MarkdownDocumentSession: ObservableObject {
                 digestWorker.cancel()
             }
             guard request == requestGeneration, isCurrentSource() else { return .none }
-            if recoveredSourceDigest == reference.baselineSourceDigest {
-                return .fileVersion(restored)
+            // A coordinated replacement can commit before its bookmark receipt.
+            // Use the source digest here so a disk BOM is kept as file metadata.
+            if recoveredSourceDigest == document.sourceDigest { return .fileVersion(restored) }
+
+            guard let baseline = recoveredBaseline else {
+                // Older drafts lack the file version they were edited against.
+                // The bookmark may already describe a newer save. Never
+                // automatically write a differing legacy draft over that file.
+                if recoveredSourceDigest == reference.baselineSourceDigest { return .fileVersion(restored) }
+                return document.diskFingerprint.digest == reference.baselineDiskDigest
+                    ? .unassociatedDraft(restored) : .conflict(restored)
             }
-            if document.diskFingerprint.digest == reference.baselineDiskDigest {
+            guard baseline.documentIdentity == reference.documentIdentity else { return .unassociatedDraft(restored) }
+            if recoveredSourceDigest == baseline.sourceDigest { return .fileVersion(restored) }
+            if document.diskFingerprint.digest == baseline.diskDigest {
                 return .recoveredEdits(restored)
             }
             return .conflict(restored)
@@ -549,6 +581,7 @@ final class MarkdownDocumentSession: ObservableObject {
         _ document: MarkdownSourceDocument,
         documentIdentity: UUID
     ) {
+        fileBaseline = MarkdownDraftFileBaseline(document: document, documentIdentity: documentIdentity)
         let reference = MarkdownActiveDocumentReference(
             documentIdentity: documentIdentity,
             bookmarkData: document.bookmarkData,

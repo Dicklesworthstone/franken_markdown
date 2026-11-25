@@ -57,6 +57,7 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
     let pdfPageSetup: MarkdownPageSetup?
     let resourceSnapshotID: UUID?
     let customCSS: String?
+    var fileBaseline: MarkdownDraftFileBaseline? = nil
 
     fileprivate func replacingSource(_ source: String) -> Self {
         Self(
@@ -81,7 +82,8 @@ struct MarkdownActiveDraft: Codable, Equatable, Sendable {
             pdfTableFontSize: pdfTableFontSize,
             pdfPageSetup: pdfPageSetup,
             resourceSnapshotID: resourceSnapshotID,
-            customCSS: customCSS
+            customCSS: customCSS,
+            fileBaseline: fileBaseline
         )
     }
 }
@@ -640,6 +642,9 @@ actor MarkdownDraftStore {
 
     private static func hasValidSettings(_ draft: MarkdownActiveDraft) -> Bool {
         draft.schema == MarkdownActiveDraft.currentSchema &&
+            (draft.fileBaseline.map {
+                $0.documentIdentity == draft.documentIdentity && $0.sourceDigest.count == 32 && $0.diskDigest.count == 32
+            } ?? true) &&
             draft.title.utf8.count <= 1_024 &&
             draft.author.utf8.count <= 1_024 &&
             ["sans", "serif"].contains(draft.fontFamily) &&

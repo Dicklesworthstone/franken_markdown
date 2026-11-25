@@ -175,6 +175,13 @@ struct ForgeView: View {
             renderer.scheduleDraftSave()
             scheduleDocumentAutosave(source)
         }
+        .onChange(of: documentSession.fileBaseline) { _, baseline in
+            // Keep the draft tied to the file revision actually acknowledged by
+            // Save. An unresolved conflict must keep its original draft baseline.
+            guard let baseline, baseline.documentIdentity == renderer.documentIdentity else { return }
+            renderer.fileBaseline = baseline
+            renderer.scheduleDraftSave()
+        }
         .onChange(of: renderer.documentIdentity) { _, _ in
             renderer.scheduleDraftSave()
         }
@@ -1150,24 +1157,28 @@ struct ForgeView: View {
 
     private func adopt(
         _ document: MarkdownSourceDocument,
-        documentIdentity: UUID = UUID()
+        documentIdentity: UUID = UUID(),
+        restoredTitle: String? = nil
     ) {
         clearDocumentPresentations()
         documentSession.adopt(document, documentIdentity: documentIdentity)
-        presentAdoptedDocument(document, documentIdentity: documentIdentity, replacingSource: true)
+        presentAdoptedDocument(
+            document, documentIdentity: documentIdentity, replacingSource: true, restoredTitle: restoredTitle
+        )
     }
 
     private func presentAdoptedDocument(
         _ document: MarkdownSourceDocument,
         documentIdentity: UUID,
-        replacingSource: Bool
+        replacingSource: Bool,
+        restoredTitle: String? = nil
     ) {
         if replacingSource && renderer.documentIdentity != documentIdentity {
             renderer.resetResourcesForNewDocument()
         }
         renderer.documentIdentity = documentIdentity
         if replacingSource { renderer.source = document.source }
-        renderer.documentTitle = document.suggestedTitle
+        renderer.documentTitle = restoredTitle ?? document.suggestedTitle
         renderer.allowRawHtml = false
         lane = .write
         sourceImportError = nil
@@ -1188,6 +1199,7 @@ struct ForgeView: View {
                 let restoration = try await documentSession.restoreActiveDocument(
                     recoveredSource: recoveredSource,
                     recoveredDocumentIdentity: identityAtStart,
+                    recoveredBaseline: renderer.fileBaseline,
                     isCurrentSource: {
                         renderer.sourceRevision == revisionAtStart
                             && renderer.documentIdentity == identityAtStart
@@ -1199,9 +1211,13 @@ struct ForgeView: View {
                 case .none:
                     break
                 case .fileVersion(let restored):
-                    adopt(restored.document, documentIdentity: restored.documentIdentity)
+                    let title = restored.publicationTitle(
+                        draftTitle: renderer.documentTitle, draftIdentity: recoveredSource == nil ? nil : identityAtStart
+                    )
+                    adopt(restored.document, documentIdentity: restored.documentIdentity, restoredTitle: title)
                 case .recoveredEdits(let restored):
                     adoptRecoveredEdits(from: restored, changedOnDisk: false)
+                    scheduleDocumentAutosave(renderer.source)
                 case .conflict(let restored):
                     adoptRecoveredEdits(from: restored, changedOnDisk: true)
                     confirmationRequest = documentSession.beginDocumentRequest()
@@ -1236,7 +1252,6 @@ struct ForgeView: View {
             changedOnDisk: changedOnDisk
         )
         renderer.documentIdentity = restored.documentIdentity
-        renderer.documentTitle = restored.document.suggestedTitle
         renderer.allowRawHtml = false
         lane = .write
         sourceImportError = nil

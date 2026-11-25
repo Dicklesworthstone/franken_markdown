@@ -567,6 +567,7 @@ final class MarkdownSourceLoaderTests: XCTestCase {
             return XCTFail("A launch without recovered edits should use the current file version")
         }
         XCTAssertEqual(restored.document.source, "# Updated elsewhere\n")
+        XCTAssertEqual(restored.publicationTitle(draftTitle: "", draftIdentity: nil), restored.document.suggestedTitle)
     }
 
     @MainActor
@@ -582,7 +583,8 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         let restoredSession = MarkdownDocumentSession(initialSource: "# Untitled\n", defaults: defaults)
         let restoration = try await restoredSession.restoreActiveDocument(
             recoveredSource: recovered,
-            recoveredDocumentIdentity: documentIdentity
+            recoveredDocumentIdentity: documentIdentity,
+            recoveredBaseline: try XCTUnwrap(firstSession.fileBaseline)
         )
         guard case .recoveredEdits(let restored) = restoration else {
             return XCTFail("Recovered edits should reconnect to an unchanged file")
@@ -596,6 +598,10 @@ final class MarkdownSourceLoaderTests: XCTestCase {
         XCTAssertTrue(restoredSession.hasCurrentDocument)
         XCTAssertTrue(restoredSession.isDirty(source: recovered))
         XCTAssertNil(restoredSession.attention)
+        XCTAssertTrue(restoredSession.needsAutosave(source: recovered))
+        try await restoredSession.save(source: recovered)
+        XCTAssertEqual(try Data(contentsOf: url), Data(recovered.utf8))
+        XCTAssertFalse(restoredSession.needsAutosave(source: recovered))
     }
 
     @MainActor
@@ -631,6 +637,88 @@ final class MarkdownSourceLoaderTests: XCTestCase {
             XCTAssertEqual(error as? MarkdownSourceLoader.DocumentError, .changedOnDisk)
         }
         XCTAssertEqual(try MarkdownSourceLoader.decode(Data(contentsOf: url)), external)
+    }
+
+    @MainActor
+    func testRestorationRecognizesCommittedBytesBeforeBookmarkUpdate() async throws {
+        let defaults = try makeDefaults()
+        let original = try MarkdownSourceLoader.encode("Old\r\n", includingByteOrderMark: true)
+        let url = try temporarySourceURL(contents: original)
+        let session = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+        let file = try await MarkdownSourceLoader.open(from: url)
+        session.adopt(file)
+        let identity = try XCTUnwrap(session.currentDocumentIdentity)
+        let baseline = try XCTUnwrap(session.fileBaseline)
+        let replacement = "e\u{301}\r\n"
+        // Simulate termination between the physical replacement and the
+        // document session's commit receipt. Leave defaults on the old version.
+        _ = try await MarkdownSourceLoader.save(replacement, replacing: file)
+        let relaunched = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+
+        let baselines: [MarkdownDraftFileBaseline?] = [baseline, nil]
+        for proof in baselines {
+            let result = try await relaunched.restoreActiveDocument(
+                recoveredSource: replacement, recoveredDocumentIdentity: identity, recoveredBaseline: proof
+            )
+            guard case .fileVersion(let restored) = result else {
+                return XCTFail("Identical disk and draft sources must reattach without a conflict")
+            }
+            XCTAssertEqual(restored.documentIdentity, identity)
+            XCTAssertTrue(restored.document.diskFingerprint.hasByteOrderMark)
+            XCTAssertTrue(restored.document.source.utf8.elementsEqual(replacement.utf8))
+            XCTAssertEqual(restored.publicationTitle(draftTitle: "", draftIdentity: identity), "")
+            XCTAssertEqual(restored.publicationTitle(draftTitle: "Custom title", draftIdentity: identity), "Custom title")
+            XCTAssertEqual(
+                restored.publicationTitle(draftTitle: "Unrelated title", draftIdentity: UUID()), restored.document.suggestedTitle
+            )
+        }
+
+        for other in ["\u{e9}\r\n", "e\u{301}\n"] {
+            let result = try await relaunched.restoreActiveDocument(
+                recoveredSource: other, recoveredDocumentIdentity: identity, recoveredBaseline: baseline
+            )
+            guard case .conflict = result else { return XCTFail("A different byte sequence needs review") }
+        }
+        let wrongIdentity = try await relaunched.restoreActiveDocument(
+            recoveredSource: replacement, recoveredDocumentIdentity: UUID(), recoveredBaseline: baseline
+        )
+        guard case .unassociatedDraft = wrongIdentity else {
+            return XCTFail("Matching text cannot grant ownership to another document")
+        }
+    }
+
+    @MainActor
+    func testOlderDraftCannotAutosaveOverNewerAcknowledgedFile() async throws {
+        let defaults = try makeDefaults()
+        let url = try temporarySourceURL(contents: Data("Before\n".utf8))
+        let session = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+        session.adopt(try await MarkdownSourceLoader.open(from: url))
+        let identity = try XCTUnwrap(session.currentDocumentIdentity)
+        let oldBaseline = try XCTUnwrap(session.fileBaseline)
+        try await session.save(source: "Saved later\n")
+        XCTAssertNotEqual(oldBaseline, session.fileBaseline)
+        let relaunched = MarkdownDocumentSession(initialSource: "", defaults: defaults)
+
+        let clean = try await relaunched.restoreActiveDocument(
+            recoveredSource: "Before\n", recoveredDocumentIdentity: identity, recoveredBaseline: oldBaseline
+        )
+        guard case .fileVersion(let latest) = clean else { return XCTFail("Restore the newer file for a clean draft") }
+        XCTAssertEqual(latest.document.source, "Saved later\n")
+
+        let divergent = try await relaunched.restoreActiveDocument(
+            recoveredSource: "An earlier unsaved edit\n", recoveredDocumentIdentity: identity, recoveredBaseline: oldBaseline
+        )
+        guard case .conflict = divergent else { return XCTFail("Both sides changed since this draft") }
+
+        let legacy = try await relaunched.restoreActiveDocument(
+            recoveredSource: "An earlier unsaved edit\n", recoveredDocumentIdentity: identity
+        )
+        guard case .unassociatedDraft(let recovered) = legacy else {
+            return XCTFail("Without its own baseline, an old draft must not enable in-place autosave")
+        }
+        relaunched.adoptUnassociatedDraft(while: recovered.document, documentIdentity: recovered.documentIdentity)
+        XCTAssertFalse(relaunched.needsAutosave(source: "An earlier unsaved edit\n"))
+        XCTAssertEqual(try Data(contentsOf: url), Data("Saved later\n".utf8))
     }
 
     @MainActor

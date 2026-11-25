@@ -172,6 +172,11 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
         didSet { invalidatePreview(sourceChanged: true) }
     }
     @Published var documentIdentity: UUID?
+    var fileBaseline: MarkdownDraftFileBaseline?
+    private var draftFileBaseline: MarkdownDraftFileBaseline? {
+        guard let fileBaseline, fileBaseline.documentIdentity == documentIdentity else { return nil }
+        return fileBaseline
+    }
     @Published private(set) var resources = MarkdownResourceCollection.empty
     @Published private(set) var resourceDocumentOwner = UUID()
     @Published private(set) var resourcesAreLoading = false
@@ -470,7 +475,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             pdfTableFontSize: pdfTableFontSize,
             pdfPageSetup: recoverablePDFPageSetup == .standard ? nil : recoverablePDFPageSetup,
             resourceSnapshotID: resourceSnapshotID,
-            customCSS: customCSS.isEmpty ? nil : customCSS
+            customCSS: customCSS.isEmpty ? nil : customCSS,
+            fileBaseline: draftFileBaseline
         )
     }
 
@@ -506,6 +512,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
             }
             self.draftWasRecovered = true
             self.allowRawHtml = false
+            self.fileBaseline = draft.fileBaseline
             self.documentIdentity = draft.documentIdentity
             self.source = draft.source
             self.documentTitle = draft.title
@@ -538,6 +545,7 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
     private func matchesCurrentDraft(_ draft: MarkdownActiveDraft, sourceRevision expectedRevision: Int) -> Bool {
         expectedRevision == sourceRevision &&
             draft.documentIdentity == documentIdentity &&
+            draft.fileBaseline == draftFileBaseline &&
             draft.title == documentTitle &&
             draft.author == documentAuthor &&
             draft.fontFamily == fontFamily &&

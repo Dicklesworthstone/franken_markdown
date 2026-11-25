@@ -14,6 +14,32 @@ final class MarkdownDraftStoreTests: XCTestCase {
         XCTAssertEqual(loaded, draft)
     }
 
+    func testDraftRetainsItsFileBaselineAcrossStorageAndRejectsAnotherIdentity() async throws {
+        let store = makeStore()
+        let identity = UUID()
+        let source = "File baseline\r\n"
+        let bytes = try MarkdownSourceLoader.encode(source, includingByteOrderMark: true)
+        let document = MarkdownSourceDocument(
+            url: URL(fileURLWithPath: "/unused.md"), bookmarkData: Data(), source: source, suggestedTitle: "",
+            diskFingerprint: .init(byteCount: bytes.count, digest: Data(SHA256.hash(data: bytes)), hasByteOrderMark: true),
+            sourceDigest: try MarkdownSourceLoader.sourceDigest(source)
+        )
+        let baseline = MarkdownDraftFileBaseline(document: document, documentIdentity: identity)
+        var draft = makeDraft(source: "Edited\n", documentIdentity: identity)
+        draft.fileBaseline = baseline
+        let revision = UUID()
+        try await store.save(draft, sourceIdentity: revision)
+        try await store.save(draft, sourceIdentity: revision)
+        let loaded = await store.load()
+        XCTAssertEqual(loaded?.fileBaseline, baseline)
+
+        var wrong = makeDraft(source: "Unrelated\n", documentIdentity: UUID())
+        wrong.fileBaseline = baseline
+        await assertInvalidDraft(wrong, store: store)
+        let afterRefusal = await store.load()
+        XCTAssertEqual(afterRefusal, draft)
+    }
+
     func testLargeEscapedUnicodeDraftUsesAFileInsteadOfJSONBody() async throws {
         let store = makeStore()
         let source = "\u{FEFF}"

@@ -9,48 +9,193 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-25
+
+A feature release (111 commits since 0.8.1) shipping `franken_markdown` 0.9.0
+(`fmd` CLI + Rust library) and the qualified browser/WASM package
+`@franken-suite/franken-markdown` 0.9.0 alongside unchanged `fmd-font` 0.5.0
+and `fmd-math` 0.4.0. GitHub release binaries are built via DSR for x86_64 and
+aarch64 Linux (`gnu`, glibc 2.28 floor), x86_64 and aarch64 macOS, and x86_64
+Windows (`msvc`), alongside the qualified browser/WASM package tarball
+(`franken-suite-franken-markdown-0.9.0.tgz`).
+
+The headline is configured PDF verification: the CLI, MCP server, browser
+facade, workers and editors can now audit the actual emitted pages of a
+document or book with the same options used to publish it. Continued footnotes
+gain exact pagination, and appearance presets, body leading and table padding
+become first-class CLI, config and MCP settings.
+
+`fmd batch`, `fmd mcp` and `fmd-lsp` exist only in builds with the cargo
+features `batch`, `mcp` and `lsp`; the entries for them apply to such builds.
+The release binaries are built with the default `cli` feature. The native
+Apple editor app (`ios/`) is not shipped.
+
 ### Added
 
-- Native configuration accepts PDF body line height and horizontal/vertical
-  table padding. Render, watch, batch and book inherit each value independently;
-  explicit flags override defaults, and disabling spacing preserves legacy PDF
-  layout. Combined HTML output and explicit-only verification remain unchanged.
-- Flow Canvas can verify the configured PDF layout, cancel verification, and
-  download the full native report. Verification uses publication's source,
-  settings, fonts and authorized images; edited documents retire stale reports.
-- Browser Flow and standalone document settings now expose PDF footnote return
-  links, continued footnotes, measured body leading and table-cell padding.
-  Settings retain explicit Off and zero padding and preserve unchanged defaults.
-  Continued notes support Standard, optimized and exact page layouts, including
-  baseline grids; fixed-grid/page-count conflicts remain rejected before apply.
-  Standalone Save HTML retains the selected controls on reopening.
+- **Configured PDF verification across every surface**: `fmd verify` checks
+  running headers and footers, rules, page numbers and decorative logos against
+  the final page geometry, with the same options as PDF publication
+  ([9d65a543](https://github.com/Dicklesworthstone/franken_markdown/commit/9d65a543)). `fmd book DIR --check-pdf` audits a configured edition's
+  actual pages, positioned text, chapter and note destinations through the
+  publication writer without writing any output; reports are bounded by
+  `--max-report-bytes` and exit 0 when clean, 65 on findings and 70 on render
+  failures ([c6c422c7](https://github.com/Dicklesworthstone/franken_markdown/commit/c6c422c7), [7c2c8f2f](https://github.com/Dicklesworthstone/franken_markdown/commit/7c2c8f2f), [a9bb54b3](https://github.com/Dicklesworthstone/franken_markdown/commit/a9bb54b3)). MCP `fmd.verify_book`
+  accepts an explicit `target: "pdf"` with the publication's typography,
+  appearance and archival options ([4dad1c65](https://github.com/Dicklesworthstone/franken_markdown/commit/4dad1c65)). The browser package exposes
+  `verifyPdf` on the direct facade, renderer instances and document workers
+  ([b3a2307e](https://github.com/Dicklesworthstone/franken_markdown/commit/b3a2307e)), persistent Flow sessions ([cef86908](https://github.com/Dicklesworthstone/franken_markdown/commit/cef86908)), Flow Canvas with
+  cancellation and full report downloads ([8494f65e](https://github.com/Dicklesworthstone/franken_markdown/commit/8494f65e)), Document Lab
+  ([eb2d62cb](https://github.com/Dicklesworthstone/franken_markdown/commit/eb2d62cb)), and assembled books through `FmdBook` and retained book
+  workers ([164ea4ab](https://github.com/Dicklesworthstone/franken_markdown/commit/164ea4ab), [b08b2cc2](https://github.com/Dicklesworthstone/franken_markdown/commit/b08b2cc2)); the book publisher shows the physical page and destination
+  results beside its export controls and keeps the full report for download
+  ([d82a6617](https://github.com/Dicklesworthstone/franken_markdown/commit/d82a6617)).
+- **Exact pagination for continued footnotes**: `--pdf-split-footnotes` now
+  works with optimal and strict pagination and baseline grids. Body page
+  boundaries are planned together with pending note fragments under a fixed
+  note policy (a preferred 40% share, mandatory first fragments, FIFO
+  continuations, full-page note-only tails) ([83f2b91b](https://github.com/Dicklesworthstone/franken_markdown/commit/83f2b91b)). Body paragraph
+  alternatives join a bounded joint search with the notes ([00f78f2e](https://github.com/Dicklesworthstone/franken_markdown/commit/00f78f2e)), and
+  split note prose keeps two measured rows on each side of every cut, with
+  source-aware paragraph topology and intra-word hyphen keeps ([aa9f34bc](https://github.com/Dicklesworthstone/franken_markdown/commit/aa9f34bc),
+  [faea01e5](https://github.com/Dicklesworthstone/franken_markdown/commit/faea01e5)). The browser editors admit the same modes ([2e990331](https://github.com/Dicklesworthstone/franken_markdown/commit/2e990331)).
+- **Appearance presets**: `--appearance` selects the shared HTML, PDF, EPUB and
+  SVG palette (`auto`, `light`, `dark`, `charcoal`, `high-contrast-light` or
+  `high-contrast-dark`) in render, watch, batch, book and explicit PDF
+  verification, with a persistent `appearance` config key and matching MCP
+  options ([c04cae00](https://github.com/Dicklesworthstone/franken_markdown/commit/c04cae00)).
+- **PDF body leading and table padding**: `--pdf-theme-spacing`,
+  `--pdf-line-height` (1..=4) and `--pdf-table-cell-padding-x-em` /
+  `--pdf-table-cell-padding-y-em` (0..=8) apply to native publication and
+  verification ([9bb0dbf7](https://github.com/Dicklesworthstone/franken_markdown/commit/9bb0dbf7)). The `pdf_line_height`,
+  `pdf_table_cell_padding_x_em` and `pdf_table_cell_padding_y_em` config keys
+  are inherited per value by render, watch, batch and book ([763a29a0](https://github.com/Dicklesworthstone/franken_markdown/commit/763a29a0)). MCP
+  rendering, verification and book tools accept `themeSpacing`, `lineHeight`
+  and per-side table padding ([9f340bbb](https://github.com/Dicklesworthstone/franken_markdown/commit/9f340bbb)), and the browser Flow and standalone
+  settings expose footnote return links, continued notes, leading and padding
+  ([4c207b9e](https://github.com/Dicklesworthstone/franken_markdown/commit/4c207b9e)).
+- **Persistent authoring profile**: a `profile` config key (`commonmark-gfm` or
+  `gfm-plus`) applies one Markdown dialect to publication, analysis, includes,
+  book preflight and watch dependencies; watch refreshes its dependency graph
+  when an inherited dialect changes ([d6cfb5b6](https://github.com/Dicklesworthstone/franken_markdown/commit/d6cfb5b6)).
+- **Composed-document analysis**: `fmd stats --expand-includes` and
+  `fmd diff --expand-includes` analyze the composed document, resolving nested
+  and selected includes relative to each revision's directory, and published
+  outlines follow the renderer's real heading and note identifiers
+  ([4b35f2a0](https://github.com/Dicklesworthstone/franken_markdown/commit/4b35f2a0)).
+- **Full-content search index**: `--search-index` writes headings, prose, code,
+  tables, definitions, mathematics and referenced notes under the selected
+  dialect, and resolves note destinations to the HTML's real anchors
+  ([62921dc1](https://github.com/Dicklesworthstone/franken_markdown/commit/62921dc1)).
+- **Profiled editable HTML**: the self-contained interactive HTML editor keeps
+  the selected authoring grammar (definition lists, page breaks) through
+  offline edits, styled printing and Save HTML/reopen ([c60d04da](https://github.com/Dicklesworthstone/franken_markdown/commit/c60d04da)); MCP
+  `interactiveHtml` accepts explicit profiles ([7b900a2d](https://github.com/Dicklesworthstone/franken_markdown/commit/7b900a2d)), as do the browser
+  `renderInteractiveHtml` API and document workers ([bd829366](https://github.com/Dicklesworthstone/franken_markdown/commit/bd829366)). Authored
+  tables of contents survive live edits ([a887268d](https://github.com/Dicklesworthstone/franken_markdown/commit/a887268d)).
+- **Book chapters independent of source headings**: every PDF book chapter gets
+  a metadata-owned navigation root and destination, so bare chapter links no
+  longer insert visible headings or shift anchor ordinals ([02627e19](https://github.com/Dicklesworthstone/franken_markdown/commit/02627e19)).
+- **Font collections in MCP**: font resources accept a zero-based `faceIndex`
+  to select one face from a TTC/OTC collection for every rendering and
+  verification tool ([2264c09a](https://github.com/Dicklesworthstone/franken_markdown/commit/2264c09a)).
+- **Language server**: heading completion works inside parsed Markdown link
+  destinations ([8f6ff9b8](https://github.com/Dicklesworthstone/franken_markdown/commit/8f6ff9b8)).
+- **Browser publishing**: the browser editor publishes EPUB and SVG and sets PDF
+  paper, orientation and independent margins ([002273c9](https://github.com/Dicklesworthstone/franken_markdown/commit/002273c9)); a new
+  `renderHtmlConfiguredMetadata` binding carries publication authors through
+  the browser APIs, workers, workspaces and EPUB exports ([01991918](https://github.com/Dicklesworthstone/franken_markdown/commit/01991918),
+  [f9d0ddc4](https://github.com/Dicklesworthstone/franken_markdown/commit/f9d0ddc4), [eb14ad6e](https://github.com/Dicklesworthstone/franken_markdown/commit/eb14ad6e)); one-shot book PDF exports honor include-only
+  source bundles ([1ce18b5f](https://github.com/Dicklesworthstone/franken_markdown/commit/1ce18b5f)); Flow saves and reopens versioned
+  `.fmdflow.json` source projects with their publishing profile ([8ef8ea1e](https://github.com/Dicklesworthstone/franken_markdown/commit/8ef8ea1e))
+  and exposes PDF running header and footer controls ([4e1e1a2f](https://github.com/Dicklesworthstone/franken_markdown/commit/4e1e1a2f)).
+- **Cited financial amounts**: Flow and SVG align decimal amounts that carry
+  trailing footnote citations and render serif note markers ([fe89ad06](https://github.com/Dicklesworthstone/franken_markdown/commit/fe89ad06),
+  [8661918f](https://github.com/Dicklesworthstone/franken_markdown/commit/8661918f)).
+- **Workspace autosave and draft recovery**: standalone browser workspaces can
+  opt in to full-project autosave of the lossless source and committed
+  resources, with revision-checked recovery downloads and deletion; the local
+  recovery catalog never enters saved HTML ([030381f8](https://github.com/Dicklesworthstone/franken_markdown/commit/030381f8)).
+- **Native editor app (`ios/`, not shipped)**: PDF paper and margin controls
+  ([93c7d010](https://github.com/Dicklesworthstone/franken_markdown/commit/93c7d010)), explicit image and font attachments ([83a47379](https://github.com/Dicklesworthstone/franken_markdown/commit/83a47379)), bounded
+  atomic collection imports ([53cc232b](https://github.com/Dicklesworthstone/franken_markdown/commit/53cc232b)), collection PDF typography and page
+  fitting ([34875686](https://github.com/Dicklesworthstone/franken_markdown/commit/34875686)), protected comparison baselines ([82c380cd](https://github.com/Dicklesworthstone/franken_markdown/commit/82c380cd)), autosave that resumes only against the
+  recovered draft's file baseline ([6ab286af](https://github.com/Dicklesworthstone/franken_markdown/commit/6ab286af)), and share sheets bound to their
+  document ([fd9bec4c](https://github.com/Dicklesworthstone/franken_markdown/commit/fd9bec4c)).
 
 ### Fixed
 
-- Markdown and book file sessions retain the initiating document's identity
-  across access checks, source capture and startup observers. Stale requests
-  cannot acquire a file picker or replace a nested operation's ownership;
-  fresh user actions still work after completed editor access changes.
+- **Parser**: complete Unicode URI autolinks are retained across renderers
+  ([06c18312](https://github.com/Dicklesworthstone/franken_markdown/commit/06c18312)); bare link and image destinations keep interior angle
+  characters ([b7661689](https://github.com/Dicklesworthstone/franken_markdown/commit/b7661689)); explicit caret links win over footnotes
+  ([a5ebb009](https://github.com/Dicklesworthstone/franken_markdown/commit/a5ebb009)); bracket links inside image descriptions deactivate enclosing
+  links before alternative text is flattened ([11b4a448](https://github.com/Dicklesworthstone/franken_markdown/commit/11b4a448)); source maps
+  capture accepted inline tokens exactly ([6168175a](https://github.com/Dicklesworthstone/franken_markdown/commit/6168175a)).
+- **PDF**: page fitting starts from the same sanitized typography and geometry
+  as ordinary rendering ([d75a05f5](https://github.com/Dicklesworthstone/franken_markdown/commit/d75a05f5)); long table tokens wrap to their shaped
+  line width ([d14e3490](https://github.com/Dicklesworthstone/franken_markdown/commit/d14e3490)); nested contents titles stay clear of their page
+  numbers ([f24a2e25](https://github.com/Dicklesworthstone/franken_markdown/commit/f24a2e25)); continued-note pages reserve the body's actual ink
+  ([3a79db89](https://github.com/Dicklesworthstone/franken_markdown/commit/3a79db89)); verification inventories only footnote navigation the writer
+  emits ([91090ef6](https://github.com/Dicklesworthstone/franken_markdown/commit/91090ef6)).
+- **Footnote and heading identity**: collision-safe note IDs are shared across
+  HTML, streaming HTML, EPUB, PDF and SVG ([e670d7f4](https://github.com/Dicklesworthstone/franken_markdown/commit/e670d7f4)).
+- **EPUB**: book link rewriting uses the shared destination resolver
+  ([ccffc270](https://github.com/Dicklesworthstone/franken_markdown/commit/ccffc270)), and MCP book publications keep the requested EPUB author
+  ([0b8d1ab0](https://github.com/Dicklesworthstone/franken_markdown/commit/0b8d1ab0)).
+- **CLI**: interactive HTML companions of PDF, EPUB or SVG output are written as
+  separate atomic sibling files ([bf14ebe4](https://github.com/Dicklesworthstone/franken_markdown/commit/bf14ebe4)); link verification preserves
+  probe age and reports first-hop redirects ([a03b2984](https://github.com/Dicklesworthstone/franken_markdown/commit/a03b2984)).
+- **Offline editor**: link targets and resource identity survive edits
+  ([dff37cf6](https://github.com/Dicklesworthstone/franken_markdown/commit/dff37cf6)); Unicode line separators and empty list continuations are
+  preserved ([bd8c8d0d](https://github.com/Dicklesworthstone/franken_markdown/commit/bd8c8d0d)); paragraphs after reference definitions stay intact
+  ([47e62bea](https://github.com/Dicklesworthstone/franken_markdown/commit/47e62bea)); footnotes no longer capture heading destinations and Unicode
+  collision allocation is bounded ([7b7253b7](https://github.com/Dicklesworthstone/franken_markdown/commit/7b7253b7), [d927983a](https://github.com/Dicklesworthstone/franken_markdown/commit/d927983a)); native heading
+  fragments, prose around invalid footnote labels and footnote-shaped
+  definition terms are preserved ([b27cb663](https://github.com/Dicklesworthstone/franken_markdown/commit/b27cb663), [ab4bf908](https://github.com/Dicklesworthstone/franken_markdown/commit/ab4bf908), [8ab1aa74](https://github.com/Dicklesworthstone/franken_markdown/commit/8ab1aa74)).
+- **Browser workers**: document and workspace resources are captured before
+  worker startup ([42c808fd](https://github.com/Dicklesworthstone/franken_markdown/commit/42c808fd), [72a6389f](https://github.com/Dicklesworthstone/franken_markdown/commit/72a6389f)); clients disposed during
+  initialization are retired ([94f02607](https://github.com/Dicklesworthstone/franken_markdown/commit/94f02607)); worker reads are validated against
+  the acknowledged editor state ([0a44d7a1](https://github.com/Dicklesworthstone/franken_markdown/commit/0a44d7a1)); the queue budget is checked
+  before PDF images are copied ([9d9ab442](https://github.com/Dicklesworthstone/franken_markdown/commit/9d9ab442)).
+- **Publication titles**: EPUB metadata and navigation, and inferred document
+  and book titles, come from the visible top-level headings, including
+  supported HTML headings; explicit titles and chapter frontmatter still win
+  ([cbbcbb3b](https://github.com/Dicklesworthstone/franken_markdown/commit/cbbcbb3b)).
+- **Editor sessions and recovery**: file sessions keep the initiating
+  document's identity across access checks and fence ownership before file
+  transactions ([1237faa1](https://github.com/Dicklesworthstone/franken_markdown/commit/1237faa1)); book source reconciliation asks for explicit review when
+  concurrent edits reuse removed or inserted lines, keeping repeated and moved
+  text ([87c2afb4](https://github.com/Dicklesworthstone/franken_markdown/commit/87c2afb4)); source formatting preserves a leading UTF-8 BOM ([cf990fb5](https://github.com/Dicklesworthstone/franken_markdown/commit/cf990fb5)); local
+  recovery keeps one owned autosave operation when status callbacks fail or
+  reenter ([9e3dd8f5](https://github.com/Dicklesworthstone/franken_markdown/commit/9e3dd8f5)); saved workspace HTML no longer embeds another source
+  project's diagnostics ([b7c7c0fa](https://github.com/Dicklesworthstone/franken_markdown/commit/b7c7c0fa)).
 
-- Book source reconciliation requires explicit review when concurrent edits
-  reuse removed or inserted line values. Repeated-line deletions and moved text
-  retain their complete versions instead of silently losing or restoring source;
-  ordinary independent edits and one-sided changes still merge automatically.
+### Performance
 
-- Source formatting preserves a leading UTF-8 BOM outside headings, lists,
-  quotes, emphasis and code fences. Select All and a caret before the marker
-  now edit only document content; mixed line endings and interior U+FEFF remain
-  unchanged in browser and bundled native editing.
+- PDF verification reuses the fitted layout and selected page breaks
+  ([abfeef6e](https://github.com/Dicklesworthstone/franken_markdown/commit/abfeef6e)), and greedy page-break search is bounded to the current page
+  ([cee72ede](https://github.com/Dicklesworthstone/franken_markdown/commit/cee72ede)).
+- The browser package stores the embedded interactive workspace scripts
+  once instead of twice: `franken_markdown_bg.wasm` is 338 KB smaller than
+  before and smaller than in 0.8.1, with byte-identical output ([b3aded7b](https://github.com/Dicklesworthstone/franken_markdown/commit/b3aded7b)).
 
-- Local recovery keeps one owned autosave operation even when status callbacks
-  fail or reenter. Disabling recovery, detaching its target, composing text or
-  editing source/settings during notification now prevents an undispatched stale
-  save; transactions already started still retain their truthful receipts.
+### Maintenance
 
-- Bracket links inside image descriptions now deactivate enclosing Markdown
-  links before alternative text is flattened. Valid image links containing
-  angle autolinks remain supported, and source destination inventories no
-  longer include rejected outer links.
+- `Cargo.lock` and `fuzz/Cargo.lock` refreshed within semver ranges; only
+  `--features batch` builds change ([dc8d86c2](https://github.com/Dicklesworthstone/franken_markdown/commit/dc8d86c2)).
+- Strict Clippy, formatting and test-fixture corrections ([108732a2](https://github.com/Dicklesworthstone/franken_markdown/commit/108732a2),
+  [dc5935c2](https://github.com/Dicklesworthstone/franken_markdown/commit/dc5935c2), [6f79e781](https://github.com/Dicklesworthstone/franken_markdown/commit/6f79e781), [6b6da9f9](https://github.com/Dicklesworthstone/franken_markdown/commit/6b6da9f9), [93408fba](https://github.com/Dicklesworthstone/franken_markdown/commit/93408fba), [98e85f9f](https://github.com/Dicklesworthstone/franken_markdown/commit/98e85f9f)).
+- Browser package test harnesses follow the current renderer bindings,
+  package layout, publisher bootstrap and module import maps; the size
+  tripwire is pinned to the recorded budget, and the package assemblers ship
+  `PDF_VERIFICATION.md`
+  ([aa12f05f](https://github.com/Dicklesworthstone/franken_markdown/commit/aa12f05f), [78a24e33](https://github.com/Dicklesworthstone/franken_markdown/commit/78a24e33), [de211ef5](https://github.com/Dicklesworthstone/franken_markdown/commit/de211ef5), [19d0663d](https://github.com/Dicklesworthstone/franken_markdown/commit/19d0663d), [a5281107](https://github.com/Dicklesworthstone/franken_markdown/commit/a5281107), [10a71283](https://github.com/Dicklesworthstone/franken_markdown/commit/10a71283),
+  [a4837299](https://github.com/Dicklesworthstone/franken_markdown/commit/a4837299)).
+- Tests written during this cycle now match the shipped behavior: heading and
+  note ID ownership, the `profile` config key, filename-stem MCP titles, the
+  interactive controller layout, rebased include links and continued-footnote
+  pagination. `fmd book --check-links` again refuses every publishing flag.
+  Adding the PDF spacing flags had emptied its argument group earlier in this
+  cycle; no release shipped that regression ([5166b78a](https://github.com/Dicklesworthstone/franken_markdown/commit/5166b78a), [3fc3d930](https://github.com/Dicklesworthstone/franken_markdown/commit/3fc3d930), [17ccfe3b](https://github.com/Dicklesworthstone/franken_markdown/commit/17ccfe3b), [56d62c0f](https://github.com/Dicklesworthstone/franken_markdown/commit/56d62c0f), [9afd3f71](https://github.com/Dicklesworthstone/franken_markdown/commit/9afd3f71), [c4f3f7d2](https://github.com/Dicklesworthstone/franken_markdown/commit/c4f3f7d2), [8b7d48f0](https://github.com/Dicklesworthstone/franken_markdown/commit/8b7d48f0), [f8a48346](https://github.com/Dicklesworthstone/franken_markdown/commit/f8a48346), [dd29399f](https://github.com/Dicklesworthstone/franken_markdown/commit/dd29399f), [12cdfbaf](https://github.com/Dicklesworthstone/franken_markdown/commit/12cdfbaf), [8f070a04](https://github.com/Dicklesworthstone/franken_markdown/commit/8f070a04)).
 
 ## [0.8.1] - 2026-11-23
 
@@ -1846,7 +1991,10 @@ API and some default output, so it is a minor-version bump.
   - WASM compilation target with byte-for-byte output parity.
   - CommonMark 0.31.2 conformance test harness and verification test suite.
 
-[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.8.1...v0.9.0
+[0.8.1]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Dicklesworthstone/franken_markdown/compare/v0.4.5...v0.5.0

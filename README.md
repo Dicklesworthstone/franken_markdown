@@ -16,21 +16,21 @@ auditable core.**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/franken_markdown/main/install.sh | bash
-# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.8.1 franken_markdown
+# or build the tagged source: cargo install --git https://github.com/Dicklesworthstone/franken_markdown --tag v0.9.0 franken_markdown
 ```
 
 </div>
 
-> **Release channels** at the 0.8.1 release (2026-11-23):
+> **Release channels** at the 0.9.0 release (2026-11-25):
 >
 > | Channel | Surface | Version | Where to verify |
 > |---|---|---|---|
-> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.8.1`** | `Cargo.toml` `version` field |
-> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) + browser/WASM tarball | **`v0.8.1`** (2026-11-23) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.8.1 |
-> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.5.0, `fmd-math` 0.4.0) | **`0.8.1`** | https://crates.io/crates/franken_markdown |
-> | **Browser/WASM package** | `@franken-suite/franken-markdown` (qualified 0.8.1 tarball on GitHub Releases; npm pending token refresh from 0.5.0) | **`0.8.1`** (tarball) / **`0.5.0`** (npm) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.8.1 |
+> | **Source (this `main`)** | `franken_markdown` library + `fmd` CLI | **`0.9.0`** | `Cargo.toml` `version` field |
+> | **GitHub Release** | `fmd` CLI archives (5 platforms, `.sha256` sidecars) + browser/WASM tarball | **`v0.9.0`** (2026-11-25) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.9.0 |
+> | **crates.io** | `franken_markdown` library (+ `fmd-font` 0.5.0, `fmd-math` 0.4.0) | **`0.9.0`** | https://crates.io/crates/franken_markdown |
+> | **Browser/WASM package** | `@franken-suite/franken-markdown` (qualified 0.9.0 tarball on GitHub Releases; npm pending token refresh from 0.5.0) | **`0.9.0`** (tarball) / **`0.5.0`** (npm) | https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.9.0 |
 >
-> The latest tagged release is **v0.8.1**, available on GitHub Releases and crates.io. Core library, `fmd-font`, `fmd-math`, and default `fmd` CLI builds require Rust 1.88 or newer (optional `--features batch` requires Rust 1.95+); see CHANGELOG.md for what changed. The qualified `0.8.1` browser/WASM package tarball (`franken-suite-franken-markdown-0.8.1.tgz`) is attached to the v0.8.1 GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`. Changes on `main` require their own qualification; release artifacts do not prove the current checkout. See the [current assessment and remaining work](docs/planning/REALITY_CHECK_BRIDGE_PLAN.md).
+> The latest tagged release is **v0.9.0**, available on GitHub Releases and crates.io. Core library, `fmd-font`, `fmd-math`, and default `fmd` CLI builds require Rust 1.88 or newer (optional `--features batch` requires Rust 1.95+); see CHANGELOG.md for what changed. The qualified `0.9.0` browser/WASM package tarball (`franken-suite-franken-markdown-0.9.0.tgz`) is attached to the v0.9.0 GitHub release. Build the in-tree source with `cargo install --path .` or `cargo build --release --bin fmd`. Changes on `main` require their own qualification; release artifacts do not prove the current checkout. See the [current assessment and remaining work](docs/planning/REALITY_CHECK_BRIDGE_PLAN.md).
 > The current renderer ships shared HTML/PDF syntax
 > highlighting including Mermaid/MMD source fences, measured PDF table
 > allocation, fitted ASCII diagrams, frankenmermaid-generated SVG diagrams drawn
@@ -117,7 +117,7 @@ pipeline, a second PDF-only parser, Mermaid.js, or a JavaScript runtime.
 | Config | Dependency-free `key=value` config supports persistent font, dark-mode, custom CSS, page size, and margin defaults. `--no-config` gives reproducible config-free runs |
 | Batch | The optional native `batch` feature uses Asupersync for bounded workers, cancellation, timeout handling, deterministic receipts, source-aware recursive includes, and protection of shared sources and assets; see the [batch contract](docs/BATCH_ORCHESTRATION.md) |
 | Browser/WASM | The wasm-bindgen package sources expose typed HTML/PDF rendering, host-supplied fonts/assets, a plain ESM browser demo, native-parity tests, and a no-default core that stays dependency-free |
-| Releases | GitHub v0.8.1 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars plus qualified browser/WASM package tarball `0.8.1`; crates.io lists `franken_markdown` 0.8.1 with `fmd-font` 0.5.0 and `fmd-math` 0.4.0. Each artifact and platform needs its own execution evidence |
+| Releases | GitHub v0.9.0 archives for Linux (x86_64 + ARM64), macOS (Intel + Apple Silicon), and Windows x86_64 with checksum sidecars plus qualified browser/WASM package tarball `0.9.0`; crates.io lists `franken_markdown` 0.9.0 with `fmd-font` 0.5.0 and `fmd-math` 0.4.0. Each artifact and platform needs its own execution evidence |
 
 Bare HTTP(S), `www`, email, `mailto:` and `xmpp:` addresses use the shared GFM
 autolink parser. Trailing punctuation and entity-shaped suffixes remain outside
@@ -508,8 +508,8 @@ cargo build --release --bin fmd
 cargo install --path .
 fmd --help
 
-# Or install the published crates.io package (Rust 1.88 or newer). Since the 0.8.1
-# release this installs 0.8.1 (fmd-font 0.5.0 and fmd-math 0.4.0 are on crates.io too).
+# Or install the published crates.io package (Rust 1.88 or newer). Since the 0.9.0
+# release this installs 0.9.0 (fmd-font 0.5.0 and fmd-math 0.4.0 are on crates.io too).
 cargo install franken_markdown
 ```
 
@@ -518,7 +518,7 @@ shared entrypoint; type whichever you like.
 
 ### Prebuilt binaries and browser package sources
 
-The v0.8.1 release includes archives for Linux x86_64 and ARM64,
+The v0.9.0 release includes archives for Linux x86_64 and ARM64,
 macOS Intel and Apple Silicon, and Windows x86_64. Release builds and
 publication orchestration use DSR exclusively; GitHub Actions is prohibited.
 Native archives are built and smoke-tested per platform before they are
@@ -532,9 +532,9 @@ tar -xzf fmd-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 The browser/WASM package is `@franken-suite/franken-markdown`. The qualified
-`0.8.1` package tarball (`franken-suite-franken-markdown-0.8.1.tgz` plus
+`0.9.0` package tarball (`franken-suite-franken-markdown-0.9.0.tgz` plus
 `.sha256` sidecar) is attached to the
-[v0.8.1 GitHub release](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.8.1)
+[v0.9.0 GitHub release](https://github.com/Dicklesworthstone/franken_markdown/releases/tag/v0.9.0)
 (built with `wasm-bindgen 0.2.130`, verified across 14 generated-WASM browser
 smoke suites and 4 native/WASM byte-parity checks). Size budgets,
 generated-WASM smoke tests and native/WASM parity must be checked against the

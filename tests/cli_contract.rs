@@ -3253,8 +3253,9 @@ fn config_render_defaults_apply_below_frontmatter_and_flags() {
 
     let shown = fmd_with_env(&["config", "show", "--json"], &env);
     let shown = text(&shown.stdout);
+    // d6cfb5b6 added the authoring `profile` key first; unset, it is JSON null.
     assert!(
-        shown.contains("\"render\":{\"lang\":\"de\",\"toc\":true,"),
+        shown.contains("\"render\":{\"profile\":null,\"lang\":\"de\",\"toc\":true,"),
         "{shown}"
     );
 

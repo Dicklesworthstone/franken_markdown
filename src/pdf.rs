@@ -81,6 +81,7 @@ mod table_panels;
 mod text_composition;
 mod text_positioning;
 mod toc_convergence;
+mod verification_capture;
 
 #[cfg(test)]
 mod text_positioning_tests;
@@ -3334,6 +3335,31 @@ fn render_inner_with_languages(
     collect_warnings: bool,
     languages: &language::Context,
 ) -> Result<RenderedPdf> {
+    render_inner_with_verification(
+        input,
+        opts,
+        pdf_a,
+        profiled,
+        emit,
+        collect_navigation,
+        collect_warnings,
+        languages,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_inner_with_verification(
+    input: &impl crate::footnotes::PdfDocumentInput,
+    opts: &PdfOptions,
+    pdf_a: crate::PdfASettings,
+    profiled: bool,
+    emit: PdfEmitOptions,
+    collect_navigation: bool,
+    collect_warnings: bool,
+    languages: &language::Context,
+    collect_verification: bool,
+) -> Result<RenderedPdf> {
     let doc = input.document();
     let notes = note_tags::Context::bind(input);
     emit.compression.validate()?;
@@ -3374,7 +3400,7 @@ fn render_inner_with_languages(
     )?;
     let line_count = lines.len();
     let serialize_started = profiler.checkpoint();
-    let (bytes, page_breaks, outlines) = serialize(
+    let (bytes, page_breaks, outlines, verification) = serialize(
         &lines,
         &effective_opts,
         &faces,
@@ -3385,6 +3411,7 @@ fn render_inner_with_languages(
         &mut profiler,
         &languages.scopes,
         &languages.chapters,
+        collect_verification,
     )?;
     faces.cjk_load_error()?;
     profiler.record_since(
@@ -3414,6 +3441,7 @@ fn render_inner_with_languages(
         stages: profiler.finish(),
         pagination,
         warnings,
+        verification,
     })
 }
 
@@ -3439,6 +3467,7 @@ struct RenderedPdf {
     stages: Vec<PdfStageSummary>,
     pagination: PdfPaginationReport,
     warnings: Vec<RenderWarning>,
+    verification: Option<VerifyTextLayer>,
 }
 
 /// How the PDF writer turns laid-out lines into page objects.
@@ -23347,7 +23376,13 @@ fn serialize(
     profiler: &mut PdfProfiler,
     languages: &language::Scopes,
     chapter_titles: &chapters::Titles,
-) -> Result<(Vec<u8>, PdfPageBreakReport, Vec<OutlineEntry>)> {
+    collect_verification: bool,
+) -> Result<(
+    Vec<u8>,
+    PdfPageBreakReport,
+    Vec<OutlineEntry>,
+    Option<VerifyTextLayer>,
+)> {
     // Resolve PDF colors once from the shared theme tokens so PDF and HTML stay
     // visually coherent (the one-theme-model doctrine). See `Palette`.
     let palette = Palette::from_theme(&opts.theme);
@@ -23732,6 +23767,7 @@ fn serialize(
         emit,
         profiler,
         chapter_titles,
+        collect_verification,
     )?;
 
     chapters::complete_outlines(
@@ -23754,7 +23790,7 @@ fn serialize(
         emit,
         languages,
     )?;
-    Ok((bytes, report, serialized.outlines))
+    Ok((bytes, report, serialized.outlines, serialized.verification))
 }
 
 struct RenderScratch {
@@ -23768,6 +23804,7 @@ struct RenderScratch {
     table_link_runs: BTreeMap<(u32, u32, u32), LinkRun>,
     table_header_link_runs: BTreeMap<(u32, usize, usize), u64>,
     first_note_reference_lines: BTreeMap<u32, usize>,
+    verification: Option<verification_capture::Capture>,
 }
 
 impl RenderScratch {
@@ -23788,6 +23825,7 @@ impl RenderScratch {
             table_link_runs: BTreeMap::new(),
             table_header_link_runs: BTreeMap::new(),
             first_note_reference_lines: first_note_reference_lines(lines),
+            verification: None,
         }
     }
 }
@@ -23882,6 +23920,7 @@ struct SerializedPages {
     pages: Vec<PageContent>,
     outlines: Vec<OutlineEntry>,
     precompressed: Option<Vec<OwnedPdfStream>>,
+    verification: Option<VerifyTextLayer>,
 }
 
 fn pdf_emit_phase(verbose: bool, phase: &str, items: usize, extra: &str) {
@@ -24252,6 +24291,7 @@ fn serialize_pages(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
     chapter_titles: &chapters::Titles,
+    collect_verification: bool,
 ) -> Result<SerializedPages> {
     match emit.emission {
         PdfPageEmission::Monolithic => serialize_pages_monolithic(
@@ -24270,6 +24310,7 @@ fn serialize_pages(
             emit,
             profiler,
             chapter_titles,
+            collect_verification,
         ),
         PdfPageEmission::Chunked => serialize_pages_chunked(
             lines,
@@ -24287,6 +24328,7 @@ fn serialize_pages(
             emit,
             profiler,
             chapter_titles,
+            collect_verification,
         ),
     }
 }
@@ -24308,6 +24350,7 @@ fn serialize_pages_monolithic(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
     chapter_titles: &chapters::Titles,
+    collect_verification: bool,
 ) -> Result<SerializedPages> {
     let pages_placed = profiler.measure(
         "pagination",
@@ -24329,6 +24372,7 @@ fn serialize_pages_monolithic(
         lines,
         chapter_titles,
     );
+    scratch.verification = collect_verification.then(verification_capture::Capture::default);
     let mut page_buffer_reserved_bytes = 0usize;
     for (page_idx, placed) in pages_placed.iter().enumerate() {
         let (content, reserved) = generate_page_content(
@@ -24344,7 +24388,7 @@ fn serialize_pages_monolithic(
             heading_meta,
             image_index,
             &mut scratch,
-        );
+        )?;
         page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
         scratch.pages.push(content);
     }
@@ -24377,9 +24421,11 @@ fn serialize_pages_chunked(
     emit: PdfEmitOptions,
     profiler: &mut PdfProfiler,
     chapter_titles: &chapters::Titles,
+    collect_verification: bool,
 ) -> Result<SerializedPages> {
     let stream_generation_started = profiler.checkpoint();
     let mut scratch = RenderScratch::with_capacity(1, heading_meta.len(), lines, chapter_titles);
+    scratch.verification = collect_verification.then(verification_capture::Capture::default);
     let mut compressed = Vec::new();
     let mut start = 0usize;
     let mut emitted_any = false;
@@ -24416,7 +24462,7 @@ fn serialize_pages_chunked(
             heading_meta,
             image_index,
             &mut scratch,
-        );
+        )?;
         page_buffer_reserved_bytes = page_buffer_reserved_bytes.saturating_add(reserved);
         #[cfg(all(feature = "native-compression", not(target_arch = "wasm32")))]
         {
@@ -24538,6 +24584,10 @@ fn finish_serialized_pages(
         },
     );
     Ok(SerializedPages {
+        verification: scratch
+            .verification
+            .map(|capture| capture.finish(scratch.pages.len()))
+            .transpose()?,
         pages: scratch.pages,
         outlines: scratch.outlines,
         precompressed,
@@ -24558,7 +24608,10 @@ fn generate_page_content(
     heading_meta: &BTreeMap<u32, HeadingMeta>,
     image_index: &BTreeMap<&str, usize>,
     scratch: &mut RenderScratch,
-) -> (PageContent, usize) {
+) -> Result<(PageContent, usize)> {
+    if let Some(capture) = &mut scratch.verification {
+        capture.page(placed, page_idx, page, chrome)?;
+    }
     let capacity = estimate_page_content_capacity(placed);
     let bg_capacity = capacity
         .background_bytes
@@ -25408,7 +25461,7 @@ fn generate_page_content(
         );
     }
 
-    (
+    Ok((
         PageContent {
             stream: body,
             shadings,
@@ -25417,7 +25470,7 @@ fn generate_page_content(
             marks,
         },
         reserved,
-    )
+    ))
 }
 
 fn table_cell_path(prefix: &[SElem], table: u32, row: u32, column: u32, header: bool) -> SmallPath {
@@ -45880,7 +45933,7 @@ pub struct VerifyTextRun {
     pub text: String,
     /// Left edge (points) of the first segment (rule x for rules).
     pub x: f32,
-    /// Baseline y (points, top-down as placed).
+    /// Baseline y in PDF points, measured upwards from the physical page bottom.
     pub y: f32,
     /// Font size in points.
     pub size: f32,

@@ -256,7 +256,41 @@ pub(super) struct ChromePages {
     content_w: f32,
 }
 
+/// Borrowed text and geometry from a final, page-expanded running band.
+/// Decorative rules and images are not represented as invented text.
+pub(super) struct VerificationRun<'a> {
+    pub text: &'a str,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub size: f32,
+    pub kind: &'static str,
+}
+
 impl ChromePages {
+    pub(super) fn verification_runs(
+        &self,
+        page_index: usize,
+    ) -> impl Iterator<Item = VerificationRun<'_>> {
+        self.pages
+            .get(page_index)
+            .into_iter()
+            .flatten()
+            .flat_map(move |band| {
+                band.runs.iter().map(move |run| VerificationRun {
+                    text: &run.text,
+                    x: run.x,
+                    y: band.baseline,
+                    width: run.width,
+                    size: self.size,
+                    kind: match band.kind {
+                        BandKind::Header => "running_header",
+                        BandKind::Footer => "running_footer",
+                    },
+                })
+            })
+    }
+
     /// The font's global ascent/descent cannot bound an attached stack of
     /// marks. Check the actual fitted, page-expanded text before embedding or
     /// drawing it, and keep an existing rule clear of the positioned ink.

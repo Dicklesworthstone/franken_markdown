@@ -1,5 +1,6 @@
 //! Source ownership retained separately from the public, source-less link AST.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -149,12 +150,16 @@ impl ChapterLinkSources {
     }
 
     pub(super) fn indices(&self, doc: &Document) -> Option<BTreeMap<NodeKey, usize>> {
+        self.indices_for_blocks(&doc.blocks)
+    }
+
+    fn indices_for_blocks(&self, blocks: &[Block]) -> Option<BTreeMap<NodeKey, usize>> {
         if self.reason.is_some() {
             return None;
         }
         let mut indices = BTreeMap::new();
         let mut next = 0;
-        let complete = walk_blocks(&doc.blocks, 0, &mut |node| {
+        let complete = walk_blocks(blocks, 0, &mut |node| {
             if next >= self.destinations.len() || indices.insert(node.key(), next).is_some() {
                 return false;
             }
@@ -212,6 +217,91 @@ impl BookLinkSources {
         }
         Ok(Self::new(self.chapters))
     }
+}
+
+/// Parser-owned references, including dormant notes retained by PDF endnotes.
+pub(crate) struct PdfReferenceSource {
+    pub destination: String,
+    pub note: bool,
+    pub html: bool,
+    pub source: LinkSourceLocation,
+}
+
+/// Use the original AST to project source ranges; normalized PDF inventories
+/// pass None and are matched by destination/kind occurrences conservatively.
+pub(crate) fn pdf_references(
+    blocks: &[Block],
+    sources: Option<&ChapterLinkSources>,
+) -> Result<Vec<PdfReferenceSource>> {
+    let indices = sources.and_then(|sources| sources.indices_for_blocks(blocks));
+    let mut references = Vec::new();
+    let mut bytes = 0usize;
+    let mut source_bytes = 0usize;
+    for (owner, block) in blocks.iter().enumerate() {
+        let complete = walk_blocks(std::slice::from_ref(block), 0, &mut |node| {
+            let (destination, note, html) = match &node {
+                Node::Link(_, destination) => (Cow::Borrowed(*destination), false, false),
+                Node::Note(Inline::FootnoteRef { id }) => (Cow::Borrowed(id.as_str()), true, false),
+                Node::Note(_) => return true,
+                Node::Html(html, index) => {
+                    let Some(span) = crate::safe_html::url_spans(html)
+                        .filter(|span| span.kind == crate::safe_html::UrlKind::Link)
+                        .nth(*index)
+                    else {
+                        return false;
+                    };
+                    (Cow::Owned(span.destination), false, true)
+                }
+            };
+            if references.len() >= 16_384
+                || destination.len() > 8192
+                || destination.len() > (1024 * 1024usize).saturating_sub(bytes)
+            {
+                return false;
+            }
+            bytes += destination.len();
+            let mut source = sources.map_or_else(
+                || LinkSourceLocation {
+                    precision: LinkSourcePrecision::Block,
+                    source: BookSourceLocation::Unavailable("ownership_unavailable"),
+                },
+                |sources| {
+                    sources.location(
+                        owner,
+                        indices
+                            .as_ref()
+                            .and_then(|indices| indices.get(&node.key()).copied()),
+                    )
+                },
+            );
+            let retained = match &source.source {
+                BookSourceLocation::Mapped(ranges) => ranges
+                    .iter()
+                    .map(|range| range.path.len().saturating_add(32))
+                    .sum::<usize>(),
+                BookSourceLocation::Unavailable(_) => 0,
+            };
+            if retained > MAX_PROVENANCE_BYTES.saturating_sub(source_bytes) {
+                source.source = BookSourceLocation::Unavailable("provenance_limit");
+            } else {
+                source_bytes += retained;
+            }
+            references.push(PdfReferenceSource {
+                destination: destination.into_owned(),
+                note,
+                html,
+                source,
+            });
+            true
+        });
+        if !complete {
+            return Err(crate::RenderError::InvalidInput(
+                "book_pdf_verification_limit: reference inventory exceeds depth or report limits"
+                    .into(),
+            ));
+        }
+    }
+    Ok(references)
 }
 
 /// These are temporary keys in a borrowed, immutable AST. Persisted metadata

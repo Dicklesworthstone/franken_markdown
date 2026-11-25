@@ -54,6 +54,9 @@ pub(crate) struct NavigationRender {
     pub stages: Vec<super::PdfStageSummary>,
     pub pagination: super::PdfPaginationReport,
     pub warnings: Vec<super::RenderWarning>,
+    /// Present only for explicit verification. Captured from the final page
+    /// emitter alongside the physical destinations, never from a second layout.
+    pub verification: Option<super::VerifyTextLayer>,
 }
 
 pub(crate) fn render_complete(
@@ -119,6 +122,30 @@ pub(crate) fn render_complete_with_languages(
         stages: rendered.stages,
         pagination: rendered.pagination,
         warnings: rendered.warnings,
+        verification: rendered.verification,
+    })
+}
+
+/// Verify the exact chapter-aware emission, including fitted running bands,
+/// contents pages, repeated table headers and continued page-bottom notes.
+/// The ordinary rendering entrypoints do not allocate or collect this layer.
+pub(crate) fn render_verified_with_languages(
+    doc: &impl crate::footnotes::PdfDocumentInput,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    languages: &super::language::Context,
+) -> Result<NavigationRender> {
+    let rendered = super::render_inner_with_verification(
+        doc, options, settings, false, emit, true, true, languages, true,
+    )?;
+    Ok(NavigationRender {
+        bytes: rendered.bytes,
+        navigation: rendered.navigation,
+        stages: rendered.stages,
+        pagination: rendered.pagination,
+        warnings: rendered.warnings,
+        verification: rendered.verification,
     })
 }
 

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::book::{Book, BookPdfRenderReport, BookRenderer, paths};
+use crate::book::{Book, BookPdfDestination, BookPdfRenderReport, BookRenderer, paths};
 use crate::search_index::{EntryKind, build_search_index};
 use crate::{Block, Document, PdfASettings, PdfEmitOptions, PdfOptions, RenderError, Result};
 
@@ -49,6 +49,34 @@ pub(super) fn render_reported(
         pagination: rendered.pagination,
         warnings: rendered.warnings,
     })
+}
+
+/// Verify with the same preparation, measured lines and binding as publication.
+pub(super) fn verify(
+    book: &Book,
+    document: Document,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    sources: &crate::book::validation::link_sources::BookLinkSources,
+) -> Result<(
+    crate::pdf::source_navigation::NavigationRender,
+    Vec<BookPdfDestination>,
+)> {
+    validate_settings(settings)?;
+    if settings.strict {
+        crate::validate_doc_pdfa_strict(&document)?;
+    }
+    let plan = prepare_inner(book, document, options, Some(sources))?;
+    let mut destinations = Vec::new();
+    let rendered = render_plan_complete_inner(
+        plan,
+        options,
+        settings,
+        PdfEmitOptions::default(),
+        true,
+        Some(&mut destinations),
+    )?;
+    Ok((rendered, destinations))
 }
 
 impl BookRenderer {
@@ -173,6 +201,17 @@ fn render_plan_complete(
     emit: PdfEmitOptions,
     diagnostics: bool,
 ) -> Result<crate::pdf::source_navigation::NavigationRender> {
+    render_plan_complete_inner(plan, options, settings, emit, diagnostics, None)
+}
+
+fn render_plan_complete_inner(
+    plan: Plan,
+    options: &PdfOptions,
+    settings: PdfASettings,
+    emit: PdfEmitOptions,
+    diagnostics: bool,
+    verification: Option<&mut Vec<BookPdfDestination>>,
+) -> Result<crate::pdf::source_navigation::NavigationRender> {
     options.font_assets.validate()?;
     if settings.strict {
         // Match the ordinary archival entrypoint after chapter HTML lowering,
@@ -187,17 +226,27 @@ fn render_plan_complete(
     let language_context =
         plan.languages
             .prepared(&plan.document, profiled.as_ref(), &prepared, options)?;
-    let mut rendered = crate::pdf::source_navigation::render_complete_with_languages(
-        &prepared,
-        options,
-        settings,
-        emit,
-        false,
-        !plan.targets.is_empty(),
-        diagnostics,
-        &language_context,
-    )?;
-    if plan.targets.is_empty() {
+    let mut rendered = if verification.is_some() {
+        crate::pdf::source_navigation::render_verified_with_languages(
+            &prepared,
+            options,
+            settings,
+            emit,
+            &language_context,
+        )?
+    } else {
+        crate::pdf::source_navigation::render_complete_with_languages(
+            &prepared,
+            options,
+            settings,
+            emit,
+            false,
+            !plan.targets.is_empty(),
+            diagnostics,
+            &language_context,
+        )?
+    };
+    if plan.targets.is_empty() && verification.is_none() {
         return Ok(rendered);
     }
     let origins = crate::footnotes::heading_origins_for_pdf_paged(&profiled);
@@ -209,12 +258,14 @@ fn render_plan_complete(
         ));
     }
     let navigation = &rendered.navigation;
-    let note_ids = if plan.targets.values().any(|target| {
-        matches!(
-            target,
-            Some(Target::Footnote(_) | Target::FootnoteReference(_))
-        )
-    }) {
+    let note_ids = if verification.is_some()
+        || plan.targets.values().any(|target| {
+            matches!(
+                target,
+                Some(Target::Footnote(_) | Target::FootnoteReference(_))
+            )
+        })
+    {
         crate::footnotes::page_note_ids(profiled.as_ref())
     } else {
         BTreeMap::new()
@@ -230,25 +281,42 @@ fn render_plan_complete(
                 .map(|source| (source, *destination))
         })
         .collect();
+    let resolve = |source: &Target| match source {
+        Target::Heading(ordinal) => emitted.get(ordinal).copied(),
+        Target::Chapter(scope) => navigation.chapters.get(scope).copied(),
+        Target::Footnote(id) => note_ids
+            .get(id)
+            .and_then(|prepared| navigation.notes.get(prepared))
+            .copied(),
+        Target::FootnoteReference(id) => note_ids
+            .get(id)
+            .and_then(|prepared| navigation.note_references.get(prepared))
+            .copied(),
+    };
+    if let Some(destinations) = verification {
+        for reference in &plan.references {
+            let target = reference.target.as_ref().and_then(&resolve);
+            destinations.push(BookPdfDestination {
+                chapter: reference.chapter.clone(),
+                destination: reference.destination.clone(),
+                kind: reference.kind,
+                source: reference.source.clone(),
+                status: if target.is_some() {
+                    "resolved"
+                } else if reference.checked {
+                    "unresolved"
+                } else {
+                    "unchecked"
+                },
+                page: target.map(|target| target.page_index + 1),
+                y: target.map(|target| target.y),
+            });
+        }
+    }
     let targets = plan
         .targets
         .iter()
-        .map(|(uri, source)| {
-            let destination = match source {
-                Some(Target::Heading(ordinal)) => emitted.get(ordinal).copied(),
-                Some(Target::Chapter(scope)) => navigation.chapters.get(scope).copied(),
-                Some(Target::Footnote(id)) => note_ids
-                    .get(id)
-                    .and_then(|prepared| navigation.notes.get(prepared))
-                    .copied(),
-                Some(Target::FootnoteReference(id)) => note_ids
-                    .get(id)
-                    .and_then(|prepared| navigation.note_references.get(prepared))
-                    .copied(),
-                None => None,
-            };
-            (uri.clone(), destination)
-        })
+        .map(|(uri, source)| (uri.clone(), source.as_ref().and_then(&resolve)))
         .collect();
     rendered.bytes = wire::bind(rendered.bytes, &targets)?;
     Ok(rendered)
@@ -259,6 +327,17 @@ struct Plan {
     languages: languages::Plan,
     /// Temporary URI -> immutable source target; None means unresolved.
     targets: BTreeMap<String, Option<Target>>,
+    /// Original emitted-source references, independent of deduplicated tokens.
+    references: Vec<VerificationReference>,
+}
+
+struct VerificationReference {
+    chapter: String,
+    destination: String,
+    kind: &'static str,
+    source: crate::book::LinkSourceLocation,
+    checked: bool,
+    target: Option<Target>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -425,6 +504,15 @@ fn normalized_heading_positions(blocks: &[Block]) -> (Vec<usize>, usize) {
 }
 
 fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan> {
+    prepare_inner(book, document, options, None)
+}
+
+fn prepare_inner(
+    book: &Book,
+    document: Document,
+    options: &PdfOptions,
+    verification: Option<&crate::book::validation::link_sources::BookLinkSources>,
+) -> Result<Plan> {
     let sources: Vec<String> = book
         .chapters
         .iter()
@@ -465,11 +553,12 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             }
         });
     }
-    if candidates == 0 {
+    if candidates == 0 && verification.is_none() {
         return Ok(Plan {
             languages: languages::Plan::new(book, &ranges, &document, options)?,
             document,
             targets: BTreeMap::new(),
+            references: Vec::new(),
         });
     }
     // Preserve the established token allocation for literal asset URLs. The
@@ -526,7 +615,7 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
                 .ok_or_else(|| invalid("normalized heading ordinal is invalid"))?;
             map.insert(entry.anchor, Target::Heading(base + *normalized));
         }
-        if note_chapters.contains(&index) {
+        if verification.is_some() || note_chapters.contains(&index) {
             for anchor in crate::book::validation::footnote_anchors(&chapter.doc) {
                 if anchor.occurrences != 1 {
                     // A heading may already own this spelling. HTML regards
@@ -560,6 +649,21 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
             .checked_add(assembled.len())
             .ok_or_else(|| invalid("heading count overflow"))?;
     }
+
+    let references = if let Some(metadata) = verification {
+        verification_references(
+            book,
+            options,
+            &sources,
+            &known,
+            &aliases,
+            &document,
+            &ranges,
+            metadata,
+        )?
+    } else {
+        Vec::new()
+    };
 
     let mut tokens: BTreeMap<Option<Target>, String> = BTreeMap::new();
     for (index, range) in ranges.iter().cloned().enumerate() {
@@ -595,7 +699,160 @@ fn prepare(book: &Book, document: Document, options: &PdfOptions) -> Result<Plan
         document,
         languages,
         targets,
+        references,
     })
+}
+
+/// Capture normalized PDF references before temporary action interning. PDF
+/// retains dormant note bodies as endnotes, so HTML's referenced-note walk
+/// cannot supply this inventory. Source ranges use destination/kind occurrence
+/// matching with complete counts. Ambiguous HTML duplicates remain unavailable.
+#[allow(clippy::too_many_arguments)]
+fn verification_references(
+    book: &Book,
+    options: &PdfOptions,
+    sources: &[String],
+    known: &BTreeMap<String, usize>,
+    aliases: &[BTreeMap<String, Target>],
+    document: &Document,
+    ranges: &[Range<usize>],
+    metadata: &crate::book::validation::link_sources::BookLinkSources,
+) -> Result<Vec<VerificationReference>> {
+    use crate::book::validation::link_sources::pdf_references;
+    use std::collections::VecDeque;
+    let mut out = Vec::new();
+    let mut bytes = 0usize;
+    let mut source_bytes = 0usize;
+    for (index, chapter) in book.chapters.iter().enumerate() {
+        let original = pdf_references(&chapter.doc.blocks, Some(metadata.chapter(index)))?;
+        let mut originals = BTreeMap::<(bool, String), VecDeque<_>>::new();
+        let mut display_labels = BTreeMap::new();
+        for reference in original {
+            let key = if reference.note && book.chapters.len() > 1 {
+                crate::book::merge::scoped_id(index + 1, &reference.destination)
+            } else {
+                reference.destination.clone()
+            };
+            if reference.note {
+                display_labels.insert(key.clone(), reference.destination.clone());
+            }
+            originals
+                .entry((reference.note, key))
+                .or_default()
+                .push_back(reference);
+        }
+        let normalized = pdf_references(&document.blocks[ranges[index].clone()], None)?;
+        let mut counts = BTreeMap::<(bool, String), usize>::new();
+        for reference in &normalized {
+            *counts
+                .entry((reference.note, reference.destination.clone()))
+                .or_default() += 1;
+        }
+        originals.retain(|key, occurrences| {
+            counts.get(key) == Some(&occurrences.len())
+                && (occurrences.len() == 1 || occurrences.iter().all(|source| !source.html))
+        });
+        let mut returns = BTreeSet::new();
+        for reference in normalized {
+            let original = originals
+                .get_mut(&(reference.note, reference.destination.clone()))
+                .and_then(VecDeque::pop_front);
+            let source = original.as_ref().map_or_else(
+                || reference.source.clone(),
+                |original| original.source.clone(),
+            );
+            let destination = original.as_ref().map_or_else(
+                || {
+                    display_labels
+                        .get(&reference.destination)
+                        .filter(|_| reference.note)
+                        .cloned()
+                        .unwrap_or_else(|| reference.destination.clone())
+                },
+                |original| original.destination.clone(),
+            );
+            let (target, checked, kind) = if reference.note {
+                (
+                    Some(Target::Footnote(reference.destination.clone())),
+                    true,
+                    "footnote",
+                )
+            } else {
+                let local = local_target(index, &sources[index], &reference.destination, known);
+                let checked = local.is_some() || {
+                    let dest = reference.destination.trim();
+                    let external = dest.starts_with("//")
+                        || dest.split_once(':').is_some_and(|(prefix, _)| {
+                            prefix
+                                .as_bytes()
+                                .first()
+                                .is_some_and(u8::is_ascii_alphabetic)
+                                && prefix.bytes().all(|byte| {
+                                    byte.is_ascii_alphanumeric()
+                                        || matches!(byte, b'+' | b'-' | b'.')
+                                })
+                        });
+                    !external
+                        && paths::destination(&sources[index], dest).is_none_or(|(path, _)| {
+                            let path = path.to_ascii_lowercase();
+                            path.ends_with(".md") || path.ends_with(".markdown")
+                        })
+                };
+                let target = match local {
+                    Some(LocalTarget::Start(chapter)) => Some(Target::Chapter(chapter as u32 + 1)),
+                    Some(LocalTarget::Fragment(chapter, fragment)) => aliases
+                        .get(chapter)
+                        .and_then(|map| map.get(&fragment))
+                        .cloned(),
+                    Some(LocalTarget::Unresolved) | None => None,
+                };
+                (target, checked, "link")
+            };
+            let return_target = if options.footnote_backlinks
+                && reference.note
+                && returns.insert(reference.destination.clone())
+            {
+                Some(Target::FootnoteReference(reference.destination.clone()))
+            } else {
+                None
+            };
+            for (target, kind) in std::iter::once((target, kind))
+                .chain(return_target.map(|target| (Some(target), "footnote_backreference")))
+            {
+                let added = sources[index].len().saturating_add(destination.len());
+                if out.len() >= 16_384 || added > (1024 * 1024usize).saturating_sub(bytes) {
+                    return Err(RenderError::InvalidInput(
+                        "book_pdf_verification_limit: references exceed 16384 entries or 1 MiB"
+                            .into(),
+                    ));
+                }
+                bytes += added;
+                let mut source = source.clone();
+                let retained = match &source.source {
+                    crate::book::BookSourceLocation::Mapped(ranges) => ranges
+                        .iter()
+                        .map(|range| range.path.len().saturating_add(32))
+                        .sum::<usize>(),
+                    crate::book::BookSourceLocation::Unavailable(_) => 0,
+                };
+                if retained > (2 * 1024 * 1024usize).saturating_sub(source_bytes) {
+                    source.source =
+                        crate::book::BookSourceLocation::Unavailable("provenance_limit");
+                } else {
+                    source_bytes += retained;
+                }
+                out.push(VerificationReference {
+                    chapter: sources[index].clone(),
+                    destination: destination.clone(),
+                    kind,
+                    source,
+                    checked,
+                    target,
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn reserve_link_nonce(destination: &str, reserved: &mut BTreeSet<usize>) {

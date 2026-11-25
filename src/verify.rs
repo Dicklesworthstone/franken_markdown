@@ -72,6 +72,18 @@ pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<Ver
     let layer = verification_text_layer_for_layout(&prepared, opts, Some(&mut warnings))?;
     let audit = crate::book::audit_document_note_links(doc, &prepared, opts);
 
+    Ok(report_from_layout(doc, opts, layer, &warnings, audit))
+}
+
+/// Assemble the canonical report from an already emitted layout. Book callers
+/// supply their chapter-aware writer's text and warnings, never a second layout.
+pub(crate) fn report_from_layout(
+    doc: &Document,
+    opts: &PdfOptions,
+    layer: crate::pdf::VerifyTextLayer,
+    warnings: &[RenderWarning],
+    audit: crate::pdf::AnchorAudit,
+) -> VerifyReport {
     let mut findings = Vec::new();
     for target in &audit.unresolved {
         findings.push(VerifyFinding {
@@ -79,7 +91,7 @@ pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<Ver
             detail: format!("internal link target #{target} matches no heading"),
         });
     }
-    for warning in &warnings {
+    for warning in warnings {
         let detail = match warning {
             RenderWarning::UnresolvedImage(dest) => {
                 format!("image {dest} had no matching asset; rendered as alt text")
@@ -145,9 +157,18 @@ pub fn verify_pdf_result(doc: &Document, opts: &PdfOptions) -> crate::Result<Ver
     };
     // Digest covers the canonical body (every field except the digest itself),
     // so any content, anchor, warning, or overflow change moves it.
-    let body = to_json_body(&report);
-    report.digest = fnv1a64(body.as_bytes());
-    Ok(report)
+    refresh_report(&mut report);
+    report
+}
+
+/// Recompute the verdict and digest after a host adds source-owned findings.
+pub(crate) fn refresh_report(report: &mut VerifyReport) {
+    report.verdict = if report.findings.is_empty() {
+        "clean"
+    } else {
+        "findings"
+    };
+    report.digest = fnv1a64(to_json_body(report).as_bytes());
 }
 
 /// Accessibility audit (bead jqls): authoring-time findings for the render

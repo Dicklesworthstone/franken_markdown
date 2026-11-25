@@ -25,6 +25,8 @@ mod verification;
 pub(crate) use pdf_links::document::{
     audit as audit_document_note_links, render as render_document_note_links,
 };
+#[cfg(feature = "cli")]
+pub(crate) use verification::verify_book_pdf;
 pub use verification::{BookPdfDestination, BookPdfVerificationReport};
 #[path = "site_publication.rs"]
 mod site_publication;

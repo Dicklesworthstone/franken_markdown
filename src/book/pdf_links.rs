@@ -264,8 +264,7 @@ fn render_plan_complete_inner(
                 target,
                 Some(Target::Footnote(_) | Target::FootnoteReference(_))
             )
-        })
-    {
+        }) {
         crate::footnotes::page_note_ids(profiled.as_ref())
     } else {
         BTreeMap::new()
@@ -652,14 +651,7 @@ fn prepare_inner(
 
     let references = if let Some(metadata) = verification {
         verification_references(
-            book,
-            options,
-            &sources,
-            &known,
-            &aliases,
-            &document,
-            &ranges,
-            metadata,
+            book, options, &sources, &known, &aliases, &document, &ranges, metadata,
         )?
     } else {
         Vec::new()

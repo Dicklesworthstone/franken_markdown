@@ -31,6 +31,8 @@ mod preflight;
 mod publishing;
 #[path = "native/remote_images.rs"]
 mod remote_images;
+#[path = "native_verify.rs"]
+mod verification;
 
 const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -77,6 +79,13 @@ pub(crate) struct BookArgs {
     /// Check expanded HTML navigation only; write no publications. Exit 65 for findings.
     #[arg(long, conflicts_with_all = ["out", "out_dir", "to", "css", "font", "appearance", "title", "author", "lang", "max_pdf_image_bytes", "deny_broken_links", "robot_triage", "pdf_fonts", "pdf_font_faces", "pdf_font_weights", "font_scale", "page_size", "margin_top_pt", "margin_right_pt", "margin_bottom_pt", "margin_left_pt", "pdf_baseline_grid_pt", "pdf_line_numbers", "toc_depth", "book_publishing", "pdf_spacing"])]
     check_links: bool,
+    /// Verify the configured assembled PDF without writing publications.
+    /// Use --json for the complete report; exit 65 when findings are present.
+    #[arg(long, conflicts_with_all = ["check_links", "out", "out_dir", "to", "deny_broken_links", "robot_triage", "css", "html_font_format", "font_embedding"])]
+    check_pdf: bool,
+    /// Maximum UTF-8 bytes in the complete PDF verification JSON (1..=8388608).
+    #[arg(long, requires = "check_pdf", value_parser = clap::value_parser!(u64).range(1..=verification::MAX_REPORT_BYTES))]
+    max_report_bytes: Option<u64>,
     /// Refuse publication on expanded-navigation findings before rendering or writes.
     #[arg(long, conflicts_with = "robot_triage")]
     deny_broken_links: bool,
@@ -239,6 +248,7 @@ pub(crate) fn dispatch(mut args: BookArgs, json: bool, no_config: bool) -> ExitC
         return preflight::run(&args, json);
     }
     match run(args, no_config) {
+        Ok(receipt) if receipt.verification.is_some() => verification::emit(receipt, json),
         Ok(receipt) => {
             if json {
                 if stdout_line(&receipt.json).is_err() {
@@ -289,9 +299,16 @@ struct Receipt {
     chapters: usize,
     outputs: Vec<PathBuf>,
     warnings: Vec<String>,
+    verification: Option<verification::Summary>,
 }
 
 fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
+    if args.check_pdf {
+        // Clap rejects explicit output modes for the read-only check. Reuse the
+        // PDF publication admission rules, including configured geometry and
+        // typography, instead of inheriting the ordinary `both` default.
+        args.to = BookTarget::Pdf;
+    }
     if args
         .out
         .as_ref()
@@ -349,9 +366,11 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
             String::new(),
         )
     };
-    loaded
-        .warnings
-        .extend(preflight::source_warnings(&loaded.source_diagnostics));
+    if !args.check_pdf {
+        loaded
+            .warnings
+            .extend(preflight::source_warnings(&loaded.source_diagnostics));
+    }
     let first = loaded
         .book
         .chapters
@@ -384,10 +403,9 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     if !no_config {
         loaded.protected_paths.insert(crate::config::config_path());
     }
-    let css = args
-        .css
-        .as_ref()
-        .or(config.custom_css.as_ref())
+    let css = (!args.check_pdf)
+        .then(|| args.css.as_ref().or(config.custom_css.as_ref()))
+        .flatten()
         .map(|path| {
             let bytes = read_stylesheet(path).map_err(|e| error(66, "stylesheet_error", e))?;
             if let Ok(canonical) = path.canonicalize() {
@@ -419,7 +437,7 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
     let mut html_options = HtmlOptions {
         theme: typography.theme,
         title,
-        author: author.clone(),
+        author,
         lang,
         custom_css: css,
         image_assets: std::mem::take(&mut loaded.images),
@@ -431,6 +449,23 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         profile: args.profile,
         ..HtmlOptions::default()
     };
+    if args.check_pdf {
+        let options = prepare_pdf_options(
+            &args,
+            &mut html_options,
+            typography.font_scale,
+            pdf_toc,
+            toc_depth,
+            &publication,
+        )?;
+        return verification::inspect(
+            loaded,
+            &options,
+            &publication,
+            args.max_report_bytes
+                .unwrap_or(verification::MAX_REPORT_BYTES),
+        );
+    }
     let paths = output_paths(&args)?;
     let known: BTreeMap<&str, &str> = loaded
         .book
@@ -528,23 +563,14 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         )?;
     }
     if args.to.wants_pdf() {
-        let mut pdf_options = PdfOptions {
-            theme: html_options.theme.clone(),
-            title: html_options.title.clone(),
-            author,
-            lang: html_options.lang.clone(),
-            toc: pdf_toc,
+        let pdf_options = prepare_pdf_options(
+            &args,
+            &mut html_options,
+            typography.font_scale,
+            pdf_toc,
             toc_depth,
-            page_numbers: true,
-            code_line_numbers: args.pdf_line_numbers,
-            base_font_size: typography.font_scale.map(|scale| scale.pdf_base_pt()),
-            metadata_epoch_seconds: metadata_epoch()?,
-            image_assets: std::mem::take(&mut html_options.image_assets),
-            font_assets: std::mem::take(&mut html_options.font_assets),
-            profile: args.profile,
-            ..PdfOptions::default()
-        };
-        publication.apply_pdf(&mut pdf_options);
+            &publication,
+        )?;
         let pdf_result = if publication.pdf_a.mode.is_a2b() {
             super::render::render_book_pdf_counted_configured(
                 &loaded.book,
@@ -693,7 +719,38 @@ fn run(mut args: BookArgs, no_config: bool) -> Result<Receipt, Failure> {
         chapters: loaded.book.chapters.len(),
         outputs,
         warnings: loaded.warnings,
+        verification: None,
     })
+}
+
+/// Rendering and read-only checking consume the same fully admitted options
+/// and move the same captured resource bytes into the chapter-aware pipeline.
+fn prepare_pdf_options(
+    args: &BookArgs,
+    html: &mut HtmlOptions,
+    font_scale: Option<crate::FontScale>,
+    toc: bool,
+    toc_depth: Option<u8>,
+    publication: &publishing::Publishing,
+) -> Result<PdfOptions, Failure> {
+    let mut options = PdfOptions {
+        theme: html.theme.clone(),
+        title: html.title.clone(),
+        author: html.author.clone(),
+        lang: html.lang.clone(),
+        toc,
+        toc_depth,
+        page_numbers: true,
+        code_line_numbers: args.pdf_line_numbers,
+        base_font_size: font_scale.map(|scale| scale.pdf_base_pt()),
+        metadata_epoch_seconds: metadata_epoch()?,
+        image_assets: std::mem::take(&mut html.image_assets),
+        font_assets: std::mem::take(&mut html.font_assets),
+        profile: args.profile,
+        ..PdfOptions::default()
+    };
+    publication.apply_pdf(&mut options);
+    Ok(options)
 }
 
 struct OutputPaths {

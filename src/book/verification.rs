@@ -1,6 +1,6 @@
 //! Full verification of the exact chapter-aware PDF publication pipeline.
 
-use super::{BookRenderer, book_pdf_document_with_assets, pdf_links};
+use super::{Book, BookRenderer, BookSourceDiagnostics, book_pdf_document_with_assets, pdf_links};
 use crate::book::LocatedLinkReport;
 use crate::{PdfASettings, PdfOptions, PdfParagraphVariantStatus, RenderError, Result};
 
@@ -175,78 +175,92 @@ impl BookRenderer {
         options: &PdfOptions,
         settings: PdfASettings,
     ) -> Result<BookPdfVerificationReport> {
-        // Bound source/navigation analysis before loading fonts or rendering.
-        let navigation = self.validate_links_with_sources()?;
-        let document = book_pdf_document_with_assets(self.book(), &options.image_assets)?;
-        let (rendered, destinations) = pdf_links::verify(
-            self.book(),
-            document.clone(),
-            options,
-            settings,
-            self.source_diagnostics().link_sources(),
-        )?;
-        let layer = rendered.verification.ok_or_else(|| {
-            RenderError::InvalidInput("book_pdf_verification: writer omitted the text layer".into())
-        })?;
-        let mut layout = crate::verify::report_from_layout(
-            &document,
-            options,
-            layer,
-            &rendered.warnings,
-            crate::pdf::AnchorAudit {
-                resolved: 0,
-                unresolved: Vec::new(),
-            },
-        );
-        for chapter in &navigation.report().chapters {
-            for finding in &chapter.findings {
-                layout.findings.push(crate::verify::VerifyFinding {
-                    code: finding.code,
-                    detail: format!(
-                        "{}: {} ({})",
-                        chapter.path, finding.message, finding.destination
-                    ),
-                });
-            }
-        }
-        for destination in &destinations {
-            match destination.status {
-                "resolved" => layout.anchors_resolved += 1,
-                "unresolved" => {
-                    let original = format!("{}: {}", destination.chapter, destination.destination);
-                    if !layout.anchors_unresolved.contains(&original) {
-                        layout.anchors_unresolved.push(original.clone());
-                    }
-                    // Preserve all original source findings; add an emitted
-                    // destination failure only when source navigation passed.
-                    let source_finding = navigation.report().chapters.iter().any(|chapter| {
-                        chapter.path == destination.chapter
-                            && chapter
-                                .findings
-                                .iter()
-                                .any(|finding| finding.destination == destination.destination)
-                    });
-                    if !source_finding {
-                        layout.findings.push(crate::verify::VerifyFinding {
-                            code: "unresolved_pdf_destination",
-                            detail: format!("{original} has no emitted PDF destination"),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        crate::verify::refresh_report(&mut layout);
-        let report = BookPdfVerificationReport {
-            layout,
-            navigation,
-            destinations,
-            pagination: rendered.pagination,
-        };
-        // Public typed and JSON callers share the same complete-report cap.
-        report.to_json()?;
-        Ok(report)
+        verify_book_pdf(self.book(), self.source_diagnostics(), options, settings)
     }
+}
+
+/// Verify an already loaded native book without reparsing its sources or
+/// discarding include provenance. The public renderer uses this same path.
+pub(crate) fn verify_book_pdf(
+    book: &Book,
+    diagnostics: &BookSourceDiagnostics,
+    options: &PdfOptions,
+    settings: PdfASettings,
+) -> Result<BookPdfVerificationReport> {
+    // Bound source/navigation analysis before loading fonts or rendering.
+    let navigation = crate::book::validation::link_sources::check_with_sources(
+        book,
+        diagnostics.link_sources(),
+    )?;
+    let document = book_pdf_document_with_assets(book, &options.image_assets)?;
+    let (rendered, destinations) = pdf_links::verify(
+        book,
+        document.clone(),
+        options,
+        settings,
+        diagnostics.link_sources(),
+    )?;
+    let layer = rendered.verification.ok_or_else(|| {
+        RenderError::InvalidInput("book_pdf_verification: writer omitted the text layer".into())
+    })?;
+    let mut layout = crate::verify::report_from_layout(
+        &document,
+        options,
+        layer,
+        &rendered.warnings,
+        crate::pdf::AnchorAudit {
+            resolved: 0,
+            unresolved: Vec::new(),
+        },
+    );
+    for chapter in &navigation.report().chapters {
+        for finding in &chapter.findings {
+            layout.findings.push(crate::verify::VerifyFinding {
+                code: finding.code,
+                detail: format!(
+                    "{}: {} ({})",
+                    chapter.path, finding.message, finding.destination
+                ),
+            });
+        }
+    }
+    for destination in &destinations {
+        match destination.status {
+            "resolved" => layout.anchors_resolved += 1,
+            "unresolved" => {
+                let original = format!("{}: {}", destination.chapter, destination.destination);
+                if !layout.anchors_unresolved.contains(&original) {
+                    layout.anchors_unresolved.push(original.clone());
+                }
+                // Preserve all original source findings; add an emitted
+                // destination failure only when source navigation passed.
+                let source_finding = navigation.report().chapters.iter().any(|chapter| {
+                    chapter.path == destination.chapter
+                        && chapter
+                            .findings
+                            .iter()
+                            .any(|finding| finding.destination == destination.destination)
+                });
+                if !source_finding {
+                    layout.findings.push(crate::verify::VerifyFinding {
+                        code: "unresolved_pdf_destination",
+                        detail: format!("{original} has no emitted PDF destination"),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    crate::verify::refresh_report(&mut layout);
+    let report = BookPdfVerificationReport {
+        layout,
+        navigation,
+        destinations,
+        pagination: rendered.pagination,
+    };
+    // Public typed and JSON callers share the same complete-report cap.
+    report.to_json()?;
+    Ok(report)
 }
 
 struct Json(String);

@@ -708,6 +708,21 @@ preserves the previous outputs. Shared images and host fonts are loaded once;
 optional remote images are fetched once per URL for the complete edition.
 Use `--out-dir` for `all`; `both` continues to produce HTML and PDF only.
 
+Check a configured PDF edition before writing its publications:
+
+```bash
+fmd book chapters --check-pdf --page-size a5 --json
+fmd book chapters --check-pdf --pdf-a 2b --pdf-a-strict --json
+```
+
+`--check-pdf` uses the same source expansion, configuration, fonts, images and
+chapter-aware PDF writer as publication. Its report includes physical pages,
+positioned text, chapter and footnote destinations, pagination and source
+findings. It writes no publication files and exits `65` when findings are
+present. The existing `--check-links` remains the lightweight source-navigation
+check. See [native book PDF verification](docs/BOOK_PDF_VERIFICATION.md) for
+options, report limits and the distinction from archival certification.
+
 ### Portable image exports
 
 Use `--embed-remote-images` when a saved HTML document, EPUB, or book should

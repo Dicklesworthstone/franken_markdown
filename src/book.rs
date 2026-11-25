@@ -38,13 +38,13 @@ pub use source_rename::{BookSourceRename, rename_book_source, rename_book_source
 pub mod validation;
 pub use validation::{LinkSourceLocation, LinkSourcePrecision, LocatedLinkReport};
 
-#[cfg(feature = "cli")]
-pub(crate) use render::emitted_pdf_page_count;
 pub use render::{
     BookPdfDestination, BookPdfRenderReport, BookPdfVerificationReport, BookRenderer,
     book_pdf_document_with_assets, render_book_pdf, render_book_pdf_reported, render_book_site,
 };
 pub(crate) use render::{audit_document_note_links, render_document_note_links};
+#[cfg(feature = "cli")]
+pub(crate) use render::{emitted_pdf_page_count, verify_book_pdf};
 
 #[cfg(feature = "wasm-book")]
 #[path = "book/browser.rs"]

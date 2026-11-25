@@ -496,7 +496,9 @@ if (process.argv.includes('--native-image-workspace')) {
   test('native-generated image bindings and the bundled renderer retain their initial meaning through editing', async () => {
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     assert.equal(typeof script, 'string');
-    const end = script.indexOf('\n(function() {');
+    // Since c60d04da the controller opens with a shared declaration before its
+    // IIFE, so locate it by its own first line rather than by `(function() {`.
+    const end = script.indexOf('\n' + controller.slice(0, controller.indexOf('\n') + 1));
     assert.ok(end > 0, 'native workspace must contain renderer followed by controller');
     const embeddedController = script.slice(end + 1, end + 1 + controller.length);
     assert.equal(embeddedController, controller, 'fixture must use the same controller being executed');

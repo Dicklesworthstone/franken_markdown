@@ -87,8 +87,7 @@ struct DocumentLabView: View {
     @State private var routePath: [DocumentForgeRoute]
     @State private var isWorking = false
     @State private var errorMessage: String?
-    @State private var exportURL: URL?
-    @State private var showShare = false
+    @StateObject private var artifactShare = MarkdownArtifactShareSession()
     @StateObject private var comparison = MarkdownComparisonSession()
     @State private var baselineSelection: MarkdownComparisonSession.Selection?
     @State private var showBaselineImporter = false
@@ -135,6 +134,7 @@ struct DocumentLabView: View {
                         showBaselineImporter = false
                         comparison.cancelPending()
                         bookImport.cancelPending()
+                        artifactShare.reset()
                         dismiss()
                     }
                         .fontWeight(.bold)
@@ -144,8 +144,8 @@ struct DocumentLabView: View {
                 destination(route)
             }
         }
-        .sheet(isPresented: $showShare) {
-            if let exportURL { ShareActivityView(fileURL: exportURL) }
+        .sheet(item: $artifactShare.item) { item in
+            if item.document == renderer.resourceDocumentOwner { ShareActivityView(fileURL: item.fileURL) }
         }
         .fileImporter(
             isPresented: $showBaselineImporter,
@@ -168,8 +168,8 @@ struct DocumentLabView: View {
             onCompletion: importStylesheet
         )
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let errorMessage {
-                errorBanner(errorMessage)
+            if let message = artifactShare.errorMessage ?? errorMessage {
+                errorBanner(message)
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -186,7 +186,8 @@ struct DocumentLabView: View {
         .task {
             if renderer.analysisIsStale { await refreshAnalysis() }
         }
-        .onChange(of: renderer.resourceDocumentOwner) { _, _ in
+        .onChange(of: renderer.resourceDocumentOwner) { _, owner in
+            artifactShare.documentChanged(to: owner)
             baselineSelection = nil
             showBaselineImporter = false
             comparison.resetForDocument()
@@ -206,7 +207,7 @@ struct DocumentLabView: View {
         }
     }
 
-    private var workIsPending: Bool { isWorking || comparison.isComparing }
+    private var workIsPending: Bool { isWorking || artifactShare.isExporting || comparison.isComparing }
 
     private var comparisonIdentity: MarkdownComparisonSession.SourceIdentity {
         .init(documentOwner: renderer.resourceDocumentOwner, revision: renderer.sourceRevision)
@@ -566,12 +567,12 @@ struct DocumentLabView: View {
         VStack(alignment: .leading, spacing: 18) {
             outputConstellation
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
-                publishCard("PDF", "Print-perfect, selectable, outlined, and ready for archival workflows", "doc.richtext", Lab.amber) { await shareLegacyPDF() }
-                publishCard("Reading HTML", "A self-contained, beautifully typeset reading view", "globe", Lab.cyan) { await shareLegacyHTML() }
-                publishCard("Vector Poster", "Every glyph and diagram becomes crisp SVG paths", "scribble.variable", Lab.emerald) { await shareArtifact(.svg) }
-                publishCard("EPUB 3", "A standards-native, offline e-book for every reader", "books.vertical", Color.purple) { await shareArtifact(.epub) }
-                publishCard("Living Workspace", "Editor, preview, document stats, and print in one portable file", "sparkles.rectangle.stack", Color.orange) { await shareArtifact(.interactiveHTML) }
-                publishCard("Search Corpus", "Deterministic, anchored JSON for instant local search", "magnifyingglass.circle", Color.blue) { await shareArtifact(.searchIndex) }
+                publishCard("PDF", "Print-perfect, selectable, outlined, and ready for archival workflows", "doc.richtext", Lab.amber) { shareLegacyPDF() }
+                publishCard("Reading HTML", "A self-contained, beautifully typeset reading view", "globe", Lab.cyan) { shareLegacyHTML() }
+                publishCard("Vector Poster", "Every glyph and diagram becomes crisp SVG paths", "scribble.variable", Lab.emerald) { shareArtifact(.svg) }
+                publishCard("EPUB 3", "A standards-native, offline e-book for every reader", "books.vertical", Color.purple) { shareArtifact(.epub) }
+                publishCard("Living Workspace", "Editor, preview, document stats, and print in one portable file", "sparkles.rectangle.stack", Color.orange) { shareArtifact(.interactiveHTML) }
+                publishCard("Search Corpus", "Deterministic, anchored JSON for instant local search", "magnifyingglass.circle", Color.blue) { shareArtifact(.searchIndex) }
             }
             exportSettings
         }
@@ -766,12 +767,12 @@ struct DocumentLabView: View {
 
     @ViewBuilder
     private var collectionButtons: some View {
-        Button { Task { await shareBook(.site) } } label: {
+        Button { shareBook(.site) } label: {
             Label("Build complete site ZIP", systemImage: "shippingbox.fill")
         }
         .buttonStyle(.borderedProminent)
         .tint(Lab.cyan)
-        Button { Task { await shareBook(.pdf) } } label: {
+        Button { shareBook(.pdf) } label: {
             Label("Bind continuous PDF", systemImage: "book.closed.fill")
         }
         .buttonStyle(.borderedProminent)
@@ -1254,8 +1255,8 @@ struct DocumentLabView: View {
         }
     }
 
-    private func publishCard(_ title: String, _ detail: String, _ symbol: String, _ tint: Color, action: @escaping () async -> Void) -> some View {
-        Button { Task { await action() } } label: {
+    private func publishCard(_ title: String, _ detail: String, _ symbol: String, _ tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: symbol)
@@ -1339,7 +1340,10 @@ struct DocumentLabView: View {
                     .foregroundStyle(Lab.text)
             }
             Spacer()
-            Button { errorMessage = nil } label: {
+            Button {
+                errorMessage = nil
+                artifactShare.errorMessage = nil
+            } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(Lab.secondary)
             }
             .buttonStyle(.plain)
@@ -1379,33 +1383,29 @@ struct DocumentLabView: View {
         }
     }
 
-    private func shareArtifact(_ format: DocumentArtifactFormat) async {
-        await performArtifactExport { try await renderer.exportArtifact(format) }
+    private func shareArtifact(_ format: DocumentArtifactFormat) {
+        performArtifactExport { [renderer] in try await renderer.exportArtifact(format) }
     }
 
-    private func shareBook(_ format: BookArtifactFormat) async {
+    private func shareBook(_ format: BookArtifactFormat) {
         guard !bookImport.isImporting, !showBookImporter else { return }
         guard let files = bookImport.publicationFiles(owner: renderer.resourceDocumentOwner) else { return }
-        await performArtifactExport { try await renderer.exportBook(files: files, format: format) }
+        performArtifactExport { [renderer] in try await renderer.exportBook(files: files, format: format) }
     }
 
-    private func shareLegacyPDF() async {
-        await performArtifactExport { try await renderer.exportPdf() }
+    private func shareLegacyPDF() {
+        performArtifactExport { [renderer] in try await renderer.exportPdf() }
     }
 
-    private func shareLegacyHTML() async {
-        await performArtifactExport { try await renderer.exportHtml() }
+    private func shareLegacyHTML() {
+        performArtifactExport { [renderer] in try await renderer.exportHtml() }
     }
 
-    private func performArtifactExport(operation: () async throws -> RenderedArtifact) async {
-        guard !workIsPending else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            let artifact = try await operation()
-            exportURL = artifact.fileURL
-            showShare = true
-        } catch { errorMessage = error.localizedDescription }
+    private func performArtifactExport(operation: @escaping @MainActor () async throws -> RenderedArtifact) {
+        guard !isWorking, !comparison.isComparing else { return }
+        artifactShare.start(document: renderer.resourceDocumentOwner, currentDocument: { [renderer] in
+            renderer.resourceDocumentOwner
+        }, render: operation)
     }
 
     private func importBaseline(

@@ -50,9 +50,7 @@ struct ForgeView: View {
 
     @State private var exportedPdfData: Data?
     @State private var exportedHtmlText: String?
-    @State private var exportItemUrl: URL?
-    @State private var showShareSheet = false
-    @State private var isExporting = false
+    @StateObject private var artifactShare = MarkdownArtifactShareSession()
     @State private var exportStatusMessage: String?
     @State private var showCopiedAlert = false
     @State private var auxiliaryPanel: AuxiliaryPanel?
@@ -65,7 +63,6 @@ struct ForgeView: View {
     @State private var sourceExportPreparationRequest: UUID?
     @State private var sourceImportError: String?
     @State private var documentError: String?
-    @State private var exportError: String?
     @State private var pendingDocument: PendingSourceDocument?
     @State private var confirmationRequest: UUID?
     @State private var pendingNewDocument: MarkdownUntitledDocumentRequest?
@@ -181,6 +178,9 @@ struct ForgeView: View {
             guard let baseline, baseline.documentIdentity == renderer.documentIdentity else { return }
             renderer.fileBaseline = baseline
             renderer.scheduleDraftSave()
+        }
+        .onChange(of: renderer.resourceDocumentOwner) { _, owner in
+            artifactShare.documentChanged(to: owner)
         }
         .onChange(of: renderer.documentIdentity) { _, _ in
             renderer.scheduleDraftSave()
@@ -308,12 +308,12 @@ struct ForgeView: View {
             Text(sourceImportError ?? "The selected document could not be opened.")
         }
         .alert("Couldn’t Export Document", isPresented: Binding(
-            get: { exportError != nil },
-            set: { if !$0 { exportError = nil } }
+            get: { artifactShare.errorMessage != nil },
+            set: { if !$0 { artifactShare.errorMessage = nil } }
         )) {
-            Button("OK", role: .cancel) { exportError = nil }
+            Button("OK", role: .cancel) { artifactShare.errorMessage = nil }
         } message: {
-            Text(exportError ?? "The document could not be exported.")
+            Text(artifactShare.errorMessage ?? "The document could not be exported.")
         }
         .alert("Couldn’t Save Document", isPresented: Binding(
             get: { documentError != nil },
@@ -388,10 +388,8 @@ struct ForgeView: View {
 
     private var forgePresentation: some View {
         forgeDocumentEvents
-        .sheet(isPresented: $showShareSheet) {
-            if let url = exportItemUrl {
-                ShareActivityView(fileURL: url)
-            }
+        .sheet(item: $artifactShare.item) { item in
+            if item.document == renderer.resourceDocumentOwner { ShareActivityView(fileURL: item.fileURL) }
         }
         .sheet(item: $auxiliaryPanel) { panel in
             NavigationStack {
@@ -635,7 +633,7 @@ struct ForgeView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .disabled(isExporting)
+            .disabled(artifactShare.isExporting)
             .accessibilityIdentifier("publish-document-menu")
         }
     }
@@ -645,7 +643,7 @@ struct ForgeView: View {
             Image(systemName: statusSymbol)
             Text(statusText)
                 .lineLimit(1)
-            if renderer.phase == .rendering || isExporting { ProgressView().controlSize(.small) }
+            if renderer.phase == .rendering || artifactShare.isExporting { ProgressView().controlSize(.small) }
         }
         .font(.system(size: Lab.size(10), weight: .bold, design: .monospaced))
         .foregroundStyle(statusColor)
@@ -972,35 +970,15 @@ struct ForgeView: View {
     }
 
     private func triggerPdfExport() {
-        guard !isExporting else { return }
-        isExporting = true
-        Task {
-            do {
-                let artifact = try await renderer.exportPdf()
-                exportItemUrl = artifact.fileURL
-                showShareSheet = true
-                isExporting = false
-            } catch {
-                if !(error is CancellationError) { exportError = error.localizedDescription }
-                isExporting = false
-            }
-        }
+        artifactShare.start(document: renderer.resourceDocumentOwner, currentDocument: { [renderer] in
+            renderer.resourceDocumentOwner
+        }, render: { [renderer] in try await renderer.exportPdf() })
     }
 
     private func triggerHtmlExport() {
-        guard !isExporting else { return }
-        isExporting = true
-        Task {
-            do {
-                let artifact = try await renderer.exportHtml()
-                exportItemUrl = artifact.fileURL
-                showShareSheet = true
-                isExporting = false
-            } catch {
-                if !(error is CancellationError) { exportError = error.localizedDescription }
-                isExporting = false
-            }
-        }
+        artifactShare.start(document: renderer.resourceDocumentOwner, currentDocument: { [renderer] in
+            renderer.resourceDocumentOwner
+        }, render: { [renderer] in try await renderer.exportHtml() })
     }
 
     private func importSourceDocument(_ result: Result<[URL], Error>) {

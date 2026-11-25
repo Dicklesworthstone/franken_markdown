@@ -168,6 +168,78 @@ struct MarkdownRenderFontSizeControl: View {
     }
 }
 
+/// Owns the share sheet from the button event through the final file receipt.
+@MainActor
+final class MarkdownArtifactShareSession: ObservableObject {
+    struct Item: Identifiable {
+        let id: UUID
+        let document: UUID
+        let fileURL: URL
+    }
+
+    @Published var item: Item?
+    @Published var errorMessage: String?
+    @Published private(set) var isExporting = false
+    private var owner: UUID?
+    private var request: UUID?
+    private var pending: Task<Void, Never>?
+
+    deinit { pending?.cancel() }
+
+    func documentChanged(to document: UUID) {
+        if let owner, owner != document { reset() }
+    }
+
+    func reset() {
+        request = nil
+        pending?.cancel()
+        pending = nil
+        owner = nil
+        isExporting = false
+        item = nil
+        errorMessage = nil
+    }
+
+    @discardableResult
+    func start(
+        document: UUID, currentDocument: @escaping @MainActor () -> UUID,
+        render: @escaping @MainActor () async throws -> RenderedArtifact
+    ) -> Task<Void, Never>? {
+        guard currentDocument() == document else { return nil }
+        documentChanged(to: document)
+        guard !isExporting, item == nil else { return nil }
+        let id = UUID()
+        owner = document
+        request = id
+        errorMessage = nil
+        isExporting = true
+        let task = Task { @MainActor [weak self] in
+            defer {
+                if self?.request == id {
+                    self?.request = nil
+                    self?.pending = nil
+                    self?.isExporting = false
+                }
+            }
+            // A Files open can supersede the tap before this Task first runs,
+            // or while WebKit is rendering, ahead of SwiftUI's onChange.
+            guard self?.request == id, currentDocument() == document else { return }
+            do {
+                let artifact = try await render()
+                guard !Task.isCancelled, self?.request == id, currentDocument() == document else { return }
+                self?.item = Item(id: id, document: document, fileURL: artifact.fileURL)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self?.request == id, currentDocument() == document else { return }
+                self?.errorMessage = error.localizedDescription
+            }
+        }
+        pending = task
+        return task
+    }
+}
+
 struct ShareActivityView: UIViewControllerRepresentable {
     let fileURL: URL
 

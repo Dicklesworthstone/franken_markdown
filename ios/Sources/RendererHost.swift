@@ -510,6 +510,8 @@ final class MarkdownRendererModel: NSObject, ObservableObject {
                 self.draftRecoveryIsComplete = true
                 return
             }
+            // A draft adopted after launch replaces the initial editor and its pending actions.
+            self.resourceDocumentOwner = UUID()
             self.draftWasRecovered = true
             self.allowRawHtml = false
             self.fileBaseline = draft.fileBaseline

@@ -102,6 +102,87 @@ final class MarkdownExportWriterTests: XCTestCase {
         try FileManager.default.removeItem(at: b.fileURL.deletingLastPathComponent())
     }
 
+    @MainActor
+    func testShareRequestReservesItsDocumentAtTheTap() async throws {
+        let share = MarkdownArtifactShareSession()
+        let first = UUID()
+        var current = first
+        var rendered = false
+        let task = try XCTUnwrap(share.start(document: first, currentDocument: { current }) {
+            rendered = true
+            return self.artifact("old.pdf")
+        })
+        // The document changes before this task gets a turn on the main actor.
+        current = UUID()
+        await task.value
+        XCTAssertFalse(rendered)
+        XCTAssertNil(share.item)
+        XCTAssertNil(share.errorMessage)
+        XCTAssertFalse(share.isExporting)
+    }
+
+    @MainActor
+    func testLateExportCannotPresentOrClearANewerDocumentsExport() async throws {
+        for fails in [false, true] {
+            let share = MarkdownArtifactShareSession()
+            let first = UUID()
+            var current = first
+            let entered = expectation(description: "First export reached renderer")
+            var release: CheckedContinuation<Void, Never>?
+            let previous = try XCTUnwrap(share.start(document: first, currentDocument: { current }) {
+                await withCheckedContinuation { continuation in
+                    release = continuation
+                    entered.fulfill()
+                }
+                if fails { throw MarkdownExportWriter.TransferError.incomplete }
+                return self.artifact("private-old.pdf")
+            })
+            await fulfillment(of: [entered], timeout: 5)
+            let continuation = try XCTUnwrap(release)
+            current = UUID()
+            // A new button event can precede SwiftUI's change notification.
+            let latest = try XCTUnwrap(share.start(document: current, currentDocument: { current }) {
+                self.artifact("current.pdf")
+            })
+            share.documentChanged(to: current)
+            await latest.value
+            continuation.resume()
+            await previous.value
+            XCTAssertEqual(share.item?.fileURL.lastPathComponent, "current.pdf")
+            XCTAssertEqual(share.item?.document, current)
+            XCTAssertNil(share.errorMessage)
+            XCTAssertFalse(share.isExporting)
+
+            current = UUID()
+            share.documentChanged(to: current)
+            XCTAssertNil(share.item)
+        }
+    }
+
+    @MainActor
+    func testExportFinishingBeforeDocumentChangeNotificationChecksLiveOwner() async throws {
+        let share = MarkdownArtifactShareSession()
+        var current = UUID()
+        let task = try XCTUnwrap(share.start(document: current, currentDocument: { current }) {
+            current = UUID()
+            return self.artifact("retired.html")
+        })
+        await task.value
+        XCTAssertNil(share.item)
+        XCTAssertNil(share.errorMessage)
+
+        let failure = try XCTUnwrap(share.start(document: current, currentDocument: { current }) {
+            throw MarkdownExportWriter.TransferError.invalidManifest
+        })
+        await failure.value
+        XCTAssertEqual(share.errorMessage, MarkdownExportWriter.TransferError.invalidManifest.localizedDescription)
+    }
+
+    private func artifact(_ name: String) -> RenderedArtifact {
+        RenderedArtifact(fileURL: URL(fileURLWithPath: "/\(name)"), byteLength: 0,
+                         extension: "pdf", mimeType: "application/pdf", diagnosticCount: 0)
+    }
+
     private func expectFailure(
         _ expected: MarkdownExportWriter.TransferError,
         operation: () async throws -> Void

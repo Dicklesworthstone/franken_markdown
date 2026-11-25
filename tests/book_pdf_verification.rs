@@ -262,8 +262,14 @@ fn return_navigation_requires_a_citation_with_its_own_note_link() {
         book.render_pdf_with_options(&without, PdfASettings::OFF)
             .unwrap(),
     );
-    let report = book.verify_pdf_with_options(&with, PdfASettings::OFF).unwrap();
-    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    let report = book
+        .verify_pdf_with_options(&with, PdfASettings::OFF)
+        .unwrap();
+    assert_eq!(
+        report.layout.verdict, "clean",
+        "{:?}",
+        report.layout.findings
+    );
     assert_eq!(report.destinations.len(), 2);
     assert_eq!(report.destinations[0].status, "unchecked");
     assert_eq!(report.destinations[1].kind, "footnote");
@@ -334,7 +340,11 @@ fn note_only_cycles_and_forward_citations_keep_their_real_return_destinations() 
     let report = book
         .verify_pdf_with_options(&options, PdfASettings::OFF)
         .unwrap();
-    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    assert_eq!(
+        report.layout.verdict, "clean",
+        "{:?}",
+        report.layout.findings
+    );
     let returns: Vec<_> = report
         .destinations
         .iter()
@@ -367,7 +377,11 @@ fn discarded_duplicate_definitions_do_not_invent_published_references() {
     let book = BookRenderer::new(&[input("one.md", source)]).unwrap();
     assert_eq!(book.validate_links().unwrap().finding_count(), 0);
     let report = book.verify_pdf().unwrap();
-    assert_eq!(report.layout.verdict, "clean", "{:?}", report.layout.findings);
+    assert_eq!(
+        report.layout.verdict, "clean",
+        "{:?}",
+        report.layout.findings
+    );
     assert_eq!(report.destinations.len(), 1);
     assert_eq!(report.destinations[0].kind, "footnote");
     assert_eq!(report.destinations[0].destination, "n");

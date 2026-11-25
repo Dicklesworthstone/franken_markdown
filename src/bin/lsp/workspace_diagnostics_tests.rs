@@ -346,7 +346,9 @@ fn referenced_notes_and_disambiguated_heading_note_targets_follow_publication() 
         "# fn-note\n\n# fnref-1\n\nnote[^note]\n\n[^note]: Visible",
         3,
     );
-    assert!(entries(report(&collision, A).unwrap()).is_empty());
+    // The heading now owns `#fn-note`, so A's link still resolves. A's
+    // published set stays empty and is unchanged, so it is not republished.
+    assert!(report(&collision, A).is_none());
     let distinct_targets = replace(
         &mut server,
         A,

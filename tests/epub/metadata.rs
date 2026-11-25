@@ -413,7 +413,10 @@ fn inferred_titles_preserve_document_book_and_explicit_metadata_precedence() {
         ..HtmlOptions::default()
     };
     let edition = franken_markdown::epub::render_book_epub(&book, &options).unwrap();
-    for (index, expected) in ["First edition", "Source metadata", "third"].iter().enumerate() {
+    for (index, expected) in ["First edition", "Source metadata", "third"]
+        .iter()
+        .enumerate()
+    {
         let chapter = entry_text(&edition, &format!("OEBPS/chapter-{}.xhtml", index + 1));
         assert!(chapter.contains(&format!("<title>{expected}</title>")));
     }

@@ -134,7 +134,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   native_workspace.js native_workspace.d.ts interactive_export.mjs NATIVE_WORKSPACE.md \
   native_source_project.mjs native_source_project_ui.mjs NATIVE_SOURCE_PROJECT.md \
   native_workspace_publisher.mjs native_source_project_open_worker.mjs native_source_project_open_ui.mjs \
-  native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md \
+  native_pdf_proof.mjs native_pdf_proof_ui.mjs NATIVE_PDF_PROOF.md PDF_VERIFICATION.md \
   book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
   book.js book.d.ts book_session.mjs book_link_report.mjs book_pdf_verification.mjs book_source_diagnostics.mjs book_source_rename.mjs book_render_diagnostics.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_publication.mjs BOOK_PUBLICATION.md BOOK_EDITION.md book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md BOOK_DIRECTORY.md INSPECTION.md BOOK_SOURCE_RENAME.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \

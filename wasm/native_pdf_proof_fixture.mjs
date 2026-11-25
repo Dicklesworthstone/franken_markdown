@@ -16,6 +16,8 @@ function envelope(text, mime, messages = []) {
 export function renderHtmlConfiguredAdvanced(...a) {
   return envelope('<html><head></head><body><h1 id="proof">Preview</h1><pre>' + escape(a[0]) + '</pre></body></html>', 'text/html');
 }
+export function renderHtmlConfiguredMetadata(...a) { return renderHtmlConfiguredAdvanced(...a); }
+Object.defineProperty(renderHtmlConfiguredMetadata, 'length', {value: 23});
 function pdf(...a) {
   if (typeof document !== 'undefined') throw Error('PDF must run in a Worker');
   if (a[0].includes('PDF_FAIL')) throw Error('fixture PDF failure');

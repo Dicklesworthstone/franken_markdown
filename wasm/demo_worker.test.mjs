@@ -236,7 +236,7 @@ test("preview and PDF use independent workers and receive only supported setting
   const a = f.calls[0], b = f.calls[1];
   assert.notEqual(a.client, b.client);
   assert.equal(a.options.customCss, "body {color: green}");
-  assert.equal(Object.hasOwn(a.options, "author"), false);
+  assert.equal(a.options.author, "Author");
   assert.equal(b.options.author, "Author");
   assert.equal(b.options.metadataEpochSeconds, 1700000000);
   assert.equal(Object.hasOwn(b.options, "customCss"), false);

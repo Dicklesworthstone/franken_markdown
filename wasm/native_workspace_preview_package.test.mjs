@@ -34,7 +34,7 @@ test('public exporter imports from a fresh package copy and embeds the actual wo
   // only the wrapper/native ABI below is an explicit adapter.
   const dir = await mkdtemp(join(tmpdir(),'fmd-preview-package-'));
   await writeFile(join(dir,'package.json'),'{"type":"module"}');
-  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','render_typography.mjs']) {
+  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','pdf_page.mjs','pdf_running.mjs','render_typography.mjs']) {
     await copyFile(new URL(name,import.meta.url),join(dir,name));
   }
   await writeFile(join(dir,'shell.html'),await fixtureShell());
@@ -57,7 +57,7 @@ test('public exporter imports from a fresh package copy and embeds the actual wo
 test('a package missing the shared typography module cannot import the public exporter', async()=>{
   const dir = await mkdtemp(join(tmpdir(),'fmd-preview-package-incomplete-'));
   await writeFile(join(dir,'package.json'),'{"type":"module"}');
-  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs']) {
+  for (const name of ['interactive.js','interactive_runtime.mjs','interactive_preview.mjs','pdf_page.mjs','pdf_running.mjs']) {
     await copyFile(new URL(name,import.meta.url),join(dir,name));
   }
   await writeFile(join(dir,'franken_markdown.js'),

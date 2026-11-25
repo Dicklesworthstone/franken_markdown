@@ -38,6 +38,8 @@ export function renderHtmlConfiguredProfiled(...args) {
   return result('<!doctype html><html><head></head><body><p data-profile="' + args[21] + '">' + escape(args[0]) + '</p></body></html>');
 }
 Object.defineProperty(renderHtmlConfiguredProfiled, 'length', {value: 22});
+export function renderHtmlConfiguredMetadata(...args) { return renderHtmlConfiguredAdvanced(...args); }
+Object.defineProperty(renderHtmlConfiguredMetadata, 'length', {value: 23});
 export function renderPdfConfiguredProfiled(...args) { return renderPdfConfiguredMulti(...args); }
 Object.defineProperty(renderPdfConfiguredProfiled, 'length', {value: 40});
 `;

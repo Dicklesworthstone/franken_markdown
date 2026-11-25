@@ -25,6 +25,7 @@ function adapter() {
     renderHtmlConfiguredAdvanced(...args) {calls.push(['html',args]); const value=result('<!DOCTYPE html><html><head><style>@media (prefers-color-scheme: dark) {body{color:white}}</style></head><body><h1>'+escape(args[0])+'</h1></body></html>',[{message:'Native finding'}]);outputs.push(value);return value;},
     renderPdfConfiguredMulti(){return result('%PDF-1.7\nfixture',[],'application/pdf');},
   };
+  engine.renderHtmlConfiguredMetadata=Object.defineProperty((...args)=>engine.renderHtmlConfiguredAdvanced(...args),'length',{value:23});
   return {engine,calls,outputs};
 }
 async function setup(runtime = {wasm:magic,bindings:'export default async function init() {}'}) {

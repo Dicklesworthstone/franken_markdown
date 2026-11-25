@@ -16,6 +16,15 @@ disk sources, choose Reconcile external edits. Separate line edits are combined;
 overlapping edits require an explicit decision. The review lists every source
 and its action. Nothing is installed until **Apply reviewed reconciliation**.
 
+Concurrent edits that remove a line still present elsewhere, or insert a line
+already present in the base, require a complete-file decision. A single diff
+alignment cannot establish which repeated or moved occurrence an edit owns.
+This bounded check is deliberately conservative: deleting a repeated blank line
+can require review even when the other edit is distant. It preserves the exact
+base, editor and disk versions instead of silently dropping or restoring text.
+Unchanged repeated headings and blank lines remain useful context, and identical
+or one-sided edits still resolve automatically.
+
 For each conflicting file, choose the complete editor version, the complete disk
 version (when present), a manually edited complete replacement, or individual
 conflicting regions. Whole-file choices intentionally discard the other

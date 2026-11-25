@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Book source reconciliation requires explicit review when concurrent edits
+  reuse removed or inserted line values. Repeated-line deletions and moved text
+  retain their complete versions instead of silently losing or restoring source;
+  ordinary independent edits and one-sided changes still merge automatically.
+
 - Source formatting preserves a leading UTF-8 BOM outside headings, lists,
   quotes, emphasis and code fences. Select All and a caret before the marker
   now edit only document content; mixed line endings and interior U+FEFF remain

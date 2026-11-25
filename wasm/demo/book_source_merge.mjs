@@ -206,6 +206,18 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     return Object.freeze({ ...planned, conflicts: Object.freeze(planned.conflicts.map(hunk =>
       Object.freeze({ ...hunk, startColumn: columns[hunk.startLine], endColumn: columns[hunk.endLine] }))) });
   }
+  // A changed line that also survives in the same version can be a different
+  // repeated occurrence or a move. A single LCS chooses an identity that source
+  // text alone does not establish, so keep the complete versions for review.
+  // The shared physical-line allowance bounds these linear scans and sets.
+  function ambiguousChanges(base, next, edits) {
+    const removed = new Set(), added = new Set();
+    for (const edit of edits) {
+      for (let i = edit.start; i < edit.end; i++) removed.add(base[i]);
+      for (const line of edit.lines) added.add(line);
+    }
+    return next.some(line => removed.has(line)) || base.some(line => added.has(line));
+  }
   function reconcile(base, local, disk, detailed, paragraphs = false) {
     if (typeof local !== "string" || ![base, disk].every(text => text === null || typeof text === "string")
         || [base, local, disk].some(text => text !== null && text.length > MAX_UNITS)) throw invalid();
@@ -218,6 +230,11 @@ export function createBookSourceMerger(limits = BOOK_SOURCE_MERGE_LIMITS) {
     if (!right) return conflict("merge-budget");
     const a = changes(old, left), b = a && changes(old, right);
     if (!b) return conflict("merge-budget");
+    if (ambiguousChanges(old, left, a) || ambiguousChanges(old, right, b)) {
+      const planned = mergePlan(old, [{ start: 0, end: old.length, lines: left }],
+        [{ start: 0, end: old.length, lines: right }]);
+      return detailed ? planned : result(planned.action, planned.source, planned.reason);
+    }
     if (detailed) return mergePlan(old, a, b, paragraphs
       ? (base, local, disk) => refineParagraph(base, local, disk, true) : refineParagraph);
     const edits = [];

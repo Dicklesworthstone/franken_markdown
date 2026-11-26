@@ -1335,13 +1335,13 @@ fn push_html_image_data_uri(mime: &str, bytes: &[u8], out: &mut String) {
 
 fn html_image_asset<'a>(dest: &str, opts: &'a HtmlOptions) -> Option<(&'static str, &'a [u8])> {
     let dest = dest.trim();
-    opts.image_assets.iter().find_map(|asset| {
-        if asset.destination.trim() == dest {
-            html_image_asset_mime(&asset.bytes).map(|mime| (mime, asset.bytes.as_slice()))
-        } else {
-            None
-        }
-    })
+    // Select the binding before validating its bytes, as PDF, SVG and source
+    // data images do. A rejected override must not expose a later duplicate.
+    let asset = opts
+        .image_assets
+        .iter()
+        .find(|asset| asset.destination.trim() == dest)?;
+    html_image_asset_mime(&asset.bytes).map(|mime| (mime, asset.bytes.as_slice()))
 }
 
 /// Asset keys are URLs or opaque host identifiers, not MIME declarations.

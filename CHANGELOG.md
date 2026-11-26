@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the first matching host image binding across HTML, saved interactive
+  workspaces, EPUB and book sites, including when its bytes are invalid. Later
+  duplicate bindings no longer silently replace a rejected image; ordinary safe
+  URL fallbacks and source data-image rejection remain intact.
+
 ## [0.9.0] - 2026-11-25
 
 A feature release (111 commits since 0.8.1) shipping `franken_markdown` 0.9.0

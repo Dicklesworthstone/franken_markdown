@@ -120,6 +120,166 @@ fn unused_assets_preserve_default_html_bytes_and_opaque_assets_package_in_epub()
     );
 }
 
+#[test]
+fn first_binding_controls_buffered_streaming_and_editable_html() {
+    let source = "![Inline](asset)\n\n![Reference][figure]\n\n[figure]: asset\n\n| Image |\n| --- |\n| ![Cell](asset) |\n\n<p><img src=\"asset\" alt=\"Raw\"></p>\n";
+    let document = parse_markdown(source);
+    for (first, later, expected_source) in [
+        (b"".as_slice(), PNG, "asset".to_string()),
+        (b"invalid image".as_slice(), SVG, "asset".to_string()),
+        (SVG, PNG, data_uri("image/svg+xml", SVG)),
+        (
+            SVG,
+            b"invalid image".as_slice(),
+            data_uri("image/svg+xml", SVG),
+        ),
+    ] {
+        let first_only = options("\u{2003}asset \n", first);
+        let mut duplicates = first_only.clone();
+        duplicates
+            .image_assets
+            .push(PdfImageAsset::new("asset", later.to_vec()));
+        let html = render_html(source, &duplicates).unwrap();
+        assert_eq!(
+            html.matches(&format!("<img src=\"{expected_source}\"")).count(),
+            4,
+            "the first binding must own Markdown, references, table cells and raw images"
+        );
+        assert_eq!(html, render_html(source, &first_only).unwrap());
+
+        let mut streamed = Vec::new();
+        let written = franken_markdown::render_html_document_to_writer(
+            &document,
+            &duplicates,
+            &mut streamed,
+        )
+        .unwrap();
+        assert_eq!(written, html.len());
+        assert_eq!(streamed, html.as_bytes());
+
+        let workspace = franken_markdown::interactive::render_interactive_html(
+            &document,
+            source,
+            &duplicates,
+        );
+        assert_eq!(
+            workspace,
+            franken_markdown::interactive::render_interactive_html(
+                &document,
+                source,
+                &first_only,
+            ),
+            "saved workspaces must retain the initial render's asset ownership"
+        );
+        let manifest = if expected_source == "asset" {
+            "id=\"fmd-image-assets\">[]</script>".to_string()
+        } else {
+            format!("id=\"fmd-image-assets\">[[\"asset\",\"{expected_source}\"]]</script>")
+        };
+        assert!(workspace.contains(&manifest));
+    }
+}
+
+#[test]
+fn rejected_source_data_bindings_stay_rejected_in_streams_workspaces_and_epub() {
+    let destination = data_uri("image/svg+xml", SVG);
+    let source = format!(
+        "![Markdown alt](<{destination}>)\n\n<img src=\"{destination}\" alt=\"Raw alt\">\n"
+    );
+    let document = parse_markdown(&source);
+    for first in [b"".as_slice(), b"invalid image".as_slice()] {
+        let first_only = options(&destination, first);
+        let mut duplicates = first_only.clone();
+        duplicates
+            .image_assets
+            .push(PdfImageAsset::new(&destination, PNG.to_vec()));
+        let html = render_html(&source, &duplicates).unwrap();
+        assert!(!html.contains("<img"));
+        assert!(html.contains("Markdown alt"));
+        assert!(html.contains("Raw alt"));
+        assert_eq!(html, render_html(&source, &first_only).unwrap());
+
+        let mut streamed = Vec::new();
+        franken_markdown::render_html_document_to_writer(&document, &duplicates, &mut streamed)
+            .unwrap();
+        assert_eq!(streamed, html.as_bytes());
+
+        let workspace = franken_markdown::interactive::render_interactive_html(
+            &document,
+            &source,
+            &duplicates,
+        );
+        assert!(workspace.contains(&format!(
+            "id=\"fmd-image-assets\">[[\"{destination}\",null]]</script>"
+        )));
+        assert_eq!(
+            workspace,
+            franken_markdown::interactive::render_interactive_html(
+                &document,
+                &source,
+                &first_only,
+            )
+        );
+        assert_eq!(
+            franken_markdown::epub::render_epub(&document, &duplicates).unwrap(),
+            franken_markdown::epub::render_epub(&document, &first_only).unwrap()
+        );
+    }
+}
+
+#[test]
+fn epub_and_book_exports_preserve_first_asset_bindings() {
+    use franken_markdown::book::{BookInput, BookRenderer};
+
+    let document = parse_markdown("# Publication\n\n![Chart](asset)");
+    let first_only = options("asset", b"invalid image");
+    let mut duplicates = first_only.clone();
+    duplicates
+        .image_assets
+        .push(PdfImageAsset::new("asset", PNG.to_vec()));
+    let epub = franken_markdown::epub::render_epub(&document, &duplicates).unwrap();
+    let resource_prefix = b"OEBPS/assets/";
+    assert!(
+        !epub
+            .windows(resource_prefix.len())
+            .any(|bytes| bytes == resource_prefix),
+        "an invalid first binding must not package a later duplicate's bytes"
+    );
+    assert_eq!(
+        epub,
+        franken_markdown::epub::render_epub(&document, &first_only).unwrap()
+    );
+
+    let mut book = BookRenderer::new(&[
+        BookInput {
+            path: "guide/start.md".into(),
+            source: "# Start\n\n![Chart](asset)\n".into(),
+        },
+        BookInput {
+            path: "appendix/end.md".into(),
+            source: "# End\n\n![Different chart](asset)\n".into(),
+        },
+    ])
+    .unwrap();
+    book.set_image("guide/asset", b"invalid image".to_vec())
+        .unwrap();
+    book.set_image("appendix/asset", SVG.to_vec()).unwrap();
+    let first_chapter = book.render_chapter_html(0).unwrap();
+    assert!(first_chapter.contains("<img src=\"guide/asset\" alt=\"Chart\">"));
+    let other_chapter = book.render_chapter_html(1).unwrap();
+    assert!(other_chapter.contains(&data_uri("image/svg+xml", SVG)));
+    let site = book.render_site().unwrap();
+    let epub = book.render_epub().unwrap();
+    book.options_mut().pdf_image_assets.extend([
+        PdfImageAsset::new(" guide/asset ", PNG.to_vec()),
+        PdfImageAsset::new(" appendix/asset ", b"invalid image".to_vec()),
+    ]);
+    assert_eq!(book.render_chapter_html(0).unwrap(), first_chapter);
+    assert_eq!(book.render_chapter_html(1).unwrap(), other_chapter);
+    assert_eq!(book.render_site().unwrap(), site);
+    assert_eq!(book.render_epub().unwrap(), epub);
+}
+
 #[cfg(feature = "cli")]
 mod native {
     use super::*;

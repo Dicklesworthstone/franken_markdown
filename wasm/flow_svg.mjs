@@ -1,6 +1,8 @@
-// Static SVG admission, not a renderer. Markers and patterns are excluded:
-// their per-vertex/tile multiplication is not bounded by a reference DAG alone. The browser decodes a bounded,
-// canonical preview; callers retain the original authorized bytes for export.
+// Static SVG admission, not a renderer. Marker references debit their complete
+// subtree for every possible vertex. Patterns and inherited marker properties
+// remain excluded; a reference DAG alone does not bound their multiplication.
+// The browser decodes a bounded canonical preview; callers retain the original
+// authorized bytes for export.
 const NS = "http://www.w3.org/2000/svg";
 const XLINK = "http://www.w3.org/1999/xlink";
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -10,19 +12,21 @@ const MAX_REFERENCES = 4096;
 const MAX_EXPANDED_NODES = 65536;
 const MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
 const elements = new Set(("svg g defs symbol use path rect circle ellipse line polyline polygon " +
-  "text tspan textPath linearGradient radialGradient stop clipPath mask title desc").split(" "));
+  "text tspan textPath linearGradient radialGradient stop clipPath mask marker title desc").split(" "));
 const presentation = new Set(("fill fill-opacity fill-rule stroke stroke-width stroke-opacity " +
   "stroke-linecap stroke-linejoin stroke-miterlimit stroke-dasharray stroke-dashoffset opacity color " +
   "clip-path clip-rule mask font-family font-size font-style " +
   "font-weight text-anchor dominant-baseline alignment-baseline letter-spacing word-spacing " +
   "text-decoration paint-order vector-effect display visibility shape-rendering text-rendering " +
-  "stop-color stop-opacity").split(" "));
+  "stop-color stop-opacity marker-start marker-mid marker-end").split(" "));
 const attributes = new Set(("id class x y x1 y1 x2 y2 cx cy r rx ry dx dy d points width height " +
   "viewBox preserveAspectRatio transform gradientTransform gradientUnits spreadMethod offset " +
   "fx fy fr clipPathUnits maskUnits maskContentUnits " +
   "pathLength textLength lengthAdjust startOffset method spacing rotate " +
-  "version baseProfile").split(" "));
-const referenceProperties = new Set(["fill", "stroke", "clip-path", "mask"]);
+  "markerUnits markerWidth markerHeight refX refY orient version baseProfile").split(" "));
+const markerProperties = new Set(["marker-start", "marker-mid", "marker-end"]);
+const markerShapes = new Set(["path", "line", "polyline", "polygon"]);
+const referenceProperties = new Set(["fill", "stroke", "clip-path", "mask", ...markerProperties]);
 const hrefElements = new Set(["use", "textPath", "linearGradient", "radialGradient"]);
 const colourFunctions = new Set(["rgb", "rgba", "hsl", "hsla"]);
 const transformFunctions = new Set(["matrix", "translate", "scale", "rotate", "skewX", "skewY"]);
@@ -93,24 +97,28 @@ export function parseStaticSvg(source, failure) {
   const stack = [], ids = new Map(), references = [];
   let root = null, offset = 0, nodeCount = 0, xlink = false;
   const charge = () => { if (++nodeCount > MAX_NODES) reject("SVG exceeds the 8192-node limit"); };
-  const addReference = (node, value) => {
+  const addReference = (node, value, marker = null) => {
     const id = value.startsWith("#") ? value.slice(1) : "";
     if (!identifier.test(id)) reject("SVG references must be simple local fragment identifiers");
     if (references.length === MAX_REFERENCES) reject("SVG exceeds the 4096-reference limit");
-    references.push({ node, id });
+    references.push({ node, id, marker });
   };
   const paint = (node, key, value) => {
     // No CSS escape/comment interpretation, custom properties, imports,
     // downloaded fonts, calc/var indirection or image-set resource functions.
     if (/[\\@]/.test(value) || value.includes("/*") || value.includes("*/"))
       reject("SVG CSS escapes, comments and at-rules are not supported");
+    const marker = markerProperties.has(key);
+    if (marker && !markerShapes.has(node.name))
+      reject("SVG markers must be set directly on paths, lines, polylines or polygons");
     if (/url[ \t\r\n]*\(/i.test(value)) {
       if (!referenceProperties.has(key)) reject("SVG resource references are not supported here");
       const local = /^url\([ \t\r\n]*(["']?)(#[A-Za-z_][A-Za-z0-9_.:-]{0,127})\1[ \t\r\n]*\)$/.exec(value);
       if (!local) reject("SVG paint resources must be local fragment references");
-      addReference(node, local[2]);
+      addReference(node, local[2], marker ? key : null);
       return;
     }
+    if (marker && value !== "none") reject("SVG markers must be none or local fragment references");
     // Match each identifier once, then inspect its suffix. A regex requiring
     // an opening parenthesis would retry every suffix of a long bare word.
     for (const match of value.matchAll(/[A-Za-z_-][A-Za-z0-9_-]*/g)) {
@@ -225,10 +233,39 @@ export function parseStaticSvg(source, failure) {
     if (!closed) stack.push(node);
   }
   if (!root || stack.length) invalid();
-  for (const { node, id } of references) {
+  // Only direct shape properties are admitted, so no ancestor/use inheritance
+  // can create unaccounted marker instances. Count every source token, including
+  // implicit repeated segments and malformed suffixes a browser may truncate.
+  // This deliberately overestimates vertices instead of interpreting geometry.
+  const markerBounds = new Map();
+  const markerCopies = (node, property) => {
+    let bound = markerBounds.get(node);
+    if (!bound) {
+      if (node.children.some(child => typeof child !== "string" &&
+          (!["title", "desc"].includes(child.name) || child.children.some(value => typeof value !== "string"))))
+        reject("SVG marker shapes cannot contain graphical child elements, including inside title/desc");
+      let vertices = 1, subpaths = 1;
+      if (node.name !== "line") {
+        const path = node.name === "path";
+        const geometry = node.attributes.get(path ? "d" : "points") ?? "";
+        const tokens = new RegExp(number + "|[A-Za-z]", "g");
+        for (const token of geometry.matchAll(tokens)) {
+          vertices++;
+          if (path && /^[Mm]$/.test(token[0])) subpaths++;
+          if (vertices > MAX_EXPANDED_NODES)
+            reject("SVG exceeds the 65536-node marker placement limit");
+        }
+      }
+      bound = { vertices, subpaths };
+      markerBounds.set(node, bound);
+    }
+    return property === "marker-mid" ? bound.vertices : bound.subpaths;
+  };
+  for (const { node, id, marker } of references) {
     const target = ids.get(id);
     if (!target) reject("SVG references must resolve inside the selected image");
-    node.edges.push(target);
+    if (marker && target.name !== "marker") reject("SVG marker references must target local marker elements");
+    node.edges.push({ target, copies: marker ? markerCopies(node, marker) : 1 });
   }
   // Bound the expanded reference graph, including repeated references to an
   // already visited subtree. Depth metadata prevents memoization bypasses.
@@ -244,10 +281,12 @@ export function parseStaticSvg(source, failure) {
     let size = 1, height = 1, bytes = node.name.length + 5;
     for (const [key, value] of node.attributes) bytes += key.length + utf8Length(value) + 4;
     for (const child of node.children) if (typeof child === "string") bytes += utf8Length(child);
-    for (const child of [...node.children.filter(value => typeof value !== "string"), ...node.edges]) {
-      const result = weight(child, depth + 1);
-      size += result.size;
-      bytes += result.bytes;
+    const edges = node.children.filter(value => typeof value !== "string")
+      .map(target => ({ target, copies: 1 })).concat(node.edges);
+    for (const { target, copies } of edges) {
+      const result = weight(target, depth + 1);
+      size += result.size * copies;
+      bytes += result.bytes * copies;
       height = Math.max(height, result.height + 1);
       if (size > MAX_EXPANDED_NODES) reject("SVG exceeds the 65536-node expanded scene limit");
       if (bytes > MAX_EXPANDED_BYTES) reject("SVG exceeds the 8 MiB expanded content limit");

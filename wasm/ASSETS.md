@@ -159,7 +159,7 @@ Codec vulnerabilities are not sandboxed by JavaScript limits.
 Authorized SVG files can supply Flow preview pixels and original native export
 bytes through the same image request. Admission requires strict UTF-8 and a
 bounded static XML subset: shapes, paths, groups, text, local use references,
-gradients, clipping and masks. A missing root SVG namespace is supplied in the
+gradients, clipping, masks and bounded local arrow markers. A missing root SVG namespace is supplied in the
 preview; an explicitly different namespace is refused. References must resolve
 to unique simple IDs inside this image. CSS presentation attributes and inline
 styles are supported only for the static presentation properties.
@@ -170,13 +170,30 @@ preserving its aspect ratio when only one dimension is specified. Raster sizes
 round upward to whole CSS pixels. Only the canonical preview receives these
 normalized dimensions; retained publication bytes remain exactly as authorized.
 
+Arrow markers use local `<marker>` definitions with their original `viewBox`,
+`markerUnits`, dimensions, reference point and orientation. Set `marker-start`,
+`marker-mid` or `marker-end` directly on a path, line, polyline or polygon,
+either as a presentation attribute or an inline style. Each reference must
+resolve to a marker in the same image. `none` is also accepted. Group/use
+inheritance, the `marker` shorthand and indirect values remain unsupported.
+Marker-bearing shapes may contain text-only title/desc elements but no other
+element descendants. Referenced definitions inside a descriptive element could
+otherwise inherit marker properties without a counted edge. These restrictions
+keep every possible placement countable.
+
+Every marker instance charges its complete referenced subtree against the same
+expanded node and content limits. Conservative counts include implicit repeated
+path commands, compact numbers, close commands and all subpaths; they also
+charge malformed suffixes before a browser might truncate them. Reused geometry
+and nested markers multiply those costs, and cycles remain invalid. Complex
+but valid drawings can be refused when this conservative bound is exhausted.
+
 This profile refuses external URLs, nested images, scripts, event handlers,
 foreign content, stylesheets, font downloads, animation, filters, patterns,
-markers, namespace rebinding, xml:base, DTDs and custom entities. CSS escapes,
-comments and indirect functions such as var/calc/image-set are refused. Static
-local references cannot contain cycles or exceed the scene expansion limits.
-Markers and patterns are excluded because their per-vertex/tile replication is
-not bounded by a simple reference graph.
+namespace rebinding, xml:base, DTDs and custom entities. CSS escapes, comments
+and indirect functions such as var/calc/image-set are refused. Static local
+references cannot contain cycles or exceed the scene expansion limits.
+Patterns remain excluded because their tile replication is not bounded here.
 
 SVG source and canonical preview each have a 2 MiB ceiling. The profile also
 admits at most 8192 nodes, 64 nesting/reference levels, 4096 local references,
@@ -202,12 +219,14 @@ scratch buffers. The host must limit its own I/O *before* returning bytes.
 
 ## Verification
 
-`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs wasm/flow_raster_gif.test.mjs wasm/flow_svg.test.mjs wasm/flow_assets_svg.test.mjs` exercises the
+`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs wasm/flow_raster_gif.test.mjs wasm/flow_svg.test.mjs wasm/flow_svg_markers.test.mjs wasm/flow_assets_svg.test.mjs` exercises the
 production admission/ownership code with explicitly synthetic containers,
 bitmaps, and session doubles, including an asynchronous session. The CMYK/YCCK
 suite also uses the real baseline/progressive JPEG fixtures shared with PDF
 tests and checks every truncated prefix and malformed color metadata. It does not
-claim real Rust/WASM or browser decoding.
+claim real Rust/WASM or browser decoding. Marker admission tests cover direct
+shape properties, target types, reference cycles, implicit-segment and nested
+fanout, unchanged resource ceilings, original-byte retention and revocation.
 
 `python wasm/tests/run_flow_assets.py --chromium /usr/bin/chromium` runs actual
 PNG/JPEG/GIF/static SVG decoding, oriented dimensions, drawing and pixel assertions in Chromium,

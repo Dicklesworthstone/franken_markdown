@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsaved target edits. Previews reuse the selected grammar and navigation
   resolver, honor client format preferences, and keep source links and HTML inert.
 
+- Flow Canvas SVG previews support local arrow markers on paths, lines,
+  polylines and polygons, with preserved orientation, view boxes and source
+  bytes. Marker placement and nested references share the existing expansion
+  budgets; inherited markers and hidden graphical descendants are refused.
+
 - Flow Canvas previews now admit authorized, self-contained static SVG images
   with bounded XML, local references and presentation styles. Image and folder
   pickers include SVG; canonical preview dimensions and decoder cleanup preserve

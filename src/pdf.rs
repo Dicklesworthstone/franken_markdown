@@ -2222,6 +2222,17 @@ impl Faces {
             F_EMOJI
         } else if in_cjk {
             F_CJK
+        } else if let Some(replacement) = text_composition::scalar_fallback(c) {
+            // Prefer real source glyphs in every fallback face before using
+            // the existing base-letter approximation. Only select its face;
+            // retain the source scalar for extraction and semantic byte spans.
+            if self.face(slot).glyph_index(replacement) != 0 {
+                slot
+            } else if self.symbol.glyph_index(replacement) != 0 {
+                F_SYMBOL
+            } else {
+                slot
+            }
         } else {
             slot
         }
@@ -2233,7 +2244,8 @@ impl Faces {
 
     /// Advance of `c` in 1/1000 em (PDF text space) for the slot's face.
     fn advance(&self, slot: u8, c: char) -> f32 {
-        self.get(slot).advance_1000(c) as f32
+        let font = self.get(slot);
+        font.advance_1000(text_composition::glyph_scalar(c, font)) as f32
     }
 
     fn shaped_width(&self, slot: u8, text: &str, size: FontSize) -> LayoutUnit {
@@ -19940,75 +19952,6 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
     }
 }
 
-fn subscript_phonetic_fallback(c: char) -> Option<char> {
-    match c {
-        '\u{1D62}' => Some('i'), // ᵢ
-        '\u{1D63}' => Some('r'), // ᵣ
-        '\u{1D64}' => Some('u'), // ᵤ
-        '\u{1D65}' => Some('v'), // ᵥ
-        '\u{1D66}' => Some('β'), // ᵦ
-        '\u{1D67}' => Some('γ'), // ᵧ
-        '\u{1D68}' => Some('ρ'), // ᵨ
-        '\u{1D69}' => Some('ϕ'), // ᵩ
-        '\u{1D6A}' => Some('χ'), // ᵪ
-        '\u{2090}' => Some('a'), // ₐ
-        '\u{2091}' => Some('e'), // ₑ
-        '\u{2092}' => Some('o'), // ₒ
-        '\u{2093}' => Some('x'), // ₓ
-        '\u{2094}' => Some('ə'), // ₔ
-        '\u{2095}' => Some('h'), // ₕ
-        '\u{2096}' => Some('k'), // ₖ
-        '\u{2097}' => Some('l'), // ₗ
-        '\u{2098}' => Some('m'), // ₘ
-        '\u{2099}' => Some('n'), // ₙ
-        '\u{209A}' => Some('p'), // ₚ
-        '\u{209B}' => Some('s'), // ₛ
-        '\u{209C}' => Some('t'), // ₜ
-        // Superscripts and phonetic modifier letters
-        '\u{2070}' => Some('0'), // ⁰
-        '\u{00B9}' => Some('1'), // ¹
-        '\u{00B2}' => Some('2'), // ²
-        '\u{00B3}' => Some('3'), // ³
-        '\u{2074}' => Some('4'), // ⁴
-        '\u{2075}' => Some('5'), // ⁵
-        '\u{2076}' => Some('6'), // ⁶
-        '\u{2077}' => Some('7'), // ⁷
-        '\u{2078}' => Some('8'), // ⁸
-        '\u{2079}' => Some('9'), // ⁹
-        '\u{207A}' => Some('+'), // ⁺
-        '\u{207B}' => Some('-'), // ⁻
-        '\u{207C}' => Some('='), // ⁼
-        '\u{207D}' => Some('('), // ⁽
-        '\u{207E}' => Some(')'), // ⁾
-        '\u{2071}' => Some('i'), // ⁱ
-        '\u{207F}' => Some('n'), // ⁿ
-        '\u{1D43}' => Some('a'), // ᵃ
-        '\u{1D47}' => Some('b'), // ᵇ
-        '\u{1D9C}' => Some('c'), // ᶜ
-        '\u{1D48}' => Some('d'), // ᵈ
-        '\u{1D49}' => Some('e'), // ᵉ
-        '\u{1DA0}' => Some('f'), // ᶠ
-        '\u{1D4D}' => Some('g'), // ᵍ
-        '\u{02B0}' => Some('h'), // ʰ
-        '\u{02B2}' => Some('j'), // ʲ
-        '\u{1D4F}' => Some('k'), // ᵏ
-        '\u{02E1}' => Some('l'), // ˡ
-        '\u{1D50}' => Some('m'), // ᵐ
-        '\u{1D52}' => Some('o'), // ᵒ
-        '\u{1D56}' => Some('p'), // ᵖ
-        '\u{02B3}' => Some('r'), // ʳ
-        '\u{02E2}' => Some('s'), // ˢ
-        '\u{1D57}' => Some('t'), // ᵗ
-        '\u{1D58}' => Some('u'), // ᵘ
-        '\u{1D5B}' => Some('v'), // ᵛ
-        '\u{02B7}' => Some('w'), // ʷ
-        '\u{02E3}' => Some('x'), // ˣ
-        '\u{02B8}' => Some('y'), // ʸ
-        '\u{1DBB}' => Some('z'), // ᶻ
-        _ => None,
-    }
-}
-
 /// Tokenize and route non-ASCII symbol glyphs in `toks` into the symbol fallback
 /// face where needed, leaving font advance metrics consistent with actual glyph
 /// advances. Word identity is preserved: split pieces are adjacent non-space
@@ -20107,7 +20050,7 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
     let mut runs: Vec<(u8, String)> = Vec::new();
     for cluster in text_composition::source_clusters(text) {
         if matches!(
-            text_composition::glyph_text(cluster, faces.get(slot)),
+            text_composition::canonical_glyph_text(cluster, faces.get(slot)),
             Cow::Owned(_)
         ) {
             // Retain source bytes and the requested face together. Scalar
@@ -20116,17 +20059,8 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
             push_slot_run(&mut runs, slot, cluster);
             continue;
         }
-        for mut c in cluster.chars() {
-            let mut target = faces.fallback_slot(slot, c);
-            if target == slot
-                && faces.face(slot).glyph_index(c) == 0
-                && faces.symbol.glyph_index(c) == 0
-                && let Some(fb) = subscript_phonetic_fallback(c)
-                && (faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0)
-            {
-                c = fb;
-                target = faces.fallback_slot(slot, c);
-            }
+        for c in cluster.chars() {
+            let target = faces.fallback_slot(slot, c);
             match runs.last_mut() {
                 Some((run_slot, buf)) if *run_slot == target => buf.push(c),
                 _ => runs.push((target, c.to_string())),
@@ -22202,7 +22136,10 @@ impl<'a> SegRunShaper<'a> {
             }
             SegRunMode::General { pending, .. } => {
                 for ch in chunk.chars() {
-                    pending.push(self.face.glyph_index(ch));
+                    pending.push(
+                        self.face
+                            .glyph_index(text_composition::glyph_scalar(ch, &self.face.font)),
+                    );
                 }
                 self.settle_general();
             }
@@ -22245,7 +22182,10 @@ impl<'a> SegRunShaper<'a> {
         }
         let mut pending = Vec::with_capacity(run_text.len());
         for ch in run_text.chars() {
-            pending.push(self.face.glyph_index(ch));
+            pending.push(
+                self.face
+                    .glyph_index(text_composition::glyph_scalar(ch, &self.face.font)),
+            );
         }
         self.mode = SegRunMode::General {
             out: Vec::new(),
@@ -23083,7 +23023,7 @@ fn split_code_slot_runs<'a>(text: &'a str, faces: &Faces) -> Vec<(u8, Cow<'a, st
     let mut runs: Vec<(u8, String)> = Vec::new();
     for cluster in text_composition::source_clusters(text) {
         if matches!(
-            text_composition::glyph_text(cluster, faces.get(F_MONO)),
+            text_composition::canonical_glyph_text(cluster, faces.get(F_MONO)),
             Cow::Owned(_)
         ) {
             push_slot_run(&mut runs, F_MONO, cluster);

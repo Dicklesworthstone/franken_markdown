@@ -226,9 +226,9 @@ impl Spans {
         *self = Self::from_vec(spans);
     }
 
-    /// Scalar fallback can replace a superscript with its base digit. The
-    /// existing fallback keeps scalar order/cardinality; project source roles
-    /// onto its new UTF-8 byte offsets rather than copying stale byte ranges.
+    /// Font fallback partitions the source into face runs without replacing
+    /// its scalars. Project semantic roles onto each run's own byte offsets;
+    /// glyph-only approximations remain separate from these source ranges.
     pub fn fallback_runs(&self, source: &str, runs: &[(u8, String)]) -> Vec<Self> {
         if self.is_empty() {
             return (0..runs.len()).map(|_| self.clone()).collect();

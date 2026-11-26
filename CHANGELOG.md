@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PDF glyph fallbacks preserve the original Unicode text for selection, copying,
+  searching and verification. Missing subscript, superscript and phonetic glyphs
+  can still use the existing visual approximation, but their source characters
+  no longer become ordinary letters or digits in the document's text layer.
+
 - Preserve the first matching host image binding across HTML, saved interactive
   workspaces, EPUB and book sites, including when its bytes are invalid. Later
   duplicate bindings no longer silently replace a rejected image; ordinary safe

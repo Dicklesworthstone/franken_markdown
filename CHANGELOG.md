@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Best-effort optimal PDF pagination can retain its measured-height planner
+  when a heading chain and an indivisible subject cannot fit together. Only
+  that impossible keep is relaxed; other hard constraints and figure dimensions
+  remain intact. Reports expose `relaxed_height` and the original infeasibility;
+  strict pagination keeps its existing refusal.
+
 - PDF optical punctuation uses a fraction of the final glyph's measured
   advance instead of the full font em. Quoted prose retains glyph expansion
   but does not protrude beyond its painted background; unboxed prose keeps

@@ -52,6 +52,7 @@ mod figure_fit;
 mod financial_tables;
 pub(crate) mod flow_diagram;
 mod gif;
+mod heading_keep_recovery;
 mod inline_code;
 mod inline_image;
 mod inline_math_fit;
@@ -2779,6 +2780,15 @@ impl RenderWarning {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::PaginationFallback {
+                strategy: PdfPaginationStrategy::RelaxedHeight,
+                reason,
+            } => format!(
+                "exact PDF pagination could not honor every heading keep ({reason}); \
+                 used relaxed_height pagination with only impossible heading-to-subject \
+                 keeps relaxed; measured heights, forced breaks, heading interiors and \
+                 hard widow/orphan rules were preserved"
+            ),
             Self::PaginationFallback { strategy, reason } => format!(
                 "exact PDF pagination could not be honored ({reason}); used {} pagination \
                  with soft keep/widow/orphan rules; increase the page area or simplify \
@@ -21021,8 +21031,13 @@ fn word_protrusion(
         // Keep the existing left hang (also used without microtype) in sync
         // with the segment painter, but never credit a full em on the right.
         let mut buffer = [0; 4];
-        let advance =
-            cached_shaped_width(faces, width_cache, tok.slot, ch.encode_utf8(&mut buffer), fs);
+        let advance = cached_shaped_width(
+            faces,
+            width_cache,
+            tok.slot,
+            ch.encode_utf8(&mut buffer),
+            fs,
+        );
         protrusion.right = crate::layout::right_protrusion_for_advance(ch, advance, microtype);
     }
     protrusion
@@ -31698,6 +31713,39 @@ fn page_break_plan_and_report(
             },
         ),
         Err(reason) => {
+            // Retain the mixed-height planner when the sole admitted weakening
+            // is a heading chain that provably cannot share any full page with
+            // its single-fragment subject. Strict and continued-note policies
+            // keep their original hard constraints and typed failure.
+            if !opts.strict_pagination
+                && matches!(
+                    &reason,
+                    PdfPaginationFailure::Planner(
+                        crate::pagination::height::HeightPaginationError::NoFeasibleLayout { .. }
+                    )
+                )
+            {
+                let recovered = match &notes {
+                    None => heading_keep_recovery::plan(lines, page, LayoutUnit::ZERO, |_| 0.0),
+                    Some(notes) if notes.continuation.is_none() => heading_keep_recovery::plan(
+                        &lines[..notes.body_end],
+                        page,
+                        notes.separator_reserve(lines),
+                        |line| notes.line_reserve(lines, line),
+                    ),
+                    Some(_) => None,
+                };
+                if let Some(plan) = recovered {
+                    return (
+                        Some(plan),
+                        PdfPageBreakReport {
+                            requested_optimal: true,
+                            strategy: PdfPaginationStrategy::RelaxedHeight,
+                            fallback: Some(reason),
+                        },
+                    );
+                }
+            }
             let (plan, strategy) = if notes.is_some() {
                 (None, PdfPaginationStrategy::Greedy)
             } else {
@@ -32012,6 +32060,19 @@ fn exact_height_page_breaks_reserving(
     reservation_prefix: LayoutUnit,
     reserve: impl Fn(usize) -> f32,
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
+    height_page_breaks_reserving(lines, page, reservation_prefix, reserve, &[])
+}
+
+/// The hard bridge and the narrowly admitted best-effort recovery share every
+/// measurement and plan validation. Recovery supplies sorted heading starts;
+/// only their final keep-with-next flags change, retaining the boundary costs.
+fn height_page_breaks_reserving(
+    lines: &[Line],
+    page: PageGeom,
+    reservation_prefix: LayoutUnit,
+    reserve: impl Fn(usize) -> f32,
+    relaxed_heading_starts: &[usize],
+) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
     use crate::pagination::height::{
         BlockCandidates, BlockPolicy, plan_blocks_with_reservation_prefix,
     };
@@ -32040,7 +32101,10 @@ fn exact_height_page_breaks_reserving(
                 lines, start, end, 0, &reserve,
             )],
         });
-        let policy = joint_pagination::block_policy(lines, start);
+        let mut policy = joint_pagination::block_policy(lines, start);
+        if relaxed_heading_starts.binary_search(&start).is_ok() {
+            policy.keep_with_next = false;
+        }
 
         spans.push((start, end));
         policies.push(policy);

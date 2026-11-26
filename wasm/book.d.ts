@@ -439,7 +439,7 @@ export interface BookPdfVerificationReport {
   readonly destinations: readonly BookPdfVerificationDestination[];
   readonly pagination: Readonly<{
     requestedOptimal: boolean;
-    strategy: "greedy" | "exact_height" | "legacy";
+    strategy: "greedy" | "exact_height" | "relaxed_height" | "legacy";
     fallback: BookPdfPaginationFailure | null;
     paragraphVariants: Readonly<{
       status: "not_requested" | "unsupported_typography" | "unprepared_footnotes" |

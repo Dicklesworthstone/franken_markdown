@@ -6439,8 +6439,7 @@ impl TableMathRuns {
                         });
                     index.runs[len - 1].push(TableMathRun {
                         start: pos,
-                        can_close: math_delimiter_can_close(bytes, pos, len, len)
-                            && !starts_cell,
+                        can_close: math_delimiter_can_close(bytes, pos, len, len) && !starts_cell,
                         after_pipe,
                     });
                 }

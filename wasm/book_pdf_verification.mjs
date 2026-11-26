@@ -49,9 +49,10 @@ function failure(value) {
 
 function pagination(value) {
   if (!value || typeof value.requestedOptimal !== "boolean"
-      || !["greedy", "exact_height", "legacy"].includes(value.strategy)) throw invalid();
+      || !["greedy", "exact_height", "relaxed_height", "legacy"].includes(value.strategy)) throw invalid();
   const fallback = failure(value.fallback), variants = value.paragraphVariants;
   if (fallback !== null && (!value.requestedOptimal || value.strategy === "exact_height")) throw invalid();
+  if (value.strategy === "relaxed_height" && (!value.requestedOptimal || fallback?.code !== "infeasible")) throw invalid();
   if (!variants || !["not_requested", "unsupported_typography", "unprepared_footnotes",
     "continued_footnotes", "no_alternatives", "planned", "rejected"].includes(variants.status)) throw invalid();
   const checked = { status: variants.status };

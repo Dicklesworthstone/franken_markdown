@@ -204,13 +204,32 @@ emission, use `render_pdf_document_reported(&doc, &options, emit_options)`.
 The report comes from the same final fitted layout and page plan as those bytes;
 it does not enable timing instrumentation or alter the PDF.
 
-`page_breaks.strategy` is `ExactHeight`, `Legacy`, or `Greedy`.
+`page_breaks.strategy` is `ExactHeight`, `RelaxedHeight`, `Legacy`, or `Greedy`.
 `page_breaks.fallback` preserves the actual solver failure, including the named
 resource budget or infeasible block index. The legacy fallback uses soft
 widow/orphan/keep costs and guarantees progress. When page-foot notes need a
 fallback, the renderer uses the note-aware greedy pager because the legacy DP
 cannot reserve footnote space. These fallbacks remain successful renders, but
 they do not establish the exact planner's hard guarantees.
+
+Before choosing those broad fallbacks, non-strict optimal rendering can recover
+an impossible heading-to-subject keep. It considers a complete consecutive
+heading chain followed by one indivisible fragment, such as a tall figure.
+The headings and subject must each fit an empty page independently, while
+their combined fixed-point height and note reservations exceed the full page.
+Only the final heading's keep with the subject becomes a finite, high-cost
+preference. Heading interiors, other keeps, explicit breaks, hard widow/orphan
+minima, baseline-grid heights and page-foot reservations retain the original
+planner's rules. The artwork and font sizes are unchanged.
+
+Successful recovery reports `RelaxedHeight` (`relaxed_height` in JSON), retains
+the original `infeasible` reason, and returns false from `is_exact()`. Its
+`pagination_infeasible` warning describes the limited heading relaxation.
+Strict requests still return the original typed error. Multi-fragment subjects,
+continued-note layouts, other failure kinds and unsuccessful recovery retain
+their existing behavior. Optional paragraph alternatives still use the hard
+original constraints and report their result separately. A recovered plan
+cannot satisfy a fit-to-pages requirement that needs exact page boundaries.
 
 Heading and short-caption preferences respect their source containers in every
 pagination mode. A closing heading or caption inside a quotation or list item

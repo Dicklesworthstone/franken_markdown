@@ -78,7 +78,12 @@ fn invalid_closers_leave_later_formulas_available() {
         ("$5 and $2+2=4$", vec![text("$5 and "), math("2+2=4")]),
         (
             "$5 and $x$ then $10 and $y$",
-            vec![text("$5 and "), math("x"), text(" then $10 and "), math("y")],
+            vec![
+                text("$5 and "),
+                math("x"),
+                text(" then $10 and "),
+                math("y"),
+            ],
         ),
     ] {
         assert_prose(source, expected);

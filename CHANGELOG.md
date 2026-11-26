@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Native language-server document links make parser-recognized Markdown and image
+  destinations clickable, including unopened files and explicit HTTP(S)/mailto
+  targets. Links preserve URI identity, UTF-16 source ranges and the selected
+  authoring grammar. Response size and item/target budgets are enforced, and
+  coordinate conversion walks long source lines once.
+
 ### Fixed
 
 - Preserve the first matching host image binding across HTML, saved interactive

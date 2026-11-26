@@ -64,7 +64,7 @@ returns `InvalidParams` without initializing the server, so the client can retry
 
 The profile is immutable for the session and applies to every opened buffer,
 including cross-document targets. Diagnostics, outlines, folds, selections,
-workspace symbols, completion, definition/reference navigation and all rename
+workspace symbols, completion, document links, definition/reference navigation and all rename
 providers use that grammar. The same profile also controls temporary parser
 probes and source-token inventories before an edit is offered. For example,
 link or footnote text inside a code span crossing a colon line stays literal in
@@ -98,8 +98,7 @@ an invalid position rejects the request instead of silently moving the caret.
 These are top-level, primary-source navigation features. The source map does
 not yet expose independent heading anchors inside list/quote containers, so
 the server does not invent nested source ranges or scan fence contents for
-headings. External-file navigation, rename, formatting and workspace indexing
-are not advertised. Same-document fragment completion and definition navigation
+headings. This server does not discover files on disk or advertise formatting. Same-document fragment completion and definition navigation
 are available with the explicit scope below. Navigation requests reparse the current
 synchronized buffer on demand; requests against an unsynchronized buffer return
 `ContentModified` rather than locations from stale text.
@@ -140,6 +139,45 @@ become navigation requests. A real-parser probe validates every candidate;
 definition additionally requires exact AST equality after restoring its original
 destination. No guessed inline source map or independent Markdown grammar is
 used. See `LSP_LINK_NAVIGATION.md` for the algorithm, budgets and exclusions.
+
+## Clickable file, image and web destinations
+
+`textDocument/documentLink` makes explicit Markdown link/image destinations and
+reference-definition URLs clickable, including targets that the editor has not
+opened. The server advertises `documentLinkProvider` with
+`resolveProvider: false`; every returned link already carries its absolute
+target URI.
+
+Relative and rooted file destinations resolve against the source document's
+`file:` URI. Explicit `file:` URLs also work from untitled buffers. Windows
+drive roots, UNC authorities, Unicode, spaces, escaped Markdown punctuation,
+queries and fragments retain their identities. Percent escapes are decoded
+once when resolving file components and encoded when constructing the final
+URI, so `literal%252F.md` continues to name a file containing the literal text
+`%2F`. The provider does not append `.md`, choose a directory index, inspect a
+file or test its existence. The client opens a target only when the user
+activates the link. HTTP(S) and `mailto:` links are returned directly with
+URI-safe encoding; command, executable, data and unknown schemes are omitted.
+
+Ranges come from the selected grammar's destination inventory, including links
+inside lists, quotes, tables and notes. They address the original UTF-16 source
+and exclude an angle destination's surrounding `<` and `>`. Markdown entities
+and escapes remain in the clickable source while the URI uses their decoded
+meaning. Accepted unused or shadowed reference definitions retain their own
+clickable URL. Reference-use labels, bare/angle autolinks and raw HTML attributes
+are outside this provider's scope; code, titles and abandoned link parses never
+acquire clickable ranges. Same-document fragments continue to use the existing
+heading/footnote go-to-definition provider.
+
+Requests use the current synchronized buffer. A rejected edit returns
+`ContentModified` until the client supplies a full-text replacement; closing a
+document removes its link inventory. Results are limited to 4,096 links and
+8,192 bytes per decoded or encoded target, and 1 MiB for the serialized result.
+Exceeding a budget returns `RequestFailed`, rather than silently publishing a
+partial inventory. Malformed URI escapes, encoded file separators, control characters and ambiguous path
+spellings do not produce a target. No filesystem, network, renderer or font
+dependency is introduced. Ordered destination ranges are converted to UTF-16 in
+one pass, so many links on one long source line do not repeatedly rescan it.
 
 ## File and folder rename edits
 

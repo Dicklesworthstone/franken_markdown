@@ -14,6 +14,77 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod profiles;
 
 #[test]
+fn real_document_links_open_unopened_targets_and_follow_buffer_synchronization() -> TestResult {
+    let (status, replies) = session(&[
+        r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"###,
+        r###"{"jsonrpc":"2.0","method":"initialized","params":{}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md","languageId":"markdown","version":1,"text":"😀 [next](<../chapters/Other chapter.md?view=1#résumé>)\r\n\r\n[web](https://example.test/docs?q=1&amp;x=2)\n"}}}"###,
+        r###"{"jsonrpc":"2.0","id":2,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md","version":2},"contentChanges":[{"text":"[changed](new.md)"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":3,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md","version":3},"contentChanges":[{"range":{"start":{"line":999,"character":0},"end":{"line":999,"character":0}},"text":"bad"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":4,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md","version":4},"contentChanges":[{"text":"[recovered](https://example.test/recovered)"}]}}"###,
+        r###"{"jsonrpc":"2.0","id":5,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","id":6,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///fmd-document-links/docs/start.md"}}}"###,
+        r###"{"jsonrpc":"2.0","id":7,"method":"shutdown"}"###,
+        r###"{"jsonrpc":"2.0","method":"exit"}"###,
+    ])?;
+    assert!(status.success());
+    let reply = |id| {
+        replies
+            .iter()
+            .find(|reply| reply.get("id").and_then(Json::as_u64) == Some(id))
+            .ok_or("missing document-link response")
+    };
+    assert_eq!(
+        reply(1)?
+            .get("result")
+            .and_then(|result| result.get("capabilities"))
+            .and_then(|capabilities| capabilities.get("documentLinkProvider"))
+            .and_then(|provider| provider.get("resolveProvider"))
+            .and_then(Json::as_bool),
+        Some(false)
+    );
+    let first = array(reply(2)?.get("result").ok_or("missing document links")?);
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first[0].get("target").and_then(Json::as_str),
+        Some("file:///fmd-document-links/chapters/Other%20chapter.md?view=1#r%C3%A9sum%C3%A9")
+    );
+    assert_eq!(
+        first[1].get("target").and_then(Json::as_str),
+        Some("https://example.test/docs?q=1&x=2")
+    );
+    let start = first[0]
+        .get("range")
+        .and_then(|range| range.get("start"))
+        .ok_or("missing document-link range")?;
+    assert_eq!(start.get("line").and_then(Json::as_u64), Some(0));
+    assert_eq!(start.get("character").and_then(Json::as_u64), Some(11));
+    for (id, expected) in [
+        (3, "file:///fmd-document-links/docs/new.md"),
+        (5, "https://example.test/recovered"),
+    ] {
+        let result = array(reply(id)?.get("result").ok_or("missing refreshed links")?);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("target").and_then(Json::as_str), Some(expected));
+    }
+    for (id, code) in [(4, -32801.0), (6, -32602.0)] {
+        assert!(reply(id)?.get("result").is_none());
+        assert_eq!(
+            reply(id)?
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Json::as_f64),
+            Some(code)
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn real_path_completion_tracks_open_buffers_and_preserves_utf16_source_ranges() -> TestResult {
     let (status, replies) = session(&[
         r###"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"###,

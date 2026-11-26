@@ -2,6 +2,7 @@
 //! Only explicitly opened buffers participate: no network, file reads, or transclusion.
 
 mod diagnostics;
+mod document_links;
 mod file_rename;
 mod footnotes;
 mod heading_rename;
@@ -202,6 +203,10 @@ impl Server {
                             ("referencesProvider", Json::Bool(true)),
                             ("documentHighlightProvider", Json::Bool(true)),
                             (
+                                "documentLinkProvider",
+                                object([("resolveProvider", Json::Bool(false))]),
+                            ),
+                            (
                                 "workspace",
                                 if self.file_renames {
                                     file_rename::capability()
@@ -306,6 +311,7 @@ impl Server {
             if matches!(
                 method,
                 "textDocument/documentSymbol"
+                    | "textDocument/documentLink"
                     | "textDocument/foldingRange"
                     | "textDocument/selectionRange"
                     | "textDocument/completion"
@@ -345,6 +351,9 @@ impl Server {
             .ok_or((-32602, "document is not open"))?;
         if !buffer.synchronized {
             return Err((-32801, "document requires full-text resynchronization"));
+        }
+        if method == "textDocument/documentLink" {
+            return document_links::request(self.parser, uri, &buffer.text);
         }
         if method == "textDocument/completion"
             && let Some(result) = label_completion::request(self.parser, params, &buffer.text)?

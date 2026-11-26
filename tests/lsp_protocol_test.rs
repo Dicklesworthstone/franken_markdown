@@ -10,6 +10,8 @@ use franken_markdown::mcp::{JsonValue as Json, parse_json, read_frame, write_fra
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "lsp_hover/mod.rs"]
+mod hover;
 #[path = "lsp_profiles/mod.rs"]
 mod profiles;
 

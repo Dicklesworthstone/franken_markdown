@@ -64,7 +64,7 @@ returns `InvalidParams` without initializing the server, so the client can retry
 
 The profile is immutable for the session and applies to every opened buffer,
 including cross-document targets. Diagnostics, outlines, folds, selections,
-workspace symbols, completion, document links, definition/reference navigation and all rename
+workspace symbols, completion, document links, hover, definition/reference navigation and all rename
 providers use that grammar. The same profile also controls temporary parser
 probes and source-token inventories before an edit is offered. For example,
 link or footnote text inside a code span crossing a colon line stays literal in
@@ -139,6 +139,38 @@ become navigation requests. A real-parser probe validates every candidate;
 definition additionally requires exact AST equality after restoring its original
 destination. No guessed inline source map or independent Markdown grammar is
 used. See `LSP_LINK_NAVIGATION.md` for the algorithm, budgets and exclusions.
+
+## Link and footnote previews
+
+`textDocument/hover` previews the actual source behind a supported inline or
+reference-style link, or a footnote marker. A heading target includes its
+section content through the next heading of the same or higher level; child
+sections remain visible. Footnotes include their definition and continuation
+paragraphs. A link to an opened file without a fragment previews its leading
+content. This lets an author inspect the destination without leaving the
+current paragraph.
+
+Hover reuses go-to-definition's parser ownership, profile, path resolution and
+ambiguity rules. It reads the current synchronized target buffer, including
+unsaved edits; unopened or closed files and external URLs have no preview.
+Unknown targets and literal lookalikes in code also return no hover.
+Unsynchronized source or target buffers return `ContentModified` until a
+full-text replacement restores synchronization. No file or URL is opened.
+
+Hover honors the client's first supported content-format preference. Plaintext
+clients receive authored source directly; Markdown clients receive a fenced
+code block whose delimiter is longer than every backtick run in the source.
+Clients without a content-format capability receive the legacy structured
+MarkedString code-block form. Empty or unsupported-only format lists disable
+the provider. Every supported representation keeps source links, images, code
+and HTML inert.
+
+The shared parser supplies primary block spans: nested targets retain their
+enclosing source container. Previews contain at most 48 source lines and 8 KiB
+of UTF-8 text including an explicit truncation marker, with no split Unicode
+scalars. Markdown fence overhead has a separate 24 KiB total-text ceiling.
+The optional hover range is omitted because a target document's coordinates
+cannot identify the origin link in a different document.
 
 ## Clickable file, image and web destinations
 

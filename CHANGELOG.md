@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native language-server hover previews show heading sections, reference-link
+  destinations and footnote bodies from synchronized open buffers, including
+  unsaved target edits. Previews reuse the selected grammar and navigation
+  resolver, honor client format preferences, and keep source links and HTML inert.
+
 - Flow Canvas previews now admit authorized, self-contained static SVG images
   with bounded XML, local references and presentation styles. Image and folder
   pickers include SVG; canonical preview dimensions and decoder cleanup preserve

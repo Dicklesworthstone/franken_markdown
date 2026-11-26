@@ -6,6 +6,7 @@ mod document_links;
 mod file_rename;
 mod footnotes;
 mod heading_rename;
+mod hover;
 mod label_completion;
 mod links;
 mod navigation;
@@ -112,6 +113,7 @@ struct Server {
     folding_limit: Option<usize>,
     versioned_edits: bool,
     file_renames: bool,
+    hover_format: hover::Format,
 }
 
 impl Server {
@@ -159,6 +161,7 @@ impl Server {
                 .get("params")
                 .and_then(|p| p.get("capabilities"))
                 .and_then(|p| p.get("textDocument"));
+            self.hover_format = hover::Format::negotiate(capabilities);
             self.hierarchical_symbols = capabilities
                 .and_then(|c| c.get("documentSymbol"))
                 .and_then(|c| c.get("hierarchicalDocumentSymbolSupport"))
@@ -200,6 +203,7 @@ impl Server {
                             ("foldingRangeProvider", Json::Bool(true)),
                             ("selectionRangeProvider", Json::Bool(true)),
                             ("definitionProvider", Json::Bool(true)),
+                            ("hoverProvider", Json::Bool(self.hover_format.supported())),
                             ("referencesProvider", Json::Bool(true)),
                             ("documentHighlightProvider", Json::Bool(true)),
                             (
@@ -311,6 +315,7 @@ impl Server {
             if matches!(
                 method,
                 "textDocument/documentSymbol"
+                    | "textDocument/hover"
                     | "textDocument/documentLink"
                     | "textDocument/foldingRange"
                     | "textDocument/selectionRange"
@@ -351,6 +356,18 @@ impl Server {
             .ok_or((-32602, "document is not open"))?;
         if !buffer.synchronized {
             return Err((-32801, "document requires full-text resynchronization"));
+        }
+        if method == "textDocument/hover" {
+            if !self.hover_format.supported() {
+                return Ok(Json::Null);
+            }
+            let definition = self.navigate("textDocument/definition", params)?;
+            return hover::request(
+                self.parser,
+                &self.documents,
+                &definition,
+                self.hover_format,
+            );
         }
         if method == "textDocument/documentLink" {
             return document_links::request(self.parser, uri, &buffer.text);

@@ -5861,7 +5861,10 @@ fn layout_simple_text_paragraph(
     // A baseline-only cache hit would hide alternatives from later occurrences
     // of the same paragraph. The ordinary cached rendering path is unchanged.
     let cacheable = text.len() <= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES
-        && !cx.paragraph_candidates.enabled();
+        && !cx.paragraph_candidates.enabled()
+        // Quoted paragraphs suppress optical protrusion at their painted
+        // boundary. Do not reuse a same-measure unboxed paragraph template.
+        && !(cx.opts.microtype.protrusion && cx.quote_geometry.is_active());
 
     if cacheable {
         let mut key = SimpleParagraphLayoutKey::new(
@@ -20961,7 +20964,7 @@ fn push_pdf_word_box(
         text: String::new(),
         runs: Default::default(),
         width,
-        protrusion: word_protrusion(toks, fs, microtype),
+        protrusion: word_protrusion(toks, fs, faces, width_cache, microtype),
     }));
     built.item_toks.push(TokGroup::take_from(toks));
     built.break_toks.push(None);
@@ -20984,7 +20987,7 @@ fn push_pdf_word_box_from_vec(
         text: String::new(),
         runs: Default::default(),
         width,
-        protrusion: word_protrusion(&toks, fs, microtype),
+        protrusion: word_protrusion(&toks, fs, faces, width_cache, microtype),
     }));
     built.item_toks.push(TokGroup::from_vec(toks));
     built.break_toks.push(None);
@@ -20996,14 +20999,33 @@ fn push_pdf_word_box_from_vec(
 fn word_protrusion(
     toks: &[Tok],
     fs: FontSize,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
     microtype: crate::layout::MicrotypeOptions,
 ) -> crate::layout::Protrusion {
-    crate::layout::protrusion_for_boundary_chars(
-        toks.first().and_then(|t| t.text.chars().next()),
-        toks.last().and_then(|t| t.text.chars().next_back()),
+    let mut protrusion = crate::layout::protrusion_for_boundary_chars(
+        toks.first()
+            .filter(|tok| !is_inline_object(tok.slot))
+            .and_then(|tok| token_visible_text(tok).chars().next()),
+        None,
         fs,
         microtype,
-    )
+    );
+    if microtype.protrusion
+        && let Some(tok) = toks.last().filter(|tok| !is_inline_object(tok.slot))
+        && let Some(ch) = token_visible_text(tok).chars().next_back()
+        && crate::layout::right_protrusion_for_advance(ch, LayoutUnit::from_points(1), microtype)
+            != LayoutUnit::ZERO
+    {
+        // The final styled/fallback face owns this punctuation's advance.
+        // Keep the existing left hang (also used without microtype) in sync
+        // with the segment painter, but never credit a full em on the right.
+        let mut buffer = [0; 4];
+        let advance =
+            cached_shaped_width(faces, width_cache, tok.slot, ch.encode_utf8(&mut buffer), fs);
+        protrusion.right = crate::layout::right_protrusion_for_advance(ch, advance, microtype);
+    }
+    protrusion
 }
 
 /// Cuts a word's tokens into consecutive character ranges in one forward pass.
@@ -21132,6 +21154,12 @@ fn layout_inlines(
     } else {
         crate::layout::MicrotypeOptions::DISABLED
     };
+    // Quote backgrounds end at the physical right margin. Preserve glyph
+    // expansion, but neither the breaker nor painter may borrow space beyond
+    // that box for punctuation (including paragraphs in nested quote lists).
+    if cx.quote_geometry.is_active() {
+        policy.microtype.protrusion = false;
+    }
     // Gradual adjacent demerits (Verna '25) are justified-paragraph-only:
     // ragged flows have no inter-word scaling to homogenize.
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
@@ -36660,6 +36688,19 @@ mod pdf_writer_tests {
         Some((seg.x + natural * scale, credit_char))
     }
 
+    fn measured_right_credit(
+        line: &Line,
+        ch: char,
+        faces: &Faces,
+        microtype: crate::layout::MicrotypeOptions,
+    ) -> f32 {
+        let slot = line.segs.last().expect("text line").slot;
+        let mut buffer = [0; 4];
+        let advance =
+            faces.shaped_width(slot, ch.encode_utf8(&mut buffer), font_size_of(line.size));
+        crate::layout::right_protrusion_for_advance(ch, advance, microtype).to_points_f32()
+    }
+
     /// Lay out [`FLUSH_FIXTURE`] and assert every justified (non-final) line
     /// ends exactly at the measure, plus any right-protrusion credit.
     fn assert_justified_lines_flush(opts: &PdfOptions) -> crate::Result<()> {
@@ -36680,14 +36721,7 @@ mod pdf_writer_tests {
         for line in &lines[..lines.len() - 1] {
             let (edge, credit_char) =
                 rendered_right_edge(line, &faces).expect("justified line has text");
-            let credit = crate::layout::protrusion_for_boundary_chars(
-                None,
-                Some(credit_char),
-                font_size_of(line.size),
-                opts.microtype,
-            )
-            .right
-            .to_points_f32();
+            let credit = measured_right_credit(line, credit_char, &faces, opts.microtype);
             let err = edge - (measure_end + credit);
             let text: String = line.segs.iter().map(|s| s.text.as_str()).collect();
             assert!(
@@ -36838,14 +36872,7 @@ mod pdf_writer_tests {
                     checked_boundaries += 1;
                 }
                 let (edge, credit_char) = rendered_right_edge(line, &faces).expect("text line");
-                let credit = crate::layout::protrusion_for_boundary_chars(
-                    None,
-                    Some(credit_char),
-                    font_size_of(line.size),
-                    microtype,
-                )
-                .right
-                .to_points_f32();
+                let credit = measured_right_credit(line, credit_char, &faces, microtype);
                 assert!(
                     (edge - page.right_x() - credit).abs() < 0.05,
                     "styled justified line ends at {edge:.3}pt, expected {:.3}pt",

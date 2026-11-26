@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PDF optical punctuation uses a fraction of the final glyph's measured
+  advance instead of the full font em. Quoted prose retains glyph expansion
+  but does not protrude beyond its painted background; unboxed prose keeps
+  bounded optical margins in its actual styled or fallback font.
+
 - Dollar amounts no longer consume adjacent financial prose, emphasis, links,
   or later inline formulas. Native and standalone interactive parsing agree
   on currency-safe closing dollars while preserving numeric formulas, escaped

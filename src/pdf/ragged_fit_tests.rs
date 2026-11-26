@@ -28,16 +28,23 @@ fn painted_right(line: &Line, faces: &Faces) -> f32 {
 
 fn assert_painted_fit(lines: &[Line], faces: &Faces, page: PageGeom, opts: &PdfOptions) {
     for line in visible_lines(lines) {
-        let tail = line.segs.last().unwrap().text.trim_end();
-        let credit = if line.flow.kind == FlowKind::Paragraph {
-            crate::layout::protrusion_for_boundary_chars(
-                None,
-                tail.strip_suffix('-').unwrap_or(tail).chars().next_back(),
-                font_size_of(line.size),
-                opts.microtype,
-            )
-            .right
-            .to_points_f32()
+        let seg = line.segs.last().unwrap();
+        let tail = seg.text.trim_end();
+        let credit = if line.flow.kind == FlowKind::Paragraph && line.quote_bars.is_empty() {
+            tail.strip_suffix('-')
+                .unwrap_or(tail)
+                .chars()
+                .next_back()
+                .map_or(0.0, |ch| {
+                    let mut buffer = [0; 4];
+                    let advance = faces.shaped_width(
+                        seg.slot,
+                        ch.encode_utf8(&mut buffer),
+                        font_size_of(line.size),
+                    );
+                    crate::layout::right_protrusion_for_advance(ch, advance, opts.microtype)
+                        .to_points_f32()
+                })
         } else {
             0.0
         };

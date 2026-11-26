@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cyclic flowcharts preserve parallel branches and downstream dependencies
+  instead of placing every unresolved node on a separate layer. Bounded,
+  deterministic component analysis retains every feedback edge and leaves
+  acyclic longest-path layering unchanged.
+
 - PDF glyph fallbacks preserve the original Unicode text for selection, copying,
   searching and verification. Missing subscript, superscript and phonetic glyphs
   can still use the existing visual approximation, but their source characters

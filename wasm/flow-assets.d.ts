@@ -23,7 +23,7 @@ export interface FlowImageLimits {
   maxConcurrentLoads?: number; // 4, including callbacks still running after abort.
   maxAssets?: number; // 256 pending/attempted per source generation.
   maxAssetBytes?: number; // 8 MiB per image AND per retained-payload delivery group.
-  maxInFlightBytes?: number; // 16 MiB of admitted immutable encoded snapshots.
+  maxInFlightBytes?: number; // 16 MiB, including separate canonical SVG preview bytes.
   maxImagePixels?: number; // 16,777,216 per bitmap, checked BEFORE decoding.
   maxRetainedPixels?: number; // 33,554,432 across reserved and retained bitmaps.
   maxDimension?: number; // 8,192 per dimension, before and after orientation.
@@ -35,7 +35,7 @@ export interface FlowImageLoadContext {
 }
 export interface FlowImageDecodeContext {
   readonly signal: AbortSignal;
-  readonly mime: "image/png" | "image/jpeg" | "image/gif";
+  readonly mime: "image/png" | "image/jpeg" | "image/gif" | "image/svg+xml";
   readonly width: number;
   readonly height: number;
   readonly pixels: number;
@@ -64,9 +64,11 @@ export interface FlowImageOptions {
     request: Readonly<FlowAssetRequest>,
     context: FlowImageLoadContext,
   ) => Uint8Array | null | Promise<Uint8Array | null>;
-  /** Defaults to createImageBitmap. Only admitted PNG/JPEG or a static first-frame
-   * GIF reaches this callback. GIF animation bytes are retained independently
-   * for export. Return an exclusively owned CanvasImageSource with close(). */
+  /** Defaults to createImageBitmap, with a detached Image/object-URL fallback
+   * for static SVG on browsers that require it. Only admitted PNG/JPEG, a GIF
+   * first frame, or a canonical bounded static SVG reaches this callback.
+   * Original SVG/GIF bytes are retained separately for export. Return an
+   * exclusively owned CanvasImageSource with close(). No destination is fetched. */
   decode?: (
     blob: Blob,
     context: FlowImageDecodeContext,

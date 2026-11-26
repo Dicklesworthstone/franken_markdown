@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real browser raster tests from local source bytes; no server or network."""
+"""Run real browser image tests from local source bytes; no server or network."""
 import argparse
 import json
 from pathlib import Path
@@ -10,7 +10,7 @@ parser.add_argument("--chromium", required=True, help="Installed Chromium execut
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 sources = {name: (root / name).read_text() for name in [
-    "flow_raster.mjs", "flow-assets.js", "flow_session.mjs", "pdf_page.mjs", "pdf_running.mjs",
+    "flow_svg.mjs", "flow_raster.mjs", "flow-assets.js", "flow_session.mjs", "pdf_page.mjs", "pdf_running.mjs",
     "render_typography.mjs", "flow_export.mjs", "flow_reading.mjs", "demo/flow_preview_export.mjs",
     "demo/flow_preview_controller.mjs", "demo/flow_export_controls.mjs",
     "tests/flow_image_fixtures.mjs", "tests/flow_assets.browser.mjs"
@@ -35,7 +35,8 @@ with sync_playwright() as playwright:
             urls.set(name, url);
           };
           try {
-            module('flow_raster.mjs');
+            module('flow_svg.mjs');
+            module('flow_raster.mjs', {'./flow_svg.mjs': 'flow_svg.mjs'});
             module('flow-assets.js', {'./flow_raster.mjs': 'flow_raster.mjs'});
             module('tests/flow_image_fixtures.mjs');
             for (const name of ['flow_session.mjs','pdf_page.mjs','pdf_running.mjs','render_typography.mjs','flow_reading.mjs']) module(name);

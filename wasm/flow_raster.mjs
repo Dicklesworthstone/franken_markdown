@@ -1,7 +1,10 @@
-// Admission only, not an image codec. Pixels are decoded by createImageBitmap.
+import { parseStaticSvg } from "./flow_svg.mjs";
+
+// Admission only, not an image codec. Pixels are decoded by browser image APIs.
 // Walk containers before decoding so size limits do not depend on allocation
 // succeeding. GIFs supply a fixed first-frame preview; publication retains the
-// complete original file. No SVG, external references or MIME/extension guessing.
+// complete original file. Static SVG has a separate bounded inline-only profile.
+// No external references or MIME/extension guessing.
 export class FlowAssetError extends Error {
   constructor(code, message, options) {
     super(message, options);
@@ -11,7 +14,7 @@ export class FlowAssetError extends Error {
 }
 export const assetFailure = (code, message) => new FlowAssetError(code, message);
 const invalid = () => {
-  throw assetFailure("INVALID_IMAGE", "invalid or unsupported raster image structure");
+  throw assetFailure("INVALID_IMAGE", "invalid or unsupported image structure");
 };
 
 export function rasterInfo(bytes, limits) {
@@ -36,11 +39,23 @@ export function rasterInfo(bytes, limits) {
   if ([137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v)) info = png(bytes, view);
   else if (bytes[0] === 0xff && bytes[1] === 0xd8) info = jpeg(bytes, view);
   else if ([71, 73, 70].every((v, i) => bytes[i] === v)) info = gif(bytes, view);
-  else
-    throw assetFailure(
-      "UNSUPPORTED_IMAGE",
-      "only static PNG, GIF first frames and 8-bit baseline/progressive JPEG are supported",
-    );
+  else {
+    // Never infer an SVG MIME from a filename. Decode only a plausible XML
+    // prefix, with strict UTF-8 and a smaller bounded static SVG profile.
+    if (![9, 10, 13, 32, 60, 239].includes(bytes[0])) {
+      throw assetFailure("UNSUPPORTED_IMAGE", "unsupported image container");
+    }
+    if (bytes.length > 2 * 1024 * 1024)
+      throw assetFailure("ASSET_BYTE_LIMIT", "SVG exceeds the 2 MiB source limit");
+    let source;
+    try { source = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch (cause) { throw new FlowAssetError("INVALID_IMAGE", "invalid SVG UTF-8", { cause }); }
+    if (!source.trimStart().startsWith("<"))
+      throw assetFailure("UNSUPPORTED_IMAGE", "unsupported image container");
+    info = parseStaticSvg(source, assetFailure);
+    if (info.previewByteLength > limits.maxAssetBytes)
+      throw assetFailure("ASSET_BYTE_LIMIT", "SVG preview exceeds the encoded-byte limit");
+  }
   const pixels = info.width * info.height;
   if (
     !info.width ||
@@ -291,20 +306,74 @@ function jpegColourScan(bytes, offset, frame) {
   } else if (start !== 0 || end !== 63 || approximation !== 0) invalid();
 }
 
-export async function decodeRaster(blob) {
+// Some browsers decode SVG Blobs only through an image element. The element
+// is detached, uses a local object URL for the admitted preview, and survives
+// until bitmap extraction settles. It is never inserted into the host document.
+async function svgBitmap(blob, signal) {
+  if (typeof globalThis.Image !== "function" ||
+      typeof globalThis.URL?.createObjectURL !== "function" ||
+      typeof globalThis.URL?.revokeObjectURL !== "function") {
+    throw assetFailure("IMAGE_DECODER_UNAVAILABLE", "SVG image decoding is unavailable; supply a host decoder");
+  }
+  signal?.throwIfAborted();
+  const url = globalThis.URL.createObjectURL(blob);
+  let image, abort;
+  try {
+    image = new globalThis.Image();
+    await new Promise((resolve, reject) => {
+      const finish = callback => value => {
+        image.onload = image.onerror = null;
+        signal?.removeEventListener("abort", abort);
+        callback(value);
+      };
+      image.onload = finish(resolve);
+      image.onerror = finish(() => reject(assetFailure("INVALID_IMAGE", "the browser could not decode the static SVG")));
+      abort = finish(() => reject(signal.reason));
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      else image.src = url;
+    });
+    signal?.throwIfAborted();
+    return await globalThis.createImageBitmap(image);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (image) {
+      image.onload = image.onerror = null;
+      image.src = "";
+    }
+    globalThis.URL.revokeObjectURL(url);
+  }
+}
+
+export async function decodeRaster(blob, context = {}) {
   if (typeof globalThis.createImageBitmap !== "function") {
     throw assetFailure(
       "IMAGE_DECODER_UNAVAILABLE",
       "createImageBitmap is unavailable; supply a host decoder",
     );
   }
-  // EXIF orientation may swap JPEG dimensions. The manager checks actual
-  // dimensions before submitting them, including this allowed transposition.
+  const signal = context.signal;
+  signal?.throwIfAborted();
+  // EXIF orientation may swap JPEG dimensions. The manager validates actual
+  // dimensions, including this allowed transposition, before layout delivery.
   try {
-    return await globalThis.createImageBitmap(blob);
+    let bitmap;
+    try { bitmap = await globalThis.createImageBitmap(blob); }
+    catch (cause) {
+      signal?.throwIfAborted();
+      if (blob.type !== "image/svg+xml") throw cause;
+      bitmap = await svgBitmap(blob, signal);
+    }
+    if (signal?.aborted) {
+      bitmap.close();
+      signal.throwIfAborted();
+    }
+    return bitmap;
   } catch (cause) {
+    signal?.throwIfAborted();
+    if (cause instanceof FlowAssetError) throw cause;
     throw new FlowAssetError(
-      "INVALID_IMAGE", "the browser could not decode the admitted raster image", { cause },
+      "INVALID_IMAGE", "the browser could not decode the admitted image", { cause },
     );
   }
 }

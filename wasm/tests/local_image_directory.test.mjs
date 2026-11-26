@@ -82,7 +82,7 @@ test("document base is a literal filename and cannot inject URL resolution polic
   assert.equal(createDirectoryImageSources([], { documentPath: "docs/a b.MD" }).documentPath, "docs/a b.MD");
 });
 
-test("only bounded raster files are retained; directory admission never reads any file", async () => {
+test("only bounded image files are retained; directory admission never reads any file", async () => {
   let reads = 0;
   const image = file("root/a.png");
   const note = file("root/private.md", new Uint8Array(9 * 1024 * 1024));
@@ -192,4 +192,36 @@ test("expanded reference inventory is bounded before insertion into an editor", 
   const part = "图".repeat(500);
   invalid(() => createDirectoryImageSources(Array.from({ length: 128 }, (_, n) =>
     file(`root/${part}/${part}/${n}.png`))));
+});
+
+test("selected nested SVG files keep literal authority and pass actual static admission", async () => {
+  const bytes = new TextEncoder().encode('<svg viewBox="0 0 12 6"><rect width="12" height="6" fill="blue"/></svg>');
+  const svg = file("root/images/a b.SVG", bytes);
+  const active = file("root/images/active.svg", new TextEncoder().encode(
+    '<svg width="1" height="1"><script>alert(1)</script></svg>',
+  ));
+  const html = file("root/private.html", [99]);
+  let reads = 0;
+  const original = svg.arrayBuffer.bind(svg);
+  svg.arrayBuffer = () => { reads++; return original(); };
+  html.arrayBuffer = () => { assert.fail("directory grant must not read an HTML file"); };
+  const sources = createDirectoryImageSources([svg, active, html], { documentPath: "docs/guide.md" });
+  assert.equal(reads, 0);
+  assert.equal(sources.count, 2);
+  assert(sources.references.includes("![a b.SVG](../images/a%20b.SVG)"));
+  const loaded = await read(sources, "../images/a%20b.SVG");
+  assert.deepEqual(loaded, bytes);
+  assert.equal(reads, 1);
+  const limits = { maxAssetBytes: 8 * 1024 * 1024, maxDimension: 8192, maxImagePixels: 16777216 };
+  const info = rasterInfo(loaded, limits);
+  assert.equal(info.mime, "image/svg+xml");
+  assert.equal(info.width, 12);
+  assert.equal(info.height, 6);
+  assert.throws(() => rasterInfo(new Uint8Array([1, 2]), limits));
+  assert.throws(() => rasterInfo(new TextEncoder().encode(
+    '<svg width="1" height="1"><script>alert(1)</script></svg>',
+  ), limits), error => error.code === "UNSUPPORTED_IMAGE");
+  for (const url of ["../../images/a%20b.SVG", "../private.html", "https://example.test/a.svg", "../images/a%20b.SVG#x"])
+    assert.equal(await read(sources, url), null);
+  assert.equal(reads, 1);
 });

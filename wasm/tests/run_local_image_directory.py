@@ -19,7 +19,9 @@ def main() -> None:
     parser.add_argument("--chromium", default="/usr/bin/chromium")
     args = parser.parse_args()
     wasm = Path(__file__).resolve().parents[1]
-    raster = module_url((wasm / "flow_raster.mjs").read_text())
+    svg = module_url((wasm / "flow_svg.mjs").read_text())
+    raster_source = (wasm / "flow_raster.mjs").read_text()
+    raster = module_url(raster_source.replace('"./flow_svg.mjs"', repr(svg)))
     source = (wasm / "demo/local_image_sources.mjs").read_text()
     source = source.replace('"../flow_raster.mjs"', repr(raster))
     module = module_url(source)
@@ -27,7 +29,8 @@ def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="fmd-image-directory-")) / "project"
     for name, payload in [("docs/guide.md", b"# Private source"),
                           ("images/plot.png", b"first image bytes"),
-                          ("images/a[b](c).jpg", b"second image bytes")]:
+                          ("images/a[b](c).jpg", b"second image bytes"),
+                          ("images/diagram.svg", b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 8"><rect width="16" height="8" fill="red"/></svg>')]:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
@@ -66,8 +69,9 @@ def main() -> None:
         check(page.evaluate('grants.length === 0'), "selection does not grant before Apply")
         page.locator('#image-document-path').fill('docs/guide.md')
         page.locator('#apply-image-folder').click()
-        check(page.evaluate('active.count === 2'), "only images admitted")
+        check(page.evaluate('active.count === 3'), "only images admitted")
         check(page.evaluate('read("../images/plot.png")') == 'first image bytes', "actual nested file contents")
+        check(page.evaluate('read("../images/diagram.svg")') == (root / "images/diagram.svg").read_text(), "exact SVG source granted")
         check(page.evaluate('read("guide.md")') is None, "Markdown contents never returned")
         check(page.evaluate('read("../../project/images/plot.png")') is None, "root escape refused")
         check(page.evaluate('read("../images/a%5Bb%5D%28c%29.jpg")') == 'second image bytes', "escaped filename read")

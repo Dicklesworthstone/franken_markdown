@@ -7,7 +7,7 @@ import { FlowAssetError, FlowImageAssets } from "@franken-suite/franken-markdown
 import { image, png, Session } from "./tests/flow_image_fixtures.mjs";
 
 const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
-const runtime = ["flow-assets.js", "flow-assets.d.ts", "flow_raster.mjs", "ASSETS.md"];
+const runtime = ["flow-assets.js", "flow-assets.d.ts", "flow_raster.mjs", "flow_svg.mjs", "ASSETS.md"];
 
 test("public package subpath imports and performs dimension-only image delivery", async () => {
   const session = new Session();
@@ -36,9 +36,11 @@ test("manifest ships the image API, decoder seam, local grant helper and integra
     assert(manifest.files.includes(file), `missing manifest file ${file}`);
     assert((await readFile(new URL(file, import.meta.url))).length > 0, `empty file ${file}`);
   }
-  const module = await readFile(new URL("./flow-assets.js", import.meta.url), "utf8");
-  for (const [, dependency] of module.matchAll(/from\s+"\.\/([^"]+)"/g)) {
-    assert(manifest.files.includes(dependency), `unshipped runtime dependency ${dependency}`);
+  for (const file of ["flow-assets.js", "flow_raster.mjs", "flow_svg.mjs"]) {
+    const module = await readFile(new URL(file, import.meta.url), "utf8");
+    for (const [, dependency] of module.matchAll(/from\s+"\.\/([^"]+)"/g)) {
+      assert(manifest.files.includes(dependency), `unshipped runtime dependency ${dependency}`);
+    }
   }
 });
 

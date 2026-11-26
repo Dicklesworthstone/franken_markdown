@@ -155,6 +155,7 @@
     "flow-assets.js",
     "flow-assets.d.ts",
     "flow_raster.mjs",
+    "flow_svg.mjs",
     "ASSETS.md",
     "demo/local_image_sources.mjs",
     "flow-reader.js",

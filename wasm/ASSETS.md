@@ -3,7 +3,7 @@
 `./flow-assets` connects the flow engine's pending image requests to the Canvas
 backend, with the same API for synchronous and worker sessions. Markdown does
 not grant network authority. You supply an authorization/loading callback; this
-module never calls `fetch`, resolves a base URI, opens a URL, or sends credentials.
+module never fetches a Markdown destination, resolves a base URI, or sends credentials.
 It does not install a second Markdown parser or alter the Rust layout engine.
 
 ```js
@@ -56,8 +56,7 @@ API and its native rollback contract.
 
 By default, actual oriented dimensions are supplied as **dimension-only**
 results, without duplicating encoded bytes in the worker/WASM asset store.
-`retainSourceBytes: true` also supplies the same immutable encoded snapshot used
-for decoding, so document export can resolve the image. Encoded delivery groups
+`retainSourceBytes: true` also supplies the original immutable encoded snapshot, so document export can resolve the image. Encoded delivery groups
 are capped at `maxAssetBytes` in aggregate (default 8 MiB), as well as being
 bounded by the loader lane count. Lower or occupied worker queue budgets and
 native cumulative payload limits still apply; rejection is not silently retried.
@@ -112,7 +111,13 @@ Observer exceptions cannot undo already acknowledged deliveries and are ignored.
 
 ## Decoder profile and budgets
 
-The default decoder is browser `createImageBitmap`, not a bundled image codec.
+The default decoder uses browser `createImageBitmap`. For admitted static SVG,
+browsers that cannot decode an SVG Blob directly use a detached `Image` with a
+local object URL, followed by bitmap extraction. That URL contains only the
+canonical admitted preview, never a Markdown destination. The element, URL and
+abort listener are released on success, error or cancellation. A worker without
+an SVG-capable `createImageBitmap` or an `Image` implementation needs a host
+decoder. No bundled image codec is introduced.
 A host may provide an equivalent decoder that transfers an exclusively owned,
 closeable Canvas image. Immutable Blob snapshots prevent later writes to loader
 buffers from changing a pending decode. Shared and detached buffers are refused.
@@ -138,8 +143,7 @@ codec or animation timer is introduced.
 
 Dimensions, encoded bytes and aggregate
 reserved pixels are checked before allocation; actual decoder dimensions must
-match, allowing EXIF JPEG orientation to exchange width and height. SVG,
-WebP, APNG, unmarked four-component/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
+match, allowing EXIF JPEG orientation to exchange width and height. WebP, APNG, unmarked four-component/lossless/arithmetic JPEG, delayed JPEG dimensions, and PNG
 compressed ancillary metadata (`iCCP`, `zTXt`, `iTXt`) are explicitly refused.
 The conservative PNG metadata restriction avoids decompression independent of
 image pixel bounds. Re-encode such input as plain PNG or supported JPEG before
@@ -150,17 +154,55 @@ responsibility. A browser decode failure reports `INVALID_IMAGE` and leaves the
 image request unresolved; it does not discard source or consume a request.
 Codec vulnerabilities are not sandboxed by JavaScript limits.
 
+### Static SVG previews
+
+Authorized SVG files can supply Flow preview pixels and original native export
+bytes through the same image request. Admission requires strict UTF-8 and a
+bounded static XML subset: shapes, paths, groups, text, local use references,
+gradients, clipping and masks. A missing root SVG namespace is supplied in the
+preview; an explicitly different namespace is refused. References must resolve
+to unique simple IDs inside this image. CSS presentation attributes and inline
+styles are supported only for the static presentation properties.
+
+Root width/height accept positive unitless or px, pt, pc, mm, cm and in lengths.
+An explicit positive viewBox supplies missing or percentage root dimensions,
+preserving its aspect ratio when only one dimension is specified. Raster sizes
+round upward to whole CSS pixels. Only the canonical preview receives these
+normalized dimensions; retained publication bytes remain exactly as authorized.
+
+This profile refuses external URLs, nested images, scripts, event handlers,
+foreign content, stylesheets, font downloads, animation, filters, patterns,
+markers, namespace rebinding, xml:base, DTDs and custom entities. CSS escapes,
+comments and indirect functions such as var/calc/image-set are refused. Static
+local references cannot contain cycles or exceed the scene expansion limits.
+Markers and patterns are excluded because their per-vertex/tile replication is
+not bounded by a simple reference graph.
+
+SVG source and canonical preview each have a 2 MiB ceiling. The profile also
+admits at most 8192 nodes, 64 nesting/reference levels, 4096 local references,
+65536 expanded element nodes and 8 MiB of expanded text/attribute content.
+Repeated references charge their complete subtree content, including long text
+and path geometry. These structural limits complement the ordinary image pixel
+budgets; they are not a precise browser memory or rendering-time guarantee.
+
+The manager reserves both original SVG bytes and canonical preview bytes
+against maxInFlightBytes before invoking any decoder. A host decoder receives
+only the canonical preview and public dimension/MIME/signal context. With
+retainSourceBytes enabled, native delivery receives the unchanged original,
+including its source formatting and XML metadata. An unsupported SVG remains
+an unresolved image request; it never acquires external resource authority.
+
 Defaults (only lower values are accepted): 256 assets/attempts per generation,
 4 concurrent loads, 8 MiB encoded bytes per image, 16 MiB in-flight immutable
-encoded snapshots, 16,777,216 pixels per image, 33,554,432 aggregate reserved and
-retained pixels, and 8,192 pixels per dimension. A rejected budget does not evict
+encoded snapshots, including separate SVG preview bytes, 16,777,216 pixels per
+image, 33,554,432 aggregate reserved and retained pixels, and 8,192 pixels per dimension. A rejected budget does not evict
 images currently borrowed by a paint. The counters bound admitted structures,
 not exact heap/GPU overhead, host-side loader allocations, or browser decoder
 scratch buffers. The host must limit its own I/O *before* returning bytes.
 
 ## Verification
 
-`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs wasm/flow_raster_gif.test.mjs` exercises the
+`node --test wasm/flow_assets.test.mjs wasm/flow_assets_batching.test.mjs wasm/flow_assets_reflow.test.mjs wasm/flow_raster.test.mjs wasm/flow_raster_cmyk.test.mjs wasm/flow_raster_gif.test.mjs wasm/flow_svg.test.mjs wasm/flow_assets_svg.test.mjs` exercises the
 production admission/ownership code with explicitly synthetic containers,
 bitmaps, and session doubles, including an asynchronous session. The CMYK/YCCK
 suite also uses the real baseline/progressive JPEG fixtures shared with PDF
@@ -168,16 +210,18 @@ tests and checks every truncated prefix and malformed color metadata. It does no
 claim real Rust/WASM or browser decoding.
 
 `python wasm/tests/run_flow_assets.py --chromium /usr/bin/chromium` runs actual
-PNG/JPEG/GIF decoding, oriented dimensions, drawing and pixel assertions in Chromium,
+PNG/JPEG/GIF/static SVG decoding, oriented dimensions, drawing and pixel assertions in Chromium,
 including all six color patches in the four CMYK/YCCK fixtures and real animated
 and interlaced GIF fixtures, without network or a server. GIF checks cover every
 interlaced pixel, transparency, local palettes and offsets, one-frame decoder
-input, and exact animation retention. Its session is explicitly synthetic; Rust layout
+input, and exact animation retention. Static SVG checks cover local use/shape
+pixels, viewBox dimensions, original-byte retention and rejection before decoding
+for external or active content. Its session is explicitly synthetic; Rust layout
 and generated-WASM integration still require the package gates on a build host.
 
 ## Local-image live preview
 
-The assembled `demo/flow-canvas.html` now includes an explicit local PNG/JPEG/GIF
+The assembled `demo/flow-canvas.html` now includes an explicit local PNG/JPEG/GIF/SVG
 picker, an **Insert image references at cursor** action, and **Revoke all images**.
 Files are authorized by exact name (or their explicitly constructed percent-encoded
 alias); no directory traversal, arbitrary URL resolution or network fallback is

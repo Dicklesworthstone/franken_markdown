@@ -139,7 +139,7 @@ for file in interactive.js interactive.d.ts interactive_runtime.mjs interactive_
   book_pdf_proof.mjs BOOK_PDF_PROOF.md BOOK_FONTS.md BOOK_IMAGES.md \
   book.js book.d.ts book_session.mjs book_link_report.mjs book_pdf_verification.mjs book_source_diagnostics.mjs book_source_rename.mjs book_render_diagnostics.mjs book-worker.js book-worker.d.ts book_worker.mjs book_retained.mjs book_publication.mjs BOOK_PUBLICATION.md BOOK_EDITION.md book_worker_entry.js BOOK.md PORTABLE_BOOK.md LIBRARY.md PREVIEW.md BOOK_EDITING.md BOOK_DIRECTORY.md INSPECTION.md BOOK_SOURCE_RENAME.md book_inspection.mjs book_site_preview.mjs book_preview_frame.mjs flow.js flow.d.ts flow_session.mjs flow_asset_batch.mjs ASSET_BATCHES.md flow_outlines.mjs flow-canvas.js flow-canvas.d.ts CANVAS.md FLOW.md \
   flow_export.mjs EXPORT.md SOURCE.md FILES.md SETTINGS.md \
-  flow-assets.js flow-assets.d.ts flow_raster.mjs ASSETS.md \
+  flow-assets.js flow-assets.d.ts flow_raster.mjs flow_svg.mjs ASSETS.md \
   flow-reader.js flow-reader.d.ts flow_reading.mjs READER.md \
   flow-worker.js flow-worker.d.ts flow_worker.js flow_worker_session.mjs flow_worker_protocol.mjs worker_transport.mjs WORKER.md \
   document-inspector.js document-inspector.d.ts document_inspector.mjs document_inspector_worker.js DOCUMENT_INSPECTION.md \

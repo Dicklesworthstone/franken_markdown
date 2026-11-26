@@ -376,11 +376,12 @@ export class FlowImageAssets {
       this.#check(run);
       if (input === null) return false; // Explicitly declined authorization.
       const info = rasterInfo(input, this.#limits);
-      if (input.byteLength > this.#limits.maxInFlightBytes - this.#bytes)
+      const encodedBytes = input.byteLength + (info.previewByteLength ?? 0);
+      if (encodedBytes > this.#limits.maxInFlightBytes - this.#bytes)
         fail("ASSET_BYTE_LIMIT", "concurrent encoded-image budget exceeded");
       if (info.pixels > this.#limits.maxRetainedPixels - this.#pixels)
         fail("ASSET_PIXEL_LIMIT", "aggregate decoded-image budget exceeded");
-      bytes = input.byteLength;
+      bytes = encodedBytes;
       pixels = info.pixels;
       this.#bytes += bytes;
       this.#pixels += pixels;
@@ -388,13 +389,16 @@ export class FlowImageAssets {
       // callback cannot mutate queued decode input after it returns its bytes.
       const blob = new Blob([input], { type: info.mime });
       input = null;
-      const { firstFrameEnd, ...decodeInfo } = info;
-      // Keep animated source bytes for HTML/SVG/EPUB publication, while every
-      // decoder (including a host callback) sees only a static first-frame GIF.
-      // Blob slices share the already admitted immutable source snapshot.
-      const preview = firstFrameEnd === undefined ? blob : new Blob([
-        blob.slice(0, firstFrameEnd), new Uint8Array([0x3b]),
-      ], { type: info.mime });
+      const { firstFrameEnd, preview: svgPreview, previewByteLength, ...decodeInfo } = info;
+      // Keep exact original SVG/GIF bytes for publication. Every decoder,
+      // including a host callback, sees only the admitted static preview.
+      // SVG's separate encoded preview is charged alongside the original;
+      // GIF slices share the immutable source snapshot.
+      const preview = svgPreview !== undefined
+        ? new Blob([svgPreview], { type: info.mime })
+        : firstFrameEnd === undefined ? blob : new Blob([
+          blob.slice(0, firstFrameEnd), new Uint8Array([0x3b]),
+        ], { type: info.mime });
       image = await this.#decode(preview, Object.freeze({ ...decodeInfo, signal: run.controller.signal }));
       this.#check(run);
       if (

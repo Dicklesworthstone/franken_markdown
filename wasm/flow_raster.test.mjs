@@ -36,7 +36,7 @@ test("byte/pixel bounds are checked before browser decode", () => {
   assert.throws(() => rasterInfo(png(), { ...limits, maxAssetBytes: 1 }), code("ASSET_BYTE_LIMIT"));
 });
 
-test("MIME names never admit SVG, APNG, compressed PNG metadata or unknown critical chunks", () => {
+test("missing SVG dimensions, unsupported containers and unsafe raster metadata are refused", () => {
   for (const text of ["<svg xmlns='http://www.w3.org/2000/svg'/>", "RIFF1234WEBP"]) {
     assert.throws(
       () => rasterInfo(new TextEncoder().encode(text), limits),

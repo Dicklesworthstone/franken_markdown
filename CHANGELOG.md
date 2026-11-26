@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flow Canvas previews now admit authorized, self-contained static SVG images
+  with bounded XML, local references and presentation styles. Image and folder
+  pickers include SVG; canonical preview dimensions and decoder cleanup preserve
+  the existing image budgets, while publication retains exact original bytes.
+
 - Native language-server document links make parser-recognized Markdown and image
   destinations clickable, including unopened files and explicit HTTP(S)/mailto
   targets. Links preserve URI identity, UTF-16 source ranges and the selected

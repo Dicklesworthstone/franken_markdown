@@ -82,6 +82,69 @@ export async function run(colourJpegs, gifFixtures) {
     throw new Error("image loading must not fetch");
   };
   try {
+    await test("static SVG: actual Canvas pixels, viewBox dimensions and exact retained original", async () => {
+      const source = '<?xml version="1.0"?>\n<!-- retained source -->' +
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4">' +
+        '<defs><g id="patches"><rect width="4" height="4" fill="red"/>' +
+        '<rect x="4" width="4" height="4" fill="blue"/></g></defs>' +
+        '<use href="#patches"/></svg>\n';
+      const bytes = new TextEncoder().encode(source), session = new Session();
+      session.requests[0].url = "static.svg";
+      let preview;
+      const assets = new FlowImageAssets(session, {
+        load: () => bytes, retainSourceBytes: true,
+        decode: async (blob, context) => {
+          preview = await blob.text();
+          assert(blob.type === "image/svg+xml" && context.width === 8 && context.height === 4,
+            "canonical SVG dimensions and MIME reach the real decoder");
+          return decodeRaster(blob, context);
+        },
+      });
+      try {
+        const report = await assets.loadPending();
+        assert(report.loaded === 1 && report.failed === 0, JSON.stringify(report));
+        const bitmap = assets.resolveImage({ ...descriptor, destination: "static.svg" }, session.token);
+        assert(bitmap instanceof ImageBitmap && bitmap.width === 8 && bitmap.height === 4,
+          "SVG viewBox supplies actual bitmap dimensions");
+        const canvas = new OffscreenCanvas(8, 4), context = canvas.getContext("2d");
+        context.drawImage(bitmap, 0, 0);
+        for (const [x, expected] of [[1, [255, 0, 0, 255]], [6, [0, 0, 255, 255]]]) {
+          const pixel = context.getImageData(x, 2, 1, 1).data;
+          assert(expected.every((byte, channel) => pixel[channel] === byte),
+            "local SVG use/shape pixel at " + x + ": " + pixel);
+        }
+        assert(!preview.includes("retained source") && preview.includes('width="8" height="4"'),
+          "the bitmap receives canonical static SVG only");
+        const retained = session.writes[0].bytes;
+        assert(retained.length === bytes.length && retained.every((byte, index) => byte === bytes[index]),
+          "native export retains the complete original SVG");
+        assets.dispose();
+        assert(bitmap.width === 0 && bitmap.height === 0 && assets.stats.reservedPixels === 0,
+          "SVG bitmap and pixel reservations released");
+      } finally { assets.dispose(); }
+    });
+    await test("SVG active and external resources are refused before any browser decoder call", async () => {
+      for (const body of [
+        '<image href="https://example.test/remote.png"/>',
+        '<use href="https://example.test/remote.svg#x"/>',
+        '<rect width="8" height="4" fill="url(https://example.test/remote.svg#x)"/>',
+        '<script>throw new Error("must not run")</script>',
+        '<style>@import "https://example.test/remote.css";</style>',
+      ]) {
+        const bytes = new TextEncoder().encode('<svg width="8" height="4">' + body + '</svg>');
+        const session = new Session(), assets = new FlowImageAssets(session, {
+          load: () => bytes,
+          decode: () => { throw new Error("unsupported SVG reached the browser codec"); },
+        });
+        try {
+          const report = await assets.loadPending();
+          assert(report.loaded === 0 && report.failed === 1 && report.errors[0].code === "UNSUPPORTED_IMAGE",
+            JSON.stringify(report));
+          assert(session.writes.length === 0 && session.requests.length === 1,
+            "refused SVG never consumes a native image request");
+        } finally { assets.dispose(); }
+      }
+    });
     for (const { name, hex } of colourJpegs)
       await test(`${name}: real colour decoding, six Canvas patches and exact retained bytes`, async () => {
         const bytes = Uint8Array.from(hex.replace(/\s/g, "").match(/../g), byte => parseInt(byte, 16));

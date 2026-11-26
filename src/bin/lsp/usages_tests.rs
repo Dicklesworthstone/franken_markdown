@@ -468,3 +468,24 @@ fn framed_protocol_advertises_and_dispatches_both_providers() {
     assert_eq!(array(replies[&2].get("result").unwrap().clone()).len(), 1);
     assert_eq!(array(replies[&3].get("result").unwrap().clone()).len(), 2);
 }
+
+#[test]
+fn references_match_canonical_and_alias_fragments_without_capturing_another_heading() {
+    let docs = documents(&[
+        (
+            A,
+            "# A B\n\n# A — B\n\n[alias](#a--b)\n\n[exact](#a-b-2)\n\n[first](#a-b)",
+        ),
+        (
+            B,
+            "[target](a.md?view=print#a%2D%2Db)\n\n[missing](a.md#a--b-1)",
+        ),
+    ]);
+    let expected = [(A.into(), 2), (A.into(), 4), (A.into(), 6), (B.into(), 0)];
+    assert_eq!(starts(&search(&docs, A, "A — B", true)), expected);
+    assert_eq!(starts(&search(&docs, A, "#a--b", true)), expected);
+    assert_eq!(
+        starts(&search(&docs, B, "a.md?view=print#a%2D%2Db", true)),
+        expected
+    );
+}

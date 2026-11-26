@@ -724,6 +724,11 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
   const definitions = new Map(), notes = new Map(), usedNotes = [], headings = new Map();
   const reservedNoteIds = new Set(), assignedNoteIds = new Set();
   const nextNoteSuffix = new Map();
+  // Source-owned GitHub separator spellings have their own duplicate sequence.
+  // Canonical heading/note anchors retain precedence and their existing IDs.
+  const headingAliases = new Map(), aliasSuffixes = new Map();
+  const MAX_ALIAS_HEADINGS = 4096, MAX_ALIAS_BYTES = 1024 * 1024, MAX_ALIAS_ID_BYTES = 8192;
+  let aliasHeadings = 0, aliasBytes = 0, aliasesDisabled = false;
   let planningNotes = false, automaticToc = contents?.toc === true, needsToc = automaticToc;
   const defaultTocDepth = contents?.tocDepth ?? 6, tocEntries = [], tocCache = new Map();
   const MAX_DEPTH = 64;
@@ -821,7 +826,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
   function safeUrl(raw, image, literal = false) {
     // Autolinks own literal destinations; only explicit/reference
     // links and images apply Markdown escape and entity decoding.
-    const url = literal ? raw : unescape(raw).trim();
+    let url = literal ? raw : unescape(raw).trim();
     // Bindings can replace image bytes, not turn a non-image data URL into an
     // image source. Match native admission before consulting an exact binding.
     if (image && /^data:/i.test(url) && !fmdDataImageMime(url)) return null;
@@ -851,6 +856,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     // A backslash is a slash in browser URL parsing; do not accept its
     // protocol-relative spellings as an apparently local destination.
     if (url.includes('\\')) return null;
+    if (!image && !planningNotes) url = headingAliasDestination(url);
     // Match exact author-supplied image keys above, then make path/query spaces
     // safe for an HTML URL attribute. Existing percent escapes stay untouched.
     charge(url.length);
@@ -2535,6 +2541,73 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     }
     return slug || 'section';
   }
+  function utf8Length(text) {
+    let bytes = 0;
+    for (const scalar of text) {
+      charge();
+      const code = scalar.codePointAt(0);
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    }
+    return bytes;
+  }
+  function chargeAliasBytes(bytes) {
+    if (aliasesDisabled) return false;
+    if (bytes > MAX_ALIAS_BYTES - aliasBytes) {
+      // A partial alias namespace would make early and late links disagree.
+      // Disable this optional fallback atomically, leaving exact IDs intact.
+      aliasesDisabled = true;
+      headingAliases.clear(); aliasSuffixes.clear();
+      return false;
+    }
+    aliasBytes += bytes;
+    return true;
+  }
+  function planHeadingAlias(text, canonical) {
+    if (aliasesDisabled) return;
+    if (++aliasHeadings > MAX_ALIAS_HEADINGS) { chargeAliasBytes(MAX_ALIAS_BYTES + 1); return; }
+    // Reuse semantic heading text, never raw Markdown or emitted HTML. Unlike
+    // canonical IDs, each space/hyphen around removed punctuation survives.
+    let base = '', separators = 0, bytes = 0;
+    for (const scalar of text) {
+      charge();
+      if (/[0-9\p{Alphabetic}_]/u.test(scalar)) {
+        const extra = base ? separators : 0, lower = scalar.toLowerCase();
+        bytes += extra + utf8Length(lower);
+        if (bytes > MAX_ALIAS_ID_BYTES) { chargeAliasBytes(MAX_ALIAS_BYTES + 1); return; }
+        base = append(base, '-'.repeat(extra) + lower);
+        separators = 0;
+      } else if (scalar === ' ' || scalar === '-') separators++;
+    }
+    if (!base) { base = 'section'; bytes = base.length; }
+    if (!chargeAliasBytes(utf8Length(canonical) * 2 + bytes * 3 + 32)) return;
+    let suffix = aliasSuffixes.get(base) || 0, alias;
+    do {
+      charge(base.length + 1);
+      alias = suffix === 0 ? base : base + '-' + suffix;
+      suffix++;
+    } while (aliasSuffixes.has(alias));
+    allocate(); aliasSuffixes.set(alias, 1);
+    aliasSuffixes.set(base, suffix);
+    if (alias.includes('--') && alias !== canonical) {
+      allocate(); headingAliases.set(alias, canonical);
+    }
+  }
+  function headingAliasDestination(destination) {
+    if (aliasesDisabled || !headingAliases.size
+        || destination[0] !== '#' && destination[0] !== '?') return destination;
+    charge(destination.length);
+    const hash = destination.indexOf('#');
+    if (hash < 0) return destination;
+    let fragment;
+    try { fragment = decodeURIComponent(destination.slice(hash + 1)); }
+    catch { return destination; }
+    // Decode exactly once, with the same case-sensitive ownership as native
+    // navigation. Unknown/malformed fragments are never blindly collapsed.
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(fragment)
+        || headings.has(fragment) || assignedNoteIds.has(fragment)) return destination;
+    const canonical = headingAliases.get(fragment);
+    return canonical === undefined ? destination : destination.slice(0, hash + 1) + canonical;
+  }
   // Recognize the native whole-paragraph TOC syntax after inline ownership.
   // A code span, resolved reference or nested style cannot turn into a marker.
   // Escapes and character references still contribute ordinary text, as they
@@ -2634,9 +2707,18 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     const content = inline(node.title, 0, true, footnotes, true, false, true, heading);
     if (heading) {
       node.headingId = uniqueId(headingSlug(heading.text));
+      planHeadingAlias(heading.text, node.headingId);
       if (outline) node.headingLabel = heading.label;
     }
     return content;
+  }
+  function planHeadings(nodes) {
+    for (const node of nodes) {
+      charge();
+      if (node.kind === 'heading') renderHeading(node);
+      else if (node.kind === 'quote' || node.kind === 'callout') planHeadings(node.children);
+      else if (node.kind === 'list') for (const item of node.items) planHeadings(item.children);
+    }
   }
   function planNoteAnchors(nodes, outline = false) {
     for (const node of nodes) {
@@ -2834,7 +2916,14 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       note.id = noteId(note.baseId);
       note.fragment = noteFragment(note.id);
       allocate(); note.referenceIds = [noteId('fnref-' + note.number)];
+      if (!aliasesDisabled) chargeAliasBytes(utf8Length(note.id) + utf8Length(note.referenceIds[0]));
     }
+  } else {
+    // Forward links need the complete heading inventory. Without notes/TOC,
+    // visit headings alone instead of reparsing every paragraph and table.
+    planningNotes = true;
+    planHeadings(blocks);
+    planningNotes = false;
   }
   const body = renderBlocks(blocks);
   if (!usedNotes.length) return body;

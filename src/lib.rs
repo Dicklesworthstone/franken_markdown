@@ -1470,11 +1470,18 @@ fn transform_footnotes_for_pdf<'a>(
     }
     let doc = input.document();
     match apply_profile(doc, opts.profile) {
-        std::borrow::Cow::Borrowed(doc) => {
-            footnotes::for_pdf_paged_with_backlinks(doc, opts.footnote_backlinks)
-        }
+        std::borrow::Cow::Borrowed(doc) => match anchors::canonicalize_links(doc) {
+            std::borrow::Cow::Borrowed(doc) => {
+                footnotes::for_pdf_paged_with_backlinks(doc, opts.footnote_backlinks)
+            }
+            std::borrow::Cow::Owned(doc) => {
+                footnotes::for_pdf_paged_with_backlinks(&doc, opts.footnote_backlinks).into_owned()
+            }
+        },
         std::borrow::Cow::Owned(doc) => {
-            footnotes::for_pdf_paged_with_backlinks(&doc, opts.footnote_backlinks).into_owned()
+            let doc = anchors::canonicalize_links(&doc);
+            footnotes::for_pdf_paged_with_backlinks(doc.as_ref(), opts.footnote_backlinks)
+                .into_owned()
         }
     }
 }

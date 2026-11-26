@@ -457,6 +457,8 @@ struct RenderState<'a> {
     /// Lazy source-owned anchor allocation reserves every emitted heading
     /// and legacy note target before choosing a collision-free alternative.
     note_anchors: Option<epub_notes::Anchors>,
+    /// Lazily built from source headings for noncanonical local fragments.
+    link_aliases: Option<crate::anchors::HeadingAliases>,
     /// Pre-computed heading inventory (level, plain text, anchor id) in
     /// document order — used by the TOC marker. Ids are produced by the same
     /// fresh-state walk the heading renderer performs, so they match exactly.
@@ -760,6 +762,16 @@ impl<'a> RenderState<'a> {
         true
     }
 
+    fn canonical_local_destination(&mut self, dest: &str) -> Option<String> {
+        if !dest.starts_with(['#', '?']) || !(dest.contains("--") || dest.contains('%')) {
+            return None;
+        }
+        let roots = self.root_blocks;
+        self.link_aliases
+            .get_or_insert_with(|| heading_identifiers_for_blocks(roots).aliases)
+            .destination(dest)
+    }
+
     fn safe_url_cached<'u>(&mut self, url: &'u str, context: UrlContext) -> Option<&'u str> {
         if let Some(entry) = self
             .url_cache
@@ -873,13 +885,17 @@ fn push_sanitized_html(
         state.in_link,
         out,
         &mut |url, kind, out| match kind {
-            crate::safe_html::UrlKind::Link => match state.safe_url_cached(url, UrlContext::Link) {
-                Some(href) => {
-                    push_escaped_url(href, out);
-                    true
+            crate::safe_html::UrlKind::Link => {
+                let replacement = state.canonical_local_destination(url);
+                let url = replacement.as_deref().unwrap_or(url);
+                match state.safe_url_cached(url, UrlContext::Link) {
+                    Some(href) => {
+                        push_escaped_url(href, out);
+                        true
+                    }
+                    None => false,
                 }
-                None => false,
-            },
+            }
             crate::safe_html::UrlKind::Image => state.push_image_source(url, opts, out),
         },
     );
@@ -1186,6 +1202,8 @@ fn render_link_open(
     if state.in_link || state.raw_html.has_open_link() {
         return false;
     }
+    let replacement = state.canonical_local_destination(dest);
+    let dest = replacement.as_deref().unwrap_or(dest);
     let prefix = state.id_prefix;
     let Some(href) = state.safe_url_cached(dest, UrlContext::Link) else {
         return false;
@@ -1781,6 +1799,7 @@ pub(crate) struct HeadingIdentifiers {
     /// stay separate from allocated IDs so book links can address the same
     /// note even when a heading owns its traditional fragment spelling.
     pub(crate) footnotes: Vec<FootnoteIdentifiers>,
+    pub(crate) aliases: crate::anchors::HeadingAliases,
 }
 
 pub(crate) struct FootnoteIdentifiers {
@@ -1792,6 +1811,7 @@ pub(crate) struct FootnoteIdentifiers {
 struct SourceAnchorInventory {
     headings: Vec<Option<String>>,
     footnote_order: Vec<String>,
+    aliases: crate::anchors::HeadingAliases,
 }
 
 pub(crate) fn heading_identifiers(doc: &Document) -> HeadingIdentifiers {
@@ -1827,14 +1847,19 @@ fn heading_identifiers_for_roots<'a>(
             reference,
         })
         .collect();
-    let other_anchors = footnotes
+    let other_anchors: BTreeSet<String> = footnotes
         .iter()
         .flat_map(|note| [note.body.clone(), note.reference.clone()])
         .collect();
+    let mut aliases = inventory.aliases;
+    for id in &other_anchors {
+        aliases.reserve(id);
+    }
     HeadingIdentifiers {
         headings: inventory.headings,
         other_anchors,
         footnotes,
+        aliases,
     }
 }
 
@@ -1860,6 +1885,7 @@ fn source_anchor_inventory<'a>(
         });
     }
     let mut headings = vec![None; ordinals.len()];
+    let mut aliases = crate::anchors::HeadingAliases::default();
     let mut state = RenderState {
         // The source-order walk already visits every definition, including
         // those nested in duplicate bodies. Reuse that borrowed inventory.
@@ -1873,6 +1899,7 @@ fn source_anchor_inventory<'a>(
             &ordinals,
             &mut headings,
             &mut state,
+            &mut aliases,
         );
     }
     let mut cursor = 0;
@@ -1880,12 +1907,13 @@ fn source_anchor_inventory<'a>(
         let blocks = state.footnote_defs.get(id.as_str()).copied();
         cursor += 1;
         if let Some(blocks) = blocks {
-            collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state);
+            collect_emitted_heading_ids(blocks, &ordinals, &mut headings, &mut state, &mut aliases);
         }
     }
     SourceAnchorInventory {
         headings,
         footnote_order: state.footnote_order,
+        aliases,
     }
 }
 
@@ -1916,6 +1944,7 @@ fn collect_emitted_heading_ids<'a>(
     ordinals: &HashMap<*const Block, usize>,
     headings: &mut [Option<String>],
     state: &mut RenderState<'a>,
+    aliases: &mut crate::anchors::HeadingAliases,
 ) {
     fn references(inlines: &[Inline], state: &mut RenderState<'_>) {
         for inline in inlines {
@@ -1935,6 +1964,7 @@ fn collect_emitted_heading_ids<'a>(
         Block::Heading { inlines, .. } => {
             let mut id = String::new();
             state.push_heading_id_from_inlines(inlines, &mut id);
+            aliases.heading(inlines, &id);
             // Every visited heading was indexed by the all-definition walk.
             headings[ordinals[&std::ptr::from_ref(block)]] = Some(id);
             references(inlines, state);

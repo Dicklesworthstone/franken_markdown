@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GitHub-style heading fragments with repeated separators resolve to their
+  source headings across HTML, PDF, EPUB, SVG, books, offline workspaces and
+  language-server navigation. Exact IDs and note targets retain precedence;
+  heading identity survives HTML lowering and note reordering. Editor rename
+  stabilizes aliases without silently reassigning another heading's links.
+
 - Best-effort optimal PDF pagination can retain its measured-height planner
   when a heading chain and an indivisible subject cannot fit together. Only
   that impossible keep is relaxed; other hard constraints and figure dimensions

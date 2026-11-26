@@ -40,6 +40,7 @@ pub struct PreparedEndnotes<'a> {
     inline_targets: BTreeMap<usize, EndnoteTarget>,
     note_starts: BTreeMap<usize, usize>,
     aliases: BTreeMap<String, (EndnoteTarget, bool)>,
+    heading_aliases: BTreeMap<String, Option<usize>>,
     limited: bool,
 }
 
@@ -50,7 +51,29 @@ impl<'a> PreparedEndnotes<'a> {
     /// once, and unreferenced definitions remain in the final Notes section.
     #[must_use]
     pub fn new(original: &'a Document) -> Self {
-        let source = crate::safe_html::lower(original);
+        let source_headings = crate::anchors::heading_alias_targets(original);
+        let (source, lowered_origins) = if source_headings.is_empty() {
+            (crate::safe_html::lower(original), None)
+        } else {
+            crate::safe_html::lower_with_heading_origins(original)
+        };
+        let heading_aliases = if source_headings.is_empty() {
+            BTreeMap::new()
+        } else {
+            let origins = crate::anchors::compose_heading_origins(
+                super::heading_origins_for_pdf(&source),
+                lowered_origins.as_deref(),
+            );
+            let positions: BTreeMap<_, _> = origins
+                .into_iter()
+                .enumerate()
+                .filter_map(|(prepared, original)| original.map(|original| (original, prepared)))
+                .collect();
+            source_headings
+                .into_iter()
+                .map(|(name, source)| (name, positions.get(&source).copied()))
+                .collect()
+        };
         let mut notes = Notes::default();
         notes.collect(&source.blocks);
         if notes.definitions.is_empty() && !notes.has_reference {
@@ -61,6 +84,7 @@ impl<'a> PreparedEndnotes<'a> {
                 inline_targets: BTreeMap::new(),
                 note_starts: BTreeMap::new(),
                 aliases: BTreeMap::new(),
+                heading_aliases,
                 limited: false,
             };
         }
@@ -194,6 +218,7 @@ impl<'a> PreparedEndnotes<'a> {
             inline_targets: metadata.targets,
             note_starts: starts,
             aliases,
+            heading_aliases,
             limited: metadata.limited,
         }
     }
@@ -245,6 +270,17 @@ impl<'a> PreparedEndnotes<'a> {
         self.aliases
             .iter()
             .map(|(name, &(target, _))| (name.as_str(), target))
+    }
+
+    /// Source-owned compatibility heading fragments and their canonical forms,
+    /// mapped to depth-first heading ordinals in [`Self::document`]. Safe HTML
+    /// and generated Notes headings cannot capture these authored targets.
+    /// An absent ordinal remains an unresolved source target, never permission
+    /// to fall back to an export-only heading with the same generated slug.
+    pub fn heading_aliases(&self) -> impl Iterator<Item = (&str, Option<usize>)> {
+        self.heading_aliases
+            .iter()
+            .map(|(name, &ordinal)| (name.as_str(), ordinal))
     }
 
     /// A collision-safe note destination owned by the original source document.

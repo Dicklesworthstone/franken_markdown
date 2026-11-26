@@ -258,14 +258,26 @@ pub(super) fn output_name(path: &str) -> String {
 /// enough context to resolve nested chapters. EPUB already understands these
 /// rooted source URLs. Unknown files and external links are not rewritten.
 pub(super) fn canonicalize(chapters: &mut [BookChapter]) {
-    let known: BTreeSet<_> = chapters
+    // Snapshot all source headings before rewriting so forward chapter links
+    // use the target's emitted IDs, independently of publication order.
+    let known: BTreeMap<_, _> = chapters
         .iter()
-        .map(|chapter| chapter.path.clone())
+        .map(|chapter| {
+            (
+                chapter.path.clone(),
+                crate::anchors::heading_aliases(&chapter.doc),
+            )
+        })
         .collect();
     for chapter in chapters {
         let source = &chapter.path;
         rewrite_blocks(&mut chapter.doc.blocks, &mut |dest| {
-            let (target, suffix) = chapter_destination(source, dest, |path| known.contains(path))?;
+            if dest.starts_with(['#', '?']) {
+                return known.get(source)?.destination(dest);
+            }
+            let (target, suffix) =
+                chapter_destination(source, dest, |path| known.contains_key(path))?;
+            let suffix = known.get(&target)?.destination(&suffix).unwrap_or(suffix);
             Some(format!("/{}{suffix}", encode_path(&target)))
         });
     }
@@ -293,15 +305,30 @@ pub(super) fn rewrite_from(doc: &mut Document, source: &str, book: &Book) -> Res
         let path = source_path(&chapter.path).ok_or_else(|| {
             RenderError::InvalidInput("book: invalid target chapter path".to_string())
         })?;
-        if known.insert(path, chapter.out_name.as_str()).is_some() {
+        if known
+            .insert(
+                path,
+                (
+                    chapter.out_name.as_str(),
+                    crate::anchors::heading_aliases(&chapter.doc),
+                ),
+            )
+            .is_some()
+        {
             return Err(RenderError::InvalidInput(
                 "book: duplicate target chapter path".to_string(),
             ));
         }
     }
+    let local = crate::anchors::heading_aliases(doc);
     Ok(rewrite_blocks(&mut doc.blocks, &mut |dest| {
+        if dest.starts_with(['#', '?']) {
+            return local.destination(dest);
+        }
         let (target, suffix) = chapter_destination(&source, dest, |path| known.contains_key(path))?;
-        known.get(&target).map(|output| format!("{output}{suffix}"))
+        let (output, aliases) = known.get(&target)?;
+        let suffix = aliases.destination(&suffix).unwrap_or(suffix);
+        Some(format!("{output}{suffix}"))
     }))
 }
 

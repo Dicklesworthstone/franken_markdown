@@ -498,6 +498,7 @@ enum Reference<'a> {
 }
 struct Navigation<'a> {
     anchors: BTreeMap<String, DocumentAnchor>,
+    aliases: crate::anchors::HeadingAliases,
     definitions: BTreeMap<&'a str, (&'a [Block], usize)>,
     references: Vec<Reference<'a>>,
     order: Vec<&'a str>,
@@ -528,8 +529,10 @@ fn navigation_with_sources<'a>(
     doc: &'a Document,
     sources: Option<&link_sources::ChapterLinkSources>,
 ) -> Navigation<'a> {
+    let identifiers = crate::html::heading_identifiers(doc);
     let mut nav = Navigation {
         anchors: BTreeMap::new(),
+        aliases: identifiers.aliases,
         definitions: BTreeMap::new(),
         references: Vec::new(),
         order: Vec::new(),
@@ -550,7 +553,7 @@ fn navigation_with_sources<'a>(
     let mut note_anchors: BTreeMap<_, _> = if nav.order.is_empty() {
         BTreeMap::new()
     } else {
-        crate::html::heading_identifiers(doc)
+        identifiers
             .footnotes
             .into_iter()
             .map(|note| (note.source_id, (note.body, note.reference)))
@@ -728,7 +731,12 @@ fn resolve_fragment<'a>(
         "invalid_fragment",
         "This fragment is not valid percent-encoded UTF-8.",
     ))?;
-    match nav.anchors.get(&id) {
+    let anchor = nav.anchors.get(&id).or_else(|| {
+        nav.aliases
+            .resolve_alias(&id)
+            .and_then(|canonical| nav.anchors.get(canonical))
+    });
+    match anchor {
         None => Err((
             "missing_anchor",
             "The target chapter has no emitted heading or referenced-footnote anchor with this ID.",

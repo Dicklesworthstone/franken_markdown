@@ -46203,7 +46203,8 @@ fn audit_inline_fragment_links(
 }
 
 pub fn audit_anchors(doc: &Document) -> AnchorAudit {
-    audit_anchors_with_resolver(doc, &|_, _| None)
+    let canonical = crate::anchors::canonicalize_links(doc);
+    audit_anchors_with_resolver(canonical.as_ref(), &|_, _| None)
 }
 
 /// Source-aware verification can override public note fragments while keeping

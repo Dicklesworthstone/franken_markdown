@@ -1,6 +1,7 @@
 import './interactive_toc.test.mjs';
 import './interactive_empty_list_items.test.mjs';
 import './interactive_currency_math.test.mjs';
+import './interactive_heading_aliases.test.mjs';
 // Run with: node --test tests/interactive_renderer.test.mjs
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

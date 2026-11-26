@@ -101,6 +101,7 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
     };
 
     let identifiers = crate::html::heading_identifiers(doc);
+    let aliases = identifiers.aliases;
     let mut collector = StatsCollector {
         defined_anchors: identifiers.other_anchors,
         heading_ids: identifiers.headings,
@@ -118,8 +119,13 @@ pub fn compute_doc_stats(markdown: &str, doc: &Document) -> DocumentStats {
 
     // Check for broken internal anchors (e.g. [Link](#missing-target))
     for (anchor, link_text) in &collector.referenced_anchors {
-        let valid = crate::anchors::decode_fragment(anchor)
-            .is_some_and(|id| id.is_empty() || collector.defined_anchors.contains(&id));
+        let valid = crate::anchors::decode_fragment(anchor).is_some_and(|id| {
+            id.is_empty()
+                || collector.defined_anchors.contains(&id)
+                || aliases
+                    .resolve_alias(&id)
+                    .is_some_and(|canonical| collector.defined_anchors.contains(canonical))
+        });
         if !valid {
             collector.findings.push(DocFinding {
                 severity: "warning",

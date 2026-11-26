@@ -59,6 +59,8 @@ pub struct DocumentReference {
 pub struct DocumentLinkAnalysis {
     /// Sorted by ID. Only headings and referenced footnotes are emitted.
     pub anchors: Vec<DocumentAnchor>,
+    /// Source-derived compatibility fragments; canonical IDs remain unchanged.
+    pub heading_aliases: crate::anchors::HeadingAliases,
     pub references: Vec<DocumentReference>,
     /// Scheme-bearing and protocol-relative links, never requested.
     pub external: usize,
@@ -103,10 +105,14 @@ impl DocumentLinkAnalysis {
             "invalid_fragment",
             "This fragment is not valid percent-encoded UTF-8.",
         ))?;
-        let index = self
-            .anchors
-            .binary_search_by(|anchor| anchor.id.as_str().cmp(id.as_str()))
-            .map_err(|_| {
+        let lookup = |id: &str| {
+            self.anchors
+                .binary_search_by(|anchor| anchor.id.as_str().cmp(id))
+                .ok()
+        };
+        let index = lookup(&id)
+            .or_else(|| self.heading_aliases.resolve_alias(&id).and_then(lookup))
+            .ok_or_else(|| {
                 (
                     "missing_anchor",
                     "The target chapter has no emitted heading or referenced-footnote anchor with this ID.",
@@ -251,6 +257,7 @@ fn analyze(doc: &Document, include_files: bool) -> Result<DocumentLinkAnalysis> 
     }
     Ok(DocumentLinkAnalysis {
         anchors: nav.anchors.into_values().collect(),
+        heading_aliases: nav.aliases,
         references,
         external,
         unchecked,

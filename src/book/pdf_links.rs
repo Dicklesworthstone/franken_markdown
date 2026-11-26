@@ -639,6 +639,13 @@ fn prepare_inner(
                 map.insert(anchor.id, target);
             }
         }
+        // Compatibility spellings map to the source heading's actual ordinal.
+        // Exact emitted IDs (including notes) always retain precedence.
+        for (alias, canonical) in crate::anchors::heading_aliases(&chapter.doc).entries() {
+            if let Some(target) = map.get(canonical).cloned() {
+                map.entry(alias.to_string()).or_insert(target);
+            }
+        }
         aliases.push(map);
         let chapter_blocks = &document.blocks[ranges[index].clone()];
         let mut assembled = Vec::new();

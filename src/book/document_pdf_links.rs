@@ -1,4 +1,4 @@
-//! Standalone PDF links to the public note IDs used by HTML and EPUB.
+//! Standalone PDF links to source-owned note and compatibility heading IDs.
 //!
 //! Ordinary note links must not become citations: doing so would move page
 //! notes, change their first return destination, and paint link text as a
@@ -11,8 +11,8 @@ use crate::pdf::source_navigation::{self, NavigationRender};
 use crate::{Block, Document, Inline, PdfASettings, PdfEmitOptions, PdfOptions, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Return `None` for documents without a link to an emitted public note anchor.
-/// Their ordinary borrowed transformation/render path stays unchanged.
+/// Return `None` when no public note or compatibility heading requires source
+/// binding. Other documents retain the ordinary borrowed rendering path.
 pub(crate) fn render(
     source: &Document,
     options: &PdfOptions,
@@ -22,19 +22,21 @@ pub(crate) fn render(
     collect_warnings: bool,
 ) -> Result<Option<NavigationRender>> {
     let mut candidate = false;
+    let mut note_candidate = false;
     visit_links(&source.blocks, &mut |destination| {
-        candidate |= note_fragment(destination).is_some();
+        candidate |= local_fragment(destination).is_some();
+        note_candidate |= note_fragment(destination).is_some();
     });
     if !candidate {
         return Ok(None);
     }
     let source = crate::apply_profile(source, options.profile);
-    let aliases = note_aliases(&source);
+    let aliases = source_aliases(&source, note_candidate);
     let mut addressed = false;
     let mut reserved = BTreeSet::new();
     visit_links(&source.blocks, &mut |destination| {
         reserve_link_nonce(destination, &mut reserved);
-        addressed |= note_fragment(destination).is_some_and(|id| aliases.contains_key(&id));
+        addressed |= local_fragment(destination).is_some_and(|id| aliases.contains_key(&id));
     });
     if !addressed {
         // Unreferenced definitions do not publish HTML anchors. In particular,
@@ -45,11 +47,27 @@ pub(crate) fn render(
         .find(|candidate| !reserved.contains(candidate))
         .ok_or_else(|| super::invalid("temporary link namespace exhausted"))?;
     let prefix = format!("{PREFIX}{nonce}/");
-    let mut document = crate::safe_html::lower(&source).into_owned();
+    let bind_headings = aliases
+        .values()
+        .any(|target| matches!(target, Some(Target::Heading(_))));
+    let (document, lowered_origins) = if bind_headings {
+        crate::safe_html::lower_with_heading_origins(&source)
+    } else {
+        (crate::safe_html::lower(&source), None)
+    };
+    let mut document = document.into_owned();
     let note_ids = crate::footnotes::page_note_ids(&document);
+    let heading_origins = if bind_headings {
+        crate::anchors::compose_heading_origins(
+            crate::footnotes::heading_origins_for_pdf_paged(&document),
+            lowered_origins.as_deref(),
+        )
+    } else {
+        Vec::new()
+    };
     let mut tokens = BTreeMap::<Option<Target>, String>::new();
     walk_links(&mut document.blocks, &mut |destination| {
-        let Some(target) = note_fragment(destination).and_then(|id| aliases.get(&id)) else {
+        let Some(target) = local_fragment(destination).and_then(|id| aliases.get(&id)) else {
             return;
         };
         if let Some(token) = tokens.get(target) {
@@ -70,6 +88,18 @@ pub(crate) fn render(
     } else {
         source_navigation::render_complete(&prepared, options, settings, emit, profiled)?
     };
+    let headings: BTreeMap<_, _> = rendered
+        .navigation
+        .headings
+        .iter()
+        .filter_map(|(ordinal, destination)| {
+            heading_origins
+                .get(*ordinal)
+                .copied()
+                .flatten()
+                .map(|source| (source, *destination))
+        })
+        .collect();
     let targets = tokens
         .into_iter()
         .map(|(target, token)| {
@@ -82,7 +112,8 @@ pub(crate) fn render(
                     .get(&id)
                     .and_then(|prepared| rendered.navigation.note_references.get(prepared))
                     .copied(),
-                Some(Target::Heading(_) | Target::Chapter(_)) | None => None,
+                Some(Target::Heading(ordinal)) => headings.get(&ordinal).copied(),
+                Some(Target::Chapter(_)) | None => None,
             };
             (token, destination)
         })
@@ -100,11 +131,26 @@ pub(crate) fn audit(
     options: &PdfOptions,
 ) -> crate::pdf::AnchorAudit {
     let source = crate::apply_profile(source, options.profile);
-    let aliases = note_aliases(&source);
+    let aliases = source_aliases(&source, true);
     let note_ids = crate::footnotes::page_note_ids(source.as_ref());
     let references = crate::footnotes::page_note_references_for_input(prepared);
+    let headings: BTreeSet<_> = if aliases
+        .values()
+        .any(|target| matches!(target, Some(Target::Heading(_))))
+    {
+        let (lowered, lowered_origins) = crate::safe_html::lower_with_heading_origins(&source);
+        crate::anchors::compose_heading_origins(
+            crate::footnotes::heading_origins_for_pdf_paged(&lowered),
+            lowered_origins.as_deref(),
+        )
+        .into_iter()
+        .flatten()
+        .collect()
+    } else {
+        BTreeSet::new()
+    };
     crate::pdf::audit_anchors_with_resolver(prepared, &|destination, ids| {
-        let fragment = note_fragment(destination)?;
+        let fragment = local_fragment(destination)?;
         let resolved = match aliases.get(&fragment) {
             Some(Some(Target::Footnote(id))) => note_ids.contains_key(id),
             Some(Some(Target::FootnoteReference(id))) => note_ids
@@ -112,8 +158,9 @@ pub(crate) fn audit(
                 .and_then(|id| id.strip_prefix(crate::footnotes::PAGE_NOTE_PREFIX))
                 .and_then(|number| number.parse::<u32>().ok())
                 .is_some_and(|number| references.contains(&number)),
-            Some(Some(Target::Heading(_) | Target::Chapter(_))) | Some(None) => false,
-            None => {
+            Some(Some(Target::Heading(ordinal))) => headings.contains(ordinal),
+            Some(Some(Target::Chapter(_))) | Some(None) => false,
+            None if note_fragment(destination).is_some() => {
                 // Namespace-shaped headings still work, but only direct
                 // fragments use the ordinary PDF heading resolver. A query
                 // with no published note alias cannot bind a local target.
@@ -122,9 +169,37 @@ pub(crate) fn audit(
                     .starts_with('#')
                     && ids.contains(&fragment)
             }
+            None => return None,
         };
         Some(resolved)
     })
+}
+
+fn source_aliases(source: &Document, notes: bool) -> BTreeMap<String, Option<Target>> {
+    let mut aliases = if notes {
+        note_aliases(source)
+    } else {
+        BTreeMap::new()
+    };
+    for (name, ordinal) in crate::anchors::heading_alias_targets(source) {
+        aliases
+            .entry(name)
+            .or_insert(Some(Target::Heading(ordinal)));
+    }
+    aliases
+}
+
+fn local_fragment(destination: &str) -> Option<String> {
+    let destination =
+        destination.trim_matches(|ch: char| ch.is_ascii_whitespace() || ch.is_control());
+    if !destination.starts_with(['#', '?']) {
+        return None;
+    }
+    let (_, fragment) = destination.split_once('#')?;
+    if fragment.is_empty() {
+        return None;
+    }
+    crate::anchors::decode_fragment(fragment)
 }
 
 fn note_aliases(source: &Document) -> BTreeMap<String, Option<Target>> {

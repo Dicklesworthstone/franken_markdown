@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dollar amounts no longer consume adjacent financial prose, emphasis, links,
+  or later inline formulas. Native and standalone interactive parsing agree
+  on currency-safe closing dollars while preserving numeric formulas, escaped
+  dollars, TeX groups, display mathematics and table cell boundaries.
+
 - Cyclic flowcharts preserve parallel branches and downstream dependencies
   instead of placing every unresolved node on a separate layer. Bounded,
   deterministic component analysis retains every feedback edge and leaves

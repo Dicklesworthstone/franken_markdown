@@ -6,6 +6,33 @@ does not need a JavaScript math renderer or a remote typesetting service.
 Single-dollar inline formulas, inline display-style formulas and standalone
 display blocks share this serializer.
 
+## Dollar delimiters and currency
+
+Single-dollar formulas keep dollar amounts in ordinary prose. A closing `$`
+must not be followed by an ASCII digit, and neither delimiter may have ASCII
+space, tab or a line ending immediately inside it. Valid numeric formulas such
+as `$2+2=4$` still work; Unicode whitespace and nondigit suffixes retain their
+existing interpretation.
+
+An ineligible, unescaped single dollar outside a TeX group stops the current
+candidate. This leaves the next formula available instead of swallowing
+intervening prose, links or emphasis. For example:
+
+```markdown
+Screen of $5 million–$50 million. Thus $0.470 becomes **$0.260 of UFCF**.
+Costs $5 and $x = 1$.
+```
+
+Only `x = 1` is mathematics in this example. Escaped dollars remain literal
+math content, and an ineligible dollar inside a group opened by the candidate
+(such as `$\text{Price $5} + x$`) does not end the scan. Display-math
+delimiters retain their existing rules. Table parsing additionally preserves
+its conservative cell-boundary rules.
+
+These rules apply to the native parser and its source-aware entry points.
+The standalone interactive renderer uses the same dollar ownership while
+preserving supported formulas as opaque source.
+
 ## Text inside mathematics
 
 Text commands can contain mathematical conditions and nested formatting. Those

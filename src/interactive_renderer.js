@@ -1082,11 +1082,12 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     return {end: content};
   }
   // Share the native dollar-edge grammar between inline ownership and table
-  // columns. Unicode whitespace is TeX content; only ASCII space/tab/newline
-  // disqualifies an edge. Index runs once so failed openers cannot repeatedly
-  // scan the suffix, and retain ineligible runs for conservative price columns.
+  // columns. Unicode whitespace remains TeX content; ASCII space/tab/newline
+  // disqualifies an edge, and a single-dollar closer cannot precede a digit.
+  // Index runs and TeX groups once, retaining invalid dollar runs as barriers.
+  // Cache the next eligible closer so unmatched suffixes need no repeated scan.
   function mathDelimiters(text, table = false) {
-    const runs = [[], []], next = [0, 0];
+    const runs = [[], []], next = [0, 0], braces = [];
     let lastPipe = -1;
     for (let i = 0; i < text.length;) {
       charge();
@@ -1097,29 +1098,42 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
           const afterPipe = i > 0 && lastPipe === i - 1, after = text[end];
           const startsPrice = width === 1 && /[0-9]/.test(after || '');
           const startsCell = afterPipe && after !== undefined && /[a-zA-Z0-9\\\u0080-\uffff]/.test(after);
-          allocate(); runs[width - 1].push({start: i, afterPipe,
-            closes: i > 0 && !' \t\n'.includes(text[i - 1]) && (!table || !startsPrice && !startsCell)});
+          allocate(); runs[width - 1].push({start: i, afterPipe, brace: braces.at(-1) ?? -1,
+            closes: i > 0 && !' \t\n'.includes(text[i - 1]) && !startsPrice && (!table || !startsCell)});
         }
         i = end; continue;
       }
+      if (!table && text[i] === '{') { allocate(); braces.push(i); }
+      else if (!table && text[i] === '}') braces.pop();
       if (text[i] === '|') lastPipe = i;
       i++;
+    }
+    for (const candidates of runs) {
+      let closer = -1;
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        charge();
+        if (candidates[i].closes) closer = i;
+        candidates[i].nextClose = closer;
+      }
     }
     return (start, width) => {
       const content = start + width;
       if (content >= text.length || ' \t\n'.includes(text[content])) return -1;
       const candidates = runs[width - 1];
-      while (next[width - 1] < candidates.length) {
-        charge();
-        const candidate = candidates[next[width - 1]];
-        if (candidate.start <= content || !table && !candidate.closes) next[width - 1]++;
-        else break;
+      while (next[width - 1] < candidates.length && candidates[next[width - 1]].start <= content) {
+        charge(); next[width - 1]++;
       }
-      const close = candidates[next[width - 1]];
-      if (!close || !close.closes) return -1;
+      const first = next[width - 1], closer = candidates[first]?.nextClose ?? -1;
+      if (closer < 0) return -1;
+      for (let i = first; i < closer; i++) {
+        charge();
+        // TeX groups may contain literal prices. A group opened before this
+        // formula cannot protect an invalid dollar belonging to later prose.
+        if (table || width === 1 && candidates[i].brace < content) return -1;
+      }
+      const close = candidates[closer];
       // A price cell cannot borrow a following cell's dollar. Table matching
-      // stops at the first same-width run, even if it is an ineligible closer;
-      // ordinary inline math may continue to a later valid closing delimiter.
+      // stops at the first same-width run, even if it is an ineligible closer.
       const numeric = width === 1 && (/^[0-9]/.test(text[content])
         || '+-'.includes(text[content]) && /[0-9]/.test(text[content + 1] || ''));
       return table && numeric && close.afterPipe ? -1 : close.start + width;

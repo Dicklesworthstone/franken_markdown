@@ -320,17 +320,16 @@ fn ambiguous_numeric_math_endings_prefer_separate_table_cells() {
 }
 
 #[test]
-fn table_admission_does_not_change_ordinary_inline_math_grammar() {
+fn table_admission_keeps_currency_safe_ordinary_inline_math_grammar() {
+    // Issue #22 tightens prose too: prices cannot close math, and an
+    // ineligible single dollar cannot consume a later formula's opener.
     for (source, expected) in [
+        ("$x$2", vec![Inline::Text("$x$2".into())]),
         (
-            "$x$2",
-            vec![Inline::Math("x".into()), Inline::Text("2".into())],
+            "$x $y$",
+            vec![Inline::Text("$x ".into()), Inline::Math("y".into())],
         ),
-        ("$x $y$", vec![Inline::Math("x $y".into())]),
-        (
-            "$12.50|$19.95",
-            vec![Inline::Math("12.50|".into()), Inline::Text("19.95".into())],
-        ),
+        ("$12.50|$19.95", vec![Inline::Text("$12.50|$19.95".into())]),
         (
             "$|x|$suffix",
             vec![Inline::Math("|x|".into()), Inline::Text("suffix".into())],

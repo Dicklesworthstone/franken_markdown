@@ -115,12 +115,21 @@ fn start_document<'a>(
 /// Render a fragment of blocks without the HTML document shell or style tag.
 #[must_use]
 pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
+    render_fragment_inner(blocks, opts, false).0
+}
+
+pub(crate) fn render_fragment_inner(
+    blocks: &[Block],
+    opts: &HtmlOptions,
+    retain_diagrams: bool,
+) -> (String, crate::interactive::diagrams::Catalog) {
     let profiled = crate::apply_profile_to_blocks(blocks, opts.profile);
     let blocks = profiled.as_ref();
     let mut html = String::with_capacity(initial_body_capacity(blocks.len()));
     let markers = crate::toc::markers(blocks);
     let needs_toc = opts.toc || markers.any();
     let mut state = RenderState {
+        retain_diagrams,
         root_blocks: blocks,
         automatic_toc: opts.toc && !markers.body,
         toc_entries: if needs_toc {
@@ -132,7 +141,7 @@ pub fn render_fragment(blocks: &[Block], opts: &HtmlOptions) -> String {
     };
     render_blocks(blocks, &mut html, opts, &mut state);
     push_footnotes_section(&mut state, &mut html, opts);
-    html
+    (html, state.diagrams)
 }
 
 /// A document-scoped renderer for hosts which place blocks in their own
@@ -430,6 +439,8 @@ pub(crate) struct TocEntry {
 
 #[derive(Default)]
 struct RenderState<'a> {
+    retain_diagrams: bool,
+    diagrams: crate::interactive::diagrams::Catalog,
     /// Namespace for renderer-owned anchors when composing complete documents.
     id_prefix: &'a str,
     /// A Markdown link owns its complete label, including nested note marks.
@@ -950,9 +961,17 @@ fn render_block<'a, 'b>(
         }
         Block::CodeBlock { lang, code } => {
             let l_str = lang.as_deref().unwrap_or("");
-            if crate::diagrams::is_diagram_code(code, l_str)
-                && let Some(svg) = crate::diagrams::render_diagram_svg(code, l_str)
-            {
+            let svg = if !crate::diagrams::is_diagram_code(code, l_str) {
+                None
+            } else if state.retain_diagrams {
+                crate::diagrams::editable_figure(code, l_str).map(|(svg, alt)| {
+                    state.diagrams.capture(l_str, code, &svg, alt);
+                    svg
+                })
+            } else {
+                crate::diagrams::render_diagram_svg(code, l_str)
+            };
+            if let Some(svg) = svg {
                 out.push_str("<div class=\"fmd-diagram-wrapper\">\n");
                 out.push_str(&svg);
                 out.push_str("</div>\n");

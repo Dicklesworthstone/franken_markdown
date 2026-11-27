@@ -13,8 +13,8 @@ function fmdCreateStyledPresentation(config) {
   // placement, real heading labels/IDs and which headings live in notes.
   // Capture settings once so edited and printed fragments use the same policy.
   const contents = Object.freeze({toc: config.toc, tocDepth: config.tocDepth});
-  function render(parser, source, assets, profile) {
-    return parser(source, assets, profile, contents);
+  function render(parser, source, assets, profile, diagramLookup) {
+    return parser(source, assets, profile, contents, diagramLookup);
   }
   function documentHtml(fragment, display = {}) {
     if (typeof fragment !== 'string' || fragment.length > 32 * 1024 * 1024) throw Error('Preview exceeds its output limit');
@@ -56,6 +56,7 @@ function fmdCreateStyledPresentation(config) {
   const initialFragment = template.content.querySelector('main.fmd').innerHTML;
   const initialSource = JSON.parse(document.querySelector('body > script#fmd-raw-source[type="application/json"]').textContent);
   const originalParse = parseMarkdownClient;
+  const diagrams = typeof fmdWorkspaceDiagramAssets === 'function' ? fmdWorkspaceDiagramAssets(document) : null;
   const authoringProfile = (() => {
     try { return Object.freeze({value: fmdReadAuthoringProfile(document), error: null}); }
     catch (error) { return Object.freeze({value: undefined, error}); }
@@ -65,8 +66,8 @@ function fmdCreateStyledPresentation(config) {
   const display = () => ({scale: parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16,
     theme: document.body.classList.contains('theme-dark') ? 'dark'
       : document.body.classList.contains('theme-light') ? 'light' : undefined});
-  parseMarkdownClient = function(source, assets, profile) {
-    fragment = styled.render(originalParse, source, assets, profile);
+  parseMarkdownClient = function(source, assets, profile, _contents, diagramLookup) {
+    fragment = styled.render(originalParse, source, assets, profile, diagramLookup);
     return styled.frame(fragment, display());
   };
   function measure(frame) {
@@ -144,7 +145,7 @@ function fmdCreateStyledPresentation(config) {
       const assets = new Map();
       const imageData = document.querySelector('body > script#fmd-image-assets[type="application/json"]');
       for (const [key, bytes] of imageData ? JSON.parse(imageData.textContent) : []) if (!assets.has(key)) assets.set(key, bytes);
-      fragment = styled.render(originalParse, source, assets, authoringProfile.value);
+      fragment = styled.render(originalParse, source, assets, authoringProfile.value, diagrams?.lookup);
     }
     preview.innerHTML = styled.frame(fragment, display()); observeFrame();
     const frame = observedFrame;

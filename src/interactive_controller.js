@@ -23,6 +23,34 @@ function fmdReadAuthoringProfile(doc) {
   return value.profile;
 }
 
+// A saved workspace can reuse only the exact code that produced an illustration.
+// Rows are captured once. Unusable optional metadata falls back to literal code.
+function fmdWorkspaceDiagramAssets(doc) {
+  const rows = [], languages = new Map();
+  const selector = 'body > script#fmd-diagram-assets';
+  const node = doc.querySelector(selector);
+  if (node && doc.querySelectorAll?.(selector)?.length === 1
+      && node.getAttribute('type') === 'application/json'
+      && typeof node.textContent === 'string' && node.textContent.length <= 8 * 1024 * 1024) {
+    let entries;
+    try { entries = JSON.parse(node.textContent); } catch { /* optional catalog */ }
+    if (Array.isArray(entries) && entries.length <= 128) {
+      for (const row of entries) {
+        if (!Array.isArray(row) || row.length !== 4 || !row.every(field => typeof field === 'string')) continue;
+        const [lang, code, alt, svg] = row;
+        if (lang.length > 128 || code.length > 65536 || alt.length > 8192
+            || !svg.length || svg.length > 5592408 || svg.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(svg)) continue;
+        if (!languages.has(lang)) languages.set(lang, new Map());
+        const fences = languages.get(lang);
+        if (fences.has(code)) continue;
+        rows.push(row);
+        fences.set(code, row);
+      }
+    }
+  }
+  return {rows, lookup: (lang, code) => languages.get(lang)?.get(code)};
+}
+
 (function() {
   const editor = document.getElementById('fmd-editor');
   const originalSource = JSON.parse(document.querySelector('body > script#fmd-raw-source[type="application/json"]').textContent);
@@ -81,6 +109,8 @@ function fmdReadAuthoringProfile(doc) {
   // Keep the full initial renderer output available for exact undo, including
   // diagrams and other features outside the offline JavaScript subset.
   const originalRendered = preview.innerHTML;
+  const diagrams = native || nativePayload ? null : fmdWorkspaceDiagramAssets(document);
+  let retainedDiagrams = diagrams?.rows;
   let lastRenderedSource = native ? null : originalSource;
   const storedScale = parseFloat(document.documentElement.style.getPropertyValue('--fmd-base')) / 16;
   let currentScale = Number.isFinite(storedScale) ? Math.min(2, Math.max(0.7, storedScale)) : 1;
@@ -157,7 +187,15 @@ function fmdReadAuthoringProfile(doc) {
     };
     if (!native) {
       if (nativePayload) throw Error('Embedded native renderer is unavailable; the reduced parser will not be used');
-      preview.innerHTML = source === originalSource ? originalRendered : parseMarkdownClient(source, imageAssets, authoringProfile.value);
+      const used = new Set();
+      const lookup = diagrams.rows.length ? (lang, code) => {
+        const row = diagrams.lookup(lang, code);
+        if (row) used.add(row);
+        return row;
+      } : undefined;
+      preview.innerHTML = source === originalSource ? originalRendered
+        : parseMarkdownClient(source, imageAssets, authoringProfile.value, undefined, lookup);
+      retainedDiagrams = source === originalSource ? diagrams.rows : Array.from(used);
       return complete(true);
     }
     const result = native.render(source, preview, display, current);
@@ -337,6 +375,16 @@ function fmdReadAuthoringProfile(doc) {
       .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     textarea.textContent = source;
     if (!native && !nativePayload) {
+      // Rebuild only the illustrations still used by the saved source.
+      const diagramSelector = 'body > script#fmd-diagram-assets';
+      const oldDiagrams = copy.querySelectorAll?.(diagramSelector) || [];
+      for (const old of oldDiagrams) old.remove();
+      if (retainedDiagrams.length) {
+        const manifest = document.createElement('script');
+        manifest.id = 'fmd-diagram-assets'; manifest.setAttribute('type', 'application/json');
+        manifest.textContent = JSON.stringify(retainedDiagrams).replace(/</g, '\\u003c');
+        copy.querySelector('body').insertBefore(manifest, data);
+      }
       // Preserve the captured dialect, including legacy absence, even if live
       // markup was replaced after opening. Document content is never metadata.
       const selector = 'body > script#fmd-authoring-profile';

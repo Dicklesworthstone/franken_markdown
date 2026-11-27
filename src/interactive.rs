@@ -10,9 +10,10 @@
 
 use crate::HtmlOptions;
 use crate::ast::Document;
-use crate::html::render_fragment;
+use crate::html::render_fragment_inner;
 
 mod assets;
+pub(crate) mod diagrams;
 mod presentation;
 
 #[inline(always)]
@@ -108,7 +109,7 @@ fn render_workspace(
     opts: &HtmlOptions,
     styled: bool,
 ) -> String {
-    let initial_rendered = render_fragment(&doc.blocks, opts);
+    let (initial_rendered, diagrams) = render_fragment_inner(&doc.blocks, opts, true);
     let css = styled.then(|| crate::html::editable_stylesheet(opts));
     let title = opts.title.as_deref().unwrap_or("FrankenMarkdown Document");
 
@@ -214,6 +215,7 @@ fn render_workspace(
 
     // The same explicit image bytes must survive editing and save/reopen.
     assets::push_manifest(opts, &mut out);
+    diagrams.push_manifest(&mut out);
 
     if let Some(css) = &css {
         presentation::push_manifest(opts, css, &mut out);

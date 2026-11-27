@@ -161,6 +161,16 @@ pub fn figure_svg_with_alt(code: &str, lang: &str) -> Option<(String, String)> {
     Some((diagram.svg, diagram.alt.unwrap_or_else(|| kind.to_owned())))
 }
 
+/// Compile an editable preview resource, including the ASCII figures rendered
+/// by HTML. Keep the accessible alternative with its exact SVG.
+pub(crate) fn editable_figure(code: &str, lang: &str) -> Option<(String, String)> {
+    let diagram = compile_diagram(code, lang)?;
+    let alt = diagram
+        .alt
+        .unwrap_or_else(|| diagram.kind.unwrap_or("ASCII diagram").to_owned());
+    Some((diagram.svg, alt))
+}
+
 /// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.
 fn names_flowchart(directive: &str) -> bool {
     matches!(

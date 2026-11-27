@@ -652,7 +652,7 @@ zwnj=200c
 }));
 // END GENERATED HTML ENTITIES
 
-function parseMarkdownClient(source, imageAssets, profile, contents) {
+function parseMarkdownClient(source, imageAssets, profile, contents, diagramLookup) {
   'use strict';
   // Authoring syntax is selected before observing source or asset bindings.
   // Omitted/null matches the native default; explicit names are never coerced.
@@ -2941,9 +2941,16 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       switch (node.kind) {
         case 'fallback':
           out = append(out, append(append('<pre>', escape(node.text)), '</pre>\n')); break;
-        case 'code':
+        case 'code': {
+          const row = diagramLookup?.(node.lang, node.text);
+          if (row) {
+            out = append(out, '<div class="fmd-diagram-wrapper"><img src="data:image/svg+xml;base64,'
+              + row[3] + '" alt="' + escape(row[2]) + '"></div>\n');
+            break;
+          }
           out = append(out, '<pre><code' + (node.lang ? ' class="language-' + escape(node.lang) + '"' : '')
             + '>' + escape(node.text) + '</code></pre>\n'); break;
+        }
         case 'html':
           // Preserve the existing lightweight policy: markup stays visible and
           // inert. Its literal body must never pass through Markdown inlining,

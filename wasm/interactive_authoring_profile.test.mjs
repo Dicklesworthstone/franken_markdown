@@ -16,7 +16,7 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
 const extensions = 'Term\n: Definition with **emphasis**\n\n<!-- pagebreak -->\n\nAfter';
 const explicit = profile => JSON.stringify({version: 1, profile});
 
-function fixture({source = '# Original\r\n', profile, profileText, profileType = 'application/json',
+function fixture({source = '# Original\r\n', profile, profileText, profileType = 'application/json', diagramText,
   duplicate = false, styled = false, native = false, nativePayload = false, initial = '<h1>Native original</h1>'} = {}) {
   const downloads = [], blobs = new Map(), timers = new Map(), calls = [], copies = [];
   const doc = new EventTarget(), win = new EventTarget();
@@ -111,6 +111,7 @@ function fixture({source = '# Original\r\n', profile, profileText, profileType =
     if (duplicate) data('fmd-authoring-profile', explicit(profile ?? 'gfm-plus'));
   }
   const raw = data('fmd-raw-source', JSON.stringify(source));
+  if (diagramText !== undefined) data('fmd-diagram-assets', diagramText);
   data('fmd-image-assets', JSON.stringify([['chart.png', 'data:image/png;base64,AQID']]));
   if (nativePayload) data('fmd-native-runtime', '{"version":1,"options":{"profile":"commonmark-gfm"}}');
   if (styled) data('fmd-presentation', JSON.stringify({version: 1, css: 'body {color:purple}', title: 'Profile',
@@ -152,7 +153,10 @@ function fixture({source = '# Original\r\n', profile, profileText, profileType =
       for (const [id, timer] of [...timers]) if (timer.delay === 150) { timers.delete(id); timer.callback(); }
     },
     click(name) { doc.getElementById('btn-' + name).click(); },
-    async saved() { return downloads.at(-1).blob.text(); },
+    async saved() {
+      // Blob.text() strips a leading UTF-8 BOM. Preserve it when checking the downloaded bytes.
+      return new TextDecoder('utf-8', {ignoreBOM: true}).decode(await downloads.at(-1).blob.arrayBuffer());
+    },
     rendered() { return preview.frame ? preview.frame.getAttribute('srcdoc') : preview.innerHTML; },
   };
 }
@@ -162,7 +166,7 @@ function savedState(html) {
   // may contain lookalike scripts and must not be promoted into app metadata.
   const owned = html.slice(0, html.indexOf('<div id="fmd-app-body">'));
   const read = id => owned.match(new RegExp('<script id="' + id + '" type="application/json">([\\s\\S]*?)</script>'))?.[1];
-  return {source: JSON.parse(read('fmd-raw-source')), profileText: read('fmd-authoring-profile')};
+  return {source: JSON.parse(read('fmd-raw-source')), profileText: read('fmd-authoring-profile'), diagramText: read('fmd-diagram-assets')};
 }
 
 for (const styled of [false, true]) {
@@ -308,3 +312,46 @@ test('missing native runtime never activates the lightweight parser', () => {
   assert.match(f.status.textContent, /reduced parser will not be used/);
   f.click('export-pdf'); assert.equal(f.calls.length, 0);
 });
+
+for (const styled of [false, true]) {
+  test('compiled diagrams survive prose edits, printing and saved HTML reopening'
+    + (styled ? ' with presentation' : ''), async () => {
+    const flow = 'flowchart LR\nA --> B', sequence = 'sequenceDiagram\nAlice->>Bob: hello';
+    const flowSvg = 'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0Lz48L3N2Zz4=';
+    const seqSvg = 'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxjaXJjbGUvPjwvc3ZnPg==';
+    const entry = (code, alt, svg) => ['mermaid', code + '\n', alt, svg];
+    const diagramText = JSON.stringify([entry(flow, 'Flow & edges', flowSvg), entry(sequence, 'Conversation', seqSvg)]);
+    const block = code => '\x60\x60\x60mermaid\n' + code + '\n\x60\x60\x60';
+    const original = '# Original\n\n' + block(flow) + '\n\n' + block(sequence);
+    const f = fixture({source: original, diagramText, styled});
+    const edited = '# Reordered\n\n' + block(sequence) + '\n\n' + block(flow) + '\n\n' + block(flow);
+    f.edit(edited);
+    const images = html => [...html.matchAll(/<img\b[^>]*src="data:image\/svg\+xml;base64,([^"]+)"/g)].map(m => m[1]);
+    assert.equal(images(f.rendered()).join(','), [seqSvg, flowSvg, flowSvg].join(','));
+    assert.match(f.rendered(), /alt="Flow &amp; edges"/);
+    f.click('export-pdf'); await flush();
+    assert.equal(f.calls[0][0], styled ? 'styled-print' : 'print');
+    assert.equal(images(f.calls[0][1]).join(','), [seqSvg, flowSvg, flowSvg].join(','));
+
+    // Change only the flow definition. This must discard its retired SVG from
+    // the downloaded file as well as from the rendered preview.
+    const changed = '# Updated\n\n' + block(flow.replace('B', 'C')) + '\n\n' + block(sequence);
+    f.edit(changed);
+    assert.equal(images(f.rendered()).join(','), seqSvg);
+    assert.match(f.rendered(), /A --(?:>|&gt;) C/);
+    f.click('save-html');
+    const html = await f.saved(), state = savedState(html);
+    assert.equal(state.source, changed);
+    assert.equal(html.includes(flowSvg), false);
+    assert.equal(JSON.stringify(JSON.parse(state.diagramText)), JSON.stringify([entry(sequence, 'Conversation', seqSvg)]));
+    const reopened = fixture({...state, styled});
+    reopened.edit(changed + '\n\nEdited after reopening.');
+    assert.equal(images(reopened.rendered()).join(','), seqSvg);
+    assert.match(reopened.rendered(), /Edited after reopening/);
+    reopened.edit('# Removed all diagrams');
+    reopened.click('save-html');
+    const removed = await reopened.saved();
+    assert.equal(removed.includes(seqSvg), false);
+    assert.equal(JSON.parse(savedState(removed).diagramText ?? '[]').length, 0);
+  });
+}

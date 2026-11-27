@@ -38,6 +38,25 @@ These are logical limits, not browser heap guarantees. The browser still decides
 whether encoded bytes form a decodable image; URL admission is not an image
 integrity validator.
 
+## Diagrams in lightweight workspaces
+
+When Rust renders an editable HTML file, it can embed the SVG and accessible
+name it produced for a diagram. In the lightweight editor, edits to surrounding
+prose, moving the diagram, or repeating its code can reuse that image. The
+preview and browser print use the fence language and exact parsed code to find
+the matching illustration. A new or modified diagram displays its Markdown
+code until a native renderer compiles it.
+
+**Save HTML** includes only diagram entries used by the saved revision.
+Restoring the original source before saving restores its rendered preview.
+Reopening a saved file can reuse the illustrations it contains. **Save Markdown**
+always retains the editable source.
+
+Each file can retain up to 128 distinct diagrams within an 8 MiB metadata
+budget. The native exporter limits individual entries to 64 KiB of code and
+4 MiB of SVG. Diagrams beyond those limits still appear in the initial native
+preview.
+
 ## Saving and portability
 
 **Save HTML** retains source, preview, editor runtime and image bindings through

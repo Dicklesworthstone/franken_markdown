@@ -52,6 +52,7 @@ function setup({source = '# Original', title = 'Document', scale = '', read = fa
     'body > script#fmd-image-assets[type="application/json"]',
     'body > script#fmd-native-runtime[type="application/json"]',
     'body > script#fmd-authoring-profile',
+    'body > script#fmd-diagram-assets',
     'body > dialog#fmd-document-settings',
   ]);
   const header = {...element(),

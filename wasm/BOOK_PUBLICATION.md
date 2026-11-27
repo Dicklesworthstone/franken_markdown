@@ -58,6 +58,28 @@ slot covers the complete edition. Overlapping calls reject with `BOOK_BUSY`;
 there is no queue. Each completed or failed edition releases its worker. A later
 publication starts a fresh capture, not a hidden cache of old resource grants.
 
+## Require a clean assembled PDF
+
+Pass `{ strictPdf: true }` as the fourth argument to `publisher.render` and
+include `"pdf"` in the formats. Before returning any files, the publisher
+asks the same retained book worker to verify its assembled PDF with an empty
+source update against the edition's latest revision. This uses the captured
+chapter and include text, fonts, images, page geometry, authoring profile and
+PDF/A policy. A clean result is available as `edition.pdfReport`, with the
+physical pages, positioned text, destinations, findings, pagination strategy
+and native layout digest. The complete report has its own 8 MiB receive limit.
+
+A finding rejects the entire edition with `BOOK_PDF_FINDINGS`. Read
+`error.pdfReport.layout.findings` for details. Missing worker support, malformed
+reports and mismatched capture receipts also reject publication. On recoverable
+worker loss the publisher regenerates the entire edition and verifies it again.
+The `verifying-pdf` progress event precedes the retained PDF check.
+
+`strictLinks` can be enabled in the same request. Its early source check and
+final HTML-navigation check remain available alongside PDF verification. PDF
+verification concerns the native writer's layout and destinations. Independent
+PDF/A certification requires an external validator.
+
 ## All-or-nothing delivery and limits
 
 Any native export error, malformed receipt, worker failure, cancellation or limit

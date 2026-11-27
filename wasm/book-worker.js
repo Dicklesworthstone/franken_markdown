@@ -36,12 +36,12 @@ export function createBookPublicationWorker(options = {}) {
     timeoutMs,
     maxOutputBytes,
     maxWorkerRetries,
-    createClient: ({ strictLinks }) => createBookWorkerClient({
+    createClient: ({ strictLinks, pdfReportLimit = 0 }) => createBookWorkerClient({
       workerFactory: factory, timeoutMs, retainBook: true,
       // A small publication budget must not truncate the final report. The
       // coordinator still enforces the original combined output ceiling before
       // retaining each publication; this is only the private receive limit.
-      maxOutputBytes: strictLinks ? Math.max(maxOutputBytes, 4 * 1024 * 1024) : maxOutputBytes,
+      maxOutputBytes: Math.max(maxOutputBytes, strictLinks ? 4 * 1024 * 1024 : 0, pdfReportLimit),
       // Only the publication deadline may expire this private capture. The
       // coordinator always disposes the client; no idle worker survives it.
       idleTimeoutMs: 600000,

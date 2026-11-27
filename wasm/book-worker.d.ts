@@ -1,4 +1,4 @@
-import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookPdfVerificationOutput, BookSourceDiagnosticsOutput, BookSourceRenameOptions, BookSourceRenameOutput } from "./book.js";
+import type { BookChapterPreviewOutput, BookFile, BookLinkReport, BookLinksOutput, BookOptions, BookOutput, BookPdfVerificationOutput, BookPdfVerificationReport, BookSourceDiagnosticsOutput, BookSourceRenameOptions, BookSourceRenameOutput } from "./book.js";
 export type BookFormat = "pdf" | "epub" | "site";
 export type BookWorkerFormat = BookFormat | "preview" | "chapter-preview" | "inspection" | "links" | "diagnostics" | "pdf-verification";
 /** A transport capture revision is local to this worker client, not a native
@@ -270,11 +270,13 @@ export interface BookPublicationOutput {
   /** Present only after strict verification of this exact captured source.
    * Scope is local expanded HTML navigation, not output-format conformance. */
   readonly linkReport?: BookLinkReport;
+  /** Complete clean assembled-PDF report, present after strictPdf verification. */
+  readonly pdfReport?: BookPdfVerificationReport;
 }
 /** Read-only phase metadata; never partial files, sources, assets or save authority.
  * Counts describe the current attempt. A restart discards earlier private outputs. */
 export interface BookPublicationProgress {
-  readonly phase: "checking-links" | "rendering" | "verifying-publication" | "retrying";
+  readonly phase: "checking-links" | "rendering" | "verifying-publication" | "verifying-pdf" | "retrying";
   /** One-based attempt. A retrying event identifies the upcoming attempt. */
   readonly attempt: number;
   readonly maxAttempts: number;
@@ -292,6 +294,9 @@ export interface BookPublicationRequest {
    * no unchecked fallback. Canonical chapter paths are required by the decoder.
    * BOOK_LINKS_FAILED carries a deeply frozen BookLinkReport as linkReport. */
   strictLinks?: boolean;
+  /** Require a clean assembled PDF before releasing any files. Requires a PDF
+   * output. BOOK_PDF_FINDINGS carries the full findings report as pdfReport. */
+  strictPdf?: boolean;
   /** Observers may cancel the publisher; exceptions/rejections are ignored.
    * No progress notification makes an output downloadable or verified. */
   onProgress?: (progress: BookPublicationProgress) => void | Promise<void>;

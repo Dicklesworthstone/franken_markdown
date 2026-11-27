@@ -1,8 +1,9 @@
 // Atomic multi-format publication over one private retained worker client.
 // Capture and transport are injected by book-worker.js; this module neither
 // parses Markdown nor serializes publication formats or creates object URLs.
-import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt } from "./book_session.mjs";
+import { bookAuthoringProfileReceipt, bookFontEmbeddingReceipt, bookTextBytes } from "./book_session.mjs";
 import { bookRenderDiagnosticsReceipt } from "./book_render_diagnostics.mjs";
+import { BOOK_PDF_VERIFICATION_MAX_BYTES, parseBookPdfVerificationReport } from "./book_pdf_verification.mjs";
 const LIMIT = 128 * 1024 * 1024;
 const TYPES = Object.freeze({
   pdf: ["application/pdf", "pdf"],
@@ -29,6 +30,14 @@ function publicationFormats(value) {
   return formats;
 }
 
+function checkArchive(value, archive) {
+  if (archive) {
+    if (value.pdfA !== archive.pdfA || value.pdfAStrict !== archive.pdfAStrict)
+      throw error("UNSUPPORTED_BOOK_PDFA", "The publication did not acknowledge the captured PDF/A emission policy; no edition was published.");
+  } else if (value.pdfA !== undefined || value.pdfAStrict !== undefined)
+    throw error("WORKER_PROTOCOL_ERROR", "An edition output claims an unrequested PDF/A emission policy.");
+}
+
 function publicationOutput(value, format, remaining, previousRevision, sourceLength, archive, embedding, profile) {
   const bytes = value?.bytes, revision = value?.retainedInputRevision;
   if (!Number.isSafeInteger(revision) || revision < 1)
@@ -46,12 +55,7 @@ function publicationOutput(value, format, remaining, previousRevision, sourceLen
   // mutable option container or an optimistic field on a later result. The
   // worker has its own check; this gate also covers injected/older clients.
   const policy = format === "pdf" ? archive : null;
-  const pdfA = value.pdfA, pdfAStrict = value.pdfAStrict;
-  if (policy) {
-    if (pdfA !== policy.pdfA || pdfAStrict !== policy.pdfAStrict)
-      throw error("UNSUPPORTED_BOOK_PDFA", "The publication did not acknowledge the captured PDF/A emission policy; no edition was published.");
-  } else if (pdfA !== undefined || pdfAStrict !== undefined)
-    throw error("WORKER_PROTOCOL_ERROR", "An edition output claims an unrequested PDF/A emission policy.");
+  checkArchive(value, policy);
   const profileReceipt = bookAuthoringProfileReceipt(value, profile);
   const fontReceipt = bookFontEmbeddingReceipt(value,
     format !== "pdf" && embedding === "full" ? "full" : "subset");
@@ -151,9 +155,14 @@ export function createBookPublicationClient({
       // Reserve before format proxies, option/source getters, signal adapters
       // or the worker factory can reenter this public operation.
       active = operation;
-      let selected, input, strictLinks, archive, embedding, profile;
+      let selected, input, strictLinks, strictPdf, pdfCapture, archive, embedding, profile;
       try {
         selected = publicationFormats(formats);
+        strictPdf = request?.strictPdf;
+        if (strictPdf !== undefined && typeof strictPdf !== "boolean")
+          throw error("INVALID_OPTIONS", "strictPdf must be a boolean.");
+        if (strictPdf && !selected.includes("pdf"))
+          throw error("INVALID_OPTIONS", "Include pdf in the publication formats to verify its assembled PDF.");
         strictLinks = request?.strictLinks;
         if (strictLinks !== undefined && typeof strictLinks !== "boolean")
           throw error("INVALID_OPTIONS", "strictLinks must be a boolean.");
@@ -184,6 +193,13 @@ export function createBookPublicationClient({
           ? Object.freeze({ pdfA: "2b", pdfAStrict: input.options.pdfAStrict === true }) : null;
         embedding = input.options.fontEmbedding;
         profile = input.options.profile;
+        if (strictPdf) {
+          pdfCapture = {
+            paths: input.files.map(file => file.path),
+            sourceLength: [...input.files, ...(input.options.includeSources ?? [])]
+              .reduce((sum, file) => sum + bookTextBytes(file.source), 0),
+          };
+        }
         if (signal?.aborted) { onAbort(); return; }
       } catch (cause) {
         finish(cause);
@@ -192,6 +208,7 @@ export function createBookPublicationClient({
       void (async () => {
         for (let attempt = 1; !stopped(); attempt++) {
           try {
+            if (strictPdf) sourceLength = pdfCapture.sourceLength;
             if (strictLinks) {
               progress("checking-links", attempt, 0);
               if (stopped()) return;
@@ -219,9 +236,12 @@ export function createBookPublicationClient({
               }
               // Every rendered format must attest the source byte metric that
               // the native checker verified, not merely agree with one another.
+              if (strictPdf && checked.sourceLength !== pdfCapture.sourceLength)
+                throw error("BOOK_VERIFICATION_MISMATCH", "The navigation and PDF checks refer to different captured inputs.");
               sourceLength = checked.sourceLength;
             }
-            const created = createClient({ strictLinks: strictLinks === true });
+            const created = createClient({ strictLinks: strictLinks === true,
+              ...(strictPdf ? { pdfReportLimit: BOOK_PDF_VERIFICATION_MAX_BYTES } : {}) });
             if (stopped()) { retire(created); return; }
             client = created;
             if (!client || ["render", "renderSourceUpdate", "dispose"].some(key => typeof client[key] !== "function"))
@@ -243,6 +263,29 @@ export function createBookPublicationClient({
               sourceLength = admitted.output.sourceLength;
               total += admitted.output.bytes.byteLength;
               outputs.push(admitted.output);
+            }
+            let pdfReport;
+            if (strictPdf) {
+              progress("verifying-pdf", attempt, selected.length);
+              if (stopped()) return;
+              // The empty delta carries no replacement settings or assets. The
+              // retained writer verifies the same capture used for the PDF.
+              const verified = await client.renderSourceUpdate([], "pdf-verification",
+                { expectedRevision: revision }, { signal: abort.signal });
+              if (stopped()) return;
+              if (verified?.format !== "book-pdf-verification" || verified.mimeType !== "application/json"
+                  || verified.extension !== "json" || verified.sourceLength !== pdfCapture.sourceLength
+                  || !Number.isSafeInteger(verified.retainedInputRevision) || verified.retainedInputRevision <= revision)
+                throw error("INVALID_BOOK_PDF_VERIFICATION", "PDF verification does not match the retained publication.");
+              checkArchive(verified, archive);
+              bookAuthoringProfileReceipt(verified, profile);
+              pdfReport = parseBookPdfVerificationReport(verified.bytes, pdfCapture.paths);
+              if (!pdfReport.layout.page_count || (pdfReport.layout.profile !== undefined && pdfReport.layout.profile !== profile))
+                throw error("INVALID_BOOK_PDF_VERIFICATION", "PDF verification returned inconsistent page or dialect information.");
+              if (pdfReport.layout.verdict !== "clean")
+                throw Object.assign(error("BOOK_PDF_FINDINGS", "The assembled PDF has verification findings; no edition was published."),
+                  { pdfReport });
+              revision = verified.retainedInputRevision;
             }
             if (strictLinks && checkRetainedLinks) {
               progress("verifying-publication", attempt, selected.length);
@@ -269,6 +312,7 @@ export function createBookPublicationClient({
               format: "book-publication", sourceLength, byteLength: total,
               outputs: Object.freeze(outputs),
               ...(linkReport ? { linkReport } : {}),
+              ...(pdfReport ? { pdfReport } : {}),
             });
             finish(null, result, false);
             return;

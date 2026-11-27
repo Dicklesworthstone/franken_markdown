@@ -65,6 +65,36 @@ fn html_queries_safe_html_and_percent_escapes_share_source_owned_aliases() {
 }
 
 #[test]
+fn api_identifiers_and_free_duplicate_suffixes_resolve_across_publication() {
+    let source = "[api](#read_value) [again](?q=1#read%5Fvalue-1) [repeat](#usage-1) \
+        [start](#-getting-started)\n\n# Read Value\n\n# `read_value`\n\n# `read_value`\n\n\
+        # Usage\n\n# Usage\n\n# 🚀 Getting started";
+    let canonical = source
+        .replace("#read_value)", "#read-value-2)")
+        .replace("#read%5Fvalue-1)", "#read-value-3)")
+        .replace("#usage-1)", "#usage-2)")
+        .replace("#-getting-started)", "#getting-started)");
+    let doc = parse_markdown(source);
+    let expected = parse_markdown(&canonical);
+    let html = render_html_document(&doc, &html_options()).unwrap();
+    assert_eq!(
+        html,
+        render_html_document(&expected, &html_options()).unwrap()
+    );
+    assert!(html.contains("href=\"#read-value-2\">api</a>"));
+    assert!(html.contains("href=\"?q=1#read-value-3\">again</a>"));
+    assert!(html.contains("href=\"#usage-2\">repeat</a>"));
+    let options = PdfOptions::default();
+    assert_eq!(
+        render_pdf_document(&doc, &options).unwrap(),
+        render_pdf_document(&expected, &options).unwrap()
+    );
+    let report = verify_pdf_result(&doc, &options).unwrap();
+    assert!(report.anchors_unresolved.is_empty());
+    assert_eq!(report.anchors_resolved, 4);
+}
+
+#[test]
 fn pdf_note_link_binding_keeps_heading_alias_resolution() {
     let source = "# A B\n\n# A — B\n\n\
         [heading](#a--b) [note](#fn-n) cited[^n].\n\n[^n]: Note body.";

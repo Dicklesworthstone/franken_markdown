@@ -36,8 +36,8 @@ Same-document links include empty destinations, `#fragment`, and
 encoding, invalid UTF-8, missing anchors, ambiguous anchors and undefined parsed
 footnote references remain distinct findings.
 
-GitHub-style repeated separators are accepted when they belong to an actual
-source heading. For `# PART 0 — DOCUMENT CONTROL`, the compatibility spelling
+GitHub-style repeated separators, underscores in identifiers, and numbered
+duplicates are accepted when they belong to an actual source heading. For `# PART 0 — DOCUMENT CONTROL`, the compatibility spelling
 `#part-0--document-control` resolves to the unchanged emitted ID
 `part-0-document-control`. The resolver derives aliases from heading text and
 its own duplicate order; it does not collapse arbitrary incoming fragments.
@@ -48,6 +48,13 @@ For example, these headings have distinct source owners:
 | `# A B` | `a-b` | None needed |
 | `# A — B` | `a-b-2` | `#a--b` |
 | `# A — B` | `a-b-3` | `#a--b-1` |
+
+For API documentation, a heading containing `read_value` accepts
+`#read_value` and emits `id="read-value"`. Two headings named `Usage` emit
+`usage` and `usage-2`. An incoming `#usage-1` reaches the second heading
+unless a literal heading already owns that ID. A decorated heading such as
+`🚀 Getting started` accepts `#-getting-started`. With three `Usage` headings,
+`#usage-2` still reaches the second because it is an exact published ID.
 
 Exact emitted IDs, including footnote targets, take precedence. Aliases retain
 once-only percent decoding, target ambiguity checks and source-block ownership.

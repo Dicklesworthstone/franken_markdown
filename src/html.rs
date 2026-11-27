@@ -763,7 +763,16 @@ impl<'a> RenderState<'a> {
     }
 
     fn canonical_local_destination(&mut self, dest: &str) -> Option<String> {
-        if !dest.starts_with(['#', '?']) || !(dest.contains("--") || dest.contains('%')) {
+        if !dest.starts_with(['#', '?']) {
+            return None;
+        }
+        let (_, fragment) = dest.split_once('#')?;
+        if !(fragment.starts_with('-')
+            || fragment.ends_with('-')
+            || fragment.contains("--")
+            || fragment.contains(['_', '%'])
+            || fragment.as_bytes().last().is_some_and(u8::is_ascii_digit))
+        {
             return None;
         }
         let roots = self.root_blocks;

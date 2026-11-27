@@ -29,6 +29,37 @@ test('alias duplicate numbering is independent of canonical heading collisions',
   assert.match(html, /href="#a--b-2">unknown<\/a>/);
 });
 
+test('code identifiers retain source ownership across collisions and percent-encoded links', () => {
+  const source = '[api](#read_value) [second](?mode=print#read%5Fvalue-1) '
+    + '[exact](#read-value) [unknown](#read__value) [remote](other.md#read_value)\n\n'
+    + '# Read Value\n\n# `read_value`\n\n# `read_value`';
+  const html = render(source);
+  assert.deepEqual(headingIds(html), ['read-value', 'read-value-2', 'read-value-3']);
+  for (const [label, target] of [
+    ['api', '#read-value-2'], ['second', '?mode=print#read-value-3'],
+    ['exact', '#read-value'], ['unknown', '#read__value'], ['remote', 'other.md#read_value'],
+  ]) assert.ok(html.includes('href="' + target + '">' + label + '</a>'));
+});
+
+test('decorated headings keep leading and trailing authored separators in incoming fragments', () => {
+  const source = '[start](#-getting-started) [end](#finishing-) [unknown](#--getting-started)\n\n'
+    + '# 🚀 Getting started\n\n# Finishing 🚩';
+  const html = render(source);
+  assert.deepEqual(headingIds(html), ['getting-started', 'finishing']);
+  assert.match(html, /href="#getting-started">start<\/a>/);
+  assert.match(html, /href="#finishing">end<\/a>/);
+  assert.match(html, /href="#--getting-started">unknown<\/a>/);
+});
+
+test('duplicate compatibility numbers yield to exact headings anywhere in the document', () => {
+  const source = '[alias](#usage-1) [exact](#usage-2)\n\n# Usage\n\n# Usage\n\n# Usage';
+  assert.match(render(source), /href="#usage-2">alias<\/a>/);
+  assert.match(render(source), /href="#usage-2">exact<\/a>/);
+  assert.match(render(source + '\n\n# Usage-1'), /href="#usage-1">alias<\/a>/);
+  const emptyBase = '[section](#section-1)\n\n# !\n\n# ?\n\n# Section\n\n# Section';
+  assert.match(render(emptyBase), /href="#section-4">section<\/a>/);
+});
+
 test('literal numbered titles reserve their GitHub spelling before later duplicates', () => {
   const html = render('[first](#a--b) [literal](#a--b-1) [third](#a--b-2)\n\n'
     + '# A — B\n\n# A — B-1\n\n# A — B');

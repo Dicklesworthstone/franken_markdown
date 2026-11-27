@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Block, Document, Inline};
 
-/// Source-derived compatibility anchors for GitHub-authored repeated separators.
+/// Compatibility anchors derived from source headings and GitHub's duplicate numbering.
 ///
 /// Canonical emitted IDs always win. Aliases do not change heading IDs, decode
 /// a fragment a second time, or grant authority to an arbitrary URL. Exceeding
@@ -77,12 +77,12 @@ impl HeadingAliases {
                 break candidate;
             }
         };
-        self.suffixes.insert(base, suffix);
-        // Only repeated-separator compatibility is offered. Other slug dialects
-        // and arbitrary misspellings retain their existing behavior.
-        if alias.contains("--") && alias != canonical {
+        // A punctuation-only heading has no source-derived base. Its generated
+        // display ID must not consume the spelling of a literal "Section" heading.
+        if !base.is_empty() && alias != canonical {
             self.aliases.insert(alias, canonical.to_owned());
         }
+        self.suffixes.insert(base, suffix);
     }
 
     pub(crate) fn reserve(&mut self, id: &str) {
@@ -128,51 +128,42 @@ impl HeadingAliases {
 /// matches canonical slugs, including code, image alt text, safe markup and the
 /// omission of footnote marks. This is deliberately not a general slugger API.
 fn separated_heading_slug(inlines: &[Inline]) -> Option<String> {
-    fn text(source: &str, out: &mut String, separators: &mut usize) -> Option<()> {
+    fn text(source: &str, out: &mut String) -> Option<()> {
         for ch in source.chars() {
-            if ch.is_ascii_alphanumeric() || ch.is_alphabetic() || ch == '_' {
-                let extra = if out.is_empty() { 0 } else { *separators };
-                if extra > HeadingAliases::MAX_ID_BYTES.saturating_sub(out.len()) {
-                    return None;
-                }
-                out.extend(std::iter::repeat_n('-', extra));
+            if matches!(ch, ' ' | '-') {
+                out.push('-');
+            } else if ch.is_ascii_alphanumeric() || ch.is_alphabetic() || ch == '_' {
                 out.extend(ch.to_lowercase());
-                if out.len() > HeadingAliases::MAX_ID_BYTES {
-                    return None;
-                }
-                *separators = 0;
-            } else if matches!(ch, ' ' | '-') {
-                *separators += 1;
+            }
+            if out.len() > HeadingAliases::MAX_ID_BYTES {
+                return None;
             }
         }
         Some(())
     }
-    fn walk(inlines: &[Inline], out: &mut String, separators: &mut usize) -> Option<()> {
+    fn walk(inlines: &[Inline], out: &mut String) -> Option<()> {
         for inline in inlines {
             match inline {
                 Inline::FootnoteRef { .. } => {}
                 Inline::Text(value)
                 | Inline::Code(value)
                 | Inline::Math(value)
-                | Inline::DisplayMath(value) => text(value, out, separators)?,
+                | Inline::DisplayMath(value) => text(value, out)?,
                 Inline::Html(value) => {
-                    text(&crate::safe_html::visible_text(value), out, separators)?;
+                    text(&crate::safe_html::visible_text(value), out)?;
                 }
                 Inline::Emphasis(inner)
                 | Inline::Strong(inner)
                 | Inline::Strikethrough(inner)
-                | Inline::Link { content: inner, .. } => walk(inner, out, separators)?,
-                Inline::Image { alt, .. } => text(alt, out, separators)?,
-                Inline::SoftBreak | Inline::HardBreak => text(" ", out, separators)?,
+                | Inline::Link { content: inner, .. } => walk(inner, out)?,
+                Inline::Image { alt, .. } => text(alt, out)?,
+                Inline::SoftBreak | Inline::HardBreak => text(" ", out)?,
             }
         }
         Some(())
     }
     let mut out = String::new();
-    walk(inlines, &mut out, &mut 0)?;
-    if out.is_empty() {
-        out.push_str("section");
-    }
+    walk(inlines, &mut out)?;
     Some(out)
 }
 

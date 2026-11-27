@@ -2688,18 +2688,17 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     if (++aliasHeadings > MAX_ALIAS_HEADINGS) { chargeAliasBytes(MAX_ALIAS_BYTES + 1); return; }
     // Reuse semantic heading text, never raw Markdown or emitted HTML. Unlike
     // canonical IDs, each space/hyphen around removed punctuation survives.
-    let base = '', separators = 0, bytes = 0;
+    let base = '', bytes = 0;
     for (const scalar of text) {
       charge();
-      if (/[0-9\p{Alphabetic}_]/u.test(scalar)) {
-        const extra = base ? separators : 0, lower = scalar.toLowerCase();
-        bytes += extra + utf8Length(lower);
-        if (bytes > MAX_ALIAS_ID_BYTES) { chargeAliasBytes(MAX_ALIAS_BYTES + 1); return; }
-        base = append(base, '-'.repeat(extra) + lower);
-        separators = 0;
-      } else if (scalar === ' ' || scalar === '-') separators++;
+      let piece;
+      if (scalar === ' ' || scalar === '-') piece = '-';
+      else if (/[0-9\p{Alphabetic}_]/u.test(scalar)) piece = scalar.toLowerCase();
+      else continue;
+      bytes += utf8Length(piece);
+      if (bytes > MAX_ALIAS_ID_BYTES) { chargeAliasBytes(MAX_ALIAS_BYTES + 1); return; }
+      base = append(base, piece);
     }
-    if (!base) { base = 'section'; bytes = base.length; }
     if (!chargeAliasBytes(utf8Length(canonical) * 2 + bytes * 3 + 32)) return;
     let suffix = aliasSuffixes.get(base) || 0, alias;
     do {
@@ -2709,7 +2708,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     } while (aliasSuffixes.has(alias));
     allocate(); aliasSuffixes.set(alias, 1);
     aliasSuffixes.set(base, suffix);
-    if (alias.includes('--') && alias !== canonical) {
+    if (base && alias !== canonical) {
       allocate(); headingAliases.set(alias, canonical);
     }
   }

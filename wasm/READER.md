@@ -91,6 +91,13 @@ Malformed metadata rejects the complete snapshot rather than silently degrading.
 The optional `math` annotation uses these same validated ranges and budgets;
 neither its content nor a link target is parsed as HTML or TeX by the reader.
 
+For local heading links, `document.locateFragment(target)` accepts the engine's
+canonical `anchorId` and its optional GitHub-style `anchorAlias`. For example,
+an authored `#a--b` can address the heading “A — B” even when an earlier
+“A B” heading makes its emitted ID `a-b-2`. Exact IDs take precedence across
+the whole document. Aliases share the reading snapshot's anchor retention limit.
+Source ranges, link text and the original Markdown stay available after navigation.
+
 A link retains `target` for diagnostics and `activeTarget` for conservative scheme
 filtering (fragment/relative references and HTTP(S)/mailto, with controls and
 backslashes refused). `activeTarget: null` is inert. This filter is NOT host

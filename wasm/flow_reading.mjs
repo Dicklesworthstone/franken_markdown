@@ -559,10 +559,9 @@ export async function readFlowDocument(session, options = {}) {
       return step.value;
     } finally { iterator.return(); }
   }
-  function* anchorMetadata(raw, index) {
-    const id = raw.anchorId;
+  function* anchorMetadata(id, role, index) {
     if (id === undefined || id === null) return null;
-    if (raw.role !== "heading" || typeof id !== "string" || !id.length)
+    if (role !== "heading" || typeof id !== "string" || !id.length)
       invalid("invalid heading destination");
     retained.anchors += id.length;
     if (retained.anchors > budget.maxAnchorUnits)
@@ -577,7 +576,7 @@ export async function readFlowDocument(session, options = {}) {
     if (depth > budget.maxDepth || nodes.length >= budget.maxNodes)
       fail("READING_LIMIT", "reading node/depth limit exceeded");
     seen.add(raw);
-    const { role, text, children: input, level, anchorId, inlineRuns, imageLink, listPath } = raw;
+    const { role, text, children: input, level, anchorId, anchorAlias, inlineRuns, imageLink, listPath } = raw;
     if (!ROLES.has(role) || typeof text !== "string" || !Array.isArray(input))
       invalid("invalid reading node");
     textUnits += text.length;
@@ -592,9 +591,11 @@ export async function readFlowDocument(session, options = {}) {
         || (CELLS.has(role) && !ROWS.has(parent)) || (parent === "table" && !ROWS.has(role))
         || (ROWS.has(parent) && !CELLS.has(role)) || (parent === "list" && role !== "list-item"))
       invalid("inconsistent reading structure");
+    if (anchorAlias != null && anchorId == null) invalid("heading alias requires a destination");
     const node = {
       index: nodes.length, role, text, bounds,
-      anchorId: yield* anchorMetadata(captured, nodes.length),
+      anchorId: yield* anchorMetadata(anchorId, role, nodes.length),
+      ...(anchorAlias == null ? {} : { anchorAlias: yield* anchorMetadata(anchorAlias, role, nodes.length) }),
       ...(yield* inlineMetadata(captured, budget, retained)),
       listPath: yield* listMetadata(captured, depth, budget, retained),
       enclosingSourceSpan, ...(role === "heading" ? { level } : {}), children: [],

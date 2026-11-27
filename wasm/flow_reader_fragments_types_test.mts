@@ -10,7 +10,8 @@ const id: string | null = entry.anchorId;
 const bytes: number = document.anchorUnits;
 declare const raw: FlowReadingNode;
 const wireId: string | null | undefined = raw.anchorId;
-void [location, id, bytes, wireId];
+const alias: string | null | undefined = entry.anchorAlias;
+void [location, id, bytes, wireId, alias];
 // @ts-expect-error Fragment targets are strings, not source offsets.
 document.locateFragment(42);
 // @ts-expect-error Snapshot entries cannot be mutated by the host.

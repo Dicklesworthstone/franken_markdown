@@ -31,6 +31,32 @@ test("local navigation uses engine IDs, not reconstructed heading slugs or sourc
   assert.equal(document.locateFragment("#fmd:note:1").enclosingSourceSpan.startByte, 100);
 });
 
+test("authored heading aliases resolve exact source spans without changing the canonical id", async () => {
+  const roots = [heading("a-b"), heading("a-b-2", "A — B", {
+    anchorAlias: "a--b", enclosingSourceSpan: { startByte: 12, endByte: 23 },
+  }), heading("repeat-2", "Repeat", { anchorAlias: "repeat-1" })];
+  const document = await readFlowDocument(new ReadingSession(roots));
+  assert.deepEqual(document.locateFragment("#a%2D%2Db"), document.locateFragment("#a-b-2"));
+  assert.equal(document.locateFragment("#a--b").enclosingSourceSpan.startByte, 12);
+  assert.deepEqual(document.locateFragment("#repeat-1"), document.locate(2));
+  assert.equal(document.nodes[1].anchorId, "a-b-2");
+  assert.equal(document.nodes[1].anchorAlias, "a--b");
+  assert.equal(document.locateFragment("#A--B"), null);
+});
+
+test("alias admission counts all identifier bytes and rejects ambiguous or ownerless targets", async () => {
+  const first = heading("id", "Title", { anchorAlias: "also" });
+  const document = await readFlowDocument(new ReadingSession([first]), { limits: { maxAnchorUnits: 6 } });
+  assert.equal(document.anchorUnits, 6);
+  await assert.rejects(readFlowDocument(new ReadingSession([first]), { limits: { maxAnchorUnits: 5 } }), code("READING_LIMIT"));
+  for (const roots of [[first, heading("also")], [heading("also"), first],
+    [first, heading("other", "Other", { anchorAlias: "also" })],
+    [heading(undefined, "Unknown", { anchorAlias: "also" })],
+    [heading("id", "Title", { anchorAlias: "id" })]]) {
+    await assert.rejects(readFlowDocument(new ReadingSession(roots)), code("INVALID_READING_DATA"));
+  }
+});
+
 test("Unicode fragments decode once, preserve plus and case, and reject malformed escapes", async () => {
   const ids = ["é中🙂", "a+b", "%41", "A", "fmd:note:2"];
   const document = await readFlowDocument(new ReadingSession(ids.map((id) => heading(id))));

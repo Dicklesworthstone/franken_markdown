@@ -321,3 +321,45 @@ fn heading_slug_and_anchors() {
     };
     assert_eq!(heading.slug(), Some("my-cool-heading".to_string()));
 }
+
+#[test]
+fn authored_heading_fragments_navigate_the_measured_and_published_document() {
+    use franken_markdown::dep_invalidation::BrowserFlowSession;
+    use franken_markdown::flow_display::FlowLayoutOptions;
+    let source = "[decorated](#a--b) [duplicate](#repeat-1) [exact](#title-1)\n\n\
+        # A B\n\n# A — **B**\n\n# Repeat\n\n# Repeat\n\n# Title\n\n# Title\n\n# Title-1";
+    let html = franken_markdown::render_html(source, &Default::default()).unwrap();
+    for href in ["#a-b-2", "#repeat-2", "#title-1"] {
+        assert!(html.contains(&format!("href=\"{href}\"")));
+    }
+    let browser = BrowserFlowSession::new(source, "sans", FlowLayoutOptions::default()).unwrap();
+    let page = browser
+        .reading_json(browser.revision(), browser.layout_revision(), 0, 512)
+        .unwrap();
+    for (id, alias) in [("a-b-2", "a--b"), ("repeat-2", "repeat-1")] {
+        assert!(page.contains(&format!("\"anchorId\":\"{id}\",\"anchorAlias\":\"{alias}\"")));
+        assert!(page.contains(&format!("\"activeTarget\":\"#{alias}\"")));
+    }
+    assert!(page.contains("\"anchorId\":\"title-1\""));
+    assert!(!page.contains("\"anchorAlias\":\"title-1\""));
+}
+
+#[test]
+fn tight_flow_output_budget_discards_optional_aliases_and_keeps_exact_headings() {
+    use franken_markdown::flow_display::FlowDisplayLimits;
+    // Each title and canonical ID fit exactly. The additional aliases do not.
+    let source = "# A — B\n\n# C — D";
+    let mut engine = ResumableFlowDisplay::try_with_limits(
+        source, 1, 1,
+        FlowDisplayLimits {
+            max_output_bytes: 20,
+            ..FlowDisplayLimits::default()
+        },
+    )
+    .unwrap();
+    engine.process_all().unwrap();
+    assert_eq!(engine.heading_id_for_block(0), Some("a-b"));
+    assert_eq!(engine.heading_id_for_block(1), Some("c-d"));
+    assert_eq!(engine.heading_alias_for_block(0), None);
+    assert_eq!(engine.heading_alias_for_block(1), None);
+}

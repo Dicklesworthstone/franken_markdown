@@ -271,6 +271,9 @@ export interface FlowReadingNode {
   /** Engine-assigned heading/note destination, including collision suffixes.
    * Absent on other roles and legacy producers; never infer from reading text. */
   readonly anchorId?: string | null;
+  /** Additional engine-allocated GitHub-style fragment for this same heading.
+   * Absent when identical to or shadowed by a canonical destination. */
+  readonly anchorAlias?: string | null;
   readonly role:
     | "document"
     | "heading"

@@ -121,6 +121,10 @@ pub(super) fn fields(
         let id = engine.heading_id_for_block(index).ok_or(fmt::Error)?;
         w.write_str(",\"anchorId\":")?;
         w.string(id)?;
+        if let Some(alias) = engine.heading_alias_for_block(index) {
+            w.write_str(",\"anchorAlias\":")?;
+            w.string(alias)?;
+        }
     }
     list_path(w, engine, index, cell)?;
     w.write_str(",\"inlineRuns\":[")?;

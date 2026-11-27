@@ -212,6 +212,7 @@ struct SourceLine {
 struct BlockMeta {
     span: SourceSpan,
     heading_id: Option<String>,
+    heading_alias: Option<String>,
     list_depth: u16,
     // One shared immutable allocation per AST item, not a path copy per output.
     list_path: std::sync::Arc<[FlowListItem]>,
@@ -915,6 +916,7 @@ fn prepare_document(
     }
     let mut output = Projection::new(limits);
     let mut slugs = HashMap::<String, usize>::new();
+    let mut aliases = crate::anchors::HeadingAliases::default();
     let mut next_request_id = 1;
     let mut next_list_id = 1_u64;
     let mut list_bytes = 0_usize;
@@ -1006,6 +1008,7 @@ fn prepare_document(
                     };
                     slugs.insert(id.clone(), 1);
                     slugs.insert(base, suffix);
+                    aliases.heading(inlines, &id);
                     meta.heading_id = Some(id);
                     let (text, runs, _) = inline::collect(
                         &notes.inlines(inlines),
@@ -1234,7 +1237,28 @@ fn prepare_document(
             },
         }
     }
-    Ok(output.into_items())
+    // A later heading can own the exact spelling of an earlier alias. Resolve
+    // only after all headings have been allocated, including moved note bodies.
+    let by_heading: HashMap<_, _> = aliases.entries().map(|(alias, id)| (id, alias)).collect();
+    // Aliases are optional. Preserve exact navigation if the entire inventory
+    // cannot fit the remaining retained-string budget.
+    if by_heading.values().map(|alias| alias.len()).sum::<usize>() > output.remaining_bytes() {
+        return Ok(output.into_items());
+    }
+    let mut items = output.into_items();
+    if !by_heading.is_empty() {
+        for item in &mut items {
+            if let Some(alias) = item
+                .meta
+                .heading_id
+                .as_deref()
+                .and_then(|id| by_heading.get(id))
+            {
+                item.meta.heading_alias = Some((*alias).to_owned());
+            }
+        }
+    }
+    Ok(items)
 }
 
 fn emit_text(

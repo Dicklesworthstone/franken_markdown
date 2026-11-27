@@ -249,6 +249,12 @@ impl super::ResumableFlowDisplay {
     pub fn heading_id_for_block(&self, index: usize) -> Option<&str> {
         self.metadata.get(index)?.heading_id.as_deref()
     }
+
+    /// Unshadowed compatibility fragment for this heading, if one was admitted.
+    #[must_use]
+    pub fn heading_alias_for_block(&self, index: usize) -> Option<&str> {
+        self.metadata.get(index)?.heading_alias.as_deref()
+    }
 }
 
 #[cfg(test)]

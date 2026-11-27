@@ -77,3 +77,40 @@ test('task markers and definitions remain content rather than empty markers', ()
   assert.equal(render('- [r]: /real\n\n  [r]\n'),
     '<ul>\n<li><p><a href="/real">r</a></p></li>\n</ul>\n');
 });
+
+test('task separators preserve code indentation and only real definitions own links', () => {
+  for (const marker of ['-', '1.', '12)']) {
+    for (const checkbox of ['[x]', '[X]', '[ ]']) {
+      for (const gap of ['     ', '\t    ', ' \t', '\t\t']) {
+        const source = marker + ' ' + checkbox + gap + '[guide]: /literal\noutside\n\n'
+          + '[guide]: /real\n\n[guide]';
+        const html = render(source);
+        assert.match(html, /<li class="task"><input type="checkbox" disabled(?: checked)?> <pre><code>\[guide\]: \/literal\n<\/code><\/pre><\/li>/);
+        assert.match(html, /<\/(?:ul|ol)>\n<p>outside<\/p>\n<p><a href="\/real">guide<\/a><\/p>/);
+        assert.doesNotMatch(html, /href="\/literal"/);
+      }
+    }
+  }
+});
+
+test('code in nested task items cannot create citations or absorb outer paragraphs', () => {
+  for (const source of [
+    '> - [x]     [^n]: sample\noutside\n\nUse[^n].',
+    '- - [x]     [^n]: sample\noutside\n\nUse[^n].',
+    '> 3) [X]     [^n]: sample\noutside\n\nUse[^n].',
+  ]) {
+    const html = render(source);
+    assert.match(html, /<pre><code>\[\^n\]: sample\n<\/code><\/pre>/);
+    assert.match(html, /<p>outside<\/p>\n<p>Use\[\^n\]\.<\/p>/);
+    assert.doesNotMatch(html, /class="footnotes"/);
+  }
+});
+
+test('only an ASCII space or tab separates the checkbox from live item content', () => {
+  for (const separator of ['\u00a0', '\u2003', '\u2028', '\u2029', '\uFEFF', '\v', '\f']) {
+    const source = '- [x]' + separator + '[r]: /sample\n\n[r]';
+    assert.equal(render(source), '<ul>\n<li>[x]' + separator + '[r]: /sample</li>\n</ul>\n<p>[r]</p>\n');
+  }
+  assert.match(render('- [X]\t[r]: /real\n\n[r]'), /<a href="\/real">r<\/a>/);
+  assert.match(render('- [ ]    **text**'), /disabled> <strong>text<\/strong>/);
+});

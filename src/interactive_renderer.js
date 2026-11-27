@@ -1820,6 +1820,14 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       start: parseInt(m[2], 10), width: column + (!m[4] || gap > 4 ? 1 : gap),
       text: !m[4] ? '' : gap > 4 ? stripIndent(m[3] + m[4], 1, column) : m[4]};
   };
+  // Native split_task_marker consumes one ASCII separator. Remaining
+  // indentation can open a code block, whose contents stay literal.
+  function taskBody(text) {
+    const marker = /^\[([ xX])\](?:[ \t]|$)/.exec(text);
+    return marker
+      ? {checked: marker[1] !== ' ', text: text.slice(marker[0].length)}
+      : {checked: null, text};
+  }
   const markerInterrupts = marker => marker && !blankLine(marker.text) && (!marker.ordered || marker.start === 1);
   const startsBlock = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || listMarker(line) || htmlBlockKind(line);
   const interruptsParagraph = line => blankLine(line) || fence(line) || headingMarker(line) || /^ {0,3}>/.test(line) || rule(line) || markerInterrupts(listMarker(line)) || htmlInterruptsParagraph(line);
@@ -2339,7 +2347,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
         if (depth + level < MAX_DEPTH) {
           allocate(); containers.push({kind: 'list', width: marker.width, ordered: marker.ordered,
             marker: marker.marker.at(-1), empty: blankLine(marker.text)});
-          observe(marker.text.replace(/^\[([ xX])\](?:\s+|$)/, ''), level + 1);
+          observe(taskBody(marker.text).text, level + 1);
         }
         return;
       }
@@ -2514,8 +2522,9 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
           if (rule(lines[i])) break;
           const next = listMarker(lines[i]);
           if (!next || next.ordered !== marker.ordered || next.marker.at(-1) !== marker.marker.at(-1)) break;
-          const item = [next.text], tail = containerTail(depth); i++; let blank = false;
-          tail.observe(next.text.replace(/^\[([ xX])\](?:\s+|$)/, ''));
+          const body = taskBody(next.text), item = [body.text], tail = containerTail(depth);
+          i++; let blank = false;
+          tail.observe(body.text);
           while (i < lines.length) {
             if (blankLine(lines[i])) {
               if (tail.literalBlank()) {
@@ -2529,7 +2538,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
               // including markers indented up to three columns. Otherwise the
               // following source keeps its original indentation outside this
               // item, so indented code cannot become a reference definition.
-              if (item.length === 1 && blankLine(item[0])) {
+              if (item.length === 1 && blankLine(next.text)) {
                 if (following && following.ordered === marker.ordered && following.marker.at(-1) === marker.marker.at(-1)) {
                   blank = true; i = j;
                 }
@@ -2556,10 +2565,8 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
             const lazy = tail.lazyLine(lines[i]);
             tail.observe(lazy); pushSourceLine(item, lazy, lines, i, true); i++;
           }
-          const task = item[0].match(/^\[([ xX])\](?:\s+|$)(.*)$/s);
-          if (task) item[0] = task[2];
           allocate();
-          items.push({task: task ? task[1] !== ' ' : null, children: parseBlocks(item, depth + 1)});
+          items.push({task: body.checked, children: parseBlocks(item, depth + 1)});
           loose ||= blank;
         }
         push({kind: 'list', ordered: marker.ordered, start: marker.start, loose, items}); continue;

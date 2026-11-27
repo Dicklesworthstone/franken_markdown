@@ -379,3 +379,23 @@ fn braces_outside_the_formula_cannot_give_a_price_the_following_columns() {
         );
     }
 }
+
+#[test]
+fn unclosed_braces_do_not_merge_price_cells_with_a_later_formula() {
+    for left in ["$10 {", r"$10 \text{", r"$10 {nested {$3}", r"$10 {escaped \}"] {
+        let source = format!(
+            "Price|Other|Formula|Link\n---|---|---|---\n{left} | $20 | $x$ | [go](/ok)\n"
+        );
+        let document = assert_table_source(&source);
+        assert_eq!(
+            table(&document).rows[0],
+            [
+                parse_inlines(left),
+                text("$20"),
+                vec![Inline::Math("x".into())],
+                parse_inlines("[go](/ok)")
+            ],
+            "{source:?}"
+        );
+    }
+}

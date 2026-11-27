@@ -95,3 +95,11 @@ test('a brace opened before a price cannot let it borrow another cell', () => {
     assert.deepEqual(cells, [first.replace('\\{', '{'), '$5', '$x|y$', '<a href="/ok">go</a>']);
   }
 });
+
+test('unclosed braces cannot merge price columns with a following formula', () => {
+  for (const left of ['$10 {', String.raw`$10 \text{`, '$10 {nested {$3}', String.raw`$10 {escaped \}`]) {
+    const html = render('Price|Other|Formula|Link\n---|---|---|---\n' + left + ' | $20 | $x$ | [go](/ok)');
+    const cells = [...html.matchAll(/<td>(.*?)<\/td>/g)].map(match => match[1]);
+    assert.deepEqual(cells, [left.replace('\\}', '}'), '$20', '$x$', '<a href="/ok">go</a>']);
+  }
+});

@@ -1108,7 +1108,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
           // double-dollar span skips invalid runs in prose only.
           const skipThrough = width === 2 ? (table ? -1 : Infinity)
             : table && startsCell ? -1 : braces.at(-1) ?? -1;
-          allocate(); runs[width - 1].push({start: i, afterPipe, skipThrough,
+          allocate(); runs[width - 1].push({start: i, afterPipe, skipThrough, openBrace: braces.at(-1) ?? -1,
             closes: i > 0 && !' \t\n'.includes(text[i - 1]) && !startsPrice && (!table || !startsCell)});
         }
         i = end; continue;
@@ -1145,6 +1145,9 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       const first = candidates[next[width - 1]];
       if (!first || content > first.latestContentStart) return -1;
       const close = candidates[first.nextClose];
+      // An unclosed brace cannot extend a price across table columns. Apply
+      // this extra table boundary only when a grouped dollar was skipped.
+      if (table && first !== close && close.openBrace >= content) return -1;
       // A price cell cannot borrow a following cell's dollar.
       const numeric = width === 1 && (/^[0-9]/.test(text[content])
         || '+-'.includes(text[content]) && /[0-9]/.test(text[content + 1] || ''));

@@ -6441,8 +6441,9 @@ struct TableMathRuns {
     runs: [Vec<TableMathRun>; 2],
     next: [usize; 2],
     // Only ineligible dollars inside TeX groups need this secondary index.
-    // (Earliest enclosing brace, index of the next eligible single closer.)
-    grouped: HashMap<usize, (usize, usize)>,
+    // A body may start only within the stored range: it must open every
+    // skipped group and close them before the indexed dollar.
+    grouped: HashMap<usize, (std::ops::RangeInclusive<usize>, usize)>,
 }
 
 struct TableMathRun {
@@ -6486,10 +6487,15 @@ impl TableMathRuns {
                             // An opener must own the enclosing brace of every skipped dollar.
                             // Link all pending runs once, including those in nested groups.
                             let closer = index.runs[0].len();
+                            // A still-open brace from an earlier table cell must not
+                            // let a price consume this closer and the intervening cells.
+                            let first_body = braces.last().map_or(0, |&open| open + 1);
                             let mut earliest = usize::MAX;
                             for (price, brace) in pending.drain(..).rev() {
                                 earliest = earliest.min(brace);
-                                index.grouped.insert(price, (earliest, closer));
+                                if first_body <= earliest {
+                                    index.grouped.insert(price, (first_body..=earliest, closer));
+                                }
                             }
                         } else if !starts_cell && let Some(&brace) = braces.last() {
                             pending.push((pos, brace));
@@ -6529,11 +6535,11 @@ impl TableMathRuns {
         }
         let mut close = runs.get(*next)?;
         if !close.can_close {
-            let &(brace, closer) = self.grouped.get(&close.start)?;
-            if after > brace {
+            let (body_starts, closer) = self.grouped.get(&close.start)?;
+            if !body_starts.contains(&after) {
                 return None;
             }
-            close = &runs[closer];
+            close = &runs[*closer];
         }
         let numeric_opener = width == 1
             && (bytes.get(after).is_some_and(u8::is_ascii_digit)

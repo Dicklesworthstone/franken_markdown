@@ -595,3 +595,24 @@ fn live_changes_are_used_and_opaque_buffers_have_no_inferred_file_authority() ->
     );
     Ok(())
 }
+
+#[test]
+fn punctuation_rename_stabilizes_aliases_even_when_the_canonical_id_is_unchanged() -> TestResult {
+    let marked = "# A ¦— B\n\n[alias](#a--b) [exact](#a%2Db)\n";
+    let (source, result) = call(marked, "A B")?;
+    assert_eq!(
+        apply_result(&source, &result, URI)?,
+        "# A B\n\n[alias](#a-b) [exact](#a%2Db)\n"
+    );
+    assert_eq!(edits(&result, URI).len(), 2);
+    Ok(())
+}
+
+#[test]
+fn rename_refuses_to_reassign_another_headings_alias_while_canonical_ids_stay_equal() -> TestResult
+{
+    let refusal = failure("# A¦ B\n\n# A — B\n\n[second](#a--b)", "A — B")?;
+    assert_eq!(refusal.0, -32803);
+    assert!(refusal.1.contains("compatibility anchors"));
+    Ok(())
+}

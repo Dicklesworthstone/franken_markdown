@@ -581,3 +581,76 @@ fn current_buffer_revision_controls_navigation_after_heading_rename() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn github_heading_alias_definition_preserves_the_source_selected_duplicate() -> TestResult {
+    for destination in ["#a--b", "?view=print#a%2D%2Db"] {
+        let source = format!("# A B\n\n# A — B\n\n[go]({destination}¦)");
+        let result = call("textDocument/definition", &source)?;
+        assert_eq!(
+            result.get("range").and_then(|r| r.get("start")),
+            Some(&position(Position {
+                line: 2,
+                character: 0
+            }))
+        );
+    }
+    assert_eq!(
+        call(
+            "textDocument/definition",
+            "# A B\n\n# A — B\n\n[go](#a--b-1¦)"
+        )?,
+        Json::Null
+    );
+    Ok(())
+}
+
+#[test]
+fn github_heading_alias_cross_buffer_definition_uses_the_authorized_target() -> TestResult {
+    let source_uri = "file:///docs/source.md";
+    let target_uri = "file:///docs/guide.md";
+    let (source, offset) = marked("[go](guide.md?view=print#a%2D%2Db¦)")?;
+    let mut server = Server {
+        phase: Phase::Running,
+        ..Server::default()
+    };
+    for (uri, text) in [
+        (source_uri, source.as_str()),
+        (target_uri, "# A B\n\n# A — B"),
+    ] {
+        server.documents.insert(
+            uri.to_string(),
+            Buffer {
+                text: text.to_string(),
+                version: 1,
+                synchronized: true,
+            },
+        );
+    }
+    let params = object([
+        ("textDocument", object([("uri", string(source_uri))])),
+        (
+            "position",
+            position(LineIndex::new(&source).position(&source, offset)),
+        ),
+    ]);
+    let result = server
+        .navigate("textDocument/definition", &params)
+        .map_err(|(_, reason)| reason)?;
+    assert_eq!(result.get("uri").and_then(Json::as_str), Some(target_uri));
+    assert_eq!(
+        result.get("range").and_then(|r| r.get("start")),
+        Some(&position(Position {
+            line: 2,
+            character: 0
+        }))
+    );
+    server.documents.remove(target_uri);
+    assert_eq!(
+        server
+            .navigate("textDocument/definition", &params)
+            .map_err(|(_, reason)| reason)?,
+        Json::Null
+    );
+    Ok(())
+}

@@ -757,3 +757,107 @@ fn generated_notes_start_a_new_section_but_keep_the_first_note() {
         );
     }
 }
+
+#[test]
+fn impossible_heading_figure_keeps_recover_measured_pages_and_report_the_relaxation() {
+    use franken_markdown::{
+        PdfPaginationFailure, PdfPaginationStrategy, RenderError, RenderWarning,
+        render_pdf_reported, render_warnings,
+    };
+
+    for grid in [None, Some(BaselineGrid::from_points(1.0).unwrap())] {
+        for with_note in [false, true] {
+            let mut options = small_options();
+            options.optimal_pagination = true;
+            options.theme.page.baseline_grid = grid;
+            // The 180pt artwork plus its gap fits the 202pt body alone, while
+            // its two complete headings cannot join it. Figure fitting must
+            // retain its natural size, independently of flowchart layering.
+            options.image_assets.push(PdfImageAsset::new(
+                "tall.svg",
+                br##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="240" viewBox="0 0 80 240"><rect width="80" height="240" fill="#eee"/></svg>"##.to_vec(),
+            ));
+            let body = (0..10)
+                .map(|index| format!("BODY{index:02}"))
+                .collect::<Vec<_>>()
+                .join("  \n");
+            let source = format!(
+                "# ALPHA{}\n\n## BETA\n\n![Tall figure](tall.svg)\n\n{body}\n{}",
+                if with_note { "[^n]" } else { "" },
+                if with_note { "\n[^n]: FOOTNOTE\n" } else { "" },
+            );
+            let doc = parse_markdown(&source);
+            let rendered = render_pdf_reported(&source, &options).unwrap();
+            assert_eq!(
+                rendered.pagination.page_breaks.strategy,
+                PdfPaginationStrategy::RelaxedHeight
+            );
+            assert!(!rendered.pagination.page_breaks.is_exact());
+            let reason = rendered.pagination.page_breaks.fallback.clone().unwrap();
+            assert!(matches!(
+                reason,
+                PdfPaginationFailure::Planner(
+                    franken_markdown::pagination::height::HeightPaginationError::NoFeasibleLayout { .. }
+                )
+            ));
+            let pages = painted_pages(&rendered.bytes);
+            let heading_page = page_of(&pages, "ALPHA");
+            assert_eq!(page_of(&pages, "BETA"), heading_page);
+            assert_eq!(pages[heading_page].rules.len(), 2 + usize::from(with_note));
+            let figures: Vec<_> = pages
+                .iter()
+                .enumerate()
+                .flat_map(|(page, content)| {
+                    content
+                        .figure_transforms
+                        .iter()
+                        .map(move |matrix| (page, matrix))
+                })
+                .collect();
+            assert_eq!(figures.len(), 1);
+            let (figure_page, matrix) = figures[0];
+            assert_eq!(figure_page, heading_page + 1);
+            assert!((matrix[0] - 0.75).abs() < 0.001);
+            assert!((matrix[3] + 0.75).abs() < 0.001);
+            assert!(matrix[5] <= 226.001 && matrix[5] - 180.0 >= 23.999);
+            for index in 0..10 {
+                assert!(page_of(&pages, &format!("BODY{index:02}")) > figure_page);
+            }
+            for page in &pages {
+                let lines = page.text.matches("BODY").count();
+                assert!(lines == 0 || lines >= 2, "hard widow/orphan rules survive");
+            }
+            if with_note {
+                assert_eq!(page_of(&pages, "FOOTNOTE"), heading_page);
+            }
+
+            let warning = render_warnings(&doc, &options)
+                .into_iter()
+                .find(|warning| matches!(warning, RenderWarning::PaginationFallback { .. }))
+                .unwrap();
+            assert_eq!(warning.code(), "pagination_infeasible");
+            assert!(warning.message().contains("relaxed_height"));
+            assert!(
+                warning
+                    .message()
+                    .contains("hard widow/orphan rules were preserved")
+            );
+            let verified = franken_markdown::verify::verify_pdf_result(&doc, &options).unwrap();
+            assert_eq!(verified.page_count, pages.len());
+            assert!(verified.findings.iter().any(|finding| {
+                finding.code == warning.code() && finding.detail == warning.message()
+            }));
+            assert_eq!(
+                rendered,
+                render_pdf_document_reported(&doc, &options, PdfEmitOptions::monolithic()).unwrap()
+            );
+            assert_eq!(rendered.bytes, render_pdf(&source, &options).unwrap());
+
+            options.strict_pagination = true;
+            assert!(matches!(
+                render_pdf(&source, &options),
+                Err(RenderError::Pagination(actual)) if actual == reason
+            ));
+        }
+    }
+}

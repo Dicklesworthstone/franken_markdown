@@ -447,3 +447,46 @@ fn every_public_pdf_entrypoint_binds_the_same_note_fragments() {
     assert_eq!(links(&archived), links(&expected));
     assert_eq!(doc, before, "rendering cannot mutate the source AST");
 }
+
+#[test]
+fn compatibility_heading_links_bind_to_the_source_bookmark_after_html_lowering() {
+    for fragment in ["#a--b", "#a-b-2", "?view=print#a%2D%2Db"] {
+        let doc = parse_markdown(&format!(
+            "# A B\n\n<h2>A B</h2>\n\n# A — B\n\n[go]({fragment})"
+        ));
+        let options = PdfOptions::default();
+        let bytes = render_pdf_document(&doc, &options).unwrap();
+        let annotations = links(&bytes);
+        // Read the completed PDF via its xref. Bookmarks and annotations must
+        // name the same physical page object and baseline, independently of
+        // canonical fragment strings or the planner's internal target map.
+        let bookmarks: Vec<_> = objects(&bytes)
+            .into_iter()
+            .map(dictionary)
+            .filter(|dict| contains(dict, b"/Title ") && contains(dict, b"/Dest ["))
+            .map(|dict| {
+                let text = std::str::from_utf8(dict).unwrap();
+                let fields: Vec<_> = text
+                    .split_once("/Dest [")
+                    .unwrap()
+                    .1
+                    .split_once(']')
+                    .unwrap()
+                    .0
+                    .split_whitespace()
+                    .collect();
+                assert_eq!(&fields[1..5], &["0", "R", "/XYZ", "null"]);
+                Destination {
+                    page: fields[0].parse().unwrap(),
+                    y: fields[5].parse().unwrap(),
+                }
+            })
+            .collect();
+        assert_eq!(bookmarks.len(), 3);
+        assert_eq!(annotations, [Some(bookmarks[2])], "{fragment}");
+        assert_ne!(bookmarks[2], bookmarks[1]);
+        let report = franken_markdown::verify::verify_pdf_result(&doc, &options).unwrap();
+        assert_eq!(report.anchors_resolved, 1);
+        assert!(report.anchors_unresolved.is_empty());
+    }
+}

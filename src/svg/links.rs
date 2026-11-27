@@ -114,6 +114,7 @@ pub(super) struct Navigation {
     /// Exact immutable prepared Inline identities, never authored destinations.
     note_inlines: BTreeMap<usize, EndnoteTarget>,
     note_aliases: BTreeMap<String, (EndnoteTarget, bool)>,
+    source_headings: BTreeMap<String, Option<usize>>,
     note_positions: BTreeMap<EndnoteTarget, f64>,
     regions: Vec<Region>,
     seen: BTreeSet<usize>,
@@ -122,6 +123,7 @@ pub(super) struct Navigation {
     region_limited: bool,
     geometry_adjusted: bool,
     note_limited: bool,
+    source_heading_limited: bool,
 }
 
 impl Navigation {
@@ -141,6 +143,17 @@ impl Navigation {
                 name.to_owned(),
                 (target, prepared.source_alias(name).is_some()),
             );
+        }
+        for (name, ordinal) in prepared.heading_aliases() {
+            if name.len() > MAX_METADATA_BYTES - self.metadata_bytes {
+                // Never expose a partial source namespace: an omitted entry
+                // could otherwise fall through to an export-only heading.
+                self.source_heading_limited = true;
+                self.source_headings.clear();
+                break;
+            }
+            self.metadata_bytes += name.len();
+            self.source_headings.insert(name.to_owned(), ordinal);
         }
         !self.note_inlines.is_empty()
     }
@@ -360,22 +373,32 @@ impl Navigation {
                 let view = match &link.target {
                     Target::Fragment(fragment) if fragment.is_empty() => Some(View::Top),
                     Target::Fragment(fragment) if !self.note_limited => {
-                        match (self.headings.get(fragment), self.note_aliases.get(fragment)) {
-                            // Original source-owned note IDs cannot be captured
-                            // by export-only headings or headings renamed while
-                            // lowering raw HTML. Native-only legacy aliases keep
-                            // the existing collision/ambiguity policy.
-                            (_, Some(&(target, true))) => self
-                                .note_positions
+                        let note = self.note_aliases.get(fragment);
+                        // Exact source note IDs retain precedence. Source
+                        // heading ordinals then bypass names introduced by HTML
+                        // lowering or complete-note preparation.
+                        if let Some(&(target, true)) = note {
+                            self.note_positions
                                 .contains_key(&target)
-                                .then_some(View::Endnote(target)),
-                            (Some(_), Some(_)) => None,
-                            (Some(heading), None) => Some(View::Heading(heading.id)),
-                            (None, Some(&(target, _))) if !self.heading_limited => self
-                                .note_positions
-                                .contains_key(&target)
-                                .then_some(View::Endnote(target)),
-                            (None, _) => None,
+                                .then_some(View::Endnote(target))
+                        } else if self.source_heading_limited {
+                            None
+                        } else if let Some(ordinal) = self.source_headings.get(fragment) {
+                            ordinal
+                                .filter(|&id| id < self.headings.len())
+                                .map(View::Heading)
+                        } else {
+                            // Native-only note aliases retain the existing
+                            // collision policy with ordinary exported headings.
+                            match (self.headings.get(fragment), note) {
+                                (Some(_), Some(_)) => None,
+                                (Some(heading), None) => Some(View::Heading(heading.id)),
+                                (None, Some(&(target, _))) if !self.heading_limited => self
+                                    .note_positions
+                                    .contains_key(&target)
+                                    .then_some(View::Endnote(target)),
+                                (None, _) => None,
+                            }
                         }
                     }
                     Target::Endnote(target) => self
@@ -489,6 +512,7 @@ impl Navigation {
             || self.region_limited
             || output_limited
             || self.note_limited
+            || self.source_heading_limited
         {
             warn(
                 warnings,

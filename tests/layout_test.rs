@@ -1026,6 +1026,50 @@ fn microtype_protrusion_table_is_stable() {
     assert_eq!(right("ax"), 0);
 }
 
+#[test]
+fn right_protrusion_uses_the_punctuation_advance_instead_of_the_em() {
+    use franken_markdown::layout::right_protrusion_for_advance;
+
+    let opts = MicrotypeOptions::CONSERVATIVE;
+    // A 3pt comma in an 11pt font may hang 1.65pt, never 6.05pt.
+    let comma = LayoutUnit::from_milli_points(3_000);
+    assert_eq!(
+        right_protrusion_for_advance(',', comma, opts),
+        LayoutUnit::from_milli_points(1_650)
+    );
+    for (ch, fraction) in [
+        ('.', 550),
+        (';', 420),
+        ('?', 250),
+        ('"', 350),
+        (')', 120),
+        ('—', 80),
+        ('x', 0),
+    ] {
+        for width in [1, 17, 2_777, 11_000, i32::MAX] {
+            let actual =
+                right_protrusion_for_advance(ch, LayoutUnit::from_milli_points(width), opts);
+            assert_eq!(
+                i64::from(actual.milli_points()),
+                i64::from(width) * fraction / 1000
+            );
+            assert!(actual < LayoutUnit::from_milli_points(width));
+        }
+    }
+    assert_eq!(
+        right_protrusion_for_advance(',', comma, MicrotypeOptions::DISABLED),
+        LayoutUnit::ZERO
+    );
+    assert_eq!(
+        right_protrusion_for_advance(',', LayoutUnit::ZERO, opts),
+        LayoutUnit::ZERO
+    );
+    assert_eq!(
+        right_protrusion_for_advance(',', LayoutUnit::from_points(-1), opts),
+        LayoutUnit::ZERO
+    );
+}
+
 fn line_text(items: &[ParagraphItem], start: usize, end: usize) -> String {
     let mut words = Vec::new();
     for item in &items[start..end] {

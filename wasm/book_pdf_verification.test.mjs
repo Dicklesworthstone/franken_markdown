@@ -137,6 +137,26 @@ test("incomplete, forged and inconsistent nested publication reports are rejecte
   assert.equal(parseBookPdfVerificationReport(encode(fallback)).pagination.fallback.code, "budget_exceeded");
 });
 
+test("relaxed height planning retains its original infeasibility instead of claiming exactness", () => {
+  const value = report();
+  value.pagination.strategy = "relaxed_height";
+  value.pagination.fallback = { code: "infeasible", detail: "An impossible heading keep was relaxed." };
+  const parsed = parseBookPdfVerificationReport(encode(value));
+  assert.deepEqual(parsed.pagination, value.pagination);
+  assert.ok(Object.isFrozen(parsed.pagination.fallback));
+
+  for (const mutate of [
+    r => { r.pagination.fallback = null; },
+    r => { r.pagination.fallback.code = "budget_exceeded"; },
+    r => { r.pagination.requestedOptimal = false; },
+  ]) {
+    const invalid = structuredClone(value);
+    mutate(invalid);
+    assert.throws(() => parseBookPdfVerificationReport(encode(invalid)),
+      { code: "INVALID_BOOK_PDF_VERIFICATION" });
+  }
+});
+
 test("wire admission rejects invalid UTF-8, shared buffers and oversized reports without truncation", () => {
   for (const bytes of [new Uint8Array(), new Uint8Array([0xff]),
     new Uint8Array(new SharedArrayBuffer(1)), new Uint8Array(BOOK_PDF_VERIFICATION_MAX_BYTES + 1)]) {

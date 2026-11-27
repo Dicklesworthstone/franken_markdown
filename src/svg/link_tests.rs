@@ -587,3 +587,42 @@ fn svg_links_link_free_output_does_not_emit_navigation_or_change_glyph_geometry(
         render_svg_with_diagnostics(&doc, &SvgOptions::default())
     );
 }
+
+#[test]
+fn svg_links_resolve_github_aliases_against_their_source_headings() {
+    let source = "# A B\n\n# A — B\n\n[second](#a--b)";
+    let document = franken_markdown::parse_markdown(source);
+    let canonical = franken_markdown::parse_markdown(&source.replace("#a--b", "#a-b-2"));
+    let options = SvgOptions::default();
+    let result = render_svg_with_diagnostics(&document, &options);
+    assert_eq!(result, render_svg_with_diagnostics(&canonical, &options));
+    let output = String::from_utf8(result.0).unwrap();
+    assert!(output.contains("<a href=\"#fmd-heading-1\""));
+    assert_eq!(count(&result.2, "svg_link_unresolved"), 0);
+}
+
+#[test]
+fn svg_heading_aliases_cannot_be_captured_by_export_only_html_headings() {
+    for fragment in ["#a--b", "#a-b-2"] {
+        let document = franken_markdown::parse_markdown(&format!(
+            "# A B\n\n<h2>A B</h2>\n\n# A — B\n\n[go]({fragment})"
+        ));
+        let (bytes, _, warnings) = render_svg_with_diagnostics(&document, &SvgOptions::default());
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("<a href=\"#fmd-heading-2\""));
+        assert!(!output.contains("<a href=\"#fmd-heading-1\""));
+        assert_eq!(count(&warnings, "svg_link_unresolved"), 0);
+    }
+}
+
+#[test]
+fn svg_note_heading_aliases_survive_generated_notes_and_definition_reordering() {
+    let document = franken_markdown::parse_markdown(
+        "[^unused]:\n    # A B\n\n# A B\n\n<h2>A B</h2>\n\n# A — B\n\n\
+         Published[^n]. [note](#a--b-1)\n\n[^n]:\n    # A — B\n",
+    );
+    let (bytes, _, warnings) = render_svg_with_diagnostics(&document, &SvgOptions::default());
+    let output = String::from_utf8(bytes).unwrap();
+    assert!(output.contains("<a href=\"#fmd-heading-4\""));
+    assert_eq!(count(&warnings, "svg_link_unresolved"), 0);
+}

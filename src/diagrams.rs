@@ -3,17 +3,20 @@
 //! Compiles Mermaid flowcharts, state, class, entity-relationship, and sequence
 //! diagrams, pie charts, timelines, and ASCII art into standalone SVG for the shared renderers.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 mod class;
 mod er;
 mod flowchart;
 mod flowchart_groups;
+mod flowchart_layers;
 mod pie;
 mod sequence;
 mod state;
 mod timeline;
+
+use flowchart_layers::assign as assign_flowchart_layers;
 
 /// Supported diagram types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,72 +580,6 @@ fn render_flow_graph(graph: flowchart::Graph, state: bool) -> String {
 
     svg.push_str("</svg>\n");
     svg
-}
-
-fn assign_flowchart_layers(
-    nodes: &mut BTreeMap<String, FlowNode>,
-    node_order: &[String],
-    edges: &[FlowEdge],
-) {
-    let mut in_degrees: BTreeMap<String, usize> = BTreeMap::new();
-    let mut adj: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    for id in node_order {
-        in_degrees.insert(id.clone(), 0);
-        adj.insert(id.clone(), Vec::new());
-    }
-
-    for edge in edges {
-        if nodes.contains_key(&edge.from) && nodes.contains_key(&edge.to) {
-            *in_degrees.entry(edge.to.clone()).or_insert(0) += 1;
-            adj.entry(edge.from.clone())
-                .or_default()
-                .push(edge.to.clone());
-        }
-    }
-
-    let mut queue = VecDeque::new();
-    for id in node_order {
-        if in_degrees.get(id).copied().unwrap_or(0) == 0 {
-            queue.push_back(id.clone());
-        }
-    }
-
-    let mut visited = BTreeSet::new();
-    while let Some(id) = queue.pop_front() {
-        visited.insert(id.clone());
-        let next_layer = nodes.get(&id).map_or(1, |node| node.layer + 1);
-        if let Some(neighbors) = adj.get(&id) {
-            for neighbor in neighbors {
-                if let Some(node) = nodes.get_mut(neighbor) {
-                    node.layer = node.layer.max(next_layer);
-                }
-                if let Some(remaining) = in_degrees.get_mut(neighbor) {
-                    *remaining = remaining.saturating_sub(1);
-                    if *remaining == 0 {
-                        queue.push_back(neighbor.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Cyclic components retain deterministic source-order placement after the
-    // resolved part of the graph; they must not reuse a completed DAG layer.
-    let mut fallback_layer = visited
-        .iter()
-        .filter_map(|id| nodes.get(id))
-        .map(|node| node.layer + 1)
-        .max()
-        .unwrap_or(0);
-    for id in node_order {
-        if !visited.contains(id)
-            && let Some(node) = nodes.get_mut(id)
-        {
-            node.layer = fallback_layer;
-            fallback_layer += 1;
-        }
-    }
 }
 
 fn layout_flowchart_nodes(

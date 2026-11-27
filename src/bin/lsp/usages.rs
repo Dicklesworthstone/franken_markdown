@@ -10,7 +10,7 @@ use super::super::{MAX_DOCUMENTS, MAX_SESSION_BYTES};
 use super::{
     AnchorKind, Buffer, Document, Failure, Json, LineIndex, MAX_BLOCK_BYTES, MAX_DESTINATION_BYTES,
     MAX_DOCUMENT_BYTES, Parser, Position, ReferenceKind, SourceSpan, analyze_document_links,
-    candidate, number, object, prefix_text, probe_document, range, references, string, structure,
+    candidate, number, object, probe_document, range, references, string, structure,
     workspace_links,
 };
 
@@ -60,6 +60,7 @@ struct Target<'a> {
     uri: &'a str,
     id: String,
     span: SourceSpan,
+    aliases: franken_markdown::anchors::HeadingAliases,
 }
 
 // Reuse definition navigation's parser probes, structural restoration and
@@ -118,9 +119,9 @@ fn addressed_target<'a>(
     let Some((_, fragment)) = destination.split_once('#') else {
         return Ok(None);
     };
-    let Some(id) = prefix_text(fragment).filter(|id| !id.is_empty()) else {
+    if fragment.is_empty() {
         return Ok(None);
-    };
+    }
     let remote;
     let (uri, target) = if destination.starts_with(['#', '?']) {
         (origin, snapshot)
@@ -131,14 +132,9 @@ fn addressed_target<'a>(
         remote = Snapshot::parse(parser, source)?;
         (uri, &remote)
     };
-    let Ok(index) = target
-        .analysis
-        .anchors
-        .binary_search_by(|anchor| anchor.id.cmp(&id))
-    else {
+    let Ok(Some(anchor)) = target.analysis.resolve_fragment(destination) else {
         return Ok(None);
     };
-    let anchor = &target.analysis.anchors[index];
     if anchor.kind != AnchorKind::Heading || anchor.occurrences != 1 {
         return Ok(None);
     }
@@ -146,7 +142,12 @@ fn addressed_target<'a>(
         .spans
         .get(anchor.block_index)
         .ok_or((-32803, "invalid heading source owner"))?;
-    Ok(Some(Target { uri, id, span }))
+    Ok(Some(Target {
+        uri,
+        id: anchor.id.clone(),
+        span,
+        aliases: target.analysis.heading_aliases.clone(),
+    }))
 }
 
 fn select_target<'a>(
@@ -192,6 +193,7 @@ fn select_target<'a>(
         uri,
         id: anchor.id.clone(),
         span: snapshot.spans[owner],
+        aliases: snapshot.analysis.heading_aliases.clone(),
     }))
 }
 
@@ -306,7 +308,10 @@ pub(super) fn request(
             let Some((_, fragment)) = destination.split_once('#') else {
                 continue;
             };
-            if prefix_text(fragment).as_deref() != Some(target.id.as_str()) {
+            let Some(id) = franken_markdown::anchors::decode_fragment(fragment) else {
+                continue;
+            };
+            if id != target.id && target.aliases.resolve_alias(&id) != Some(target.id.as_str()) {
                 continue;
             }
             let matches = if destination.starts_with(['#', '?']) {

@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsaved target edits. Previews reuse the selected grammar and navigation
   resolver, honor client format preferences, and keep source links and HTML inert.
 
+- Flow Canvas SVG previews support local arrow markers on paths, lines,
+  polylines and polygons, with preserved orientation, view boxes and source
+  bytes. Marker placement and nested references share the existing expansion
+  budgets; inherited markers and hidden graphical descendants are refused.
+
 - Flow Canvas previews now admit authorized, self-contained static SVG images
   with bounded XML, local references and presentation styles. Image and folder
   pickers include SVG; canonical preview dimensions and decoder cleanup preserve
@@ -28,6 +33,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coordinate conversion walks long source lines once.
 
 ### Fixed
+
+- GitHub-style heading fragments with repeated separators resolve to their
+  source headings across HTML, PDF, EPUB, SVG, books, offline workspaces and
+  language-server navigation. Exact IDs and note targets retain precedence;
+  heading identity survives HTML lowering and note reordering. Editor rename
+  stabilizes aliases without silently reassigning another heading's links.
+
+- Best-effort optimal PDF pagination can retain its measured-height planner
+  when a heading chain and an indivisible subject cannot fit together. Only
+  that impossible keep is relaxed; other hard constraints and figure dimensions
+  remain intact. Reports expose `relaxed_height` and the original infeasibility;
+  strict pagination keeps its existing refusal.
+
+- PDF optical punctuation uses a fraction of the final glyph's measured
+  advance instead of the full font em. Quoted prose retains glyph expansion
+  but does not protrude beyond its painted background; unboxed prose keeps
+  bounded optical margins in its actual styled or fallback font.
+
+- Dollar amounts no longer consume adjacent financial prose, emphasis, links,
+  or later inline formulas. Native and standalone interactive parsing agree
+  on currency-safe closing dollars while preserving numeric formulas, escaped
+  dollars, TeX groups, display mathematics and table cell boundaries.
+
+- Cyclic flowcharts preserve parallel branches and downstream dependencies
+  instead of placing every unresolved node on a separate layer. Bounded,
+  deterministic component analysis retains every feedback edge and leaves
+  acyclic longest-path layering unchanged.
+
+- PDF glyph fallbacks preserve the original Unicode text for selection, copying,
+  searching and verification. Missing subscript, superscript and phonetic glyphs
+  can still use the existing visual approximation, but their source characters
+  no longer become ordinary letters or digits in the document's text layer.
 
 - Preserve the first matching host image binding across HTML, saved interactive
   workspaces, EPUB and book sites, including when its bytes are invalid. Later

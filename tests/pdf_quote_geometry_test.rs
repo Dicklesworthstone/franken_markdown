@@ -105,6 +105,7 @@ struct PaintedRun {
     width: f32,
     scale: f32,
     size: f32,
+    last_glyph_advance: f32,
 }
 
 /// Decode the writer's actual font resources, CIDs, widths, and TJ adjustments.
@@ -154,6 +155,7 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
                 .replace('>', "> ");
             let mut text = String::new();
             let mut width = 0.0;
+            let mut last_glyph_advance = 0.0;
             for item in array.split_whitespace() {
                 if let Some(hex) = item.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
                     for code in hex.as_bytes().as_chunks::<4>().0 {
@@ -164,7 +166,8 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
                                 .get(&cid)
                                 .expect("painted source has a Unicode map"),
                         );
-                        width += font.widths[usize::from(cid)];
+                        last_glyph_advance = font.widths[usize::from(cid)];
+                        width += last_glyph_advance;
                     }
                 } else {
                     width -= item.parse::<f32>().unwrap();
@@ -179,6 +182,7 @@ fn painted_runs(pdf: &[u8]) -> Vec<PaintedRun> {
                 width: width * size * scale / 1000.0,
                 scale,
                 size,
+                last_glyph_advance: last_glyph_advance * size * scale / 1000.0,
             });
         }
     }
@@ -200,6 +204,85 @@ fn options(measure: f32) -> PdfOptions {
         left_pt: 36.0,
     };
     opts
+}
+
+#[test]
+fn microtype_punctuation_stays_inside_quote_backgrounds() {
+    let source = "> **The central idea:** turn local distribution businesses into a coordinated \
+        network that can solve increasingly valuable customer problems. Compile products, \
+        permissions, customer missions, inventory, people, technical capabilities, service \
+        commitments, and capital into one executable business model.\n";
+    for family in [
+        franken_markdown::FontFamily::Sans,
+        franken_markdown::FontFamily::Serif,
+    ] {
+        for expansion in [0, 15] {
+            let mut opts = PdfOptions::default();
+            opts.theme.font = family;
+            opts.microtype = franken_markdown::layout::MicrotypeOptions {
+                protrusion: true,
+                max_expansion_per_mille: expansion,
+            };
+            let pdf = render_pdf(source, &opts).unwrap();
+            let runs = painted_runs(&pdf);
+            let right = opts.theme.page.size.width_pt - opts.theme.page.margins.right_pt;
+            assert!(runs.len() > 5, "fixture must wrap and retain styled runs");
+            for run in &runs {
+                assert!(
+                    run.x + run.width <= right + 0.03,
+                    "punctuation escaped the quote background: {run:?}, boundary {right}"
+                );
+            }
+            assert_quote_artifacts(&pdf, &opts, true);
+            assert!(compact(&text(&runs)).contains("customermissions,inventory,people"));
+        }
+    }
+}
+
+#[test]
+fn microtype_hangs_only_a_fraction_of_the_emitted_punctuation_glyph() {
+    let source = "Alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, \
+        lambda, mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega. "
+        .repeat(6);
+    for family in [
+        franken_markdown::FontFamily::Sans,
+        franken_markdown::FontFamily::Serif,
+    ] {
+        for expansion in [0, 15] {
+            let mut opts = options(288.0);
+            opts.theme.font = family;
+            opts.microtype = franken_markdown::layout::MicrotypeOptions {
+                protrusion: true,
+                max_expansion_per_mille: expansion,
+            };
+            let pdf = render_pdf(&source, &opts).unwrap();
+            let runs = painted_runs(&pdf);
+            let right = opts.theme.page.size.width_pt - opts.theme.page.margins.right_pt;
+            let mut protruding_lines = 0;
+            for run in &runs {
+                let protrusion = run.x + run.width - right;
+                if protrusion <= 0.03 {
+                    continue;
+                }
+                assert!(
+                    run.text.ends_with(['.', ',']),
+                    "only actual boundary punctuation may overhang: {run:?}"
+                );
+                // The independent PDF decoder obtains the final glyph width
+                // from the emitted CIDFont /W array, including its Tz scale.
+                // Allow 0.04pt for serialized widths and text coordinates.
+                assert!(
+                    protrusion <= 0.56 * run.last_glyph_advance + 0.04,
+                    "protrusion {protrusion} exceeds the boundary glyph fraction: {run:?}"
+                );
+                protruding_lines += 1;
+            }
+            assert!(
+                protruding_lines >= 3,
+                "unboxed prose must retain real optical protrusion"
+            );
+        }
+    }
 }
 
 fn quote(source: &str, depth: usize) -> String {

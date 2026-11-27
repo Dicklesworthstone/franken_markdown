@@ -1584,3 +1584,54 @@ fn er_diagrams_reach_single_and_book_epubs_with_attribute_tables_and_declared_sv
         assert!(opf.contains("properties=\"svg\""));
     }
 }
+
+#[test]
+fn github_heading_aliases_follow_source_provenance_through_epub_html_lowering() {
+    let source = "# A B\n\n<h2>A B</h2>\n\n# A — B\n\n# A — B\n\n\
+        [second](#a--b) [duplicate](?view=print#a%2D%2Db-1)\n";
+    let bytes = epub::render_epub(
+        &parse_markdown(source),
+        &HtmlOptions {
+            custom_css: Some(String::new()),
+            ..HtmlOptions::default()
+        },
+    )
+    .unwrap();
+    let chapter = entry_text(&bytes, "OEBPS/chapter-1.xhtml");
+    assert_well_formed_xml(&chapter);
+    assert!(chapter.contains("href=\"#a-b-3\">second</a>"));
+    assert!(chapter.contains("href=\"?view=print#a-b-4\">duplicate</a>"));
+    assert!(!chapter.contains("id=\"a--b\""));
+}
+
+#[test]
+fn github_cross_chapter_aliases_bind_in_epub_and_site_publication() {
+    use franken_markdown::book::{BookInput, build_book, render_book_site};
+    let mut book = build_book(&[
+        BookInput {
+            path: "intro.md".into(),
+            source: "[second](guide.md?view=print#a--b)".into(),
+        },
+        BookInput {
+            path: "guide.md".into(),
+            source: "# A B\n\n<h2>A B</h2>\n\n# A — B".into(),
+        },
+    ])
+    .unwrap();
+    // Exercise both exporters with a host-constructed source AST, so success
+    // does not depend on build_book having already canonicalized its fragments.
+    book.chapters[0].doc = parse_markdown("[second](guide.md?view=print#a%2D%2Db)");
+    let options = HtmlOptions {
+        custom_css: Some(String::new()),
+        ..HtmlOptions::default()
+    };
+    let epub_bytes = epub::render_book_epub(&book, &options).unwrap();
+    let epub_chapter = entry_text(&epub_bytes, "OEBPS/chapter-1.xhtml");
+    assert_well_formed_xml(&epub_chapter);
+    assert!(epub_chapter.contains("href=\"chapter-2.xhtml?view=print#a-b-3\">second</a>"));
+
+    let site_bytes = render_book_site(&book, &options).unwrap();
+    let site_chapter = entry_text(&site_bytes, "intro.html");
+    assert!(site_chapter.contains("href=\"guide.html?view=print#a-b-2\">second</a>"));
+    assert!(entry_text(&site_bytes, "guide.html").contains("id=\"a-b-2\""));
+}

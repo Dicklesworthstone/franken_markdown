@@ -185,3 +185,59 @@ for (const mode of ["success", "load-error", "abort-load", "abort-bitmap", "cons
     }
   });
 }
+
+test("arrow-marker previews preserve the complete original while decoding a canonical snapshot", async () => {
+  const document = '<?xml version="1.0"?>\n<!-- retained arrow source -->' +
+    '<svg width="64" height="32"><defs><marker id="arrow" viewBox="0 0 8 8" ' +
+    'markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">' +
+    '<path d="M0 0L8 4L0 8Z" fill="red"/></marker></defs>' +
+    '<path d="M8 16L48 16" marker-end="url(#arrow)" stroke="black"/></svg>\n';
+  const source = bytes(document), original = source.slice(), session = new Session();
+  const bitmap = image(64, 32);
+  let preview;
+  const assets = new FlowImageAssets(session, {
+    load: () => source, retainSourceBytes: true,
+    decode: async (blob, context) => {
+      assert.equal(context.mime, "image/svg+xml");
+      assert.equal(context.width, 64); assert.equal(context.height, 32);
+      source.fill(0);
+      preview = await blob.text();
+      assert.ok(preview.includes('marker-end="url(#arrow)"'));
+      assert.ok(preview.includes('orient="auto"'));
+      assert.equal(preview.includes("retained arrow source"), false);
+      return bitmap;
+    },
+  });
+  try {
+    const report = await assets.loadPending();
+    assert.equal(report.loaded, 1); assert.equal(report.failed, 0);
+    assert.deepEqual(session.writes[0].bytes, original);
+    assert.equal(assets.resolveImage(descriptor, session.token), bitmap);
+    assert.equal(assets.stats.inFlightBytes, 0);
+    assert.ok(preview.includes('<marker id="arrow"'));
+    assets.clear();
+    assert.equal(bitmap.closed, 1);
+    assert.equal(assets.resolveImage(descriptor, session.token), null);
+    assert.equal(assets.stats.reservedPixels, 0);
+  } finally { assets.dispose(); }
+  assert.equal(bitmap.closed, 1);
+});
+
+test("marker fanout is rejected before decoding or delivering a native asset", async () => {
+  const source = bytes('<svg width="64" height="32"><defs><marker id="arrow">' +
+    '<rect width="1" height="1"/>'.repeat(100) + '</marker></defs>' +
+    '<path d="M0 0H' + '1 '.repeat(1000) + '" marker-mid="url(#arrow)"/></svg>');
+  const session = new Session(), assets = new FlowImageAssets(session, {
+    load: () => source, retainSourceBytes: true,
+    decode: () => { assert.fail("over-budget marker expansion reached the browser decoder"); },
+  });
+  try {
+    const report = await assets.loadPending();
+    assert.equal(report.loaded, 0); assert.equal(report.failed, 1);
+    assert.equal(report.errors[0].code, "UNSUPPORTED_IMAGE");
+    assert.equal(session.requests.length, 1);
+    assert.equal(session.writes.length, 0);
+    assert.equal(assets.stats.inFlightBytes, 0);
+    assert.equal(assets.stats.reservedPixels, 0);
+  } finally { assets.dispose(); }
+});

@@ -10,12 +10,24 @@ HTML and PDF output is unchanged.
 | Hook | What it computes |
 |---|---|
 | `MicrotypeOptions { protrusion, max_expansion_per_mille }` | Policy; `DISABLED` (default) and `CONSERVATIVE` presets |
-| `protrusion_for_text(text, size, opts) -> Protrusion` | Left/right optical-margin protrusion of a run's boundary characters |
+| `protrusion_for_text(text, size, opts) -> Protrusion` | Legacy font-independent estimate of a run's boundary protrusion, scaled by the em |
+| `right_protrusion_for_advance(ch, advance, opts) -> LayoutUnit` | Right-edge credit measured as a fraction of the actual boundary glyph advance |
 | `protruded_fit_width(natural, text, size, opts) -> LayoutUnit` | The width to fit against once boundary punctuation is allowed to hang into the margin |
 | `expansion_budget(line_width, opts) -> LayoutUnit` | Per-line font expansion/contraction budget |
 
 The optical-margin table (right-edge per-mille): `. ,` = 550, `: ;` = 420,
-`! ?` = 250, quotes = 350, brackets = 120, hyphens = 80.
+`! ?` = 250, quotes = 350, brackets = 120, hyphens = 80. Production PDF
+right-edge credit applies these fractions to the final punctuation glyph's
+advance in its actual styled or fallback face, not to the font's full em.
+A 3 pt comma therefore receives 1.65 pt of credit, rather than 6.05 pt in an
+11 pt font. Zero/negative advances and inline objects receive no credit.
+
+Quote backgrounds end at the physical right margin. Protrusion is disabled
+inside quotations, including nested quoted paragraphs and lists; optional
+glyph expansion still applies where supported. This policy is enforced before
+line breaking and retained by the painter. Quoted paragraphs cannot reuse an
+unboxed paragraph's cached protrusion layout. Tables and other ragged flows
+continue to receive no protrusion credit.
 
 ## Determinism
 
@@ -25,18 +37,23 @@ point enters a layout comparison, so decisions are byte-stable across runs and
 platforms (`tests/layout_test.rs::microtype_protrusion_and_expansion_are_integer_deterministic`,
 `microtype_protrusion_table_is_stable`).
 
-## Intended effect (demonstrated)
+## Fixed-point contract and output regression coverage
 
-`microtype_protrusion_changes_a_line_fit_decision_deterministically` pins the
-intended decision change: a line 2 pt over the column does not fit with
-protrusion disabled, but its trailing period protrudes 550‰ × 10 pt = 5_500
-milli-points and the line then fits — an exact, deterministic delta.
+The original em-scaled helpers remain available for callers without font
+metrics, and their arithmetic tests remain unchanged. They no longer supply
+production PDF right-margin credit. The measured helper's tests cover exact
+fractions, rounding, disabled behavior, nonpositive widths and large advances.
+
+`tests/pdf_quote_geometry_test.rs` adds the reported financial-prose quotation
+and unboxed punctuation paragraphs for both bundled families, with and without
+glyph expansion. It independently decodes emitted CIDs, font widths, text
+positions and scaling to check containment and the punctuation's own advance.
 
 ## Status: wired behind `--microtype protrusion` (opt-in since 0.4.2)
 
 The hooks are complete, tested, and now wired end-to-end for optical-margin
 protrusion in justified PDF body paragraphs: `TextBox.protrusion` is
-precomputed at box construction (font size known there), the Knuth-Plass
+precomputed at box construction (font size and styled face known there), the Knuth-Plass
 breaker fits against protrusion-adjusted line widths (O(1) edge lookups in
 `MetricPrefixes`), the whole-paragraph fast path honors the same credit, and
 the emitter shifts line starts left by the credited protrusion. Default renders

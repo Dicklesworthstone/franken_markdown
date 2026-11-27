@@ -530,9 +530,6 @@ fn remote_definition(
     let target = if fragment.is_empty() {
         SourceSpan::new(0, 0)
     } else {
-        let Some(id) = prefix_text(fragment) else {
-            return Ok(Json::Null);
-        };
         let document = parser.spanned(source);
         let (spans, blocks): (Vec<_>, Vec<_>) = document
             .blocks
@@ -545,12 +542,9 @@ fn remote_definition(
                 "target link analysis could not complete within its limits",
             )
         })?;
-        let Some(anchor) = analysis.anchors.iter().find(|anchor| anchor.id == id) else {
+        let Ok(Some(anchor)) = analysis.resolve_fragment(destination) else {
             return Ok(Json::Null);
         };
-        if anchor.occurrences != 1 {
-            return Ok(Json::Null);
-        }
         *spans
             .get(anchor.block_index)
             .ok_or((-32803, "invalid target source owner"))?

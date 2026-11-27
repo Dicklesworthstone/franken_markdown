@@ -83,10 +83,11 @@ fn unmatched_code_span_lengths_and_link_destinations_are_bounded() {
 
 #[test]
 fn exhausted_scans_roll_back_destinations_and_do_not_poison_later_paragraphs() {
-    // Bracket matching succeeds before the repeated failed math scans. The
-    // first link therefore has an accepted destination that must be revoked
-    // when the outer paragraph falls back to its original literal source.
-    let hostile = format!("[discard](/discard) {}end", "$value ".repeat(4096));
+    // Repeated unmatched display-math scans still exhaust the budget after
+    // a link is accepted, so its destination must be revoked on whole-run
+    // rollback. Single-dollar currency now stops at the next invalid dollar
+    // instead of performing these expensive speculative suffix scans.
+    let hostile = format!("[discard](/discard) {}end", "$$value ".repeat(4096));
     let source = format!("{hostile}\n\n[good](/ok)\n\n{hostile}\n\n[good](/ok)");
     let parsed = parse_markdown(&source);
     assert_eq!(
@@ -111,6 +112,14 @@ fn exhausted_scans_roll_back_destinations_and_do_not_poison_later_paragraphs() {
     for block in &spanned.blocks {
         assert!(block.span.slice(&source).is_some());
     }
+    assert_eq!(
+        spanned
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "inline_work_limit")
+            .count(),
+        2
+    );
     let spans = destination_spans(&source);
     assert_eq!(spans.len(), 2);
     for span in spans {

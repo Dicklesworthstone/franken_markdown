@@ -137,6 +137,121 @@ fn joining_a_short_and_long_dependency_path_keeps_the_join_after_both() {
     assert!(position(&svg, "B").1 < position(&svg, "C").1);
 }
 
+const FEEDBACK_GRAPH: &str = concat!(
+    "S[\"Evidence and company configuration\"] --> M[\"Business model compiler\"]\n",
+    "I[\"Industry mechanisms\"] --> M\n",
+    "M --> O[\"Operations and promises\"]\n",
+    "M --> F[\"Financial recipes\"]\n",
+    "M --> T[\"Twin and policy laboratory\"]\n",
+    "O --> E[\"Observed execution and outcomes\"]\n",
+    "F --> E\n",
+    "T --> D[\"Qualified decisions\"]\n",
+    "D --> O\n",
+    "E --> L[\"Reconciliation and learning\"]\n",
+    "L --> S\n",
+);
+
+#[test]
+fn feedback_loops_keep_parallel_nodes_on_five_layers_in_every_direction() {
+    for (direction, horizontal, forward) in [
+        ("TD", false, true),
+        ("TB", false, true),
+        ("BT", false, false),
+        ("LR", true, true),
+        ("RL", true, false),
+    ] {
+        let source = format!("flowchart {direction}\n{FEEDBACK_GRAPH}");
+        let svg = render_diagram_svg(&source, "mermaid").unwrap();
+        let axis = |label| {
+            let point = position(&svg, label);
+            if horizontal { point.0 } else { point.1 }
+        };
+        let levels = [
+            axis("Evidence and company configuration"),
+            axis("Business model compiler"),
+            axis("Operations and promises"),
+            axis("Observed execution and outcomes"),
+            axis("Reconciliation and learning"),
+        ];
+        assert_eq!(axis("Industry mechanisms"), levels[0]);
+        assert_eq!(axis("Financial recipes"), levels[2]);
+        assert_eq!(axis("Twin and policy laboratory"), levels[2]);
+        assert_eq!(axis("Qualified decisions"), levels[3]);
+        for pair in levels.windows(2) {
+            assert_eq!(pair[0] < pair[1], forward, "{direction}: {svg}");
+            assert_eq!(pair[0] > pair[1], !forward, "{direction}: {svg}");
+        }
+        assert_eq!(nodes(&svg), 9);
+        assert_eq!(edges(&svg), 11);
+        let routes: Vec<_> = svg
+            .lines()
+            .filter(|line| line.contains("class=\"fmd-edge-path\""))
+            .collect();
+        for index in [8, 10] {
+            assert!(routes[index].starts_with("<path "), "{direction}: {svg}");
+            assert_return_route_clear(&svg, routes[index]);
+        }
+        if !horizontal {
+            let height = number(svg.lines().next().unwrap(), "height");
+            assert!(height < 500.0, "{direction}: {height}");
+        }
+        assert_eq!(svg, render_diagram_svg(&source, "mermaid").unwrap());
+    }
+}
+
+#[test]
+fn downstream_dag_branches_do_not_inherit_a_cycles_serial_fallback() {
+    let source = "flowchart TD\nA-->B; B-->A; B-->C; B-->D; C-->E; D-->E; \
+                  X-->Y; Y-->X; Y-->Z; I; I-->I;";
+    let svg = render_diagram_svg(source, "mermaid").unwrap();
+    let y = |label| position(&svg, label).1;
+    assert_eq!(y("A"), y("X"));
+    assert_eq!(y("A"), y("I"));
+    assert_eq!(y("B"), y("Y"));
+    assert_eq!(y("C"), y("D"));
+    assert_eq!(y("C"), y("Z"));
+    assert!(y("A") < y("B") && y("B") < y("C") && y("C") < y("E"));
+    assert_eq!(edges(&svg), 10);
+    let routes: Vec<_> = svg
+        .lines()
+        .filter(|line| line.contains("class=\"fmd-edge-path\""))
+        .collect();
+    for index in [1, 7, 9] {
+        assert_return_route_clear(&svg, routes[index]);
+    }
+}
+
+#[test]
+fn cyclic_diagrams_reach_shared_publications_without_losing_feedback_edges() {
+    let source = format!("flowchart TD\n{FEEDBACK_GRAPH}");
+    let markdown = format!("# Architecture\n\n```mermaid\n{source}```\n\nFollowing text.");
+    let diagram = render_diagram_svg(&source, "mermaid").unwrap();
+    let html = render_html(&markdown, &HtmlOptions::default()).unwrap();
+    assert!(html.contains(&diagram));
+    let (poster, _, warnings) = franken_markdown::svg::render_svg_with_diagnostics(
+        &parse_markdown(&markdown),
+        &franken_markdown::svg::SvgOptions::default(),
+    );
+    assert!(
+        String::from_utf8(poster)
+            .unwrap()
+            .contains(&franken_markdown::html::base64_encode(diagram.as_bytes()))
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let options = PdfOptions {
+        optimal_pagination: true,
+        strict_pagination: true,
+        ..PdfOptions::default()
+    };
+    let pdf = render_pdf(&markdown, &options).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&pdf).matches("/S /Figure").count(),
+        1
+    );
+    assert_eq!(pdf, render_pdf(&markdown, &options).unwrap());
+}
+
 #[test]
 fn open_dotted_and_thick_links_keep_their_visual_meaning() {
     for (syntax, style, dashed) in [

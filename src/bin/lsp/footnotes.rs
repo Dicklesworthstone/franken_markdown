@@ -366,6 +366,7 @@ fn check_rename_links(
             kind: AnchorKind::Footnote,
             occurrences: 1,
         }],
+        heading_aliases: Default::default(),
         references: Vec::new(),
         external: 0,
         unchecked: 0,

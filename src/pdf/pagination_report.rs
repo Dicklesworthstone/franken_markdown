@@ -16,6 +16,9 @@ pub enum PdfPaginationStrategy {
     Greedy,
     /// The bounded, fixed-point planner satisfied its hard block constraints.
     ExactHeight,
+    /// Fixed-point planning with only provably impossible heading-to-subject
+    /// keeps relaxed. All other hard constraints remain in force.
+    RelaxedHeight,
     /// Guaranteed-progress page planning with soft keep/widow/orphan costs.
     Legacy,
 }
@@ -27,6 +30,7 @@ impl PdfPaginationStrategy {
         match self {
             Self::Greedy => "greedy",
             Self::ExactHeight => "exact_height",
+            Self::RelaxedHeight => "relaxed_height",
             Self::Legacy => "legacy",
         }
     }
@@ -95,12 +99,14 @@ impl std::error::Error for PdfPaginationFailure {
 pub struct PdfPageBreakReport {
     pub requested_optimal: bool,
     pub strategy: PdfPaginationStrategy,
-    /// `Some` only when an optimal request fell back to a weaker algorithm.
+    /// `Some` when an optimal request used weaker constraints or an algorithm
+    /// fallback. Retains the original hard-planner failure.
     pub fallback: Option<PdfPaginationFailure>,
 }
 
 impl PdfPageBreakReport {
-    /// Whether the emitted page boundaries use the exact fixed-layout planner.
+    /// Whether the emitted page boundaries satisfy every original hard
+    /// constraint under the exact fixed-layout planner.
     /// Paragraph-variant admission is reported separately.
     #[must_use]
     pub const fn is_exact(&self) -> bool {

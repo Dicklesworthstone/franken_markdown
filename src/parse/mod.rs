@@ -6352,7 +6352,8 @@ fn normalize_code_span(chars: &[char]) -> String {
 }
 
 /// The math grammar deliberately excludes only ASCII space, tab and line
-/// endings at delimiter edges; Unicode whitespace remains TeX content. Share
+/// endings at delimiter edges; Unicode whitespace remains TeX content. A closing
+/// single dollar cannot precede an ASCII digit, so prices remain prose. Share
 /// these rules between character-based inline parsing and byte-based table
 /// boundaries, so a formula cannot be split before the inline parser sees it.
 fn math_delimiter_content_start<T: Copy + Into<u32>>(
@@ -6381,6 +6382,10 @@ fn math_delimiter_can_close<T: Copy + Into<u32>>(
         && matches!(want, 1 | 2)
         && start > 0
         && !matches!(units[start - 1].into(), 0x20 | 0x09 | 0x0a)
+        && (want != 1
+            || !units
+                .get(start + run)
+                .is_some_and(|&unit| matches!(unit.into(), 0x30..=0x39)))
 }
 
 /// Table boundaries need a conservative pairing rule in addition to the shared
@@ -6428,16 +6433,13 @@ impl TableMathRuns {
                 if matches!(len, 1 | 2) {
                     let after_pipe = pos > 0 && last_pipe == Some(pos - 1);
                     let following = bytes.get(pos + len);
-                    let starts_price = len == 1 && following.is_some_and(u8::is_ascii_digit);
                     let starts_cell = after_pipe
                         && following.is_some_and(|byte| {
                             byte.is_ascii_alphanumeric() || *byte == b'\\' || !byte.is_ascii()
                         });
                     index.runs[len - 1].push(TableMathRun {
                         start: pos,
-                        can_close: math_delimiter_can_close(bytes, pos, len, len)
-                            && !starts_price
-                            && !starts_cell,
+                        can_close: math_delimiter_can_close(bytes, pos, len, len) && !starts_cell,
                         after_pipe,
                     });
                 }
@@ -6482,6 +6484,7 @@ fn parse_math_delim(
     let after = math_delimiter_content_start(chars, i, open_run, want)?;
     let mut j = after;
     let mut found = None;
+    let mut brace_depth = 0usize;
     while j < chars.len() {
         if chars[j] == '\\' && j + 1 < chars.len() {
             j += 2;
@@ -6493,8 +6496,20 @@ fn parse_math_delim(
                 found = Some(j);
                 break;
             }
+            // An unmatched price must not borrow a later formula's closing
+            // dollar. Leave this ineligible opener for the ordinary tokenizer.
+            // TeX groups may contain literal prices, as in \text{USD $5};
+            // escaped dollars and braces were already skipped above.
+            if want == 1 && run == 1 && brace_depth == 0 {
+                break;
+            }
             j += run;
         } else {
+            match chars[j] {
+                '{' => brace_depth += 1,
+                '}' => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
             j += 1;
         }
     }

@@ -1351,6 +1351,12 @@ Honest about what the renderer does not do yet.
   spaces remain fixed-width code glyphs. Long code spans wrap at source
   separators or measured character boundaries without inserting hyphens or
   stretching their internal spaces to justify the surrounding prose.
+- **PDF glyph approximations preserve source text.** When the selected fonts
+  lack a supported subscript, superscript or phonetic character, the existing
+  base-character approximation affects only the painted glyph. Selection,
+  copying, searching and verification retain the original Unicode spelling,
+  including in headings, tables and code. An available original glyph always
+  takes precedence over an approximation.
 - **SVG support is practical, not browser-complete.** The PDF renderer covers
   the shapes, gradients, masks, clips, markers, CSS variables/selectors,
   embedded PNG/JPEG/GIFs, marker view boxes/orientation/units, and `paint-order` behavior

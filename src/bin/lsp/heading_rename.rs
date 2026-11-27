@@ -452,6 +452,20 @@ fn changed_heading(
             "renaming this heading would change other heading or footnote anchors",
         ));
     }
+    if old_analysis
+        .heading_aliases
+        .entries()
+        .filter(|(_, id)| *id != heading.id)
+        .ne(new_analysis
+            .heading_aliases
+            .entries()
+            .filter(|(_, id)| *id != anchor.id))
+    {
+        return Err((
+            -32803,
+            "renaming this heading would change other heading compatibility anchors",
+        ));
+    }
     Ok((document, anchor.id.clone()))
 }
 
@@ -556,13 +570,20 @@ pub(super) fn request(
             if link_count > MAX_LINKS || link_bytes > MAX_LINK_BYTES || dest.len() > 8192 {
                 return Err((-32803, "links exceed the heading rename budget"));
             }
-            if new_id != heading.id && target.matches(origin, dest)? {
+            if target.matches(origin, dest)? {
                 let separator = dest
                     .find('#')
                     .ok_or((-32803, "heading link has no fragment"))?;
-                dest.truncate(separator + 1);
-                dest.push_str(&fragment);
-                affected = true;
+                // Punctuation-only renames can remove an alias while keeping
+                // the canonical ID. Stabilize those links too, preserving exact
+                // source spellings that already address the final identifier.
+                if franken_markdown::anchors::decode_fragment(&dest[separator + 1..]).as_deref()
+                    != Some(new_id.as_str())
+                {
+                    dest.truncate(separator + 1);
+                    dest.push_str(&fragment);
+                    affected = true;
+                }
             }
             Ok(())
         })?;
@@ -589,7 +610,16 @@ pub(super) fn request(
                 {
                     continue;
                 }
-                if target.matches(origin, &token.dest)? {
+                if target.matches(origin, &token.dest)?
+                    && token
+                        .dest
+                        .split_once('#')
+                        .and_then(|(_, fragment)| {
+                            franken_markdown::anchors::decode_fragment(fragment)
+                        })
+                        .as_deref()
+                        != Some(new_id.as_str())
+                {
                     candidates.push(token);
                 }
             }

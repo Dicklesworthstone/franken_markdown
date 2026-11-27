@@ -2073,7 +2073,11 @@ impl Protrusion {
     }
 }
 
-/// Compute optical-margin protrusion for a text run.
+/// Compute a font-independent optical-margin estimate for a text run.
+///
+/// These legacy hooks scale by the em because they have no glyph metrics.
+/// Renderers with actual font advances should use
+/// [right_protrusion_for_advance] for their right-edge credit.
 #[must_use]
 pub fn protrusion_for_text(text: &str, size: FontSize, options: MicrotypeOptions) -> Protrusion {
     protrusion_for_boundary_chars(text.chars().next(), text.chars().next_back(), size, options)
@@ -2100,6 +2104,27 @@ pub fn protrusion_for_boundary_chars(
         protrusion_amount(right_protrusion_per_mille(ch), size)
     });
     Protrusion { left, right }
+}
+
+/// Right-edge optical margin credit based on the boundary glyph's own advance.
+///
+/// Renderers with font metrics must use this instead of scaling right-edge
+/// punctuation by the full em. A comma may occupy less than a third of an em;
+/// crediting 55% of the em would also hang the preceding letter. Nonpositive
+/// advances and disabled protrusion receive no credit. The fixed-point table
+/// always hangs less than the complete glyph advance.
+#[must_use]
+pub fn right_protrusion_for_advance(
+    ch: char,
+    advance: LayoutUnit,
+    options: MicrotypeOptions,
+) -> LayoutUnit {
+    if !options.protrusion || advance <= LayoutUnit::ZERO {
+        return LayoutUnit::ZERO;
+    }
+    let amount =
+        i128::from(advance.milli_points()) * i128::from(right_protrusion_per_mille(ch)) / 1000;
+    LayoutUnit(clamp_i128_to_i32(amount))
 }
 
 /// Return the width used for fitting after optical margin protrusion.

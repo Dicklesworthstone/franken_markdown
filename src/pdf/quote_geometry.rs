@@ -22,6 +22,12 @@ pub(super) struct State {
     lists: HashMap<usize, f32>,
 }
 
+impl State {
+    pub(super) fn is_active(&self) -> bool {
+        self.depth != 0
+    }
+}
+
 fn identity<T>(value: &T) -> usize {
     std::ptr::from_ref(value) as usize
 }

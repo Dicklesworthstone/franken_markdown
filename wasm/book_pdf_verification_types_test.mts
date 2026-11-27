@@ -12,7 +12,7 @@ const report: BookPdfVerificationReport = parseBookPdfVerificationReport(once.by
 const format: "book-pdf-verification" = direct.format;
 const text: string | undefined = report.layout.pages[0]?.runs[0]?.text;
 const target: number | null | undefined = report.destinations[0]?.page;
-const status: "greedy" | "exact_height" | "legacy" = report.pagination.strategy;
+const status: "greedy" | "exact_height" | "relaxed_height" | "legacy" = report.pagination.strategy;
 void [format, text, target, status];
 
 // @ts-expect-error Source dialect is fixed when a retained book is created.

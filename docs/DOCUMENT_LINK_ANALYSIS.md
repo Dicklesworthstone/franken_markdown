@@ -36,6 +36,26 @@ Same-document links include empty destinations, `#fragment`, and
 encoding, invalid UTF-8, missing anchors, ambiguous anchors and undefined parsed
 footnote references remain distinct findings.
 
+GitHub-style repeated separators are accepted when they belong to an actual
+source heading. For `# PART 0 — DOCUMENT CONTROL`, the compatibility spelling
+`#part-0--document-control` resolves to the unchanged emitted ID
+`part-0-document-control`. The resolver derives aliases from heading text and
+its own duplicate order; it does not collapse arbitrary incoming fragments.
+For example, these headings have distinct source owners:
+
+| Headings, in source order | Canonical ID | Accepted compatibility fragment |
+| --- | --- | --- |
+| `# A B` | `a-b` | None needed |
+| `# A — B` | `a-b-2` | `#a--b` |
+| `# A — B` | `a-b-3` | `#a--b-1` |
+
+Exact emitted IDs, including footnote targets, take precedence. Aliases retain
+once-only percent decoding, target ambiguity checks and source-block ownership.
+The public `heading_aliases` inventory supports the same resolution in editor
+navigation. It is bounded to 4,096 headings, 8,192 bytes per derived base ID and
+1 MiB of charged retained strings. Exceeding a bound disables the complete
+compatibility inventory while preserving exact lookup.
+
 File-addressed links are counted as `unchecked`, not incorrectly diagnosed as
 missing merely because an editor supplied one buffer. External links are counted
 as `external` without fetching them. Use the explicitly supplied book model and

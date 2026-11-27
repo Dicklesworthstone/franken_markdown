@@ -52,6 +52,7 @@ mod figure_fit;
 mod financial_tables;
 pub(crate) mod flow_diagram;
 mod gif;
+mod heading_keep_recovery;
 mod inline_code;
 mod inline_image;
 mod inline_math_fit;
@@ -2226,6 +2227,17 @@ impl Faces {
             F_EMOJI
         } else if in_cjk {
             F_CJK
+        } else if let Some(replacement) = text_composition::scalar_fallback(c) {
+            // Prefer real source glyphs in every fallback face before using
+            // the existing base-letter approximation. Only select its face;
+            // retain the source scalar for extraction and semantic byte spans.
+            if self.face(slot).glyph_index(replacement) != 0 {
+                slot
+            } else if self.symbol.glyph_index(replacement) != 0 {
+                F_SYMBOL
+            } else {
+                slot
+            }
         } else {
             slot
         }
@@ -2237,7 +2249,8 @@ impl Faces {
 
     /// Advance of `c` in 1/1000 em (PDF text space) for the slot's face.
     fn advance(&self, slot: u8, c: char) -> f32 {
-        self.get(slot).advance_1000(c) as f32
+        let font = self.get(slot);
+        font.advance_1000(text_composition::glyph_scalar(c, font)) as f32
     }
 
     fn shaped_width(&self, slot: u8, text: &str, size: FontSize) -> LayoutUnit {
@@ -2771,6 +2784,15 @@ impl RenderWarning {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::PaginationFallback {
+                strategy: PdfPaginationStrategy::RelaxedHeight,
+                reason,
+            } => format!(
+                "exact PDF pagination could not honor every heading keep ({reason}); \
+                 used relaxed_height pagination with only impossible heading-to-subject \
+                 keeps relaxed; measured heights, forced breaks, heading interiors and \
+                 hard widow/orphan rules were preserved"
+            ),
             Self::PaginationFallback { strategy, reason } => format!(
                 "exact PDF pagination could not be honored ({reason}); used {} pagination \
                  with soft keep/widow/orphan rules; increase the page area or simplify \
@@ -5858,7 +5880,10 @@ fn layout_simple_text_paragraph(
     // A baseline-only cache hit would hide alternatives from later occurrences
     // of the same paragraph. The ordinary cached rendering path is unchanged.
     let cacheable = text.len() <= SIMPLE_PARAGRAPH_LAYOUT_CACHE_MAX_TEXT_BYTES
-        && !cx.paragraph_candidates.enabled();
+        && !cx.paragraph_candidates.enabled()
+        // Quoted paragraphs suppress optical protrusion at their painted
+        // boundary. Do not reuse a same-measure unboxed paragraph template.
+        && !(cx.opts.microtype.protrusion && cx.quote_geometry.is_active());
 
     if cacheable {
         let mut key = SimpleParagraphLayoutKey::new(
@@ -19953,75 +19978,6 @@ fn push_text_tokens(text: &str, slot: u8, strike: bool, link: Option<u32>, out: 
     }
 }
 
-fn subscript_phonetic_fallback(c: char) -> Option<char> {
-    match c {
-        '\u{1D62}' => Some('i'), // ᵢ
-        '\u{1D63}' => Some('r'), // ᵣ
-        '\u{1D64}' => Some('u'), // ᵤ
-        '\u{1D65}' => Some('v'), // ᵥ
-        '\u{1D66}' => Some('β'), // ᵦ
-        '\u{1D67}' => Some('γ'), // ᵧ
-        '\u{1D68}' => Some('ρ'), // ᵨ
-        '\u{1D69}' => Some('ϕ'), // ᵩ
-        '\u{1D6A}' => Some('χ'), // ᵪ
-        '\u{2090}' => Some('a'), // ₐ
-        '\u{2091}' => Some('e'), // ₑ
-        '\u{2092}' => Some('o'), // ₒ
-        '\u{2093}' => Some('x'), // ₓ
-        '\u{2094}' => Some('ə'), // ₔ
-        '\u{2095}' => Some('h'), // ₕ
-        '\u{2096}' => Some('k'), // ₖ
-        '\u{2097}' => Some('l'), // ₗ
-        '\u{2098}' => Some('m'), // ₘ
-        '\u{2099}' => Some('n'), // ₙ
-        '\u{209A}' => Some('p'), // ₚ
-        '\u{209B}' => Some('s'), // ₛ
-        '\u{209C}' => Some('t'), // ₜ
-        // Superscripts and phonetic modifier letters
-        '\u{2070}' => Some('0'), // ⁰
-        '\u{00B9}' => Some('1'), // ¹
-        '\u{00B2}' => Some('2'), // ²
-        '\u{00B3}' => Some('3'), // ³
-        '\u{2074}' => Some('4'), // ⁴
-        '\u{2075}' => Some('5'), // ⁵
-        '\u{2076}' => Some('6'), // ⁶
-        '\u{2077}' => Some('7'), // ⁷
-        '\u{2078}' => Some('8'), // ⁸
-        '\u{2079}' => Some('9'), // ⁹
-        '\u{207A}' => Some('+'), // ⁺
-        '\u{207B}' => Some('-'), // ⁻
-        '\u{207C}' => Some('='), // ⁼
-        '\u{207D}' => Some('('), // ⁽
-        '\u{207E}' => Some(')'), // ⁾
-        '\u{2071}' => Some('i'), // ⁱ
-        '\u{207F}' => Some('n'), // ⁿ
-        '\u{1D43}' => Some('a'), // ᵃ
-        '\u{1D47}' => Some('b'), // ᵇ
-        '\u{1D9C}' => Some('c'), // ᶜ
-        '\u{1D48}' => Some('d'), // ᵈ
-        '\u{1D49}' => Some('e'), // ᵉ
-        '\u{1DA0}' => Some('f'), // ᶠ
-        '\u{1D4D}' => Some('g'), // ᵍ
-        '\u{02B0}' => Some('h'), // ʰ
-        '\u{02B2}' => Some('j'), // ʲ
-        '\u{1D4F}' => Some('k'), // ᵏ
-        '\u{02E1}' => Some('l'), // ˡ
-        '\u{1D50}' => Some('m'), // ᵐ
-        '\u{1D52}' => Some('o'), // ᵒ
-        '\u{1D56}' => Some('p'), // ᵖ
-        '\u{02B3}' => Some('r'), // ʳ
-        '\u{02E2}' => Some('s'), // ˢ
-        '\u{1D57}' => Some('t'), // ᵗ
-        '\u{1D58}' => Some('u'), // ᵘ
-        '\u{1D5B}' => Some('v'), // ᵛ
-        '\u{02B7}' => Some('w'), // ʷ
-        '\u{02E3}' => Some('x'), // ˣ
-        '\u{02B8}' => Some('y'), // ʸ
-        '\u{1DBB}' => Some('z'), // ᶻ
-        _ => None,
-    }
-}
-
 /// Tokenize and route non-ASCII symbol glyphs in `toks` into the symbol fallback
 /// face where needed, leaving font advance metrics consistent with actual glyph
 /// advances. Word identity is preserved: split pieces are adjacent non-space
@@ -20120,7 +20076,7 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
     let mut runs: Vec<(u8, String)> = Vec::new();
     for cluster in text_composition::source_clusters(text) {
         if matches!(
-            text_composition::glyph_text(cluster, faces.get(slot)),
+            text_composition::canonical_glyph_text(cluster, faces.get(slot)),
             Cow::Owned(_)
         ) {
             // Retain source bytes and the requested face together. Scalar
@@ -20129,17 +20085,8 @@ fn fallback_slot_runs(faces: &Faces, slot: u8, text: &str) -> Vec<(u8, String)> 
             push_slot_run(&mut runs, slot, cluster);
             continue;
         }
-        for mut c in cluster.chars() {
-            let mut target = faces.fallback_slot(slot, c);
-            if target == slot
-                && faces.face(slot).glyph_index(c) == 0
-                && faces.symbol.glyph_index(c) == 0
-                && let Some(fb) = subscript_phonetic_fallback(c)
-                && (faces.face(slot).glyph_index(fb) != 0 || faces.symbol.glyph_index(fb) != 0)
-            {
-                c = fb;
-                target = faces.fallback_slot(slot, c);
-            }
+        for c in cluster.chars() {
+            let target = faces.fallback_slot(slot, c);
             match runs.last_mut() {
                 Some((run_slot, buf)) if *run_slot == target => buf.push(c),
                 _ => runs.push((target, c.to_string())),
@@ -21040,7 +20987,7 @@ fn push_pdf_word_box(
         text: String::new(),
         runs: Default::default(),
         width,
-        protrusion: word_protrusion(toks, fs, microtype),
+        protrusion: word_protrusion(toks, fs, faces, width_cache, microtype),
     }));
     built.item_toks.push(TokGroup::take_from(toks));
     built.break_toks.push(None);
@@ -21063,7 +21010,7 @@ fn push_pdf_word_box_from_vec(
         text: String::new(),
         runs: Default::default(),
         width,
-        protrusion: word_protrusion(&toks, fs, microtype),
+        protrusion: word_protrusion(&toks, fs, faces, width_cache, microtype),
     }));
     built.item_toks.push(TokGroup::from_vec(toks));
     built.break_toks.push(None);
@@ -21075,19 +21022,38 @@ fn push_pdf_word_box_from_vec(
 fn word_protrusion(
     toks: &[Tok],
     fs: FontSize,
+    faces: &Faces,
+    width_cache: &RefCell<WidthCache>,
     microtype: crate::layout::MicrotypeOptions,
 ) -> crate::layout::Protrusion {
-    // Inline objects carry raw TeX or image payload metadata in `tok.text`,
-    // never shaped prose characters, so they must not contribute protrusion.
-    let first = toks
-        .first()
-        .filter(|t| !is_inline_object(t.slot))
-        .and_then(|t| t.text.chars().next());
-    let last = toks
-        .last()
-        .filter(|t| !is_inline_object(t.slot))
-        .and_then(|t| t.text.chars().next_back());
-    crate::layout::protrusion_for_boundary_chars(first, last, fs, microtype)
+    let mut protrusion = crate::layout::protrusion_for_boundary_chars(
+        toks.first()
+            .filter(|tok| !is_inline_object(tok.slot))
+            .and_then(|tok| token_visible_text(tok).chars().next()),
+        None,
+        fs,
+        microtype,
+    );
+    if microtype.protrusion
+        && let Some(tok) = toks.last().filter(|tok| !is_inline_object(tok.slot))
+        && let Some(ch) = token_visible_text(tok).chars().next_back()
+        && crate::layout::right_protrusion_for_advance(ch, LayoutUnit::from_points(1), microtype)
+            != LayoutUnit::ZERO
+    {
+        // The final styled/fallback face owns this punctuation's advance.
+        // Keep the existing left hang (also used without microtype) in sync
+        // with the segment painter, but never credit a full em on the right.
+        let mut buffer = [0; 4];
+        let advance = cached_shaped_width(
+            faces,
+            width_cache,
+            tok.slot,
+            ch.encode_utf8(&mut buffer),
+            fs,
+        );
+        protrusion.right = crate::layout::right_protrusion_for_advance(ch, advance, microtype);
+    }
+    protrusion
 }
 
 /// Cuts a word's tokens into consecutive character ranges in one forward pass.
@@ -21216,6 +21182,12 @@ fn layout_inlines(
     } else {
         crate::layout::MicrotypeOptions::DISABLED
     };
+    // Quote backgrounds end at the physical right margin. Preserve glyph
+    // expansion, but neither the breaker nor painter may borrow space beyond
+    // that box for punctuation (including paragraphs in nested quote lists).
+    if cx.quote_geometry.is_active() {
+        policy.microtype.protrusion = false;
+    }
     // Gradual adjacent demerits (Verna '25) are justified-paragraph-only:
     // ragged flows have no inter-word scaling to homogenize.
     policy.gradual_demerits = policy.justify && cx.opts.gradual_demerits;
@@ -22224,7 +22196,10 @@ impl<'a> SegRunShaper<'a> {
             }
             SegRunMode::General { pending, .. } => {
                 for ch in chunk.chars() {
-                    pending.push(self.face.glyph_index(ch));
+                    pending.push(
+                        self.face
+                            .glyph_index(text_composition::glyph_scalar(ch, &self.face.font)),
+                    );
                 }
                 self.settle_general();
             }
@@ -22267,7 +22242,10 @@ impl<'a> SegRunShaper<'a> {
         }
         let mut pending = Vec::with_capacity(run_text.len());
         for ch in run_text.chars() {
-            pending.push(self.face.glyph_index(ch));
+            pending.push(
+                self.face
+                    .glyph_index(text_composition::glyph_scalar(ch, &self.face.font)),
+            );
         }
         self.mode = SegRunMode::General {
             out: Vec::new(),
@@ -23105,7 +23083,7 @@ fn split_code_slot_runs<'a>(text: &'a str, faces: &Faces) -> Vec<(u8, Cow<'a, st
     let mut runs: Vec<(u8, String)> = Vec::new();
     for cluster in text_composition::source_clusters(text) {
         if matches!(
-            text_composition::glyph_text(cluster, faces.get(F_MONO)),
+            text_composition::canonical_glyph_text(cluster, faces.get(F_MONO)),
             Cow::Owned(_)
         ) {
             push_slot_run(&mut runs, F_MONO, cluster);
@@ -31753,6 +31731,39 @@ fn page_break_plan_and_report(
             },
         ),
         Err(reason) => {
+            // Retain the mixed-height planner when the sole admitted weakening
+            // is a heading chain that provably cannot share any full page with
+            // its single-fragment subject. Strict and continued-note policies
+            // keep their original hard constraints and typed failure.
+            if !opts.strict_pagination
+                && matches!(
+                    &reason,
+                    PdfPaginationFailure::Planner(
+                        crate::pagination::height::HeightPaginationError::NoFeasibleLayout { .. }
+                    )
+                )
+            {
+                let recovered = match &notes {
+                    None => heading_keep_recovery::plan(lines, page, LayoutUnit::ZERO, |_| 0.0),
+                    Some(notes) if notes.continuation.is_none() => heading_keep_recovery::plan(
+                        &lines[..notes.body_end],
+                        page,
+                        notes.separator_reserve(lines),
+                        |line| notes.line_reserve(lines, line),
+                    ),
+                    Some(_) => None,
+                };
+                if let Some(plan) = recovered {
+                    return (
+                        Some(plan),
+                        PdfPageBreakReport {
+                            requested_optimal: true,
+                            strategy: PdfPaginationStrategy::RelaxedHeight,
+                            fallback: Some(reason),
+                        },
+                    );
+                }
+            }
             let (plan, strategy) = if notes.is_some() {
                 (None, PdfPaginationStrategy::Greedy)
             } else {
@@ -32067,6 +32078,19 @@ fn exact_height_page_breaks_reserving(
     reservation_prefix: LayoutUnit,
     reserve: impl Fn(usize) -> f32,
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
+    height_page_breaks_reserving(lines, page, reservation_prefix, reserve, &[])
+}
+
+/// The hard bridge and the narrowly admitted best-effort recovery share every
+/// measurement and plan validation. Recovery supplies sorted heading starts;
+/// only their final keep-with-next flags change, retaining the boundary costs.
+fn height_page_breaks_reserving(
+    lines: &[Line],
+    page: PageGeom,
+    reservation_prefix: LayoutUnit,
+    reserve: impl Fn(usize) -> f32,
+    relaxed_heading_starts: &[usize],
+) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
     use crate::pagination::height::{
         BlockCandidates, BlockPolicy, plan_blocks_with_reservation_prefix,
     };
@@ -32095,7 +32119,10 @@ fn exact_height_page_breaks_reserving(
                 lines, start, end, 0, &reserve,
             )],
         });
-        let policy = joint_pagination::block_policy(lines, start);
+        let mut policy = joint_pagination::block_policy(lines, start);
+        if relaxed_heading_starts.binary_search(&start).is_ok() {
+            policy.keep_with_next = false;
+        }
 
         spans.push((start, end));
         policies.push(policy);
@@ -36746,6 +36773,19 @@ mod pdf_writer_tests {
         Some((seg.x + natural * scale, credit_char))
     }
 
+    fn measured_right_credit(
+        line: &Line,
+        ch: char,
+        faces: &Faces,
+        microtype: crate::layout::MicrotypeOptions,
+    ) -> f32 {
+        let slot = line.segs.last().expect("text line").slot;
+        let mut buffer = [0; 4];
+        let advance =
+            faces.shaped_width(slot, ch.encode_utf8(&mut buffer), font_size_of(line.size));
+        crate::layout::right_protrusion_for_advance(ch, advance, microtype).to_points_f32()
+    }
+
     /// Lay out [`FLUSH_FIXTURE`] and assert every justified (non-final) line
     /// ends exactly at the measure, plus any right-protrusion credit.
     fn assert_justified_lines_flush(opts: &PdfOptions) -> crate::Result<()> {
@@ -36766,14 +36806,7 @@ mod pdf_writer_tests {
         for line in &lines[..lines.len() - 1] {
             let (edge, credit_char) =
                 rendered_right_edge(line, &faces).expect("justified line has text");
-            let credit = crate::layout::protrusion_for_boundary_chars(
-                None,
-                Some(credit_char),
-                font_size_of(line.size),
-                opts.microtype,
-            )
-            .right
-            .to_points_f32();
+            let credit = measured_right_credit(line, credit_char, &faces, opts.microtype);
             let err = edge - (measure_end + credit);
             let text: String = line.segs.iter().map(|s| s.text.as_str()).collect();
             assert!(
@@ -37032,14 +37065,7 @@ mod pdf_writer_tests {
                     checked_boundaries += 1;
                 }
                 let (edge, credit_char) = rendered_right_edge(line, &faces).expect("text line");
-                let credit = crate::layout::protrusion_for_boundary_chars(
-                    None,
-                    Some(credit_char),
-                    font_size_of(line.size),
-                    microtype,
-                )
-                .right
-                .to_points_f32();
+                let credit = measured_right_credit(line, credit_char, &faces, microtype);
                 assert!(
                     (edge - page.right_x() - credit).abs() < 0.05,
                     "styled justified line ends at {edge:.3}pt, expected {:.3}pt",
@@ -46315,7 +46341,8 @@ fn audit_inline_fragment_links(
 }
 
 pub fn audit_anchors(doc: &Document) -> AnchorAudit {
-    audit_anchors_with_resolver(doc, &|_, _| None)
+    let canonical = crate::anchors::canonicalize_links(doc);
+    audit_anchors_with_resolver(canonical.as_ref(), &|_, _| None)
 }
 
 /// Source-aware verification can override public note fragments while keeping

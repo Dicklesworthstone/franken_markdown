@@ -209,6 +209,7 @@ fn unicode_uri_actions_encode_utf8_without_changing_pdf_metadata() {
             .map(|id| objects.dictionary(id))
             .find(|dictionary| dictionary.contains("/Producer "))
             .unwrap();
+        assert!(objects.dictionary(1).contains("/ViewerPreferences << /DisplayDocTitle true >>"));
         assert!(info.contains("/Title <FEFF00430061006600E90020D83DDE3A>"));
         assert!(info.contains("/Author <FEFF005A006F00EB>"));
     }
@@ -218,6 +219,18 @@ fn unicode_uri_actions_encode_utf8_without_changing_pdf_metadata() {
     )
     .unwrap();
     assert_eq!(external_uri_targets(&browser.bytes), expected);
+}
+
+#[test]
+fn pdf_viewer_uses_its_default_when_there_is_no_display_title() {
+    for title in [None, Some("  ".to_owned())] {
+        let opts = PdfOptions {
+            title,
+            ..PdfOptions::default()
+        };
+        let bytes = render_pdf("Untitled body", &opts).unwrap();
+        assert!(!Objects::new(&bytes).dictionary(1).contains("/DisplayDocTitle"));
+    }
 }
 
 #[test]

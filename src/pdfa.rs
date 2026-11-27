@@ -149,7 +149,9 @@ pub fn output_intent_body(icc_obj: usize) -> String {
 }
 
 /// Deterministic PDF/A-2b XMP packet. Dates use `epoch` when set, else a
-/// fixed Unix 0 so output stays reproducible without env.
+/// fixed Unix 0 so output stays reproducible without env. Direct packet callers
+/// get U+FFFD for characters outside XML 1.0. Archival rendering rejects those
+/// metadata values before layout so the authored text cannot silently change.
 #[must_use]
 pub fn xmp_packet(title: &str, author: &str, epoch: Option<u64>) -> Vec<u8> {
     let date = xmp_date(epoch.unwrap_or(0));
@@ -192,15 +194,27 @@ pub fn xmp_packet(title: &str, author: &str, epoch: Option<u64>) -> Vec<u8> {
     xml.into_bytes()
 }
 
+pub(crate) fn date_components(epoch: u64) -> [u64; 6] {
+    const LAST_SECOND_OF_YEAR_9999: u64 = 253_402_300_799;
+    let seconds = epoch.min(LAST_SECOND_OF_YEAR_9999);
+    let (year, month, day) = civil_from_days(seconds / 86_400);
+    [
+        u64::from(year),
+        u64::from(month),
+        u64::from(day),
+        seconds / 3_600 % 24,
+        seconds / 60 % 60,
+        seconds % 60,
+    ]
+}
+
+pub(crate) fn info_date(epoch: Option<u64>) -> String {
+    let [year, month, day, hour, min, sec] = date_components(epoch.unwrap_or(0));
+    format!("D:{year:04}{month:02}{day:02}{hour:02}{min:02}{sec:02}Z")
+}
+
 fn xmp_date(epoch: u64) -> String {
-    // Deterministic civil date from Unix seconds, UTC, no leap-second table.
-    let secs = epoch.min(4_102_444_800); // cap ~2100
-    let days = secs / 86400;
-    let rem = secs % 86400;
-    let hour = rem / 3600;
-    let min = (rem % 3600) / 60;
-    let sec = rem % 60;
-    let (year, month, day) = civil_from_days(days);
+    let [year, month, day, hour, min, sec] = date_components(epoch);
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
@@ -220,15 +234,26 @@ fn civil_from_days(unix_days: u64) -> (u32, u32, u32) {
     (y as u32, m as u32, d as u32)
 }
 
-#[inline(always)]
-fn push_xml_escaped(out: &mut String, s: &str) {
-    if !s
-        .bytes()
-        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
-    {
-        out.push_str(s);
-        return;
+fn valid_xml_character(ch: char) -> bool {
+    matches!(ch, '\t' | '\n' | '\r') || (ch >= ' ' && !matches!(ch, '\u{fffe}' | '\u{ffff}'))
+}
+
+pub(crate) fn validate_metadata_text(title: Option<&str>, author: Option<&str>) -> Result<()> {
+    for (name, value) in [("title", title), ("author", author)] {
+        if let Some(ch) = value.and_then(|s| s.chars().find(|&ch| !valid_xml_character(ch))) {
+            return Err(pdfa_reject(
+                "pdf_a_metadata_character",
+                &format!(
+                    "document {name} contains U+{:04X}, which XML 1.0 cannot represent",
+                    u32::from(ch)
+                ),
+            ));
+        }
     }
+    Ok(())
+}
+
+fn push_xml_escaped(out: &mut String, s: &str) {
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
@@ -236,6 +261,10 @@ fn push_xml_escaped(out: &mut String, s: &str) {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            // A literal carriage return would become a line feed in an XML reader.
+            '\r' => out.push_str("&#xD;"),
+            // Direct callers of the infallible packet helper still get well-formed XML.
+            c if !valid_xml_character(c) => out.push('\u{fffd}'),
             c => out.push(c),
         }
     }

@@ -78,6 +78,56 @@ fn pdfa_2b_emits_xmp_output_intent_and_icc() {
 }
 
 #[test]
+fn archive_info_and_xmp_preserve_metadata_text_and_the_same_utc_instant() {
+    for (epoch, pdf_date, xml_date) in [
+        (4_102_444_801, "21000101000001", "2100-01-01T00:00:01"),
+        (u64::MAX, "99991231235959", "9999-12-31T23:59:59"),
+    ] {
+        let options = PdfOptions {
+            title: Some("First\r\nSecond & (last)".into()),
+            author: Some("Zoë 🐈".into()),
+            metadata_epoch_seconds: Some(epoch),
+            ..PdfOptions::default()
+        };
+        let bytes = render_pdf_pdfa(MD, &options, PdfASettings::a2b_strict()).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(r"/Title (First\r\nSecond & \(last\))"));
+        assert!(text.contains("First&#xD;\nSecond &amp; (last)</rdf:li>"));
+        assert!(text.contains("Zoë 🐈</rdf:li>"));
+        assert!(text.contains(&format!("/CreationDate (D:{pdf_date}Z)")));
+        assert!(text.contains(&format!("/ModDate (D:{pdf_date}Z)")));
+        assert!(text.contains(&format!("<xmp:CreateDate>{xml_date}Z</xmp:CreateDate>")));
+        assert!(text.contains(&format!("<xmp:ModifyDate>{xml_date}Z</xmp:ModifyDate>")));
+    }
+}
+
+#[test]
+fn archive_rejects_metadata_that_xml_cannot_represent() {
+    for (field, invalid) in [("title", '\0'), ("author", '\u{ffff}')] {
+        let mut options = opts();
+        let value = Some(format!("ordinary text {invalid} more"));
+        if field == "title" {
+            options.title = value;
+        } else {
+            options.author = value;
+        }
+        for profile in [PdfASettings::a2b(), PdfASettings::a2b_strict()] {
+            let err = render_pdf_pdfa(MD, &options, profile)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("pdf_a_metadata_character"), "{err}");
+            assert!(err.contains(field), "{err}");
+        }
+    }
+    let packet = franken_markdown::pdfa::xmp_packet("\u{000b}", "", None);
+    assert!(
+        String::from_utf8(packet)
+            .unwrap()
+            .contains(">\u{fffd}</rdf:li>")
+    );
+}
+
+#[test]
 fn pdfa_2b_is_deterministic() {
     let a = render_pdf_pdfa(MD, &opts(), PdfASettings::a2b()).unwrap();
     let b = render_pdf_pdfa(MD, &opts(), PdfASettings::a2b()).unwrap();

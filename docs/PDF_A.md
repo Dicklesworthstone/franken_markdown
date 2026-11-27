@@ -38,6 +38,12 @@ Default (`PdfASettings::OFF`) is byte-identical to historical output: the three
 PDF/A objects are numbered after Info/SMask so they never renumber existing
 objects.
 
+PDF/A writes the same title, author, and UTC instants to the Info dictionary and
+XMP. Line feeds and carriage returns survive both encodings. An epoch above
+the four-digit date range uses 9999-12-31T23:59:59Z in both places. A title or
+author containing a character forbidden by XML 1.0 fails before layout with
+`pdf_a_metadata_character` and identifies the field and code point.
+
 ## Compact sRGB ICC provenance
 
 `src/pdfa.rs` `compact_srgb_icc()` is a **project-authored, CC0** ICC v2

@@ -21,6 +21,11 @@ values use the writer's PDF string encoding. This applies to ordinary and
 PDF/A output and lets assistive readers select the document's language even
 when the hyphenator uses a fallback pattern set.
 
+When the document has a nonblank title, the catalog sets
+`/ViewerPreferences << /DisplayDocTitle true >>` so readers can display the
+authored title in the window or tab. The Info dictionary carries the title in
+both ordinary and archival PDFs. See [W3C PDF18](https://www.w3.org/WAI/WCAG22/Techniques/pdf/PDF18).
+
 ## Supported semantics
 
 The structure tree is a real hierarchy rooted at a single `/Document` element:
@@ -254,5 +259,6 @@ ratchets `failedRules` against `tests/fixtures/pdfua-baseline.txt` (currently
 | clause 7.1, test 10 | heading-structure detail (same roadmap item) |
 | clause 5, test 1 | document-level requirement (viewer/title metadata class) |
 
-These rows map to the roadmap items above (H4–H6 exact tags, now landed; document title
-display). When they land, tighten the baseline in the same commit.
+The writer now emits exact H4–H6 tags and requests display of a supplied title.
+The table records the historical validator run. A fresh measurement is needed
+before changing its baseline.

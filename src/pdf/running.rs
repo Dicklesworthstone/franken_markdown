@@ -13,9 +13,8 @@ use super::{
     EmbeddedFace, EmbeddedFaceLookup, F_BODY, Faces, Fill, HeadingSource, ImageLine, Line,
     LinkAnnotation, PageBreakPlan, PageGeom, PageNotes, Palette, PdfImageData, Seg, ShapedRunCache,
     SvgPageResources, append_oriented_image_xobject_do, append_rgb_stroke_line_operator,
-    append_svg_text_viewport_clip, civil_from_unix_days, draw_seg, draw_svg_image,
-    fallback_slot_runs, font_size_of, next_placed_page, parse_pdf_image_asset, seg_text_hash,
-    text_composition, text_positioning,
+    append_svg_text_viewport_clip, draw_seg, draw_svg_image, fallback_slot_runs, font_size_of,
+    next_placed_page, parse_pdf_image_asset, seg_text_hash, text_composition, text_positioning,
 };
 use crate::ast::{Block, Document};
 use crate::{PdfOptions, PdfRunningBand, PdfRunningImage, PdfRunningImagePosition, RenderError};
@@ -451,9 +450,7 @@ fn expand(pieces: &[Piece], page: usize, pages: usize, context: &PageContext) ->
 
 /// `YYYY-MM-DD` (UTC) for `{date}`.
 fn iso_date(epoch_seconds: u64) -> String {
-    const MAX_EPOCH: u64 = 253_402_300_799; // 9999-12-31T23:59:59Z
-    let days = (epoch_seconds.min(MAX_EPOCH) / 86_400) as i64;
-    let (year, month, day) = civil_from_unix_days(days);
+    let [year, month, day, ..] = crate::pdfa::date_components(epoch_seconds);
     format!("{year:04}-{month:02}-{day:02}")
 }
 

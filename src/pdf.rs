@@ -3386,6 +3386,9 @@ fn render_inner_with_verification(
     languages: &language::Context,
     collect_verification: bool,
 ) -> Result<RenderedPdf> {
+    if pdf_a.mode.is_a2b() {
+        crate::pdfa::validate_metadata_text(opts.title.as_deref(), opts.author.as_deref())?;
+    }
     let doc = input.document();
     let notes = note_tags::Context::bind(input);
     emit.compression.validate()?;
@@ -34256,7 +34259,7 @@ fn append_pdf_text_string_bytes(out: &mut Vec<u8>, s: &str) {
                 b')' => out.extend_from_slice(b"\\)"),
                 b'\\' => out.extend_from_slice(b"\\\\"),
                 b'\r' => out.extend_from_slice(b"\\r"),
-                b'\n' => out.push(b' '),
+                b'\n' => out.extend_from_slice(b"\\n"),
                 _ => out.push(byte),
             }
         }
@@ -34989,6 +34992,11 @@ fn build_pdf(
     } else {
         String::new()
     };
+    let viewer_preferences = if title.trim().is_empty() {
+        ""
+    } else {
+        " /ViewerPreferences << /DisplayDocTitle true >>"
+    };
     let pdfa_catalog_ref = if pdf_a.mode.is_a2b() {
         crate::pdfa::catalog_extras(metadata_obj, output_intent_obj)
     } else {
@@ -35050,7 +35058,7 @@ fn build_pdf(
         &mut offsets,
         1,
         &format!(
-            "<< /Type /Catalog /Pages 2 0 R{outline_root_ref}{structure_root_ref}{pdfa_catalog_ref} >>"
+            "<< /Type /Catalog /Pages 2 0 R{outline_root_ref}{structure_root_ref}{viewer_preferences}{pdfa_catalog_ref} >>"
         ),
     );
 
@@ -35446,7 +35454,7 @@ fn build_pdf(
     } else {
         format!(" /Author {}", pdf_text_string(&author))
     };
-    let info_date = pdf_info_date(opts.metadata_epoch_seconds);
+    let info_date = crate::pdfa::info_date(opts.metadata_epoch_seconds);
     append_pdf_object_str(
         &mut buf,
         &mut offsets,
@@ -35601,34 +35609,6 @@ fn append_pdf_hex_string(out: &mut Vec<u8>, bytes: &[u8]) {
         out.push(HEX[(byte & 0x0F) as usize]);
     }
     out.push(b'>');
-}
-
-fn pdf_info_date(epoch_seconds: Option<u64>) -> String {
-    const MAX_PDF_DATE_EPOCH: u64 = 253_402_300_799; // 9999-12-31T23:59:59Z
-    let epoch = epoch_seconds.unwrap_or(0).min(MAX_PDF_DATE_EPOCH);
-    let days = (epoch / 86_400) as i64;
-    let secs = epoch % 86_400;
-    let (year, month, day) = civil_from_unix_days(days);
-    let hour = secs / 3_600;
-    let minute = (secs % 3_600) / 60;
-    let second = secs % 60;
-    format!("D:{year:04}{month:02}{day:02}{hour:02}{minute:02}{second:02}Z")
-}
-
-fn civil_from_unix_days(days: i64) -> (i64, u32, u32) {
-    // Howard Hinnant's civil-from-days algorithm. It is tiny, deterministic,
-    // proleptic-Gregorian, and avoids pulling in a time crate for one Info date.
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + i64::from(month <= 2);
-    (year, month as u32, day as u32)
 }
 
 fn annotation_is_resolved(annot: &LinkAnnotation, dest_ids: &BTreeSet<&str>) -> bool {
@@ -36435,7 +36415,7 @@ fn append_pdf_string_escaped(out: &mut String, s: &str) {
             ')' => out.push_str("\\)"),
             '\\' => out.push_str("\\\\"),
             '\r' => out.push_str("\\r"),
-            '\n' => out.push(' '),
+            '\n' => out.push_str("\\n"),
             c if (c as u32) < 256 => out.push(c),
             _ => out.push('?'),
         }
@@ -42217,7 +42197,7 @@ mod pdf_writer_tests {
         let mut out = String::new();
         append_pdf_string_escaped(&mut out, "a(b)c\\d\re\n\u{2206}");
 
-        assert_eq!(out, "a\\(b\\)c\\\\d\\re ?");
+        assert_eq!(out, "a\\(b\\)c\\\\d\\re\\n?");
     }
 
     #[test]

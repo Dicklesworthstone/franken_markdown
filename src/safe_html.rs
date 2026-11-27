@@ -1912,6 +1912,39 @@ impl Sanitizer {
     }
 }
 
+/// Append searchable text for the default sanitized HTML representation. Track
+/// recognized markup so callers can retain their raw-block exclusion for
+/// unsupported source. Formatting tags join adjacent text, while line breaks
+/// and structural tags separate words just as they do in the published page.
+pub(crate) fn push_search_text(raw: &str, out: &mut String) -> bool {
+    let mut recognized = false;
+    for piece in pieces(raw) {
+        match piece {
+            Piece::Ignorable => {}
+            Piece::Text(text) => out.push_str(&decode_entities(text)),
+            Piece::Tag(tag, source) => {
+                let name = tag.name.as_str();
+                if allowed_element(name).is_none() {
+                    if !dropped_element(name) {
+                        out.push_str(source);
+                    }
+                    continue;
+                }
+                recognized = true;
+                match name {
+                    "img" if !tag.closing => out.push_str(tag.attr("alt").unwrap_or("")),
+                    "br" | "hr" | "blockquote" | "caption" | "center" | "dd" | "details"
+                    | "div" | "dl" | "dt" | "figcaption" | "figure" | "h1" | "h2" | "h3"
+                    | "h4" | "h5" | "h6" | "li" | "ol" | "p" | "pre" | "summary" | "table"
+                    | "td" | "th" | "tr" | "ul" => out.push(' '),
+                    _ => {}
+                }
+            }
+        }
+    }
+    recognized
+}
+
 /// The text a raw HTML fragment shows: decoded text runs plus the source of
 /// tags outside the safe subset, without markup the renderers keep or lower.
 pub(crate) fn visible_text(raw: &str) -> Cow<'_, str> {

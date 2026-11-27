@@ -32,9 +32,12 @@ allocated alternative, preserving reserved targets for other notes as well.
 The same correction applies to offline book search because it uses the shared
 full-content indexer.
 
-Raw HTML blocks and layout-only breaks remain outside the index. In particular,
-raw HTML headings do not invent Markdown heading identifiers or shift later
-Markdown anchors. Hosts should treat index text as data and encode anchors as
+Search includes the reader-visible text of supported HTML blocks, including table
+cells, details, summaries, and image alternative text. Search results in a raw
+HTML heading use the surrounding Markdown section or note. Inline formatting
+keeps words together, line breaks separate words, and comments and formatting
+attributes stay outside snippets. Blocks containing only unsupported markup
+and layout-only breaks remain outside the full index. Hosts should treat index text as data and encode anchors as
 fragment identifiers when building links.
 
 The library's `build_search_index` retains its established heading/body-paragraph

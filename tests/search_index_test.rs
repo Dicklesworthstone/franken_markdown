@@ -380,3 +380,38 @@ fn full_index_does_not_invent_heading_ids_for_sanitized_raw_html() {
         assert!(rendered.contains(&format!("<h1 id=\"{anchor}\">Topic</h1>")));
     }
 }
+
+#[test]
+fn full_index_searches_visible_html_text_at_real_markdown_anchors() {
+    let source = concat!(
+        "# Guide\n\n",
+        "<div><h2>Setup</h2><table><tr><td>North</td><td>South</td></tr></table>",
+        "<details><summary>Tip</summary><p>Copy <kbd>Ctrl</kbd>+C</p></details>",
+        "<img src='hidden-url.png' alt='Route &amp; map'></div>\n\n",
+        "Use <span title='hidden-title'>co<b>mp</b>ass</span><br>now",
+        "<!--hidden-comment-->.\n\n",
+        "# Setup\n"
+    );
+    let doc = parse(source);
+    let index = build_full_search_index(&doc);
+    let entries: Vec<_> = index
+        .entries
+        .iter()
+        .map(|entry| (entry.anchor.as_str(), entry.text.as_str()))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("guide", "Guide"),
+            ("guide", "Setup North South Tip Copy Ctrl+C Route & map"),
+            ("guide", "Use compass now."),
+            ("setup", "Setup"),
+        ]
+    );
+    let legacy = build_search_index(&doc);
+    assert_eq!(legacy.entries.len(), 3);
+    assert_eq!(legacy.entries[1].text, "Use compass now.");
+    let rendered = html::render_fragment(&doc.blocks, &HtmlOptions::default());
+    assert!(rendered.contains("<h1 id=\"setup\">Setup</h1>"));
+    assert!(!rendered.contains("hidden-comment"));
+}

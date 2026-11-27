@@ -7,8 +7,8 @@
 //! be deep-linked into the rendered HTML.
 //!
 //! [`build_full_search_index`] additionally includes code, tables, definitions,
-//! mathematics, and referenced footnotes in HTML emission order. The original
-//! [`build_search_index`] retains its heading/body-paragraph-only contract.
+//! mathematics, supported HTML content, and referenced footnotes in HTML emission
+//! order. [`build_search_index`] retains its heading/body-paragraph-only contract.
 //!
 //! # Anchor parity
 //!
@@ -84,9 +84,9 @@ pub fn build_search_index(doc: &Document) -> SearchIndex {
 /// Build a full-content index for reader-facing document and book search.
 ///
 /// Includes body headings/paragraphs, code and diagram source, table rows,
-/// definition terms/bodies, TeX math, and every referenced footnote. Raw HTML
-/// blocks and layout-only breaks are omitted. Non-heading entries retain the
-/// v1 `paragraph` kind, so existing JSON consumers need no new enum variants.
+/// definition terms/bodies, TeX math, recognized HTML blocks, and every referenced
+/// footnote. HTML content targets the preceding Markdown heading or note.
+/// Non-heading entries retain the v1 `paragraph` kind.
 ///
 /// Notes follow the HTML renderer's first-reference queue (including references
 /// inside tables, definitions, and other notes). Unreferenced notes are omitted,
@@ -273,6 +273,12 @@ fn walk_blocks(
                     push_content(&text, current_anchor, entries);
                 }
             }
+            Block::HtmlBlock(raw) if full => {
+                let mut text = String::new();
+                if crate::safe_html::push_search_text(raw, &mut text) {
+                    push_content(&text, current_anchor, entries);
+                }
+            }
             // Definition bodies are emitted only when dequeued after the body.
             Block::FootnoteDefinition { .. } => {}
             _ => {}
@@ -386,7 +392,7 @@ fn slug_inlines(inlines: &[Inline]) -> String {
     franken_markdown::anchors::heading_slug(inlines)
 }
 
-/// Mirror of `push_inlines_to_plain` (src/html.rs:984-998).
+/// Reader-visible text; image alternative text and HTML breaks are searchable.
 fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
     for inl in inlines {
         match inl {
@@ -404,7 +410,9 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
             Inline::Link { content, .. } => push_inlines_to_plain(content, out),
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
-            Inline::Html(html) => out.push_str(html),
+            Inline::Html(html) => {
+                crate::safe_html::push_search_text(html, out);
+            }
         }
     }
 }

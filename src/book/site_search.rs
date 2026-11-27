@@ -212,11 +212,12 @@ mod tests {
     fn exported_index_contains_code_tables_and_referenced_notes() {
         let book = build_book(&[BookInput {
             path: "guide.md".into(),
-            source: "# Guide\n\n```rust\nlaunch_unique();\n```\n\n| option | value |\n| --- | --- |\n| timeout | 30 |\n\nRead[^n].\n\n[^n]: unique citation body\n".into(),
+            source: "# Guide\n\n```rust\nlaunch_unique();\n```\n\n| option | value |\n| --- | --- |\n| timeout | 30 |\n\n<div><p>Readable</p><p>HTML_unique</p></div>\n\nRead[^n].\n\n[^n]: unique citation body\n".into(),
         }]).unwrap();
         let json = index_json(&book).unwrap();
         assert!(json.contains("launch_unique();"));
         assert!(json.contains("timeout 30"));
+        assert!(json.contains("\"anchor\":\"guide\",\"text\":\"Readable HTML_unique\""));
         assert!(json.contains("unique citation body"));
         assert!(json.contains("\"anchor\":\"fn-n\""));
     }

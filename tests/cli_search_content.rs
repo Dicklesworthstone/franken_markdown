@@ -56,7 +56,7 @@ fn succeeded(output: &Output) {
 #[test]
 fn native_sidecar_includes_all_supported_content_and_real_note_targets() {
     let dir = Workspace::new();
-    let source = "# fn-n\n\nProse needle.[^n]\n\n~~~rust\nlaunch_unique();\n~~~\n\n| Key | Value |\n| --- | --- |\n| timeout_unique | 30 |\n\nCache_unique\n: Stores reusable values\n\n$$\nx_unique^2 + y^2\n$$\n\n[^n]: Note_unique body.\n\n[^unused]: Invisible_unique note.\n";
+    let source = "# fn-n\n\nProse needle.[^n]\n\n~~~rust\nlaunch_unique();\n~~~\n\n| Key | Value |\n| --- | --- |\n| timeout_unique | 30 |\n\nCache_unique\n: Stores reusable values\n\n$$\nx_unique^2 + y^2\n$$\n\n<details><summary>HTML_unique</summary><p>A &amp; B</p></details>\n\n[^n]: Note_unique body.\n\n[^unused]: Invisible_unique note.\n";
     dir.write("doc.md", source);
     let args = [
         "doc.md",
@@ -76,6 +76,7 @@ fn native_sidecar_includes_all_supported_content_and_real_note_targets() {
         "Cache_unique Stores reusable values",
         "x_unique^2 + y^2",
         "Note_unique body.",
+        "HTML_unique A & B",
     ] {
         assert!(index.contains(text), "missing {text:?}: {index}");
     }

@@ -32003,6 +32003,17 @@ fn definition_keeps_next(before: &Line, after: &Line) -> bool {
         && before.flow.note == after.flow.note
 }
 
+/// Keep the opening header assembly with the first row and the closing rule
+/// with the last data row. A rule painted on its own page has no table content.
+fn table_rule_keeps_next(before: &Line, after: &Line) -> bool {
+    use FlowKind::{TableHeader, TableRow, TableRule};
+    before.flow.group == after.flow.group
+        && matches!(
+            (before.flow.kind, after.flow.kind),
+            (TableHeader | TableRule, TableRule | TableRow) | (TableRow, TableRule)
+        )
+}
+
 fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     if candidate == 0 || candidate >= lines.len() {
         return false;
@@ -32010,28 +32021,19 @@ fn pdf_split_is_hard_forbidden(lines: &[Line], candidate: usize) -> bool {
     let before = &lines[candidate - 1];
     let after = &lines[candidate];
 
-    if before.flow.group == after.flow.group {
-        // Table header/rule material is inseparable from the first body row.
-        if matches!(
-            before.flow.kind,
-            FlowKind::TableHeader | FlowKind::TableRule
-        ) && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
-        {
-            return true;
-        }
-        // A wrapped logical table row/header must never be cut between its
-        // physical lines.
-        if matches!(before.flow.kind, FlowKind::TableRow | FlowKind::TableHeader)
-            && before.flow.index + 1 < before.flow.count
-        {
-            return true;
-        }
+    // Keep all physical lines of a wrapped logical row or header together.
+    if before.flow.group == after.flow.group
+        && matches!(before.flow.kind, FlowKind::TableRow | FlowKind::TableHeader)
+        && before.flow.index + 1 < before.flow.count
+    {
+        return true;
     }
 
     // An actual intra-word hyphen break joins these physical lines. Source
     // punctuation alone does not: '-' is a common missing-value table cell
     // and a valid ending for code and hard-break prose lines.
     before.hyphenated
+        || table_rule_keeps_next(before, after)
         || list_labels::keeps_next(before, after)
         || definition_keeps_next(before, after)
 }
@@ -32471,15 +32473,7 @@ fn break_penalty(lines: &[Line], candidate: usize) -> f32 {
         penalty += 1_500_000.0;
     }
 
-    // Never separate table header or table rule from table rows, and never break
-    // between TableHeader and TableRule.
-    if before.flow.group == after.flow.group
-        && matches!(
-            before.flow.kind,
-            FlowKind::TableHeader | FlowKind::TableRule
-        )
-        && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow)
-    {
+    if table_rule_keeps_next(before, after) {
         penalty += 1_500_000.0;
     }
 

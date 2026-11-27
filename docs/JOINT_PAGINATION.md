@@ -309,7 +309,8 @@ The contract covers hard constraints over the final measured body lines:
 two-line minima on split ordinary paragraphs, heading keep-together and
 keep-with-next, short-caption/list-introduction keeps, forced page breaks, and
 forbidden splits inside wrapped table rows, between a table header and its
-first row, or at protected hyphen breaks.
+first row, between the final data row and its closing rule, or at protected
+hyphen breaks.
 
 A complete paragraph of one to three measured lines immediately before a
 figure, table, code block, or list stays together with that subject's first

@@ -603,3 +603,47 @@ fn ordinary_headers_repeat_and_exact_requests_still_refuse_infeasible_tables() {
         Err(RenderError::Pagination(_))
     ));
 }
+
+#[test]
+fn table_closing_rule_stays_on_a_page_with_its_last_body_row() {
+    let text = source(1, 12, false, false);
+    let (table, _) = text.split_once("\nAfter sentinel.").unwrap();
+    for strict in [false, true] {
+        let mut options = options();
+        options.theme.page.size.height_pt = 124.0;
+        options.strict_pagination = strict;
+        let report = render_pdf_reported(table, &options).unwrap();
+        assert_eq!(report.pagination.page_breaks.is_exact(), strict);
+        let objects = Objects::new(&report.bytes);
+        let pages = objects.text();
+        assert!(pages.len() > 1);
+        let mut rows = Vec::new();
+        for page in &pages {
+            let data: Vec<_> = page
+                .iter()
+                .filter(|run| run.text.starts_with('R'))
+                .collect();
+            assert!(!data.is_empty(), "every table page needs a data row");
+            rows.extend(data.into_iter().map(|run| run.text.as_str()));
+        }
+        assert_eq!(
+            rows,
+            (0..12).map(|i| format!("R{i:03}")).collect::<Vec<_>>()
+        );
+        let last_page = *objects.pages().last().unwrap();
+        let content = objects.stream(number(objects.dictionary(last_page), "/Contents "));
+        let strokes = pdf_content::operations(&content)
+            .iter()
+            .filter(|op| op.operator == "S")
+            .count();
+        assert!(
+            strokes >= 2,
+            "the last page must paint the header separator and closing rule"
+        );
+        assert_eq!(objects.count_tag("TR"), 13);
+        assert_eq!(
+            report.bytes,
+            render_pdf_emitted(table, &options, PdfEmitOptions::monolithic()).unwrap()
+        );
+    }
+}

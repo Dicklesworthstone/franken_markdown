@@ -423,11 +423,7 @@ fn keeps_next(before: &Line, after: &Line) -> bool {
         // last row, so no header-only or rule-only continuation page is made.
         if (matches!(before.flow.kind, FlowKind::TableHeader | FlowKind::TableRow)
             && before.flow.index + 1 < before.flow.count)
-            || (matches!(
-                before.flow.kind,
-                FlowKind::TableHeader | FlowKind::TableRule
-            ) && matches!(after.flow.kind, FlowKind::TableRule | FlowKind::TableRow))
-            || (before.flow.kind == FlowKind::TableRow && after.flow.kind == FlowKind::TableRule)
+            || table_rule_keeps_next(before, after)
         {
             return true;
         }

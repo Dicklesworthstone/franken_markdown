@@ -34,7 +34,9 @@ export function captureFlowProject(document, settings) {
 }
 export function serializeFlowProject(document, settings) {
   const project = captureFlowProject(document, settings);
-  const text = JSON.stringify(project, null, 2) + "\n";
+  // Keep ordinary projects readable by editors predating the archival selector.
+  const { pdfPolicy, ...originalSettings } = project.settings;
+  const text = JSON.stringify(pdfPolicy === "off" ? { ...project, settings: originalSettings } : project, null, 2) + "\n";
   if (new TextEncoder().encode(text).length > FLOW_PROJECT_LIMIT)
     throw new FlowError("BUDGET_EXCEEDED", "Flow source project exceeds the 32 MiB JSON limit.");
   return text;

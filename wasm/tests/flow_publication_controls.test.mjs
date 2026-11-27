@@ -9,7 +9,7 @@ import { withFlowExports } from "../flow_export.mjs";
 import { createPreviewController } from "../demo/flow_preview_controller.mjs";
 import { createPdfVerificationControls } from "../demo/flow_pdf_verification_controls.mjs";
 import { createExportControls } from "../demo/flow_export_controls.mjs";
-import { normalizeRenderSettings } from "../demo/flow_render_settings.mjs";
+import { normalizeRenderSettings, pdfLayoutVerificationOptions } from "../demo/flow_render_settings.mjs";
 
 const formats = ["html", "pdf", "epub", "svg"];
 const mime = {
@@ -67,7 +67,7 @@ async function fixture(options = {}) {
     .map(name => [name, new Element()]));
   const verification = createPdfVerificationControls({
     ...verificationElements, sourceEditor,
-    readOptions: () => ({ ...settings.pdf, maxOutputBytes: 8 * 1024 * 1024 }),
+    readOptions: () => pdfLayoutVerificationOptions(settings.pdf),
     urls: {
       createObjectURL(blob) { f.blobs.push(blob); return "blob:verification-" + f.blobs.length; },
       revokeObjectURL(url) { f.revoked.push(url); },
@@ -115,6 +115,7 @@ async function fixture(options = {}) {
         if (held) await held.promise;
         if (f.renderError) throw f.renderError;
         return { format, mimeType: mime[format], bytes: new Uint8Array([5, 6, 7]), diagnostics: [],
+          ...(rendererOptions.pdfA ? { pdfA: rendererOptions.pdfA, pdfAStrict: rendererOptions.pdfAStrict } : {}),
           ...(profile === undefined ? {} : { profile }) };
       };
       const renderers = Object.fromEntries(formats
@@ -494,3 +495,23 @@ test("verification worker loss retires readiness without losing source or prior 
   f.renderError = null; f.controller.restart(); await f.controller.whenIdle();
   await f.verify(); assert.equal(f.verificationElements.download.hidden, false);
 });
+
+for (const [policy, strict] of [["2b", false], ["2b-strict", true]]) {
+  test("live editor publishes " + policy + " and verifies the same configured layout", async t => {
+    const f = await fixture(); t.after(f.dispose);
+    f.changeSettings({ pdfPolicy: policy, baselineGridPt: 12, headerLeft: "{title}" });
+    await f.prepare("pdf");
+    assert.equal(f.download.hidden, false);
+    assert.match(f.download.textContent, /PDF\/A-2b/);
+    const { pdfA, pdfAStrict, ...layout } = f.calls[0].options;
+    assert.equal(pdfA, "2b");
+    assert.equal(pdfAStrict, strict);
+    assert.equal(layout.baselineGridPt, 12);
+    await f.verify();
+    assert.equal(f.verificationElements.download.hidden, false);
+    assert.deepEqual(f.calls[1].options, layout);
+    assert.equal(f.calls[0].markdown, f.calls[1].markdown);
+    f.changeSettings({ pdfPolicy: "off" });
+    assert.equal(f.download.click().defaultPrevented, true);
+  });
+}

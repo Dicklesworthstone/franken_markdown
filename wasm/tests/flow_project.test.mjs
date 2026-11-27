@@ -130,3 +130,15 @@ test("download names stay portable at the UTF-8 boundary without cutting a Unico
   assert(!output.filename.includes("\ufffd"));
   assert.equal(parseFlowProject(await output.blob.text()).document.filename, "😀".repeat(58) + ".md");
 });
+
+test("Flow projects preserve explicit archival publication and keep ordinary projects backward-readable", () => {
+  for (const pdfPolicy of ["2b", "2b-strict", "off"]) {
+    const text = serializeFlowProject(document, { ...settings, pdfPolicy });
+    const stored = JSON.parse(text);
+    assert.equal(stored.settings.pdfPolicy, pdfPolicy === "off" ? undefined : pdfPolicy);
+    const restored = parseFlowProject(text);
+    assert.equal(restored.settings.pdfPolicy, pdfPolicy);
+    assert.deepEqual(restored.document, document);
+  }
+  assert.throws(() => captureFlowProject(document, { pdfPolicy: "3a" }), { code: "INVALID_OPTIONS" });
+});

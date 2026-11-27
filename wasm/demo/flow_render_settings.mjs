@@ -16,6 +16,7 @@ const DEFAULTS = Object.freeze({
   tocDepth: null,
   svgWidthPt: null,
   author: "",
+  pdfPolicy: "off",
   pageNumbers: true,
   codeLineNumbers: null,
   baseFontSize: null,
@@ -166,6 +167,7 @@ export function normalizeRenderSettings(input = {}) {
     if (values[key] !== null && typeof values[key] !== "number")
       fail(`${key} must be numeric or null.`);
   }
+  if (!["off", "2b", "2b-strict"].includes(values.pdfPolicy)) fail("Choose a supported PDF output policy.");
   if (![null, "disabled", "protrusion", "expansion"].includes(values.microtype)) fail("Invalid microtype.");
   if (!["auto", "disabled"].includes(values.darkMode)) fail("Invalid darkMode.");
   if (![null, "letter", "a4", "a5", "legal", "tabloid", "custom"].includes(values.pageSize))
@@ -217,6 +219,7 @@ export function normalizeRenderSettings(input = {}) {
     "pdf",
     {
       ...selected([...common, ...pdfOnly]), metadataEpochSeconds: 0,
+      ...(values.pdfPolicy === "off" ? {} : { pdfA: "2b", pdfAStrict: values.pdfPolicy === "2b-strict" }),
       ...(Object.keys(page).length ? { page } : {}),
       ...(Object.keys(typography).length ? { typography } : {}),
       ...(Object.keys(running).length ? { running } : {}),
@@ -235,6 +238,11 @@ export function normalizeRenderSettings(input = {}) {
     validationToken,
   );
   return Object.freeze({ values: Object.freeze(values), preview, html, pdf, epub, svg });
+}
+
+// The layout verifier uses its own report budget and accepts only layout options.
+export function pdfLayoutVerificationOptions({ pdfA, pdfAStrict, maxOutputBytes, ...layout }) {
+  return layout;
 }
 
 const booleanChoices = [
@@ -271,6 +279,9 @@ const FIELDS = [
   ["tocDepth", "Contents depth (empty uses renderer default)", "number", 1, 6, true],
   ["svgWidthPt", "SVG poster width in points (optional, default 612)", "number", 144, 14400],
   ["author", "HTML/PDF/EPUB author (empty uses source metadata)", "textarea", 4096],
+  ["pdfPolicy", "PDF output policy", "select", [
+    ["off", "Standard PDF"], ["2b", "PDF/A-2b archival"], ["2b-strict", "PDF/A-2b archival, strict"],
+  ]],
   ["pageNumbers", "PDF page numbers", "boolean", booleanChoices],
   ["codeLineNumbers", "PDF code line numbers", "boolean", booleanChoices],
   ["baseFontSize", "PDF body size in points (optional)", "number", 6, 24],

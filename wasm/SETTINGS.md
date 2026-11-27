@@ -100,6 +100,13 @@ request, not a guarantee that arbitrary content can fit. Expansion enables glyph
 expansion without protrusion; protrusion retains the native combined mode.
 PDF timestamps remain explicitly deterministic at epoch zero.
 
+**PDF output policy** selects standard PDF, PDF/A-2b archival, or PDF/A-2b
+archival with strict writer checks. Strict export refuses forbidden URI actions.
+A successful archival export enables the PDF/A-2b download. **Verify PDF layout**
+can check the same page geometry, fonts and text before either kind of export.
+Independent PDF/A conformance testing requires the emitted file. Flow projects
+retain the selected policy, and opening plain Markdown restores standard PDF.
+
 The **PDF headers and footers** group provides independent left, center and right text
 slots for both page bands, a rule for each band, and an option to leave the first
 physical page without any header, footer or page number. For example, put

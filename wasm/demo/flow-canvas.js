@@ -7,7 +7,7 @@ import { createPdfVerificationControls } from "./flow_pdf_verification_controls.
 import { createExportControls } from "./flow_export_controls.mjs";
 import { createPreviewController } from "./flow_preview_controller.mjs";
 import { createReadingControls } from "./flow_reading_controls.mjs";
-import { getRenderSettingsBinding } from "./flow_render_settings.mjs";
+import { getRenderSettingsBinding, pdfLayoutVerificationOptions } from "./flow_render_settings.mjs";
 import { createDirectoryImageControls, createLocalImageSources } from "./local_image_sources.mjs";
 
 const source = document.querySelector("#source"),
@@ -73,9 +73,7 @@ function start() {
     sourceEditor: source,
     verifyPdf: (options, currentSource, control) =>
       controller.verifyPdf(options, currentSource, control),
-    // The print settings are shared. Reports have their own 8 MiB ceiling,
-    // separate from the larger PDF-publication byte budget.
-    readOptions: () => ({ ...renderSettings.exportOptions("pdf"), maxOutputBytes: 8 * 1024 * 1024 }),
+    readOptions: () => pdfLayoutVerificationOptions(renderSettings.exportOptions("pdf")),
   });
   readingControls = createReadingControls({
     root: reading,

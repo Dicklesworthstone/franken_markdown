@@ -90,7 +90,7 @@ export function createExportControls({
       const [, currentOptions] = normalizeFlowExport(format, readOptions(format), expected);
       if (!sameOptions(options, currentOptions))
         throw new FlowError("STALE_OPTIONS", "publishing settings changed during export");
-      validateFlowExportResult(result, expected, options.maxOutputBytes);
+      validateFlowExportResult(result, expected, options.maxOutputBytes, options);
       if (result.format !== format)
         throw new FlowError("INVALID_WASM_RESPONSE", "unexpected export format");
       const blob = new Blob([result.bytes], { type: result.mimeType });
@@ -98,7 +98,8 @@ export function createExportControls({
       published = { source, token: expected, epoch: ticket, format, options };
       download.href = url;
       download.download = `document.${format}`;
-      download.textContent = `Download ${format.toUpperCase()} (${result.bytes.length.toLocaleString()} bytes)`;
+      const label = result.pdfA === "2b" ? "PDF/A-2b" : format.toUpperCase();
+      download.textContent = `Download ${label} (${result.bytes.length.toLocaleString()} bytes)`;
       download.hidden = false;
       const first = result.diagnostics[0];
       status.textContent =

@@ -1014,3 +1014,17 @@ test("publication settings cannot export reentrantly while an apply callback own
   assert.equal(controls.exportOptions("svg").maxWidthPt, 900);
   controls.dispose();
 });
+
+test("archival publishing selection applies independently of preview and resets on source replacement", t => {
+  const f = fixture();
+  t.after(() => f.controls.dispose());
+  f.set("pdfPolicy", "2b-strict");
+  assert.throws(() => f.controls.exportOptions("pdf"), { code: "UNAPPLIED_SETTINGS" });
+  f.submit();
+  assert.equal(f.applied.at(-1).change.previewChanged, false);
+  assert.equal(f.controls.exportOptions("pdf").pdfAStrict, true);
+  for (const format of ["epub", "svg", "html"]) assert.equal("pdfA" in f.controls.exportOptions(format), false);
+  f.sourceEditor.dispatchEvent(new Event("fmd-document-replaced"));
+  assert.equal(f.el("render-pdfPolicy").value, "off");
+  assert.equal("pdfA" in f.controls.exportOptions("pdf"), false);
+});

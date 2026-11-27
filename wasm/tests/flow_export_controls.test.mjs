@@ -528,3 +528,20 @@ for (const format of ["epub", "svg"]) {
     assert.equal(f.download.click().defaultPrevented, true);
   });
 }
+
+for (const [label, request, receipt] of [
+  ["missing archival acknowledgement", { pdfA: "2b" }, {}],
+  ["downgraded strict policy", { pdfA: "2b", pdfAStrict: true }, { pdfA: "2b", pdfAStrict: false }],
+  ["unexpected archival output", {}, { pdfA: "2b", pdfAStrict: true }],
+]) {
+  test("download rejects " + label, async t => {
+    const f = fixture(() => request);
+    t.after(() => f.controls.dispose());
+    Object.assign(f.result, receipt);
+    f.pdf.click();
+    await tick();
+    assert.equal(f.download.hidden, true);
+    assert.equal(f.created.length, 0);
+    assert.match(f.status.textContent, /INVALID_WASM_RESPONSE/);
+  });
+}

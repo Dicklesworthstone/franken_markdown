@@ -2631,7 +2631,9 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       while (i < lines.length) {
         underline = setextLevel(lines[i]);
         if (underline) { i++; break; }
-        if (interruptsParagraph(lines[i]) || (!paragraphOnly && i + 1 < lines.length && tableAlignments(lines[i], lines[i + 1]))) break;
+        // A pipe header is eligible at a block boundary. Promoting one in
+        // existing prose can discard text as an overflowing body cell.
+        if (interruptsParagraph(lines[i])) break;
         pushSourceLine(paragraph, lines[i], lines, i); i++;
       }
       const text = paragraphSource(paragraph);

@@ -180,3 +180,21 @@ test('the first padding fallback row cannot close a nonexistent setext paragraph
   assert.match(control, /<h1[^>]*>first<\/h1>/);
   assert.match(control, /<a href="\/right">visible<\/a>/);
 });
+
+test('pipe-shaped continuations cannot interrupt an open paragraph or discard its links', () => {
+  const body = 'Introduction\nA | B\n--- | ---\none | two | [keep](/guide)';
+  const inner = 'Introduction\nA | B\n--- | ---\none | two | <a href="/guide">keep</a>';
+  for (const profile of [undefined, 'gfm-plus', 'commonmark-gfm']) {
+    for (const [source, expected] of [
+      [body, '<p>' + inner + '</p>\n'],
+      [body.split('\n').map(line => '> ' + line).join('\n'),
+        '<blockquote>\n<p>' + inner + '</p>\n</blockquote>\n'],
+      ['- ' + body.replace(/\n/g, '\n  '), '<ul>\n<li>' + inner + '</li>\n</ul>\n'],
+    ]) assert.equal(context.parseMarkdownClient(source, undefined, profile), expected);
+    const withBoundary = context.parseMarkdownClient(body.replace('Introduction\n', 'Introduction\n\n'),
+      undefined, profile);
+    assert.match(withBoundary, /^<p>Introduction<\/p>\n<div class="table-wrap"/);
+    assert.match(withBoundary, /<tr><td>one<\/td><td>two<\/td><\/tr>/);
+    assert.doesNotMatch(withBoundary, /href="\/guide"/);
+  }
+});

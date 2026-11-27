@@ -68,6 +68,40 @@ pub fn destination_spans_with_profile(
     destinations::destination_spans_with_profile(source, profile)
 }
 
+/// Return the source range and decoded URL of each clickable Markdown
+/// destination, reference definition, or supported HTML href/src attribute.
+/// Ranges select the URL spelling in this exact source, excluding delimiters.
+/// These locations support navigation. Mutation requires separate ownership
+/// checks because a reference definition may be unused or shared.
+pub fn document_link_targets_with_profile(
+    source: &str,
+    profile: Option<crate::Profile>,
+) -> impl Iterator<Item = (Range<usize>, String)> + '_ {
+    resource_destination_spans_with_profile(source, profile)
+        .into_iter()
+        .filter_map(move |span| {
+            let mut range = span.token.range;
+            let raw = source.get(range.clone())?;
+            match span.syntax {
+                DestinationSyntax::Markdown if raw.starts_with('<') && raw.ends_with('>') => {
+                    range.start += 1;
+                    range.end -= 1;
+                }
+                DestinationSyntax::HtmlAttribute
+                    if raw.starts_with(['\'', '"'])
+                        && raw.as_bytes().first() == raw.as_bytes().last() =>
+                {
+                    let inner = raw.get(1..raw.len() - 1)?;
+                    let trimmed = inner.trim();
+                    range.start += 1 + inner.len() - inner.trim_start().len();
+                    range.end = range.start + trimmed.len();
+                }
+                _ => {}
+            }
+            (!range.is_empty()).then_some((range, span.token.dest))
+        })
+}
+
 /// Source labels for accepted reference definitions and resolved reference
 /// links/images, using the ordinary parser's grammar and Unicode identity.
 /// Unused and shadowed definitions are included. Literal text, inline URLs,

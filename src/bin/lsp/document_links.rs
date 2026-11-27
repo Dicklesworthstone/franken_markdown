@@ -178,27 +178,19 @@ pub(super) fn request(parser: Parser, uri: &str, source: &str) -> Result<Json, F
     let mut coordinates = Coordinates::new();
     let mut links = Vec::new();
     let mut response_bytes: usize = 2; // The result array's brackets.
-    // This inventory excludes code, HTML attributes, abandoned speculative
-    // links and bare/angle autolinks. It also includes accepted unused or
-    // shadowed reference definitions: their URL token is itself clickable.
-    for destination in parser.destinations(source) {
-        let Some(target) = target(uri, &destination.dest)? else {
+    // Includes accepted Markdown tokens and supported HTML URL attributes.
+    // Navigation does not confer edit authority over these source ranges.
+    for (range, destination) in
+        franken_markdown::parse::document_link_targets_with_profile(source, parser.profile())
+    {
+        let Some(target) = target(uri, &destination)? else {
             continue;
         };
-        let Some(raw) = source.get(destination.range.clone()) else {
-            return Err((-32803, "document link has no exact source range"));
-        };
-        let angle = raw.starts_with('<') && raw.ends_with('>');
-        let start = destination.range.start + usize::from(angle);
-        let end = destination.range.end - usize::from(angle);
-        if start >= end {
-            continue;
-        }
         if links.len() == MAX_LINKS {
             return Err((-32803, "document links exceed the 4096-item result budget"));
         }
-        let start = coordinates.position(source, start)?;
-        let end = coordinates.position(source, end)?;
+        let start = coordinates.position(source, range.start)?;
+        let end = coordinates.position(source, range.end)?;
         let link = object([
             (
                 "range",

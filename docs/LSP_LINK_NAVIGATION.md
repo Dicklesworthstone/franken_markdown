@@ -11,6 +11,15 @@ Links between explicitly opened files are supported; see
 [Nested origins](LSP_NESTED_NAVIGATION.md) and
 [reference-style uses](LSP_REFERENCE_NAVIGATION.md) share the same target model.
 
+## Clickable URLs
+
+Editors can request `textDocument/documentLink` to open Markdown destinations,
+reference-definition URLs, and the values of `<a href>` and `<img src>` in
+recognized HTML. The clickable range selects the original URL spelling. For
+example, `<a href="guide.md?x=1&amp;y=2">` opens `guide.md?x=1&y=2` relative
+to the document. The client opens the target on activation. Same-document
+fragments use go-to-definition for Markdown links.
+
 ## Completion
 
 Place the caret in `[label](#inst)` and request completion, or type `#` to

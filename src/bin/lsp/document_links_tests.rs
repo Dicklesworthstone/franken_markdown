@@ -200,10 +200,10 @@ fn actual_parser_tokens_keep_unicode_crlf_nested_and_reference_ranges() {
 }
 
 #[test]
-fn code_html_titles_abandoned_links_and_autolinks_do_not_acquire_ranges() {
+fn literal_html_code_titles_abandoned_links_and_autolinks_do_not_acquire_ranges() {
     let source = concat!(
         "`[code](wrong.md)`\n\n```md\n[x](wrong.md)\n```\n\n",
-        "<a href=\"wrong.md\">raw</a>\n\n",
+        "<!-- <a href=\"wrong.md\"> -->\n\n`<img src=wrong.md>`\n\n",
         "[bad](unterminated\n\n[bad]: <foo<bar>\n\n",
         "[good](right.md \"[title](wrong.md)\")\n\n",
         "https://example.test/bare <https://example.test/angle>\n\n",
@@ -212,6 +212,40 @@ fn code_html_titles_abandoned_links_and_autolinks_do_not_acquire_ranges() {
     let result = links(source);
     assert_eq!(result.len(), 1, "{result:?}");
     assert_eq!(pointed_source(source, &result[0]), "right.md");
+}
+
+#[test]
+fn html_href_and_src_select_original_values_and_decode_targets() {
+    let source = concat!(
+        "😀 See <a href=' ../Café.md?q=a&amp;b=2#top ' href='ignored.md'>chapter</a>.\r\n\r\n",
+        "<div>\r\n<img alt=\"preview\" src=images/diagram.svg>\r\n</div>\r\n\r\n",
+        "<span href='wrong.md'>label</span> <a href='command:run'>skip</a>\n\n",
+        "[Next](<next page.md>)"
+    );
+    let result = links(source);
+    let actual: Vec<_> = result
+        .iter()
+        .map(|link| {
+            (
+                pointed_source(source, link),
+                link.get("target").and_then(Json::as_str).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            (
+                "../Café.md?q=a&amp;b=2#top",
+                "file:///manual/Caf%C3%A9.md?q=a&b=2#top"
+            ),
+            (
+                "images/diagram.svg",
+                "file:///manual/guide/images/diagram.svg"
+            ),
+            ("next page.md", "file:///manual/guide/next%20page.md"),
+        ]
+    );
 }
 
 #[test]

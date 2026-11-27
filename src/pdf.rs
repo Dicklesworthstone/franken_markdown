@@ -34250,8 +34250,16 @@ fn append_pdf_num_bytes(out: &mut Vec<u8>, value: f32) {
     }
 }
 
+// PDFDocEncoding agrees with Unicode for printable ASCII and these three
+// whitespace characters. Other control bytes are undefined or designate a
+// different character (for example, byte 0x18 is a breve).
+fn literal_pdf_text(s: &str) -> bool {
+    s.bytes()
+        .all(|byte| matches!(byte, b'\t' | b'\n' | b'\r' | b' '..=b'~'))
+}
+
 fn append_pdf_text_string_bytes(out: &mut Vec<u8>, s: &str) {
-    if s.is_ascii() {
+    if literal_pdf_text(s) {
         out.push(b'(');
         for byte in s.bytes() {
             match byte {
@@ -36378,9 +36386,9 @@ fn slug(text: &str) -> String {
 
 /// Encode `s` as a complete PDF string-object token, delimiters included.
 ///
-/// Printable/ASCII text becomes a literal `(...)` string (the compact common
-/// case, byte-identical to the historical output). Any string containing a
-/// non-ASCII scalar becomes a UTF-16BE hex string `<FEFF...>` with a leading
+/// Printable ASCII, tabs and line endings use a compact literal `(...)` string.
+/// Any other control character or non-ASCII scalar uses a UTF-16BE hex
+/// string `<FEFF...>` with a leading
 /// byte-order mark. This matters because a PDF literal `(...)` string is decoded
 /// as PDFDocEncoding, so pushing raw UTF-8 bytes for U+0080..=U+00FF produced
 /// mojibake (`é` → `Ã©`) and U+0100.. was silently replaced with `?`. UTF-16BE is
@@ -36389,7 +36397,7 @@ fn slug(text: &str) -> String {
 /// instead (see `append_pdf_uri_string_bytes`). The returned value INCLUDES the
 /// delimiters, so callers must not add their own.
 fn pdf_text_string(s: &str) -> String {
-    if s.is_ascii() {
+    if literal_pdf_text(s) {
         let mut o = String::with_capacity(s.len() + 2);
         o.push('(');
         append_pdf_string_escaped(&mut o, s);
@@ -42207,6 +42215,8 @@ mod pdf_writer_tests {
         assert_eq!(pdf_text_string("Plain Title"), "(Plain Title)");
         assert_eq!(pdf_text_string("a(b)c\\d"), "(a\\(b\\)c\\\\d)");
         assert_eq!(pdf_text_string(""), "()");
+        assert_eq!(pdf_text_string("\t\r\n"), "(\t\\r\\n)");
+        assert_eq!(pdf_text_string("A\u{0018}\u{007f}"), "<FEFF00410018007F>");
 
         // Any non-ASCII scalar switches to a UTF-16BE hex string with a BOM, so
         // U+0080..=U+00FF no longer mojibakes and U+0100.. is no longer dropped to
@@ -42223,6 +42233,7 @@ mod pdf_writer_tests {
             "",
             "Plain Title",
             "a(b)c\\d\re\n",
+            "\0\t\u{0018}\u{001f}\u{007f}",
             "é",
             "A—B",
             "\u{1F600}",

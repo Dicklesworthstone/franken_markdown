@@ -102,6 +102,22 @@ fn archive_info_and_xmp_preserve_metadata_text_and_the_same_utc_instant() {
 }
 
 #[test]
+fn archive_preserves_del_in_both_info_and_xmp() {
+    // DEL is legal XML text but has no PDFDocEncoding representation.
+    let options = PdfOptions {
+        title: Some("A\u{007f}B".into()),
+        author: Some("\u{007f}".into()),
+        ..PdfOptions::default()
+    };
+    let bytes = render_pdf_pdfa(MD, &options, PdfASettings::a2b_strict()).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/Title <FEFF0041007F0042>"));
+    assert!(text.contains("/Author <FEFF007F>"));
+    assert!(text.contains("<rdf:li xml:lang=\"x-default\">A\u{007f}B</rdf:li>"));
+    assert!(text.contains("<rdf:Seq><rdf:li>\u{007f}</rdf:li>"));
+}
+
+#[test]
 fn archive_rejects_metadata_that_xml_cannot_represent() {
     for (field, invalid) in [("title", '\0'), ("author", '\u{ffff}')] {
         let mut options = opts();

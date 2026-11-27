@@ -223,3 +223,76 @@ test("physical workers retain format-specific settings and identical authorized 
   assert.deepEqual(receipts.pdf.settings.page, { size: { widthPt: 297 * 72 / 25.4, heightPt: 210 * 72 / 25.4 },
     margins: { topPt: 72, rightPt: 72, bottomPt: 72, leftPt: 23.25 } });
 });
+
+// Use the production controller with the worker API as the explicit test boundary.
+function verificationFixture(t, { missing = false } = {}) {
+  const checks = [], exports = [];
+  const f = fixture(t, { rendererFactory: () => {
+    const client = { disposed: false, dispose() { this.disposed = true; },
+      render(kind, source, options, controls) {
+        const pending = deferred();
+        exports.push({ kind, source, options, controls, ...pending });
+        return pending.promise;
+      },
+    };
+    if (!missing) client.verifyPdf = (source, options, controls) => {
+      const pending = deferred();
+      checks.push({ source, options, controls, client, ...pending });
+      return pending.promise;
+    };
+    return client;
+  }});
+  const report = { schema_version: "1", target: "pdf", verdict: "findings", page_count: 1,
+    digest: "fnv1a64:0123456789abcdef", anchors: { resolved: 0, unresolved: ["lost"] },
+    findings: [{ code: "unresolved_anchor", detail: "Missing #lost" }],
+    pages: [{ number: 1, runs: [{ text: "# Guide", x: 24, y: 600, size: 12, kind: "heading" }] }] };
+  return { ...f, checks, exports, report };
+}
+
+test("main demo verifies the same PDF inputs as export and downloads the complete report", async t => {
+  const f = verificationFixture(t);
+  f.input("# Guide"); f.input("commonmark-gfm", "profile"); f.input("a4", "pdf-page-size");
+  f.input("landscape", "pdf-orientation"); f.input("24", "pdf-margin-left");
+  await f.controller.importImages([new File(["pixels"], "image.png")]);
+  const pdf = f.controller.downloadPdf(), published = f.exports[0];
+  published.resolve(f.output(published)); assert.equal(await pdf, true);
+  const verified = f.controller.verifyPdf(), call = f.checks[0];
+  assert.equal(call.source, published.source); assert.deepEqual(call.options, published.options);
+  assert.equal(call.options.pdfImages.length, 2); assert.equal(call.options.page.margins.leftPt, 24);
+  assert.equal(f.els["verify-pdf"].disabled, true);
+  call.resolve(f.report); assert.equal(await verified, true); assert.equal(call.client.disposed, true);
+  const link = f.els["download-publication"];
+  assert.equal(link.download, "original-title.pdf-verification.json");
+  assert.equal(f.urls.at(-1).blob.type, "application/json");
+  assert.deepEqual(JSON.parse(await f.urls.at(-1).blob.text()), f.report);
+  assert.match(f.els["publication-status"].textContent, /1 page, 1 finding.*Missing #lost/);
+  assert.equal(f.els["verify-pdf"].disabled, false);
+  f.els["pdf-margin-left"].value = "32"; link.click();
+  assert.equal(link.hidden, true); assert(f.revoked.includes(f.urls.at(-1).url));
+});
+
+test("PDF verification reports never survive a cancelled or superseded check", async t => {
+  const f = verificationFixture(t);
+  const stale = f.controller.verifyPdf(), first = f.checks[0];
+  f.input("revised"); assert.equal(first.controls.signal.aborted, true);
+  const fresh = f.controller.verifyPdf(), second = f.checks[1];
+  second.resolve(f.report); assert.equal(await fresh, true);
+  const link = f.els["download-publication"], current = link.href;
+  first.resolve(f.report); assert.equal(await stale, false);
+  assert.equal(link.href, current); assert.equal(f.urls.length, 1);
+  const stopped = f.controller.verifyPdf(), last = f.checks[2];
+  assert.equal(f.controller.cancelPublication(), true); last.resolve(f.report);
+  assert.equal(await stopped, false); assert.equal(link.hidden, true);
+  assert.equal(f.urls.length, 1); assert.deepEqual(f.revoked, [current]);
+});
+
+test("invalid PDF geometry and incompatible verification packages preserve the source", async t => {
+  const f = verificationFixture(t, { missing: true });
+  f.input("custom", "pdf-page-size"); f.input("144", "pdf-width");
+  assert.equal(await f.controller.verifyPdf(), false);
+  assert.match(f.els["publication-status"].textContent, /INVALID_OPTIONS/);
+  f.input("a5", "pdf-page-size");
+  assert.equal(await f.controller.verifyPdf(), false);
+  assert.match(f.els["publication-status"].textContent, /UNSUPPORTED_WASM_PACKAGE/);
+  assert.equal(f.els.markdown.value, "# Original"); assert.equal(f.urls.length, 0);
+});

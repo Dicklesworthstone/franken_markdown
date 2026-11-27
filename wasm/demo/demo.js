@@ -108,6 +108,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
       if (!els[key]) throw new Error(`franken_markdown demo is missing required element ${selector}`);
     }
   }
+  const verifyPdfButton = publishing && doc.querySelector("#verify-pdf");
   let alive = true, suspended = false, composing = false, generation = 0;
   let timer = null, lastPdfUrl = null, lastHtmlUrl = null, preparedHtml = null, observed = null;
   let fileJob = null, cleanSource, originalSource, sourceFilename = "franken-markdown.md";
@@ -162,6 +163,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     if (!publishing) return;
     const blocked = !alive || suspended || composing || imageJob !== null || fileJob !== null || directSourcePending;
     els.prepareEpub.disabled = els.prepareSvg.disabled = blocked || publicationJob !== null;
+    if (verifyPdfButton) verifyPdfButton.disabled = blocked || publicationJob !== null;
     els.cancelPublication.disabled = blocked || publicationJob === null;
     els.pdfWidth.disabled = els.pdfHeight.disabled = els.pdfPageSize.value !== "custom";
   }
@@ -181,7 +183,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     }
     if (output && !output.revoked) { output.revoked = true; win.URL.revokeObjectURL(output.url); }
   }
-  function retirePublication(message = "The source, settings or image access changed. Prepare a fresh EPUB or SVG.") {
+  function retirePublication(message = "The source, settings or image access changed. Prepare a fresh publication or PDF report.") {
     const sequence = ++publicationSequence, previous = publicationJob, output = publicationOutput;
     publicationJob = null;
     releasePublication(output);
@@ -207,30 +209,49 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
     publicationJob = job;
     const fresh = () => publicationJob === job && publicationFresh(job);
     let candidate = null, published = null;
-    els.publicationStatus.textContent = `Preparing ${format.toUpperCase()} in a worker. Editing remains available.`;
+    const verifying = format === "pdf-verification";
+    els.publicationStatus.textContent = verifying ? "Checking the configured PDF layout…"
+      : `Preparing ${format.toUpperCase()} in a worker. Editing remains available.`;
     refreshPublicationControls();
     try {
-      const requested = options(format, captured.raw, captured.images);
+      const requested = options(verifying ? "pdf" : format, captured.raw, captured.images);
       const client = factory({ maxPendingOperations: 1, maxPendingBytes: 64 * 1024 * 1024 });
       if (!fresh()) { client.dispose(); return false; }
       job.client = client;
-      const output = await client.render(format, captured.raw.markdown, requested, { signal: job.abort.signal });
-      if (!fresh()) return false;
-      const blob = output.blob();
       const base = captured.raw.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "franken-markdown";
-      const filename = output.filename(base);
+      const control = { signal: job.abort.signal };
+      let blob, filename, downloadLabel, summary;
+      if (verifying) {
+        if (typeof client.verifyPdf !== "function")
+          throw Object.assign(new Error("PDF verification requires a matching renderer package."), { code: "UNSUPPORTED_WASM_PACKAGE" });
+        const report = await client.verifyPdf(captured.raw.markdown, requested, control);
+        if (!fresh()) return false;
+        blob = new Blob([JSON.stringify(report)], { type: "application/json" });
+        filename = base + ".pdf-verification.json";
+        downloadLabel = "Download PDF verification report";
+        const count = report.findings.length;
+        summary = `PDF layout checked. ${report.page_count} ${report.page_count === 1 ? "page" : "pages"}, ${count} ${count === 1 ? "finding" : "findings"}.`
+          + (count ? ` First finding: ${report.findings[0].code} — ${report.findings[0].detail}` : "");
+      } else {
+        const output = await client.render(format, captured.raw.markdown, requested, control);
+        if (!fresh()) return false;
+        blob = output.blob();
+        filename = output.filename(base);
+        downloadLabel = `Download ${format.toUpperCase()} (${output.bytes.byteLength.toLocaleString()} bytes)`;
+        const first = output.diagnostics[0];
+        summary = `${format.toUpperCase()} ready. ${output.diagnostics.length} renderer diagnostics.`
+          + (first ? ` First ${first.severity}: ${first.message}` : " Click Download to save the publication.");
+      }
       if (!fresh()) return false;
       candidate = { captured, url: win.URL.createObjectURL(blob), revoked: false };
       if (!fresh()) { releasePublication(candidate); return false; }
       publicationOutput = candidate;
       els.downloadPublication.href = candidate.url;
       els.downloadPublication.download = filename;
-      els.downloadPublication.textContent = `Download ${format.toUpperCase()} (${output.bytes.byteLength.toLocaleString()} bytes)`;
+      els.downloadPublication.textContent = downloadLabel;
       els.downloadPublication.hidden = false;
       if (!fresh() || publicationOutput !== candidate) { releasePublication(candidate); return false; }
-      const first = output.diagnostics[0];
-      els.publicationStatus.textContent = `${format.toUpperCase()} ready. ${output.diagnostics.length} renderer diagnostics.`
-        + (first ? ` First ${first.severity}: ${first.message}` : " Click Download to save the publication.");
+      els.publicationStatus.textContent = summary;
       published = candidate;
     } catch (error) {
       if (candidate) releasePublication(candidate);
@@ -845,6 +866,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   if (publishing) {
     listen(els.prepareEpub, "click", () => { void preparePublication("epub"); });
     listen(els.prepareSvg, "click", () => { void preparePublication("svg"); });
+    if (verifyPdfButton) listen(verifyPdfButton, "click", () => { void preparePublication("pdf-verification"); });
     listen(els.cancelPublication, "click", cancelPublication);
     listen(els.downloadPublication, "click", event => {
       if (!publicationOutput || !publicationFresh(publicationOutput.captured)) {
@@ -885,7 +907,7 @@ export function createDemoController(doc, win, factory = createWorkerRenderer, {
   return Object.freeze({
     renderPreview: () => run("html"), downloadPdf: () => run("pdf"), openMarkdown, downloadMarkdown,
     importImages, clearImages, cancelImages,
-    prepareWorkspace, cancelWorkspace,
+    prepareWorkspace, cancelWorkspace, verifyPdf: () => preparePublication("pdf-verification"),
     prepareEpub: () => preparePublication("epub"), prepareSvg: () => preparePublication("svg"), cancelPublication,
     get fileAccess() { return directFiles; },
     dispose() {

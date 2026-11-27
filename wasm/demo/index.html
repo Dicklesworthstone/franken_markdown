@@ -430,16 +430,17 @@
               </div>
             </div>
             <details id="publishing-controls" class="image-controls">
-              <summary>EPUB, SVG and PDF page setup</summary>
+              <summary>EPUB, SVG and PDF layout</summary>
               <p>Prepare an ebook or a single SVG document from the current Markdown, dialect, font and authorized images. Custom CSS applies to HTML and EPUB; PDF and SVG use the renderer's layout. EPUB and SVG require Allow raw HTML to be off.</p>
               <div class="actions">
                 <button id="prepare-epub" class="button secondary" type="button" aria-describedby="publication-status">Prepare EPUB</button>
                 <button id="prepare-svg" class="button secondary" type="button" aria-describedby="publication-status">Prepare SVG</button>
-                <button id="cancel-publication" class="button secondary" type="button" disabled>Cancel publication</button>
+                <button id="verify-pdf" class="button secondary" type="button" aria-describedby="pdf-page-help publication-status">Verify PDF layout</button>
+                <button id="cancel-publication" class="button secondary" type="button" disabled>Cancel preparation</button>
                 <a id="download-publication" class="button secondary" hidden>Download publication</a>
               </div>
               <p id="publication-status" class="status" role="status" aria-live="polite">Choose a format, then download the completed publication. Editing retires prepared downloads.</p>
-              <p id="pdf-page-help">Paper and margins apply to Download PDF and are retained in editable workspaces. Blank fields keep renderer defaults: Letter paper with 72-point margins. Dimensions use points (72 per inch). Margins must leave at least 72 points of content on each axis.</p>
+              <p id="pdf-page-help">Verify PDF layout checks the same Markdown, images and page settings as Download PDF. The downloadable JSON report includes page text, link targets and findings. Editable workspaces retain these page settings. Blank fields keep renderer defaults: Letter paper with 72-point margins. Dimensions use points (72 per inch). Margins must leave at least 72 points of content on each axis.</p>
               <div class="controls" aria-describedby="pdf-page-help">
                 <label class="field">PDF paper
                   <select id="pdf-page-size">

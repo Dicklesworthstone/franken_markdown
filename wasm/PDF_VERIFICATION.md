@@ -35,6 +35,12 @@ settings, and exact image/font byte ranges before asynchronous initialization
 yields. Keep the source and resources unchanged between calls when comparing
 their results; there is no shared parse cache or combined audit/export operation.
 
+In the main browser demo, open **EPUB, SVG and PDF layout** and choose
+**Verify PDF layout**. The check uses the same source, dialect, images and
+page options as **Download PDF**. The status shows the measured page count
+and first finding. **Download PDF verification report** saves the complete
+JSON report. Changing the draft or its settings retires an older report.
+
 ## Use a worker for document-sized layouts
 
 ```js

@@ -42,15 +42,17 @@ unless raw HTML is explicitly enabled for trusted input.
 
 ### Publish EPUB, SVG and configured PDFs
 
-Expand **EPUB, SVG and PDF page setup** to prepare an EPUB ebook or a single SVG
+Expand **EPUB, SVG and PDF layout** to prepare an EPUB ebook or a single SVG
 document using the same source, Markdown dialect, selected font and authorized
 local images as the preview. EPUB also carries the title, author, color mode and
 custom stylesheet. SVG uses the renderer's typography; custom CSS applies to HTML
 and EPUB. These two export paths require **Allow raw HTML** to be off, and report
 that unsupported setting before starting a worker.
 
+Choose **Verify PDF layout** to check the same inputs as **Download PDF** and download the complete JSON report with measured pages, anchors and findings.
+
 Preparation exposes a download link without automatically downloading the file.
-Repeated clicks reuse the exact completed bytes. **Cancel publication** stops
+Repeated clicks reuse the exact completed bytes. **Cancel preparation** stops
 pending work. Source, settings and image-access changes, a new file-open request,
 text composition, page suspension and disposal retire pending work and prepared
 links. An older result cannot replace a newer publication. The additional export

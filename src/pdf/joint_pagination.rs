@@ -435,6 +435,7 @@ fn cost_context(line: &Line) -> Line {
         spacing: line.spacing,
         grid: line.grid,
         hyphenated: line.hyphenated,
+        right_protrusion: line.right_protrusion,
         segs: Vec::new(),
         image: None,
     }

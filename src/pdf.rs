@@ -465,6 +465,10 @@ struct Line {
     /// or present in a compound word). The following line continues that word;
     /// literal punctuation before whitespace or a structural boundary does not.
     hyphenated: bool,
+    /// Right optical-margin protrusion credit (points) applied by the
+    /// paragraph line breaker and justifier on this line (0.0 when disabled or
+    /// outside justified body paragraphs).
+    right_protrusion: f32,
     segs: Vec<Seg>,
     image: Option<ImageLine>,
 }
@@ -4005,6 +4009,7 @@ fn layout_pdf_toc(max_depth: Option<u8>, indent: f32, out: &mut Vec<Line>, cx: &
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -4608,6 +4613,7 @@ fn page_note_separator(page: PageGeom) -> Line {
         spacing: Default::default(),
         grid: None,
         hyphenated: false,
+        right_protrusion: 0.0,
         segs: Vec::new(),
         image: None,
     }
@@ -5610,6 +5616,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                         spacing: Default::default(),
                         grid: None,
                         hyphenated: false,
+                        right_protrusion: 0.0,
                         segs,
                         page_break_before: false,
                         image: None,
@@ -5663,6 +5670,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                     spacing: Default::default(),
                     grid: None,
                     hyphenated: false,
+                    right_protrusion: 0.0,
                     segs,
                     page_break_before: false,
                     image: None,
@@ -5714,6 +5722,7 @@ fn layout_block_content(block: &Block, indent: f32, out: &mut Vec<Line>, cx: &mu
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs: Vec::new(),
                 image: None,
             });
@@ -5936,6 +5945,7 @@ fn push_heading_rule(out: &mut Vec<Line>, indent: f32, page: PageGeom, group: u3
         spacing: Default::default(),
         grid: None,
         hyphenated: false,
+        right_protrusion: 0.0,
         segs: Vec::new(),
         image: None,
     });
@@ -6058,6 +6068,7 @@ fn push_figure_line(
         spacing: Default::default(),
         grid: None,
         hyphenated: false,
+        right_protrusion: 0.0,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,
@@ -19404,6 +19415,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
                 spacing: spacing.table_line(size, row_idx, depth),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -19447,6 +19459,7 @@ fn layout_table_uncached(table: &Table, spec: TableLayoutSpec<'_>, out: &mut Vec
         spacing: Default::default(),
         grid: None,
         hyphenated: false,
+        right_protrusion: 0.0,
         segs: Vec::new(),
         page_break_before: false,
         image: None,
@@ -21064,12 +21077,17 @@ fn word_protrusion(
     fs: FontSize,
     microtype: crate::layout::MicrotypeOptions,
 ) -> crate::layout::Protrusion {
-    crate::layout::protrusion_for_boundary_chars(
-        toks.first().and_then(|t| t.text.chars().next()),
-        toks.last().and_then(|t| t.text.chars().next_back()),
-        fs,
-        microtype,
-    )
+    // Inline objects carry raw TeX or image payload metadata in `tok.text`,
+    // never shaped prose characters, so they must not contribute protrusion.
+    let first = toks
+        .first()
+        .filter(|t| !is_inline_object(t.slot))
+        .and_then(|t| t.text.chars().next());
+    let last = toks
+        .last()
+        .filter(|t| !is_inline_object(t.slot))
+        .and_then(|t| t.text.chars().next_back());
+    crate::layout::protrusion_for_boundary_chars(first, last, fs, microtype)
 }
 
 /// Cuts a word's tokens into consecutive character ranges in one forward pass.
@@ -21402,6 +21420,7 @@ fn emit_broken_paragraph(
             spacing: Default::default(),
             grid: None,
             hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
+            right_protrusion: right_protrusion.to_points_f32(),
             segs,
             page_break_before: false,
             image: None,
@@ -21489,6 +21508,7 @@ fn layout_prefixed_inlines(
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: vec![marker],
             image: None,
         });
@@ -21666,6 +21686,7 @@ fn emit_broken_prefixed_paragraph(
             spacing: Default::default(),
             grid: None,
             hyphenated: chosen_hyphenated_break(&built.items, lb, &cx.line_toks),
+            right_protrusion: 0.0,
             segs,
             page_break_before: false,
             image: None,
@@ -21769,6 +21790,7 @@ fn layout_inlines_greedy(
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs,
             page_break_before: false,
             image: None,
@@ -26464,6 +26486,7 @@ mod font_slot_text_refs_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs,
             page_break_before: false,
             image,
@@ -32693,6 +32716,7 @@ mod keep_with_next_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -32970,6 +32994,7 @@ mod void_budget_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -36607,6 +36632,7 @@ mod pdf_writer_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: texts
                 .iter()
                 .map(|text| Seg {
@@ -36784,6 +36810,114 @@ mod pdf_writer_tests {
             ..PdfOptions::default()
         };
         assert_justified_lines_flush(&opts)
+    }
+
+    #[test]
+    fn verify_text_layer_honors_microtype_protrusion_without_false_overflow() -> crate::Result<()> {
+        let compound_fixture = format!(
+            "{FLUSH_FIXTURE}\n\n\
+             Cross-referenced well-documented multi-jurisdiction compliance-verification \
+             workflows remained synchronized across state-regulated distribution-network \
+             branches while cost-accounting reconciliation-reports closed cleanly every quarter.\n\n\
+             Inline code `status_ok` must disable microtype on this paragraph even when it ends \
+             with ordinary trailing punctuation."
+        );
+        let doc = crate::parse_markdown(&compound_fixture);
+        let opts = PdfOptions {
+            microtype: crate::layout::MicrotypeOptions::CONSERVATIVE,
+            ..PdfOptions::default()
+        };
+        let layer = super::verification_text_layer_result(&doc, &opts)?;
+        let runs: Vec<&super::VerifyTextRun> =
+            layer.pages.iter().flat_map(|p| p.runs.iter()).collect();
+        assert!(
+            runs.iter().any(|r| {
+                r.text
+                    .trim_end()
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| matches!(ch, ',' | '.' | ';' | ':' | '"' | ')'))
+            }),
+            "fixture must produce at least one punctuation-ending line"
+        );
+        let overshoots: Vec<_> = runs.iter().filter(|r| r.overshoot.is_some()).collect();
+        assert!(
+            overshoots.is_empty(),
+            "intentional microtype protrusion must not trigger verify overflow: {overshoots:?}"
+        );
+        let report = crate::verify::verify_pdf(&doc, &opts).expect("verify_pdf report");
+        let overflow_findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.code == "overflow")
+            .collect();
+        assert!(
+            overflow_findings.is_empty(),
+            "verify_pdf must not report overflow for protruded punctuation: {overflow_findings:?}"
+        );
+
+        // Also exercise the chunked page-serialization verification capture path.
+        let rendered = super::render_inner_with_verification(
+            &doc,
+            &opts,
+            crate::PdfASettings::OFF,
+            false,
+            super::PdfEmitOptions::default(),
+            false,
+            false,
+            &super::language::EMPTY,
+            true,
+        )?;
+        let captured = rendered
+            .verification
+            .expect("collect_verification populates capture");
+        let captured_overshoots: Vec<_> = captured
+            .pages
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .filter(|r| r.overshoot.is_some())
+            .collect();
+        assert!(
+            captured_overshoots.is_empty(),
+            "captured verification layer must not report overflow for protruded lines: {captured_overshoots:?}"
+        );
+
+        // A paragraph containing inline code disables microtype (`policy.microtype = DISABLED`),
+        // so its lines must record zero `right_protrusion` and cannot mask a real overflow.
+        let faces = Faces::load(&opts)?;
+        let page = PageGeom::from_theme(&opts.theme);
+        let code_doc = crate::parse_markdown(
+            "Inline code `status_ok` disables microtype even on a long paragraph that wraps \
+             across multiple lines and ends sentences with trailing commas, periods, and quotes.",
+        );
+        let code_lines = super::layout(&code_doc.blocks, &opts, &faces, page);
+        assert!(
+            code_lines.iter().all(|line| line.right_protrusion == 0.0),
+            "inline-code paragraphs must not record right_protrusion credit"
+        );
+
+        // Inline objects carry raw TeX/image metadata in `tok.text` and must
+        // never contribute optical-margin protrusion.
+        let inline_math_tok = Tok {
+            text: "(f(x))".to_string(),
+            slot: super::F_MATH,
+            space: false,
+            hard_break: false,
+            literal: false,
+            list_label: false,
+            note_spans: Default::default(),
+            link: None,
+            strike: false,
+        };
+        assert_eq!(
+            super::word_protrusion(
+                &[inline_math_tok],
+                font_size_of(11.0),
+                crate::layout::MicrotypeOptions::CONSERVATIVE,
+            ),
+            crate::layout::Protrusion::default()
+        );
+        Ok(())
     }
 
     fn assert_expanded_styled_word_contiguous(permille: i16) -> crate::Result<()> {
@@ -38535,6 +38669,7 @@ mod pdf_writer_tests {
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs,
                 page_break_before: false,
                 image: None,
@@ -38706,6 +38841,7 @@ mod pdf_writer_tests {
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -38864,6 +39000,7 @@ mod pdf_writer_tests {
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -38998,6 +39135,7 @@ mod pdf_writer_tests {
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs: vec![
                     Seg {
                         x: 0.0,
@@ -39113,6 +39251,7 @@ mod pdf_writer_tests {
                 spacing: Default::default(),
                 grid: None,
                 hyphenated: false,
+                right_protrusion: 0.0,
                 segs: Vec::new(),
                 page_break_before: false,
                 image: None,
@@ -44211,6 +44350,7 @@ mod coverage_gap_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             page_break_before: false,
             image: None,
@@ -45985,7 +46125,10 @@ fn line_overshoot(line: &Line, page: &PageGeom) -> Option<f32> {
     // `right` is the margin WIDTH; the content's right edge coordinate is
     // width - right. Comparing against the raw margin value would flag every
     // line on the page (plan-space review caught this in the first smoke run).
-    let right_edge = page.width - page.right;
+    // When opt-in microtype protrusion is enabled on a justified body paragraph,
+    // `line.right_protrusion` records the exact optical-margin credit applied
+    // by the line breaker and justifier.
+    let right_edge = page.width - page.right + line.right_protrusion;
     let last = line.segs.last()?;
     let overshoot = last.x + last.width - right_edge;
     if overshoot > VERIFY_OVERSHOOT_TOLERANCE_PT {
@@ -46341,6 +46484,7 @@ mod plass_pagination_tests {
             spacing: Default::default(),
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             page_break_before: false,
             image: None,

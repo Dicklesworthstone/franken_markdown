@@ -585,6 +585,7 @@ mod alternative_tests {
                 bottom_guard: 5_000,
             }),
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             image: None,
         }

@@ -543,6 +543,7 @@ pub(super) fn layout_block(
         spacing: Default::default(),
         grid: None,
         hyphenated: false,
+        right_protrusion: 0.0,
         segs: Vec::new(),
         image: Some(ImageLine {
             image,

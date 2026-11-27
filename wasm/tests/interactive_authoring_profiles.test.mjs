@@ -317,3 +317,15 @@ test('definition list allocation failure cannot poison the next render or change
     '<p>Term\n: body</p>\n');
   assert.equal(vm.runInContext('parseMarkdownClient("Term\\n: body")', small), dl(pair('Term', 'body')));
 });
+
+test('glossary lookahead leaves a preceding setext heading and link target intact', () => {
+  for (const [underline, level] of [['=', 1], ['===', 1], ['   == ', 1], ['--', 2], ['---', 2]]) {
+    const source = 'First\n: old meaning\n\nAPI *Guide*\r\n' + underline
+      + '\r\nTerm\r\n: new meaning\r\n\n[Jump](#api-guide)\n';
+    const heading = '<h' + level + ' id="api-guide">API <em>Guide</em></h' + level + '>\n';
+    for (const profile of plusProfiles) {
+      assert.equal(render(source, profile), dl(pair('First', 'old meaning')) + heading
+        + dl(pair('Term', 'new meaning')) + '<p><a href="#api-guide">Jump</a></p>\n', source);
+    }
+  }
+});

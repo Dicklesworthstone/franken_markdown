@@ -3858,7 +3858,19 @@ fn strip_definition_marker(line: &str) -> &str {
 fn definition_list_term_line_count(lines: &[&str]) -> Option<usize> {
     for (index, line) in lines.iter().enumerate() {
         let trimmed = trim_space_tab(line);
-        if trimmed.is_empty() || scanned_paragraph_interrupt(BlockStartScan::new(line, trimmed)) {
+        let scan = BlockStartScan::new(line, trimmed);
+        if trimmed.is_empty() || scanned_paragraph_interrupt(scan) {
+            return None;
+        }
+        // An underline closes the preceding heading before a later glossary
+        // term. Keep the extension's literal underline term when the colon
+        // immediately follows it, e.g. "Term\n===\n: meaning".
+        if index > 0
+            && scanned_setext_underline(scan).is_some()
+            && !lines
+                .get(index + 1)
+                .is_some_and(|next| is_definition_marker(next))
+        {
             return None;
         }
         if is_definition_marker(line) {

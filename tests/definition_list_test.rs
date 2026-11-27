@@ -134,3 +134,47 @@ Term
     assert!(pdf.starts_with(b"%PDF-1.7"));
     assert!(pdf.len() > 1000);
 }
+
+#[test]
+fn a_glossary_after_a_setext_heading_keeps_its_heading_and_anchor() {
+    use franken_markdown::{parse_markdown_spanned, parse_markdown_with_profile};
+
+    for (underline, level) in [("=", 1), ("===", 1), ("   == ", 1), ("--", 2), ("---", 2)] {
+        let source = format!(
+            "First\n: old meaning\n\nAPI *Guide*\r\n{underline}\r\nTerm\r\n: new meaning\r\n\n[Jump](#api-guide)\n"
+        );
+        let document = parse_markdown(&source);
+        assert_eq!(
+            document,
+            parse_markdown_with_profile(&source, Some(Profile::GfmPlus))
+        );
+        let spanned = parse_markdown_spanned(&source);
+        assert_eq!(document, spanned.to_document());
+        assert!(
+            matches!(
+                &document.blocks[..],
+                [Block::DefinitionList(_), Block::Heading {level: heading, ..}, Block::DefinitionList(_), Block::Paragraph(_)] if *heading == level
+            ),
+            "{source:?}: {document:?}"
+        );
+        assert_eq!(
+            spanned.blocks[1].span.slice(&source),
+            Some(format!("API *Guide*\r\n{underline}").as_str())
+        );
+        let html =
+            franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
+        assert!(html.contains(&format!("<h{level} id=\"api-guide\">API <em>Guide</em></h{level}>")));
+        assert!(html.contains("<a href=\"#api-guide\">Jump</a>"));
+    }
+}
+
+#[test]
+fn an_underline_term_immediately_before_its_definition_is_preserved() {
+    let source = "Term\n===\n: meaning";
+    let document = parse_markdown(source);
+    let html = franken_markdown::html::render_fragment(&document.blocks, &HtmlOptions::default());
+    assert_eq!(
+        html,
+        "<dl>\n<dt>Term</dt>\n<dt>===</dt>\n<dd>meaning</dd>\n</dl>\n"
+    );
+}

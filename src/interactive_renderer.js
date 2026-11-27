@@ -2380,6 +2380,10 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       for (termEnd = start; termEnd < lines.length; termEnd++) {
         const line = lines[termEnd]; charge(line.length + 1);
         if (interruptsParagraph(line)) break;
+        // A completed heading before another term is outside the glossary.
+        // An underline directly introducing its own definition remains a term.
+        if (termEnd > start && setextLevel(line)
+            && !(termEnd + 1 < lines.length && definitionMarker(lines[termEnd + 1]))) break;
         if (definitionMarker(line)) { termMarker = termEnd; break; }
       }
       return termMarker > start ? termMarker : -1;

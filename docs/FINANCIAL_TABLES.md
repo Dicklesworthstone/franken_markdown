@@ -76,6 +76,13 @@ Total rules are borders on the preceding data cells, preserving table reading
 order. EPUB uses the same table content and inline styles; the reading system
 controls its support for the CSS layout.
 
+After editing a lightweight, self-contained interactive HTML file, the offline
+preview preserves these tables and total rules. It reserves a shared suffix
+width per column in root font units, so mixed precision aligns without loading
+font metrics. Whole-amount links stay a single keyboard stop and trailing
+footnotes retain their targets. A link covering only part of a number and
+crossing its decimal point keeps ordinary right alignment.
+
 The shaped Flow preview uses the host's measured text clusters for decimal
 positions and draws rules on their data rows. It resolves numeric anchors from
 the source AST before expanding defined footnotes into linked labels, so

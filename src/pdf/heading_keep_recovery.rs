@@ -1,7 +1,7 @@
 //! Narrow recovery for an impossible heading-to-subject keep in best-effort PDF.
 //!
 //! The hard planner always runs first. Only a complete heading chain followed
-//! by one indivisible fragment is considered here: both sides must fit alone,
+//! by a subject’s minimum legal first fragment is considered. Both must fit alone,
 //! while their exact measured heights and reservations cannot fit together.
 //! The final heading's keep is then priced by the existing boundary penalty;
 //! heading interiors, the rest of the chain and every other hard rule survive.
@@ -9,7 +9,7 @@
 //! continued-footnote allocator never enter this recovery path.
 
 use super::*;
-use crate::pagination::height::BlockVariant;
+use crate::pagination::height::{BlockPolicy, BlockVariant};
 
 #[derive(Clone, Copy, Default)]
 struct Measured {
@@ -18,9 +18,9 @@ struct Measured {
 }
 
 impl Measured {
-    fn from_variant(variant: &BlockVariant) -> Option<Self> {
+    fn prefix(variant: &BlockVariant, count: usize) -> Option<Self> {
         let sum = |values: &[LayoutUnit]| {
-            values.iter().try_fold(0i64, |total, value| {
+            values.iter().take(count).try_fold(0i64, |total, value| {
                 let value = i64::from(value.milli_points());
                 if value < 0 {
                     None
@@ -49,6 +49,23 @@ impl Measured {
     }
 }
 
+/// Earliest internal break that preserves the block's hard split rules and
+/// leaves enough rows for a legal continuation. This is a lower bound. The
+/// full planner must still find and validate all subsequent pages.
+fn first_fragment_len(variant: &BlockVariant, policy: BlockPolicy) -> usize {
+    let total = variant.fragment_heights.len();
+    if policy.keep_together {
+        return total;
+    }
+    (1..total)
+        .find(|&count| {
+            (policy.before_break_penalty.is_some() || count >= policy.min_before_break)
+                && (policy.after_break_penalty.is_some() || total - count >= policy.min_after_break)
+                && (variant.split_costs.is_empty() || variant.split_costs[count - 1].is_some())
+        })
+        .unwrap_or(total)
+}
+
 /// Sorted starts of the last headings in independently impossible keep chains.
 /// Fixed-point admission uses exactly the same variants as the production
 /// bridge, including final gaps, baseline-grid heights and page-foot reserves.
@@ -67,8 +84,6 @@ fn boundaries(
     while start < lines.len() {
         let end = pdf_height_block_end(lines, start);
         let policy = joint_pagination::block_policy(lines, start);
-        let variant = joint_pagination::block_variant(lines, start, end, 0, &reserve);
-        let measured = Measured::from_variant(&variant)?;
         if policy.break_before {
             chain = None;
         }
@@ -76,21 +91,26 @@ fn boundaries(
             && policy.keep_together
             && policy.keep_with_next
         {
+            let variant = joint_pagination::block_variant(lines, start, end, 0, &reserve);
+            let measured = Measured::prefix(&variant, end - start)?;
             chain = Some(chain.unwrap_or_default().add(measured)?);
             last_heading = start;
         } else {
-            if end == start + 1
-                && lines[start].flow.kind != FlowKind::Heading
+            if lines[start].flow.kind != FlowKind::Heading
                 && !policy.break_before
                 // A label, definition term or hyphenated word may independently
                 // forbid this boundary; heading recovery cannot weaken it.
                 && !pdf_split_is_hard_forbidden(lines, start)
                 && let Some(headings) = chain
                 && headings.occupied(prefix)? <= capacity
-                && measured.occupied(prefix)? <= capacity
-                && headings.add(measured)?.occupied(prefix)? > capacity
             {
-                result.push(last_heading);
+                let variant = joint_pagination::block_variant(lines, start, end, 0, &reserve);
+                let subject = Measured::prefix(&variant, first_fragment_len(&variant, policy))?;
+                if subject.occupied(prefix)? <= capacity
+                    && headings.add(subject)?.occupied(prefix)? > capacity
+                {
+                    result.push(last_heading);
+                }
             }
             chain = None;
         }
@@ -308,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn other_hard_associations_and_multifragment_subjects_are_never_relaxed() {
+    fn other_hard_associations_and_fitting_first_fragments_are_never_relaxed() {
         let page = page(100.0);
         let mut cases = Vec::new();
         let mut oversized = fixture();
@@ -330,6 +350,7 @@ mod tests {
         cases.push(caption);
         let mut code = fixture();
         code[2].flow.kind = FlowKind::Code;
+        code[2].size = 60.0;
         code[2].flow.count = 2;
         let mut continuation = code[2].clone();
         continuation.flow.index = 1;
@@ -343,6 +364,36 @@ mod tests {
             );
             assert!(plan(&lines, page, LayoutUnit::ZERO, |_| 0.0).is_none());
         }
+    }
+
+    #[test]
+    fn recovery_keeps_the_table_header_and_wrapped_first_row_together() {
+        let mut lines = vec![
+            line(FlowKind::Heading, 1, 40.0),
+            line(FlowKind::TableHeader, 2, 15.0),
+            line(FlowKind::TableRule, 2, 5.0),
+            line(FlowKind::TableRow, 2, 25.0),
+            line(FlowKind::TableRow, 2, 25.0),
+            line(FlowKind::TableRow, 2, 25.0),
+        ];
+        lines[3].flow.count = 2;
+        lines[4].flow.count = 2;
+        lines[4].flow.index = 1;
+        let opts = PdfOptions {
+            optimal_pagination: true,
+            ..PdfOptions::default()
+        };
+        let (plan, report) = validated_page_break_plan(&lines, page(100.0), &opts).unwrap();
+        assert_eq!(report.strategy, PdfPaginationStrategy::RelaxedHeight);
+        assert_eq!(plan.unwrap().ends, [1, 6]);
+
+        // At exactly 110pt the first complete table fragment fits with its
+        // heading, even though the whole table still needs another page.
+        assert!(
+            boundaries(&lines, page(110.0), LayoutUnit::ZERO, |_| 0.0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

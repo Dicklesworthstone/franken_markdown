@@ -861,3 +861,34 @@ fn impossible_heading_figure_keeps_recover_measured_pages_and_report_the_relaxat
         }
     }
 }
+
+#[test]
+fn optimal_heading_recovery_preserves_an_indivisible_three_line_paragraph() {
+    use franken_markdown::PdfPaginationStrategy;
+
+    let source = "## ALPHA\n\nONE  \nTWO  \nTHREE";
+    let doc = parse_markdown(source);
+    let mut options = tight_exact_options();
+    assert_eq!(
+        render_pdf(source, &options).unwrap_err().code(),
+        "pagination_infeasible"
+    );
+    options.strict_pagination = false;
+    options.optimal_pagination = true;
+    let output = render_pdf_document_reported(&doc, &options, PdfEmitOptions::default()).unwrap();
+    assert_eq!(
+        output.pagination.page_breaks.strategy,
+        PdfPaginationStrategy::RelaxedHeight
+    );
+    let pages = painted_pages(&output.bytes);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(page_of(&pages, "ALPHA"), 0);
+    for word in ["ONE", "TWO", "THREE"] {
+        assert_eq!(page_of(&pages, word), 1);
+    }
+
+    options.theme.page.size.height_pt = 300.0;
+    let roomy = render_pdf_document_reported(&doc, &options, PdfEmitOptions::default()).unwrap();
+    assert!(roomy.pagination.page_breaks.is_exact());
+    assert_eq!(painted_pages(&roomy.bytes).len(), 1);
+}

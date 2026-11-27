@@ -739,7 +739,43 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
   // split() adds an empty element after the final newline. It is a source
   // boundary, not another blank code line; retain its identity through lists.
   const terminalEmptyLine = new WeakMap();
-  function pushSourceLine(target, line, sourceLines, index, lazy = false) {
+  // Container parsing measures indentation in columns. Keep the literal view
+  // for tabbed lines so copying a fenced example retains complete source tabs.
+  const literalViews = new WeakMap();
+  function cutLiteralIndent(text, column, width) {
+    const stop = column + width;
+    let end = 0;
+    while (column < stop && (text[end] === ' ' || text[end] === '\t')) {
+      charge();
+      column += text[end++] === '\t' ? 4 - column % 4 : 1;
+    }
+    // A tab crossing the boundary leaves its unconsumed columns as spaces.
+    return {text: ' '.repeat(Math.max(0, column - stop)) + text.slice(end),
+      column: Math.min(column, stop)};
+  }
+  function literalCodeLine(lines, index, indent) {
+    const view = literalViews.get(lines)?.get(index);
+    const text = view?.text ?? lines[index];
+    return indent ? cutLiteralIndent(text, view?.column ?? 0, indent).text : text;
+  }
+  function pushSourceLine(target, line, sourceLines, index, lazy = false, cut = 0) {
+    if (cut && !lazy) {
+      const view = literalViews.get(sourceLines)?.get(index);
+      if (view || sourceLines[index].includes('\t')) {
+        let text = view?.text ?? sourceLines[index], column = view?.column ?? 0;
+        if (cut === 'quote') {
+          // Consume the authored marker, then at most one padding column. Its
+          // physical column matters when that padding is the start of a tab.
+          const prefix = indentation(text, column);
+          column += prefix.width + 1;
+          text = text.slice(prefix.end + 1);
+          cut = 1;
+        }
+        let views = literalViews.get(target);
+        if (!views) { allocate(); literalViews.set(target, views = new Map()); }
+        allocate(); views.set(target.length, cutLiteralIndent(text, column, cut));
+      }
+    }
     if (terminalEmptyLine.get(sourceLines) === index) {
       allocate(); terminalEmptyLine.set(target, target.length);
     }
@@ -2411,7 +2447,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
         const indent = line.length - line.trimStart().length;
         i++;
         while (i < lines.length && !end.test(lines[i])) {
-          if (terminalEmptyLine.get(lines) !== i) code.push(lines[i].replace(new RegExp('^ {0,' + indent + '}'), ''));
+          if (terminalEmptyLine.get(lines) !== i) code.push(literalCodeLine(lines, i, indent));
           i++;
         }
         if (i < lines.length) i++;
@@ -2468,8 +2504,10 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
             if (next === lines.length || indentation(lines[next]).width < 4) break;
             // Consume the complete admitted blank run once, retaining literal
             // blank content inside code instead of repeatedly scanning suffixes.
-            while (i < next) content.push(stripIndent(lines[i++], 4));
-          } else if (indentation(lines[i]).width >= 4) content.push(stripIndent(lines[i++], 4));
+            while (i < next) { pushSourceLine(content, stripIndent(lines[i], 4), lines, i, false, 4); i++; }
+          } else if (indentation(lines[i]).width >= 4) {
+            pushSourceLine(content, stripIndent(lines[i], 4), lines, i, false, 4); i++;
+          }
           else break;
         }
         const key = noteKey(line.slice(foot.start, foot.close));
@@ -2501,11 +2539,17 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
             if (!tail.canContinue(lines[i])) break;
             inner = tail.lazyLine(lines[i]); lazy = true;
           }
-          tail.observe(inner); pushSourceLine(quote, inner, lines, i, lazy); i++;
+          tail.observe(inner); pushSourceLine(quote, inner, lines, i, lazy, 'quote'); i++;
         }
         const callout = quote[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(.*)$/is);
         if (callout) {
           const name = callout[1].toLowerCase(); quote.shift();
+          const views = literalViews.get(quote);
+          if (views) {
+            const shifted = new Map();
+            for (const [index, view] of views) if (index > 0) shifted.set(index - 1, view);
+            literalViews.set(quote, shifted);
+          }
           const padded = lazyPadding.get(quote);
           if (padded) lazyPadding.set(quote, new Set([...padded].filter(index => index > 0).map(index => index - 1)));
           const label = callout[2] || name[0].toUpperCase() + name.slice(1);
@@ -2529,7 +2573,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
             if (blankLine(lines[i])) {
               if (tail.literalBlank()) {
                 const inner = stripIndent(lines[i], next.width);
-                tail.observe(inner); pushSourceLine(item, inner, lines, i); i++; continue;
+                tail.observe(inner); pushSourceLine(item, inner, lines, i, false, next.width); i++; continue;
               }
               let j = i; while (j < lines.length) { charge(lines[j].length + 1); if (!blankLine(lines[j])) break; j++; }
               const following = j < lines.length && !rule(lines[j]) && listMarker(lines[j]);
@@ -2558,7 +2602,7 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
               const inner = stripIndent(lines[i], next.width);
               // Preserve real paragraph boundaries: a non-1 marker cannot
               // interrupt prose, and a continued child item needs no new gap.
-              tail.observe(inner); pushSourceLine(item, inner, lines, i); i++; continue;
+              tail.observe(inner); pushSourceLine(item, inner, lines, i, false, next.width); i++; continue;
             }
             const sibling = listMarker(lines[i]);
             if (sibling || !tail.canContinue(lines[i])) break;

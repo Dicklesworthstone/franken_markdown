@@ -150,3 +150,33 @@ test('long blank runs and many changing sibling indents complete within the rend
     '<ol start="7">\n' + Array.from({length: 2048}, (_, i) => `<li>item ${i}</li>\n`).join('') + '</ol>\n');
   assert.equal(vm.runInContext('parseMarkdownClient("- fresh")', bounded), '<ul>\n<li>fresh</li>\n</ul>\n');
 });
+
+test('fenced recipes retain authored tabs inside lists, quotes, callouts and notes', () => {
+  for (const ending of ['\n', '\r\n', '\r']) {
+    for (const source of [
+      '- ' + '~~~\n  all:\n  \tcc main.c\n  ~~~',
+      '> - ' + '~~~\n>   all:\n>   \tcc main.c\n>   ~~~',
+      '> [!TIP]\n> - ' + '~~~\n>   all:\n>   \tcc main.c\n>   ~~~',
+      'Use [^n].\n\n[^n]: ~~~\n    all:\n    \tcc main.c\n    ~~~',
+    ]) {
+      assert.match(render(source.replace(/\n/g, ending)), /<pre><code>all:\n\tcc main\.c\n<\/code><\/pre>/);
+    }
+  }
+});
+
+test('fence and container indentation consume columns and preserve whole remaining tabs', () => {
+  for (const [source, code] of [
+    ['  ~~~\n\tcommand\n  ~~~', '  command'],
+    ['  ~~~\n\t\tcommand\n  ~~~', '  \tcommand'],
+    [' ~~~\n \tcommand\n ~~~', '\tcommand'],
+    ['   ~~~\n\tx\n no indent\ntext\n   ~~~', ' x\nno indent\ntext'],
+    ['- ~~~\n\tcommand\n  ~~~', '  command'],
+    ['>\t~~~\n>\t\tcommand\n>\t~~~', '\tcommand'],
+    ['- ~~~\n  \t\n  \tend\n  ~~~', '\t\n\tend'],
+  ]) assert.ok(render(source).includes('<pre><code>' + code + '\n</code></pre>'), source);
+});
+
+test('identical displayed indentation remembers which code line actually contained a tab', () => {
+  const source = '- ~~~\n  \tfirst\n    second\n  \tthird\n  ~~~\n\n- after';
+  assert.match(render(source), /<pre><code>\tfirst\n  second\n\tthird\n<\/code><\/pre>/);
+});

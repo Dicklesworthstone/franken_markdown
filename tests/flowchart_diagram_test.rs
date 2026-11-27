@@ -697,3 +697,63 @@ fn forward_captions_fit_the_canvas_and_do_not_cover_their_endpoint_nodes() {
         assert!(svg.contains(&format!(">{label}</text>")));
     }
 }
+
+#[test]
+fn accessible_flowcharts_reach_html_tagged_pdf_and_svg_posters() {
+    use franken_markdown::diagrams::figure_svg_with_alt;
+
+    let meta = "accTitle: Order & delivery\naccDescr {\n  An order leaves the shop.\n  The buyer receives it.\n}";
+    for body in ["A --> B", "subgraph S[Shipping]\nA --> B\nend"] {
+        let source = format!("flowchart LR\n{meta}\n{body}");
+        let (svg, alt) = figure_svg_with_alt(&source, "mermaid").unwrap();
+        let expected = "Order & delivery — An order leaves the shop. The buyer receives it.";
+        assert_eq!(alt, expected);
+        assert!(svg.contains("role=\"img\""));
+        assert_eq!(svg.matches("<title>").count(), 1);
+        assert!(svg.contains("<title>Order &amp; delivery</title>"));
+        assert!(svg.contains("<desc>An order leaves the shop. The buyer receives it.</desc>"));
+        assert_eq!(edges(&svg), 1);
+        let markdown = format!("```mermaid\n{source}\n```");
+        let html = render_html(&markdown, &HtmlOptions::default()).unwrap();
+        assert!(html.contains(&svg));
+        let pdf = render_pdf(&markdown, &PdfOptions::default()).unwrap();
+        let encoded = expected
+            .encode_utf16()
+            .map(|c| format!("{c:04X}"))
+            .collect::<String>();
+        assert!(String::from_utf8_lossy(&pdf).contains(&format!("/Alt <FEFF{encoded}>")));
+        let doc = parse_markdown(&markdown);
+        let (poster, _, warnings) =
+            franken_markdown::svg::render_svg_with_diagnostics(&doc, &Default::default());
+        assert!(warnings.is_empty());
+        let poster = String::from_utf8(poster).unwrap();
+        assert!(poster.contains(
+            "aria-label=\"Order &amp; delivery — An order leaves the shop. The buyer receives it.\""
+        ));
+    }
+}
+
+#[test]
+fn accessible_metadata_preserves_literal_labels_and_refuses_malformed_directives() {
+    use franken_markdown::diagrams::figure_svg_with_alt;
+    let source = "graph TD\n%% accTitle: comment\naccTitleNode[\"accDescr: label\"] --> B\naccDescr: A < B; they keep 100%";
+    let (svg, alt) = figure_svg_with_alt(source, "mermaid").unwrap();
+    assert_eq!(alt, "A < B; they keep 100%");
+    assert!(svg.contains("<title>Flowchart</title>"));
+    assert!(svg.contains("accDescr: label</text>"));
+    assert!(svg.contains("<desc>A &lt; B; they keep 100%</desc>"));
+
+    for invalid in [
+        "accTitle:".to_owned(),
+        "accTitle: One\naccTitle: Two".into(),
+        "accDescr { missing close".into(),
+        "accDescr { OK } extra".into(),
+        "accDescr {}".into(),
+        "accDescr: first\naccDescr { second }".into(),
+        format!("accTitle: {}", "x".repeat(1025)),
+        format!("accDescr: {}", "a".repeat(4097)),
+    ] {
+        let source = format!("flowchart TD\nA --> B\n{invalid}");
+        assert!(figure_svg_with_alt(&source, "mermaid").is_none(), "{invalid}");
+    }
+}

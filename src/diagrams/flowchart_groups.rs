@@ -150,6 +150,7 @@ impl Scene {
             graph,
             subgraphs,
             owners,
+            ..
         } = parsed;
         let ids = graph.order;
         let nodes = ids
@@ -576,17 +577,21 @@ fn layout_container(
     })
 }
 
-pub(super) fn render(parsed: ParsedGraph) -> Option<String> {
+pub(super) fn render(
+    parsed: ParsedGraph,
+    metadata: &super::flowchart::AccessibleText,
+) -> Option<String> {
     let scene = Scene::layout(parsed)?;
     let routes = scene.routes()?;
     let bounds = scene.containers.last()?.bounds;
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-flowchart\" role=\"img\">\n<title>Flowchart</title>\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram fmd-flowchart\" role=\"img\">\n",
         SvgNum(bounds.width),
         SvgNum(bounds.height),
         SvgNum(bounds.width),
         SvgNum(bounds.height)
     );
+    metadata.write_svg(&mut svg, Some("Flowchart"));
     svg.push_str(STYLE);
     for (index, group) in scene.groups.iter().enumerate() {
         let layout = &scene.containers[index];

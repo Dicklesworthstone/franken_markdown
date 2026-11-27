@@ -48,6 +48,13 @@ the routes and labels visible in every direction. Horizontal layer spacing
 reserves caption widths. Parallel transitions and conflicting captions also
 receive separate lanes, so one transition's label cannot hide another.
 
+A flowchart can carry its own accessible name and description. Put
+`accTitle: Order fulfilment` and `accDescr: An accepted order is sent to shipping.`
+on separate lines, or use a multiline `accDescr { ... }` block. The title and
+description travel with the diagram in HTML, tagged PDF and SVG posters,
+including diagrams with subgraphs. The maximum title is 1,024 UTF-8 bytes and
+the maximum description is 4,096. Each can be supplied once.
+
 ### Subgraphs
 
 Named subgraphs organize architecture diagrams into real containing boxes:

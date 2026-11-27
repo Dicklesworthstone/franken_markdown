@@ -24,7 +24,7 @@ pub(super) fn is_header(line: &str) -> bool {
 
 pub(super) fn render(source: &str) -> Option<String> {
     let graph = parse(source)?;
-    Some(super::render_flow_graph(graph, true))
+    Some(super::render_flow_graph(graph, true, &Default::default()))
 }
 
 fn parse(source: &str) -> Option<Graph> {

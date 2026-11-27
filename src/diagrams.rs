@@ -126,7 +126,7 @@ fn compile_diagram(code: &str, lang: &str) -> Option<RenderedDiagram> {
             alt: None,
         })
     } else if lower_lang == "flowchart" {
-        render_flowchart(trimmed).map(|svg| RenderedDiagram::figure(svg, "Diagram"))
+        render_flowchart(trimmed)
     } else if lower_lang == "pie" || pie::is_header(first_directive) {
         pie::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Pie chart"))
     } else if state::is_header(first_directive) {
@@ -138,7 +138,7 @@ fn compile_diagram(code: &str, lang: &str) -> Option<RenderedDiagram> {
     } else if timeline::is_header(first_directive) {
         timeline::render(code).map(|svg| RenderedDiagram::figure(svg, "Timeline diagram"))
     } else if names_flowchart(first_directive) {
-        render_flowchart(trimmed).map(|svg| RenderedDiagram::figure(svg, "Diagram"))
+        render_flowchart(trimmed)
     } else {
         None
     }
@@ -347,16 +347,25 @@ struct FlowEdge {
     arrow: bool,
 }
 
-fn render_flowchart(src: &str) -> Option<String> {
-    let parsed = flowchart::parse(src)?;
-    if parsed.subgraphs.is_empty() {
-        Some(render_flow_graph(parsed.graph, false))
+fn render_flowchart(src: &str) -> Option<RenderedDiagram> {
+    let mut parsed = flowchart::parse(src)?;
+    let metadata = std::mem::take(&mut parsed.metadata);
+    let svg = if parsed.subgraphs.is_empty() {
+        render_flow_graph(parsed.graph, false, &metadata)
     } else {
-        flowchart_groups::render(parsed)
-    }
+        flowchart_groups::render(parsed, &metadata)?
+    };
+    Some(
+        RenderedDiagram::figure(svg, "Diagram")
+            .with_accessible_text(metadata.title, metadata.description),
+    )
 }
 
-fn render_flow_graph(graph: flowchart::Graph, state: bool) -> String {
+fn render_flow_graph(
+    graph: flowchart::Graph,
+    state: bool,
+    metadata: &flowchart::AccessibleText,
+) -> String {
     let flowchart::Graph {
         dir,
         mut nodes,
@@ -376,16 +385,24 @@ fn render_flow_graph(graph: flowchart::Graph, state: bool) -> String {
     // Generate SVG
     let mut svg = String::with_capacity(4096);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram {}\">\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\" class=\"fmd-diagram {}\"{}>\n",
         SvgInt(total_width),
         SvgInt(total_height),
         SvgInt(total_width),
         SvgInt(total_height),
-        if state { "fmd-state" } else { "fmd-flowchart" }
+        if state { "fmd-state" } else { "fmd-flowchart" },
+        if metadata.title.is_some() || metadata.description.is_some() {
+            " role=\"img\""
+        } else {
+            ""
+        }
     ));
-    if state {
-        svg.push_str("<title>State diagram</title>\n");
-    }
+    let default_title = if state {
+        Some("State diagram")
+    } else {
+        metadata.description.as_ref().map(|_| "Flowchart")
+    };
+    metadata.write_svg(&mut svg, default_title);
 
     // Defs: Arrowhead markers and styles
     svg.push_str("<defs>\n");

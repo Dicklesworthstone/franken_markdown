@@ -30,8 +30,30 @@ pub(super) struct Subgraph {
 
 pub(super) struct ParsedGraph {
     pub graph: Graph,
+    pub metadata: AccessibleText,
     pub subgraphs: Vec<Subgraph>,
     pub owners: BTreeMap<String, usize>,
+}
+
+#[derive(Default)]
+pub(super) struct AccessibleText {
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+impl AccessibleText {
+    pub fn write_svg(&self, svg: &mut String, default_title: Option<&str>) {
+        if let Some(title) = self.title.as_deref().or(default_title) {
+            svg.push_str("<title>");
+            super::push_escaped_svg_text(title, svg);
+            svg.push_str("</title>\n");
+        }
+        if let Some(description) = &self.description {
+            svg.push_str("<desc>");
+            super::push_escaped_svg_text(description, svg);
+            svg.push_str("</desc>\n");
+        }
+    }
 }
 
 pub(super) fn parse(source: &str) -> Option<ParsedGraph> {
@@ -49,6 +71,7 @@ pub(super) fn parse(source: &str) -> Option<ParsedGraph> {
         order: Vec::new(),
         edges: Vec::new(),
     };
+    let mut metadata = AccessibleText::default();
     let mut subgraphs = Vec::new();
     let mut group_ids = BTreeSet::new();
     let mut members: Vec<BTreeSet<String>> = Vec::new();
@@ -74,6 +97,10 @@ pub(super) fn parse(source: &str) -> Option<ParsedGraph> {
         parser.separators()?;
     }
     while !parser.rest().is_empty() {
+        if parser.accessible_text(&mut metadata)? {
+            parser.separators()?;
+            continue;
+        }
         if parser.keyword("subgraph") {
             if subgraphs.len() == MAX_SUBGRAPHS || stack.len() == MAX_SUBGRAPH_DEPTH {
                 return None;
@@ -169,6 +196,7 @@ pub(super) fn parse(source: &str) -> Option<ParsedGraph> {
     }
     Some(ParsedGraph {
         graph,
+        metadata,
         subgraphs,
         owners,
     })
@@ -218,6 +246,52 @@ impl<'a> Parser<'a> {
         self.rest().is_empty()
             || self.rest().starts_with(['\n', ';'])
             || self.rest().starts_with("%%")
+    }
+
+    /// Read directives only at a statement boundary. Labels and comments
+    /// containing the same words remain owned by their normal grammar.
+    fn accessible_text(&mut self, metadata: &mut AccessibleText) -> Option<bool> {
+        let (keyword, slot, limit) = if self.rest().starts_with("accTitle") {
+            ("accTitle", &mut metadata.title, 1024)
+        } else if self.rest().starts_with("accDescr") {
+            ("accDescr", &mut metadata.description, 4096)
+        } else {
+            return Some(false);
+        };
+        let after = self.rest()[keyword.len()..].trim_start_matches([' ', '\t']);
+        let (value, end) = if let Some(line) = after.strip_prefix(':') {
+            let len = line.find(['\r', '\n']).unwrap_or(line.len());
+            (line[..len].trim(), &line[len..])
+        } else if keyword == "accDescr"
+            && let Some(block) = after.strip_prefix('{')
+        {
+            let (value, end) = block.split_once('}')?;
+            (value.trim(), end)
+        } else {
+            // A node identifier can start with the same letters.
+            return Some(false);
+        };
+        if value.is_empty()
+            || value.len() > limit
+            || slot.is_some()
+            || value.contains(['\u{fffe}', '\u{ffff}'])
+        {
+            return None;
+        }
+        self.pos = self.source.len() - end.len();
+        self.spaces();
+        if !self.at_end_of_statement() {
+            return None;
+        }
+        *slot = Some(
+            value
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        Some(true)
     }
 
     fn separators(&mut self) -> Option<()> {

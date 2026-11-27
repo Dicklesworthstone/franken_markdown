@@ -1237,16 +1237,7 @@ impl<'s> Parser<'s> {
                 },
                 span,
             )),
-            Cmd::OperatorName => {
-                let (raw, raw_span) = self.raw_group("argument of \\operatorname")?;
-                Ok(Node::new(
-                    NodeKind::OpName {
-                        name: raw.trim().to_owned(),
-                        limits: false,
-                    },
-                    span.union(raw_span),
-                ))
-            }
+            Cmd::OperatorName => self.operator_name(span),
             Cmd::Pmod => self.pmod(span),
             Cmd::Mod => self.modulus(span),
             Cmd::Accent(kind) => {
@@ -1831,6 +1822,239 @@ impl<'s> Parser<'s> {
             });
         };
         Ok(Node::new(NodeKind::Skip(length), span.union(raw_span)))
+    }
+
+    /// `\operatorname{…}` and `\operatorname*{…}` (amsmath).
+    ///
+    /// Decodes TeX spacing and punctuation escapes (`\ `, `\,`, `\:`, `\;`,
+    /// `~`, `\-`, `\_`, …) instead of leaving literal backslashes in the
+    /// rendered operator name, and honors the starred form's display-limits
+    /// placement.
+    fn operator_name(&mut self, span: Span) -> Result<Node, MathError> {
+        self.skip_spaces();
+        let mut limits = false;
+        if matches!(self.peek().map(|tok| &tok.kind), Some(TokKind::Char('*'))) {
+            self.pos += 1;
+            limits = true;
+            self.skip_spaces();
+        }
+        let Some(open) = self.peek().cloned() else {
+            return Err(MathError::Malformed {
+                what: "missing argument of \\operatorname at end of input".to_owned(),
+                at: self.src.len(),
+            });
+        };
+        if !matches!(open.kind, TokKind::BeginGroup) {
+            return Err(MathError::Malformed {
+                what: "missing argument of \\operatorname (expected '{')".to_owned(),
+                at: open.span.start,
+            });
+        }
+        if self.depth >= MAX_DEPTH {
+            return Err(MathError::Budget {
+                kind: BudgetKind::Nesting,
+                limit: MAX_DEPTH,
+                at: open.span.start,
+            });
+        }
+        self.pos += 1;
+        let mut depth = 1_usize;
+        let mut out = String::new();
+        let mut pending_space = false;
+        let mut suppress_space = false;
+        let flush_space = |out: &mut String, pending: &mut bool| {
+            if *pending && !out.is_empty() && !out.ends_with(' ') && !out.ends_with('\u{2009}') {
+                out.push(' ');
+            }
+            *pending = false;
+        };
+        loop {
+            let Some(tok) = self.next_tok() else {
+                return Err(MathError::Malformed {
+                    what: format!(
+                        "unclosed '{{' in argument of \\operatorname, opened at byte {}",
+                        open.span.start
+                    ),
+                    at: self.src.len(),
+                });
+            };
+            match tok.kind {
+                TokKind::BeginGroup => {
+                    depth += 1;
+                    if self.depth.saturating_add(depth) > MAX_DEPTH {
+                        return Err(MathError::Budget {
+                            kind: BudgetKind::Nesting,
+                            limit: MAX_DEPTH,
+                            at: tok.span.start,
+                        });
+                    }
+                }
+                TokKind::EndGroup => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(Node::new(
+                            NodeKind::OpName { name: out, limits },
+                            span.union(tok.span),
+                        ));
+                    }
+                }
+                TokKind::Char(c) => {
+                    flush_space(&mut out, &mut pending_space);
+                    suppress_space = false;
+                    out.push(c);
+                }
+                TokKind::Space | TokKind::Par => {
+                    if !out.is_empty() && !suppress_space {
+                        pending_space = true;
+                    }
+                }
+                TokKind::Tie => {
+                    pending_space = false;
+                    suppress_space = false;
+                    out.push(' ');
+                }
+                TokKind::Sub => {
+                    flush_space(&mut out, &mut pending_space);
+                    suppress_space = false;
+                    out.push('_');
+                }
+                TokKind::Sup => {
+                    flush_space(&mut out, &mut pending_space);
+                    suppress_space = false;
+                    out.push('^');
+                }
+                TokKind::AlignTab => {
+                    flush_space(&mut out, &mut pending_space);
+                    suppress_space = false;
+                    out.push('&');
+                }
+                TokKind::MathShift => {
+                    flush_space(&mut out, &mut pending_space);
+                    suppress_space = false;
+                    out.push('$');
+                }
+                TokKind::ControlSymbol(c) => match c {
+                    ' ' | '\t' | '\n' | '\r' | ':' | ';' | '>' => {
+                        pending_space = false;
+                        suppress_space = false;
+                        out.push(' ');
+                    }
+                    ',' => {
+                        pending_space = false;
+                        suppress_space = false;
+                        out.push('\u{2009}');
+                    }
+                    '!' => {
+                        pending_space = false;
+                        suppress_space = true;
+                    }
+                    '-' | '_' | '%' | '&' | '$' | '#' | '{' | '}' => {
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push(c);
+                    }
+                    '\'' | '"' => {
+                        let (base, base_span) = self.text_accent_argument(c, tok.span)?;
+                        let Some(composed) = commands::compose_text_accent(c, base) else {
+                            return Err(MathError::Malformed {
+                                what: format!(
+                                    "\\{c} has no composition over '{base}' \
+                                     (the bundled faces carry the Latin-1 \
+                                     acute and dieresis rows)"
+                                ),
+                                at: base_span.start,
+                            });
+                        };
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push(composed);
+                    }
+                    other => {
+                        return Err(MathError::UnsupportedCommand {
+                            name: format!("\\{other}"),
+                            span: tok.span,
+                        });
+                    }
+                },
+                TokKind::ControlWord(w) => match w {
+                    "thinspace" => {
+                        pending_space = false;
+                        suppress_space = false;
+                        out.push('\u{2009}');
+                    }
+                    "medspace" | "thickspace" | "enspace" | "quad" | "qquad" | "space" => {
+                        pending_space = false;
+                        suppress_space = false;
+                        out.push(' ');
+                    }
+                    "negthinspace" => {
+                        pending_space = false;
+                        suppress_space = true;
+                    }
+                    "textendash" => {
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push('–');
+                    }
+                    "textemdash" => {
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push('—');
+                    }
+                    "textunderscore" => {
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push('_');
+                    }
+                    "dots" | "ldots" | "hdots" => {
+                        flush_space(&mut out, &mut pending_space);
+                        suppress_space = false;
+                        out.push_str("...");
+                    }
+                    // Transparent upright-text/roman wrappers: `\operatorname`
+                    // is already set in the upright operator face, so inner
+                    // `{…}` groups flatten naturally.
+                    "text" | "textrm" | "mathrm" | "rm" | "operatorname" | "mbox" | "hbox" => {}
+                    _ => match commands::lookup(w) {
+                        Some(Cmd::Spacing(SpaceKind::Thin)) => {
+                            pending_space = false;
+                            suppress_space = false;
+                            out.push('\u{2009}');
+                        }
+                        Some(Cmd::Spacing(SpaceKind::NegThin)) => {
+                            pending_space = false;
+                            suppress_space = true;
+                        }
+                        Some(Cmd::Spacing(_)) => {
+                            pending_space = false;
+                            suppress_space = false;
+                            out.push(' ');
+                        }
+                        Some(Cmd::Sym { ch: '…', .. }) => {
+                            flush_space(&mut out, &mut pending_space);
+                            suppress_space = false;
+                            out.push_str("...");
+                        }
+                        Some(Cmd::Sym { ch, .. }) => {
+                            flush_space(&mut out, &mut pending_space);
+                            suppress_space = false;
+                            out.push(ch);
+                        }
+                        Some(Cmd::OpName { rendered, .. }) => {
+                            flush_space(&mut out, &mut pending_space);
+                            suppress_space = false;
+                            out.push_str(rendered);
+                        }
+                        _ => {
+                            return Err(MathError::UnsupportedCommand {
+                                name: format!("\\{w}"),
+                                span: tok.span,
+                            });
+                        }
+                    },
+                },
+            }
+        }
     }
 
     fn raw_group(&mut self, what: &str) -> Result<(String, Span), MathError> {

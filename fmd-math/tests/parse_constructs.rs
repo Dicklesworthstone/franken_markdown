@@ -1177,3 +1177,88 @@ fn text_spaces_follow_tex_modes() {
         assert_eq!(runs(root_items(&root)), expected, "`{source}`");
     }
 }
+
+#[test]
+fn operatorname_decodes_spacing_escapes_and_star_limits() {
+    let cases: [(&str, &str, bool); 8] = [
+        (r"\operatorname{Operating\ ROIC}", "Operating ROIC", false),
+        (r"\operatorname{Operating \ ROIC}", "Operating ROIC", false),
+        (r"\operatorname{ arg \, max }", "arg\u{2009}max", false),
+        (r"\operatorname{arg \! max}", "argmax", false),
+        (r"\operatorname{foo\_bar\-baz}", "foo_bar-baz", false),
+        (
+            r"\operatorname{\text{Operating ROIC}}",
+            "Operating ROIC",
+            false,
+        ),
+        (
+            r#"\operatorname{L\'evy\textendash M\"obius}"#,
+            "Lévy–Möbius",
+            false,
+        ),
+        (r"\operatorname *{arg\,max}", "arg\u{2009}max", true),
+    ];
+    for (src, expected_name, expected_limits) in cases {
+        let items = parse_items(src);
+        assert!(
+            matches!(
+                items.as_slice(),
+                [Node {
+                    kind: NodeKind::OpName { name, limits },
+                    ..
+                }] if name == expected_name && *limits == expected_limits
+            ),
+            "`{src}` -> {items:?}"
+        );
+    }
+
+    let starred = parse_items(r"\operatorname*{arg\,max}_x f(x)");
+    assert!(
+        matches!(
+            starred.first(),
+            Some(Node {
+                kind: NodeKind::Scripts { base: Some(base), .. },
+                ..
+            }) if matches!(
+                &base.kind,
+                NodeKind::OpName { name, limits: true } if name == "arg\u{2009}max"
+            )
+        ),
+        "{starred:?}"
+    );
+
+    assert!(matches!(
+        parse(r"\operatorname{\notarealcommand}"),
+        Err(MathError::UnsupportedCommand { ref name, .. }) if name == r"\notarealcommand"
+    ));
+    assert!(matches!(
+        parse(r"\operatorname{a\\b}"),
+        Err(MathError::UnsupportedCommand { ref name, .. }) if name == r"\\"
+    ));
+
+    for src in [
+        r"\operatorname{Operating\ ROIC}",
+        r"\operatorname{Operating \ ROIC}",
+        r"\operatorname*{arg\,max}_x f(x)",
+        r"\operatorname{arg \, max}",
+        r"\operatorname{foo\_bar\-baz}",
+        r"\operatorname{\text{Operating ROIC}}",
+        r#"\operatorname{L\'evy\textendash M\"obius}"#,
+        r"\operatorname{a\dots b}",
+    ] {
+        let root = parse(src).unwrap_or_else(|e| panic!("parse `{src}` failed: {e}"));
+        let mathml = fmd_math::to_mathml(&root, true);
+        assert!(
+            !mathml.contains('\\'),
+            "mathml for `{src}` leaked raw backslash: {mathml}"
+        );
+        #[cfg(feature = "bundled-faces")]
+        {
+            let engine = fmd_math::Engine::bundled().expect("bundled math faces");
+            let laid = engine
+                .typeset(src, fmd_math::Style::Display)
+                .unwrap_or_else(|e| panic!("layout `{src}` failed: {e}"));
+            assert!(laid.width > 0.0, "`{src}` produced zero width");
+        }
+    }
+}

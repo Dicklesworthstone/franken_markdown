@@ -2498,6 +2498,11 @@ impl Engine {
                 prev = None;
                 continue;
             }
+            if ch == '\u{2009}' {
+                x += self.space_glue(SpaceKind::Thin, ctx).natural;
+                prev = None;
+                continue;
+            }
             let chain = [prefer, FACE_REGULAR, FACE_SYMBOLS];
             let mapped = match ctx.alphabet {
                 Some(font) => alphabet_map(font, ch).0,

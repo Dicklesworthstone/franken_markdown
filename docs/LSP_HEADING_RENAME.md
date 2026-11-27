@@ -1,7 +1,8 @@
 # Rename headings and their Markdown links
 
 In `fmd-lsp`, start **Rename Symbol** on a top-level ATX heading (`# Heading`)
-or a one-line setext heading. The replacement is the heading's visible title.
+or a one-line setext heading. You can also start on the fragment of a Markdown
+link pointing to such a heading in the same or another opened document. The replacement is the heading's visible title.
 The server returns one versioned workspace edit containing that title and every
 matching real Markdown link in the editor's opened, synchronized buffers.
 
@@ -72,10 +73,14 @@ document notifications.
 
 ## Scope and limits
 
-Rename starts on the heading declaration. Existing navigation and reference
-search still work from links; link-origin rename, independently mapped headings
-inside containers and multiline setext titles are outside this provider. Footnote
-labels retain their separate [rename contract](LSP_FOOTNOTES.md).
+When starting from a link, place the caret inside the fragment text after `#`.
+The editor selects the original fragment in the calling document and offers the
+visible heading title as the replacement placeholder. This also works inside
+the supplying destination of an active reference definition. The heading title
+takes precedence when the caret is inside a heading declaration. File paths,
+query strings, images and unused definitions cannot start a heading rename.
+Headings inside containers and multiline setext titles remain outside this
+provider. Footnote labels retain their separate [rename contract](LSP_FOOTNOTES.md).
 
 Raw HTML IDs and `href` attributes are outside the LSP's default-safe Markdown
 navigation contract and remain unchanged. The default sanitizer drops HTML `id`

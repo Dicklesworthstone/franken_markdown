@@ -98,37 +98,63 @@ fn content_candidate(source: &str, span: SourceSpan) -> Option<Range<usize>> {
     Some(start..end)
 }
 
+enum HeadingOrigin<'a> {
+    Caret(usize),
+    Destination(&'a str),
+}
+
+type SelectedHeading = (Heading, Document, DocumentLinkAnalysis);
+
 fn select_heading(
     parser: Parser,
     source: &str,
-    offset: usize,
-) -> Result<Option<(Heading, Document, DocumentLinkAnalysis)>, Failure> {
+    origin: HeadingOrigin<'_>,
+) -> Result<Option<SelectedHeading>, Failure> {
     let parsed = parser.spanned(source);
-    let selected = parsed.blocks.iter().enumerate().find_map(|(index, block)| {
-        // Parser spans exclude line endings. A caret immediately after the
-        // title remains useful, but an exclusive end at another source node
-        // must never select the preceding declaration.
-        let line_end = offset == block.span.end
-            && (offset == source.len()
-                || matches!(source.as_bytes().get(offset), Some(b'\r' | b'\n')));
-        if !block.span.contains(offset) && !line_end {
-            return None;
+    let spans: Vec<_> = parsed.blocks.iter().map(|block| block.span).collect();
+    let document = parsed.into_document();
+    let analyze = || {
+        analyze_document_links(&document)
+            .map_err(|_| (-32803, "heading anchor analysis exceeds its limits"))
+    };
+    let (block, analysis) = match origin {
+        HeadingOrigin::Caret(offset) => {
+            let Some(block) = spans.iter().position(|span| {
+                span.contains(offset)
+                    || (offset == span.end
+                        && (offset == source.len()
+                            || matches!(source.as_bytes().get(offset), Some(b'\r' | b'\n'))))
+            }) else {
+                return Ok(None);
+            };
+            if !matches!(document.blocks[block], Block::Heading { .. }) {
+                return Ok(None);
+            }
+            (block, analyze()?)
         }
-        let Block::Heading { level, .. } = &block.node else {
-            return None;
-        };
-        Some((index, *level, block.span))
-    });
-    let Some((block, level, span)) = selected else {
+        HeadingOrigin::Destination(destination) => {
+            let analysis = analyze()?;
+            let Ok(Some(anchor)) = analysis.resolve_fragment(destination) else {
+                return Ok(None);
+            };
+            if anchor.kind != AnchorKind::Heading || anchor.occurrences != 1 {
+                return Ok(None);
+            }
+            (anchor.block_index, analysis)
+        }
+    };
+    let Some(Block::Heading { level, .. }) = document.blocks.get(block) else {
+        // A nested heading has a container as its source owner.
         return Ok(None);
     };
+    let level = *level;
+    let span = spans[block];
     let Some(content) = content_candidate(source, span) else {
         return Ok(None);
     };
     if content.len() > 64 * 1024 {
         return Err((-32803, "heading source exceeds the rename budget"));
     }
-    let document = parsed.into_document();
     let probe = "fmd-heading-title-source-probe";
     let mut amended = source.to_string();
     amended.replace_range(content.clone(), probe);
@@ -140,8 +166,6 @@ fn select_heading(
     if parser.parse(&amended) != expected {
         return Ok(None);
     }
-    let analysis = analyze_document_links(&document)
-        .map_err(|_| (-32803, "heading anchor analysis exceeds its limits"))?;
     let mut anchors = analysis
         .anchors
         .iter()
@@ -470,6 +494,58 @@ fn changed_heading(
 }
 
 /// Called only for rename/prepareRename after the footnote provider declines.
+/// Resolve only a parser-proven fragment token. Image destinations and
+/// shadowed reference definitions must never select a heading.
+fn linked_heading<'a>(
+    parser: Parser,
+    uri: &'a str,
+    source: &str,
+    offset: usize,
+    documents: &'a BTreeMap<String, Buffer>,
+) -> Result<Option<(&'a str, SelectedHeading, Range<usize>)>, Failure> {
+    let tokens = parser.destinations(source);
+    if tokens.len() > MAX_TOKENS {
+        return Err((
+            -32803,
+            "source destinations exceed the heading rename budget",
+        ));
+    }
+    let Some(token) = tokens
+        .into_iter()
+        .find(|token| token.range.contains(&offset))
+    else {
+        return Ok(None);
+    };
+    if token.dest.len() > 8192 {
+        return Err((-32803, "link exceeds the heading rename budget"));
+    }
+    let Some(fragment) = token
+        .fragment_range(source)
+        .filter(|range| range.contains(&offset))
+    else {
+        return Ok(None);
+    };
+    let original = parser.parse(source);
+    let Some(proven) = proven_tokens(parser, source, &original, vec![token])?.pop() else {
+        return Ok(None);
+    };
+    let dest = proven
+        .dest
+        .trim_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    let (target_uri, target_source) = if dest.starts_with(['#', '?']) {
+        (uri, source)
+    } else if let Some(target) = workspace_links::resolve(documents, uri, dest)? {
+        target
+    } else {
+        return Ok(None);
+    };
+    if target_source.len() > MAX_DOCUMENT_BYTES {
+        return Err((-32803, "document exceeds the heading rename budget"));
+    }
+    let selected = select_heading(parser, target_source, HeadingOrigin::Destination(dest))?;
+    Ok(selected.map(|heading| (target_uri, heading, fragment)))
+}
+
 pub(super) fn request(
     parser: Parser,
     method: &str,
@@ -491,7 +567,13 @@ pub(super) fn request(
     let offset = index
         .offset(source, requested)
         .map_err(|reason| (-32602, reason))?;
-    let Some((heading, original, analysis)) = select_heading(parser, source, offset)? else {
+    let selection = select_heading(parser, source, HeadingOrigin::Caret(offset))?;
+    let (target_uri, (heading, original, analysis), trigger) = if let Some(selected) = selection {
+        let trigger = selected.0.content.clone();
+        (uri, selected, trigger)
+    } else if let Some(linked) = linked_heading(parser, uri, source, offset, documents)? {
+        linked
+    } else {
         return Ok(Json::Null);
     };
     if documents.len() > MAX_DOCUMENTS {
@@ -513,9 +595,13 @@ pub(super) fn request(
         session_bytes += document.text.len();
     }
     ensure_unique_uri(documents, uri)?;
+    if uri != target_uri {
+        ensure_unique_uri(documents, target_uri)?;
+    }
+    let uri = target_uri;
     if method == "textDocument/prepareRename" {
         return Ok(object([
-            ("range", range_json(&index, source, &heading.content)),
+            ("range", range_json(&index, source, &trigger)),
             ("placeholder", string(&heading.title)),
         ]));
     }

@@ -303,9 +303,17 @@ fn heading_text_is_literal_and_html_code_math_and_image_lookalikes_are_preserved
 }
 
 #[test]
-fn declaration_only_scope_excludes_nested_headings_and_multiline_setext() -> TestResult {
+fn unsupported_declarations_and_fragment_lookalikes_do_not_start_rename() -> TestResult {
     for marked in [
-        "# Old\n\n[a](#ol¦d)\n",
+        "# Old\n\n[external](https://example.org/#ol¦d)\n",
+        "# Old\n\n[missing](#miss¦ing)\n",
+        "# Old\n\n[unopened](other.md#ol¦d)\n",
+        "# Old\n\n![image](#ol¦d)\n",
+        "# Old\n\n`[code](#ol¦d)`\n",
+        "# Old\n\n[unused]: #ol¦d\n",
+        "# Old\n\n[x][r]\n\n[r]: #old\n[r]: #ol¦d\n",
+        "# Old\n\n[query](?old¦#old)\n",
+        "> # Nested\n\n[link](#nes¦ted)\n",
         "> # Ne¦sted\n",
         "- # Ne¦sted\n",
         "two¦\nlines\n=====\n",
@@ -314,6 +322,66 @@ fn declaration_only_scope_excludes_nested_headings_and_multiline_setext() -> Tes
         let (_, result) = call(marked, "New")?;
         assert_eq!(result, Json::Null, "{marked}");
     }
+    Ok(())
+}
+
+#[test]
+fn fragment_in_active_reference_definition_renames_the_heading_and_all_uses() -> TestResult {
+    let marked =
+        "# Old title\n\n[jump][r] and [direct](#old-title)\n\n[r]: <#old¦-title> \"hover\"\n";
+    let (source, result) = call(marked, "New title")?;
+    assert_eq!(
+        apply_result(&source, &result, URI)?,
+        source
+            .replace("# Old title", "# New title")
+            .replace("#old-title", "#new-title"),
+    );
+    assert_eq!(edits(&result, URI).len(), 3);
+    Ok(())
+}
+
+#[test]
+fn cross_file_prepare_selects_the_callers_utf16_fragment_and_renames_target() -> TestResult {
+    let chapter = "file:///docs/sub/chapter.md";
+    let source = "😀 [Open](<../guide?x=1&num;%E7%8C%AB-title>)\r\n";
+    let title = "# 猫 Title\r\n\r\n[local](#猫-title)\r\n";
+    let documents = BTreeMap::from([
+        (chapter.to_string(), buffer(source, 19)),
+        (URI.to_string(), buffer(title, 8)),
+    ]);
+    let params = params(
+        chapter,
+        source,
+        source.find("%8C").ok_or("fragment")?,
+        "Final",
+    );
+    let call = |method| {
+        request(
+            Parser::default(),
+            method,
+            &params,
+            chapter,
+            &documents[chapter],
+            &documents,
+        )
+        .map_err(|(_, reason)| reason)
+    };
+    let prepared = call("textDocument/prepareRename")?;
+    let range = source_range(source, prepared.get("range").ok_or("range")?)?;
+    assert_eq!(&source[range], "%E7%8C%AB-title");
+    assert_eq!(
+        prepared.get("placeholder").and_then(Json::as_str),
+        Some("猫 Title")
+    );
+    let result = call("textDocument/rename")?;
+    assert_eq!(
+        apply_result(source, &result, chapter)?,
+        source.replace("%E7%8C%AB-title", "final"),
+    );
+    assert_eq!(
+        apply_result(title, &result, URI)?,
+        "# Final\r\n\r\n[local](#final)\r\n",
+    );
     Ok(())
 }
 

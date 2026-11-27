@@ -340,9 +340,20 @@ fn inline_navigation_completions_references_and_heading_edits_share_the_profile(
                 "textDocument/rename",
                 field(heading, "newName", text("Renamed")),
             ),
-            request(8, "textDocument/definition", link),
+            request(8, "textDocument/definition", link.clone()),
+            request(9, "textDocument/prepareRename", link.clone()),
+            request(
+                10,
+                "textDocument/rename",
+                field(link, "newName", text("Renamed")),
+            ),
         ])?;
         if commonmark {
+            assert_eq!(
+                result(&replies, 9).get("placeholder").and_then(Json::as_str),
+                Some("Target")
+            );
+            assert_eq!(result(&replies, 10), result(&replies, 7));
             assert_eq!(
                 result(&replies, 2).get("uri").and_then(Json::as_str),
                 Some(URI)
@@ -356,6 +367,8 @@ fn inline_navigation_completions_references_and_heading_edits_share_the_profile(
         } else {
             assert_eq!(result(&replies, 2), &Json::Null);
             assert!(array(result(&replies, 3).get("items").unwrap()).is_empty());
+            assert_eq!(result(&replies, 9), &Json::Null);
+            assert_eq!(result(&replies, 10), &Json::Null);
         }
         assert_eq!(
             array(result(&replies, 4)).len(),

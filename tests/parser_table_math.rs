@@ -340,3 +340,42 @@ fn table_admission_keeps_currency_safe_ordinary_inline_math_grammar() {
         assert_eq!(parse_inlines(source), expected, "{source:?}");
     }
 }
+
+#[test]
+fn braced_currency_in_a_formula_keeps_table_columns_and_link_ranges() {
+    for (formula, tex) in [
+        (r"$P(A|B)+\text{USD $5}$", r"P(A|B)+\text{USD $5}"),
+        (r"$\text{{USD $5} and $10}|x$", r"\text{{USD $5} and $10}|x"),
+        (r"$\text{escaped \} $5}|x$", r"\text{escaped \} $5}|x"),
+    ] {
+        let source = format!("{formula}|Link\r\n---|---\r\n{formula}|[café](/réel)\r\n");
+        let document = assert_table_source(&source);
+        let table = table(&document);
+        let math = vec![Inline::Math(tex.into())];
+        assert_eq!(table.head, [math.clone(), text("Link")], "{source:?}");
+        assert_eq!(table.rows[0], [math, parse_inlines("[café](/réel)")]);
+        let spans = destination_spans(&source);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(&source[spans[0].range.clone()], "/réel");
+    }
+}
+
+#[test]
+fn braces_outside_the_formula_cannot_give_a_price_the_following_columns() {
+    for first in [r"{Cost $12", r"\{Cost $12", r"$\{cost"] {
+        let source = format!(
+            "Left|Price|Formula|Link\n---|---|---|---\n{first} | $5 | $x|y$ | [go](/ok)\n"
+        );
+        let document = assert_table_source(&source);
+        assert_eq!(
+            table(&document).rows[0],
+            [
+                parse_inlines(first),
+                text("$5"),
+                vec![Inline::Math("x|y".into())],
+                parse_inlines("[go](/ok)")
+            ],
+            "{source:?}"
+        );
+    }
+}

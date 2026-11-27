@@ -6424,8 +6424,8 @@ fn math_delimiter_can_close<T: Copy + Into<u32>>(
 
 /// Table boundaries need a conservative pairing rule in addition to the shared
 /// inline grammar: `$12 | $19 | $x|y$` must keep its price columns. Only the first
-/// unescaped same-width run may close a table formula; an ineligible run leaves
-/// the opener literal rather than searching across more cells. A single dollar
+/// unescaped same-width run may close a table formula, except for an ineligible
+/// single dollar inside a TeX group opened by this formula. A single dollar
 /// before a digit, or one directly after a real pipe and before word/TeX content,
 /// belongs to the following cell instead of closing the preceding one.
 ///
@@ -6440,6 +6440,9 @@ fn math_delimiter_can_close<T: Copy + Into<u32>>(
 struct TableMathRuns {
     runs: [Vec<TableMathRun>; 2],
     next: [usize; 2],
+    // Only ineligible dollars inside TeX groups need this secondary index.
+    // (Earliest enclosing brace, index of the next eligible single closer.)
+    grouped: HashMap<usize, (usize, usize)>,
 }
 
 struct TableMathRun {
@@ -6453,7 +6456,13 @@ impl TableMathRuns {
         let mut index = Self {
             runs: [Vec::new(), Vec::new()],
             next: [0; 2],
+            grouped: HashMap::new(),
         };
+        if !bytes.contains(&b'$') {
+            return index;
+        }
+        let mut braces = Vec::new();
+        let mut pending = Vec::new();
         let mut pos = 0;
         let mut last_pipe = None;
         while pos < bytes.len() {
@@ -6471,16 +6480,38 @@ impl TableMathRuns {
                         && following.is_some_and(|byte| {
                             byte.is_ascii_alphanumeric() || *byte == b'\\' || !byte.is_ascii()
                         });
+                    let can_close = math_delimiter_can_close(bytes, pos, len, len) && !starts_cell;
+                    if len == 1 {
+                        if can_close {
+                            // An opener must own the enclosing brace of every skipped dollar.
+                            // Link all pending runs once, including those in nested groups.
+                            let closer = index.runs[0].len();
+                            let mut earliest = usize::MAX;
+                            for (price, brace) in pending.drain(..).rev() {
+                                earliest = earliest.min(brace);
+                                index.grouped.insert(price, (earliest, closer));
+                            }
+                        } else if !starts_cell && let Some(&brace) = braces.last() {
+                            pending.push((pos, brace));
+                        } else {
+                            pending.clear();
+                        }
+                    }
                     index.runs[len - 1].push(TableMathRun {
                         start: pos,
-                        can_close: math_delimiter_can_close(bytes, pos, len, len) && !starts_cell,
+                        can_close,
                         after_pipe,
                     });
                 }
                 pos += len;
             } else {
-                if bytes[pos] == b'|' {
-                    last_pipe = Some(pos);
+                match bytes[pos] {
+                    b'{' => braces.push(pos),
+                    b'}' => {
+                        braces.pop();
+                    }
+                    b'|' => last_pipe = Some(pos),
+                    _ => {}
                 }
                 pos += 1;
             }
@@ -6496,14 +6527,21 @@ impl TableMathRuns {
         while runs.get(*next).is_some_and(|run| run.start <= after) {
             *next += 1;
         }
-        let close = runs.get(*next)?;
+        let mut close = runs.get(*next)?;
+        if !close.can_close {
+            let &(brace, closer) = self.grouped.get(&close.start)?;
+            if after > brace {
+                return None;
+            }
+            close = &runs[closer];
+        }
         let numeric_opener = width == 1
             && (bytes.get(after).is_some_and(u8::is_ascii_digit)
                 || (bytes
                     .get(after)
                     .is_some_and(|byte| matches!(byte, b'+' | b'-'))
                     && bytes.get(after + 1).is_some_and(u8::is_ascii_digit)));
-        (close.can_close && !(numeric_opener && close.after_pipe)).then_some(close.start)
+        (!(numeric_opener && close.after_pipe)).then_some(close.start)
     }
 }
 

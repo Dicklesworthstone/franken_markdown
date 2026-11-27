@@ -272,7 +272,6 @@ impl<'a> Parser<'a> {
             return Some(false);
         };
         if value.is_empty()
-            || value.len() > limit
             || slot.is_some()
             || value.contains(['\u{fffe}', '\u{ffff}'])
         {
@@ -283,14 +282,17 @@ impl<'a> Parser<'a> {
         if !self.at_end_of_statement() {
             return None;
         }
-        *slot = Some(
-            value
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
+        let decoded = super::decode_mermaid_label(value, limit)?;
+        let text = decoded
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.is_empty() {
+            return None;
+        }
+        *slot = Some(text);
         Some(true)
     }
 

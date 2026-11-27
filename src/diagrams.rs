@@ -1033,6 +1033,64 @@ fn push_escaped_svg_text(s: &str, out: &mut String) {
     }
 }
 
+/// Decode Mermaid label entities and hard breaks once, before encoding the
+/// resulting plain text for the destination format.
+fn decode_mermaid_label(source: &str, limit: usize) -> Option<String> {
+    if source.len() > limit {
+        return None;
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while !rest.is_empty() {
+        if rest.starts_with('<')
+            && let Some(end) = rest.as_bytes().iter().take(6).position(|&b| b == b'>')
+            && matches!(
+                rest[..=end].to_ascii_lowercase().as_str(),
+                "<br>" | "<br/>" | "<br />"
+            )
+        {
+            out.push('\n');
+            rest = &rest[end + 1..];
+            continue;
+        }
+        if (rest.starts_with('#') || rest.starts_with('&'))
+            && let Some(end) = rest.as_bytes()[..rest.len().min(34)]
+                .iter()
+                .position(|&byte| byte == b';')
+                .filter(|&end| end > 1)
+        {
+            let body = &rest[1..end];
+            let numeric = if rest.starts_with('#') {
+                body.bytes().all(|b| b.is_ascii_digit()).then_some(body)
+            } else {
+                body.strip_prefix('#')
+            };
+            if let Some(number) = numeric {
+                let codepoint = match number.strip_prefix('x').or_else(|| number.strip_prefix('X')) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                    None => number.parse().ok()?,
+                };
+                let ch = char::from_u32(codepoint)?;
+                if ch.is_control() || matches!(ch, '\u{fffe}' | '\u{ffff}') {
+                    return None;
+                }
+                out.push(ch);
+                rest = &rest[end + 1..];
+                continue;
+            }
+            if let Some(value) = crate::parse::entities::lookup(body) {
+                out.push_str(value);
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        let ch = rest.chars().next()?;
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    Some(out)
+}
+
 fn escape_svg_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     push_escaped_svg_text(s, &mut out);

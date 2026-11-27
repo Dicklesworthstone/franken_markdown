@@ -757,3 +757,21 @@ fn accessible_metadata_preserves_literal_labels_and_refuses_malformed_directives
         assert!(figure_svg_with_alt(&source, "mermaid").is_none(), "{invalid}");
     }
 }
+
+#[test]
+fn flowchart_and_sequence_alternatives_decode_entities_exactly_once() {
+    use franken_markdown::diagrams::figure_svg_with_alt;
+
+    let metadata = "accTitle: Caf&#xE9; &amp; tea\naccDescr: #9829; &lt; &amp;lt;";
+    for (header, edge) in [("graph TD", "A-->B"), ("sequenceDiagram", "A->>B: hi")] {
+        let source = format!("{header}\n{metadata}\n{edge}");
+        let (svg, alt) = figure_svg_with_alt(&source, "mermaid").unwrap();
+        assert_eq!(alt, "Café & tea — ♥ < &lt;");
+        assert!(svg.contains("<title>Café &amp; tea</title>"));
+        assert!(svg.contains("<desc>♥ &lt; &amp;lt;</desc>"));
+    }
+    for value in ["&#0;", "&#xD800;", "&#x110000;"] {
+        let source = format!("graph TD\naccTitle: {value}\nA-->B");
+        assert!(figure_svg_with_alt(&source, "mermaid").is_none());
+    }
+}

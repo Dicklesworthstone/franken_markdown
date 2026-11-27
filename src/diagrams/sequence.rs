@@ -178,52 +178,7 @@ fn statements(source: &str) -> Option<Vec<&str>> {
 }
 
 fn label(source: &str) -> Option<String> {
-    if source.len() > MAX_LABEL {
-        return None;
-    }
-    let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-    while !rest.is_empty() {
-        if rest.starts_with('<')
-            && let Some(end) = rest.find('>').filter(|&end| end <= 5)
-            && matches!(
-                rest[..=end].to_ascii_lowercase().as_str(),
-                "<br>" | "<br/>" | "<br />"
-            )
-        {
-            out.push('\n');
-            rest = &rest[end + 1..];
-            continue;
-        }
-        if (rest.starts_with('#') || rest.starts_with('&'))
-            && let Some(end) = rest.find(';').filter(|&end| end > 1 && end <= 33)
-        {
-            let body = &rest[1..end];
-            let numeric = if rest.starts_with('#') {
-                body.bytes().all(|b| b.is_ascii_digit()).then_some(body)
-            } else {
-                body.strip_prefix('#')
-            };
-            if let Some(number) = numeric {
-                let ch = char::from_u32(number.parse().ok()?)?;
-                if ch.is_control() || matches!(ch, '\u{fffe}' | '\u{ffff}') {
-                    return None;
-                }
-                out.push(ch);
-                rest = &rest[end + 1..];
-                continue;
-            }
-            if let Some(value) = crate::parse::entities::lookup(body) {
-                out.push_str(value);
-                rest = &rest[end + 1..];
-                continue;
-            }
-        }
-        let ch = rest.chars().next()?;
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
-    }
-    Some(out)
+    super::decode_mermaid_label(source, MAX_LABEL)
 }
 
 fn identifier(id: &str) -> bool {

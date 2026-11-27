@@ -4,6 +4,7 @@ import { bookTextBytes, validateBookLinkReportBytes } from "./book_link_report.m
 import { validatePdfVerificationReport } from "./render_typography.mjs";
 
 export const BOOK_PDF_VERIFICATION_MAX_BYTES = 8 * 1024 * 1024;
+const decodedReports = new WeakSet();
 const invalid = () => Object.assign(new Error(
   "The book PDF verifier returned an invalid or mismatched publication report.",
 ), { code: "INVALID_BOOK_PDF_VERIFICATION" });
@@ -164,7 +165,19 @@ export function parseBookPdfVerificationReport(bytes, expectedPaths) {
         || checkedLayout.anchors.unresolved.length !== unresolved.length
         || unresolved.some((target, index) => target !== checkedLayout.anchors.unresolved[index])
         || (checkedLayout.verdict === "clean" && (unresolved.length || navigation.summary.findings))) throw invalid();
-    return Object.freeze({ schema: value.schema, scope: value.scope, layout: checkedLayout,
+    const report = Object.freeze({ schema: value.schema, scope: value.scope, layout: checkedLayout,
       navigation, destinations: Object.freeze(destinations), pagination: pagination(value.pagination) });
+    decodedReports.add(report);
+    return report;
   } catch { throw invalid(); }
+}
+
+/** Recheck the immutable decoded receipt against a captured edition without
+ * traversing or serializing its potentially large page and destination arrays. */
+export function checkBookPdfVerificationCapture(report, paths) {
+  if (!decodedReports.has(report) || !report.layout.page_count) throw invalid();
+  const expected = canonicalBookPdfVerificationPaths(paths);
+  if (report.navigation.chapters.length !== expected.length
+      || expected.some((path, index) => path !== report.navigation.chapters[index].path)) throw invalid();
+  return report;
 }

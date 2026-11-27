@@ -61,7 +61,11 @@ publication starts a fresh capture, not a hidden cache of old resource grants.
 ## Require a clean assembled PDF
 
 Pass `{ strictPdf: true }` as the fourth argument to `publisher.render` and
-include `"pdf"` in the formats. Before returning any files, the publisher
+include `"pdf"` in the formats. In the book workbench select **Require clean PDF
+layout and destinations** under **Publish a complete edition**. The option
+applies when PDF is selected. The verification summary shows page and destination
+counts and up to 100 findings. Editing the book or changing the policy clears
+the old result and download links. Before returning any files, the publisher
 asks the same retained book worker to verify its assembled PDF with an empty
 source update against the edition's latest revision. This uses the captured
 chapter and include text, fonts, images, page geometry, authoring profile and

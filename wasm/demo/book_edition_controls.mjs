@@ -32,8 +32,13 @@ export function createBookEditionPanel(root) {
   strict.type = "checkbox"; strict.checked = true;
   strict.setAttribute("aria-describedby", "book-edition-help");
   label.append(strict, root.createTextNode(" Require clean internal navigation before publishing")); policy.append(label);
+  const pdfPolicy = make("label"), strictPdf = make("input", "book-edition-strict-pdf");
+  strictPdf.type = "checkbox"; strictPdf.checked = false;
+  strictPdf.setAttribute("aria-describedby", "book-edition-help");
+  pdfPolicy.append(strictPdf, root.createTextNode(" Require clean PDF layout and destinations"));
+  policy.append(root.createTextNode(" "), pdfPolicy);
   const verification = make("div", "book-edition-verification");
-  verification.hidden = true; verification.setAttribute("aria-label", "Edition navigation verification");
+  verification.hidden = true; verification.setAttribute("aria-label", "Edition verification");
   const diagnostics = make("div", "book-edition-diagnostics");
   diagnostics.hidden = true; diagnostics.setAttribute("aria-label", "PDF render diagnostics");
   const actions = make("p"), prepare = make("button", "book-edition-prepare", "Prepare selected edition");
@@ -65,7 +70,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     throw fail("INVALID_OPTIONS", "Edition controls require the workbench source host and collection.");
   const panel = createBookEditionPanel(root);
   if (mounted.has(panel)) throw fail("ALREADY_MOUNTED", "Edition controls are already installed.");
-  const names = ["prepare", "bundle", "cancel", "formats", "strict", "verification", "diagnostics", "status", "downloads", ...choices.map(([key]) => key)];
+  const names = ["prepare", "bundle", "cancel", "formats", "strict", "strict-pdf", "verification", "diagnostics", "status", "downloads", ...choices.map(([key]) => key)];
   const el = Object.fromEntries(names.map(key => [key, root.querySelector(`#book-edition-${key}`)]));
   if (Object.values(el).some(node => !node)) throw fail("MISSING_CONTROLS", "Edition controls are incomplete.");
   let disposed = false, suspended = false, session = null;
@@ -73,19 +78,19 @@ export function createBookEditionControls({ root, controls, collection, publishe
   const unlisten = [], composing = new Set(), finishing = new Map();
   const blocked = () => suspended || composing.size > 0 || controls.sourceBusy
     || !collection.files.some(file => file.role !== "include");
-  const checkpoint = () => JSON.stringify([collection.revision, controls.checkpoint(), selection(), el.strict.checked]);
+  const checkpoint = () => JSON.stringify([collection.revision, controls.checkpoint(), selection(), el.strict.checked, el.pdf.checked && el["strict-pdf"].checked]);
   function clearLinks() {
     // Also strip detached nodes retained by a menu/event handler before revocation.
     for (const link of links) { link.removeAttribute("href"); link.removeAttribute("download"); }
     links = [];
     el.downloads.replaceChildren(); el.downloads.hidden = true;
   }
-  let shownReport = null, shownUnchecked = false;
+  let shownReport = null, shownPdf = null, shownUnchecked = false;
   function showVerification(state) {
     const report = state.linkReport;
     const unchecked = !state.strictLinks && state.downloads.length > 0;
-    if (report === shownReport && unchecked === shownUnchecked) return;
-    shownReport = report; shownUnchecked = unchecked;
+    if (report === shownReport && state.pdfReport === shownPdf && unchecked === shownUnchecked) return;
+    shownReport = report; shownPdf = state.pdfReport; shownUnchecked = unchecked;
     const rows = [];
     const paragraph = text => {
       const node = root.createElement("p"); node.textContent = text; rows.push(node);
@@ -103,6 +108,13 @@ export function createBookEditionControls({ root, controls, collection, publishe
       }
       if (findings > shown) paragraph(`Showing the first ${shown} of ${findings} findings. The complete report is available on the edition state; use the book link checker to inspect all findings.`);
     } else if (unchecked) paragraph("Internal navigation was not checked for this edition. Verification was explicitly turned off.");
+    if (state.pdfReport) {
+      const { page_count, anchors, findings } = state.pdfReport.layout;
+      paragraph(`Assembled PDF: ${page_count} ${page_count === 1 ? "page" : "pages"}, ${anchors.resolved} resolved destinations, ${findings.length} findings.`);
+      for (const finding of findings.slice(0, 100))
+        paragraph(`${finding.code}: ${finding.detail}`.slice(0, 2000));
+      if (findings.length > 100) paragraph(`Showing the first 100 of ${findings.length} PDF findings.`);
+    }
     el.verification.replaceChildren(...rows); el.verification.hidden = rows.length === 0;
   }
   function show(state) {
@@ -111,6 +123,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     el.bundle.disabled = inactive || !state.canBundle;
     el.cancel.disabled = inactive || (!state.busy && state.downloads.length === 0);
     el.formats.disabled = inactive; el.strict.disabled = inactive;
+    el["strict-pdf"].disabled = inactive || !el.pdf.checked;
     panel.setAttribute("aria-busy", String(state.busy));
     el.status.textContent = state.message;
     showVerification(state);
@@ -152,7 +165,10 @@ export function createBookEditionControls({ root, controls, collection, publishe
     finishing.clear(); composing.clear();
   }
   function selection() { return choices.filter(([key]) => el[key].checked).map(([key]) => key); }
-  function syncSelection() { session.setFormats(selection()); session.setStrictLinks(el.strict.checked); }
+  function syncSelection() {
+    session.setFormats(selection()); session.setStrictLinks(el.strict.checked);
+    session.setStrictPdf(el["strict-pdf"].checked);
+  }
   async function prepare() {
     // Read checked values even when changed programmatically without an event.
     syncSelection();
@@ -167,7 +183,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
       el.status.textContent = `${cause?.code ?? "EDITION_FAILED"}: ${cause?.message ?? "Edition preparation failed."}`;
   }
   try {
-    session = createBookEditionSession({ publisher, urls, crypto, strictLinks: el.strict.checked, checkpoint, isBlocked: blocked, onState: show,
+    session = createBookEditionSession({ publisher, urls, crypto, strictLinks: el.strict.checked, strictPdf: el["strict-pdf"].checked, checkpoint, isBlocked: blocked, onState: show,
       capture() {
         controls.captureProject();
         const before = checkpoint();
@@ -187,7 +203,7 @@ export function createBookEditionControls({ root, controls, collection, publishe
     const edit = event => {
       if (disposed || suspended) return;
       if (panel.contains(event.target)) {
-        if (event.target === el.strict || choices.some(([key]) => event.target === el[key])) {
+        if (event.target === el.strict || event.target === el["strict-pdf"] || choices.some(([key]) => event.target === el[key])) {
           try { syncSelection(); } catch (cause) { report(cause); }
         }
       } else session.invalidate();

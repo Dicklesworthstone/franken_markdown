@@ -1,5 +1,6 @@
 // Workbench ownership of one captured publication. The injected publisher owns
 // native rendering; this session owns only cancellation, receipts and Blob URLs.
+import { checkBookPdfVerificationCapture } from "../book_pdf_verification.mjs";
 import { bookRenderDiagnosticsReceipt } from "../book_render_diagnostics.mjs";
 import { bookZipCrc32, createBookZip } from "./book_zip.mjs";
 const EDITION_LIMIT = 128 * 1024 * 1024;
@@ -46,7 +47,7 @@ function editionLinkReport(report, paths, clean) {
 // Optional display metadata is not a publication/verification receipt. Copy
 // only bounded primitive data fields; no source, output, accessor or HTML enters
 // session state. Ignore malformed, duplicate and out-of-order notifications.
-function editionProgress(value, selected, checking, previous) {
+function editionProgress(value, selected, checking, checkingPdf, previous) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
         || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
@@ -69,11 +70,13 @@ function editionProgress(value, selected, checking, previous) {
       if (phase === "retrying") {
         if (attempt < 2 || completedFormats !== 0
             || !["WORKER_FAILED", "BOOK_CAPTURE_EXPIRED"].includes(retryCode)) return null;
+      } else if (phase === "verifying-pdf") {
+        if (!checkingPdf || completedFormats !== totalFormats || retryCode !== undefined) return null;
       } else if ((phase !== "checking-links" && phase !== "verifying-publication") || !checking
           || retryCode !== undefined || completedFormats !== (phase === "checking-links" ? 0 : totalFormats)) return null;
     }
     const step = item => item.phase === "retrying" ? -1 : item.phase === "checking-links" ? 0
-      : item.phase === "rendering" ? item.completedFormats + 1 : totalFormats + 1;
+      : item.phase === "rendering" ? item.completedFormats + 1 : item.phase === "verifying-pdf" ? totalFormats + 1 : totalFormats + 2;
     if (previous) {
       if (maxAttempts !== previous.maxAttempts || attempt < previous.attempt || attempt > previous.attempt + 1
           || (attempt > previous.attempt && phase !== "retrying")
@@ -89,6 +92,7 @@ function editionProgressMessage(progress) {
   const text = phase === "retrying"
     ? `The publication worker was lost. Restarting the complete edition (attempt ${attempt} of ${maxAttempts}) from the same captured book.`
     : phase === "checking-links" ? `${prefix}Checking internal navigation before rendering.`
+      : phase === "verifying-pdf" ? `${prefix}Verifying the assembled PDF pages and destinations.`
       : phase === "verifying-publication" ? `${prefix}Verifying the rendered edition before releasing downloads.`
         : `${prefix}Rendering ${format === "site" ? "HTML-site ZIP" : format.toUpperCase()} (${completedFormats + 1} of ${totalFormats}).`;
   return `${text} No edition downloads are ready yet.`;
@@ -114,8 +118,9 @@ function waitFor(pending, signal) {
  */
 export function createBookEditionSession({
   publisher, capture, checkpoint, isBlocked = () => false, urls = URL, onState = () => {},
-  crypto = globalThis.crypto, strictLinks = false,
+  crypto = globalThis.crypto, strictLinks = false, strictPdf = false,
 } = {}) {
+  if (typeof strictPdf !== "boolean") throw fail("INVALID_OPTIONS", "strictPdf must be a boolean.");
   if (typeof strictLinks !== "boolean") throw fail("INVALID_OPTIONS", "strictLinks must be a boolean.");
   if (!publisher || ["render", "cancel", "dispose"].some(key => typeof publisher[key] !== "function")
       || [capture, checkpoint, isBlocked, onState].some(fn => typeof fn !== "function")
@@ -136,10 +141,11 @@ export function createBookEditionSession({
       canPrepare: !disposed && !suspended && !active && !packing && formats.length > 0 && !blocked(),
       canBundle: !!ready && !active && !packing && !ready.bundleByteLength && current(ready),
       bundleByteLength: ready?.bundleByteLength ?? 0,
-      formats, strictLinks,
+      formats, strictLinks, strictPdf,
       publicationProgress,
       // Raw edits without notifications must not leave a visible clean verdict.
-      linkReport: verification && current(verification) ? verification.report : null,
+      linkReport: verification && current(verification) ? verification.report ?? null : null,
+      pdfReport: verification && current(verification) ? verification.pdfReport ?? null : null,
       pdfDiagnostics: ready && current(ready) ? ready.pdfDiagnostics : undefined,
       downloads: Object.freeze(ready ? ready.downloads.slice() : []),
       byteLength: ready?.byteLength ?? 0, sourceLength: ready?.sourceLength ?? 0,
@@ -198,7 +204,7 @@ export function createBookEditionSession({
     if (!formats.length) throw fail("INVALID_FORMAT", "Select at least one publication format.");
     release(ready); ready = null; verification = null;
     const job = { abort: new AbortController(), urls: [], downloads: [], checkpoint: null };
-    const selected = formats, checking = strictLinks;
+    const selected = formats, checking = strictLinks, checkingPdf = strictPdf && selected.includes("pdf");
     active = job; phase = "busy"; errorCode = null;
     message = `Preparing ${selected.map(format => format.toUpperCase()).join(" + ")} from one captured book. No downloads are ready yet.`;
     announce();
@@ -211,7 +217,7 @@ export function createBookEditionSession({
       job.checkpoint = checkpoint();
       job.paths = input.files.map(file => file.path);
       const pending = publisher.render(input.files, selected, input.options, {
-        signal: job.abort.signal, ...(checking ? { strictLinks: true } : {}),
+        signal: job.abort.signal, ...(checking ? { strictLinks: true } : {}), ...(checkingPdf ? { strictPdf: true } : {}),
         onProgress(value) {
           // A retired publisher may still call its observer. It cannot repaint
           // the next job or renew the source/resource authority of this one.
@@ -225,7 +231,7 @@ export function createBookEditionSession({
             }
           };
           if (!check()) return;
-          const next = editionProgress(value, selected, checking, job.progress);
+          const next = editionProgress(value, selected, checking, checkingPdf, job.progress);
           // Proxy inspection and view observers can reenter the source host.
           if (!check() || !next) return;
           job.progress = next;
@@ -246,6 +252,14 @@ export function createBookEditionSession({
           || result.sourceLength > 64 * 1024 * 1024)
         throw fail("WORKER_PROTOCOL_ERROR", "The publisher did not return a complete captured edition.");
       const checked = checking ? editionLinkReport(result.linkReport, job.paths, true) : null;
+      let pdfReport;
+      if (checkingPdf) {
+        if (!result.pdfReport) throw fail("UNSUPPORTED_BOOK_PDF_VERIFICATION",
+          "The publisher did not return assembled PDF verification. Rebuild the matching package.");
+        pdfReport = checkBookPdfVerificationCapture(result.pdfReport, job.paths);
+        if (pdfReport.layout.verdict !== "clean")
+          throw fail("INVALID_BOOK_PDF_VERIFICATION", "The edition lacks a clean assembled PDF report.");
+      }
       // Admit every receipt/Blob before creating even the first download URL.
       let total = 0;
       const blobs = result.outputs.map((output, index) => {
@@ -278,7 +292,7 @@ export function createBookEditionSession({
       job.pdfDiagnostics = blobs.find(output => output.format === "pdf")?.diagnostics;
       job.byteLength = total; job.sourceLength = result.sourceLength;
       ready = job; active = null; phase = "ready";
-      verification = checked ? { checkpoint: job.checkpoint, report: checked } : null;
+      verification = checked || pdfReport ? { checkpoint: job.checkpoint, report: checked, pdfReport } : null;
       message = `Edition ready: ${selected.length} files, ${total} bytes. Use each download link to save it; preparation alone saves nothing.`;
       announce();
       return state();
@@ -291,6 +305,14 @@ export function createBookEditionSession({
           try {
             verification = { checkpoint: job.checkpoint,
               report: editionLinkReport(cause.linkReport, job.paths, false) };
+          } catch (invalid) { cause = invalid; }
+        }
+        if (checkingPdf && cause?.code === "BOOK_PDF_FINDINGS" && current(job)) {
+          try {
+            const pdfReport = checkBookPdfVerificationCapture(cause.pdfReport, job.paths);
+            if (pdfReport.layout.verdict !== "findings")
+              throw fail("INVALID_BOOK_PDF_VERIFICATION", "The publisher reported findings without a matching PDF report.");
+            verification = { checkpoint: job.checkpoint, pdfReport };
           } catch (invalid) { cause = invalid; }
         }
         active = null; phase = "error";
@@ -368,6 +390,13 @@ export function createBookEditionSession({
       if (value === strictLinks) return;
       strictLinks = value;
       retire("EXPORT_CANCELLED", "Navigation verification policy changed. Prepare a new edition.");
+    },
+    setStrictPdf(value) {
+      alive();
+      if (typeof value !== "boolean") throw fail("INVALID_OPTIONS", "strictPdf must be a boolean.");
+      if (value === strictPdf) return;
+      strictPdf = value;
+      retire("EXPORT_CANCELLED", "PDF verification policy changed. Prepare a new edition.");
     },
     setFormats(value) {
       alive();

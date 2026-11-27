@@ -91,6 +91,10 @@ function fixture(t, { dom = false, real = false, strict = true, failPhase, onSta
         h.calls.push({ id, format });
         if (id === 1 && format === failPhase) throw Object.assign(Error("lost endpoint"), { code: "WORKER_FAILED" });
         await h.onRender?.(id, format);
+        if (format === "pdf-verification") return {
+          format: "book-pdf-verification", mimeType: "application/json", extension: "json",
+          bytes: new TextEncoder().encode(JSON.stringify(h.pdfVerification)), sourceLength: 1, retainedInputRevision: ++revision,
+        };
         return { format: `book-${format}`, bytes: Uint8Array.of(id), sourceLength: 1, retainedInputRevision: ++revision };
       }
       return { render: (_files, format) => render(format),
@@ -330,4 +334,61 @@ test("late rendering progress cannot repaint or revoke a completed delivery bund
   h.emit(rendering()); h.emit(retrying());
   assert.equal(h.edition.state.message, ready.message); assert.equal(h.edition.state.publicationProgress, null);
   assert.equal(h.urls.size, 4); assert(ready.bundleByteLength > 0);
+});
+
+function pdfVerification(findings = []) {
+  return { schema: "fmd-book-pdf-verification-v1", scope: "assembled-pdf-publication",
+    layout: { schema_version: "1", target: "pdf", verdict: findings.length ? "findings" : "clean",
+      page_count: 1, digest: "fnv1a64:0123456789abcdef", anchors: { resolved: 0, unresolved: [] },
+      findings, pages: [{ number: 1, runs: [] }] },
+    navigation: report, destinations: [], pagination: { requestedOptimal: false, strategy: "greedy", fallback: null,
+      paragraphVariants: { status: "not_requested", attemptedParagraphs: 0, limitedParagraphs: 0,
+        offeredParagraphs: 0, selectedAlternatives: 0, paragraphItemLimit: false,
+        retainedLineLimit: false, measurementWorkLimit: false, candidateStateLimit: false, failure: null } } };
+}
+
+test("workbench holds all downloads through assembled PDF verification and withdraws stale results", async t => {
+  const h = fixture(t, { dom: true, real: true }), wait = deferred();
+  const option = h.el("strict-pdf");
+  assert.equal(option.checked, false);
+  option.checked = true; option.fire("change");
+  h.pdfVerification = pdfVerification();
+  h.onRender = (_id, format) => format === "pdf-verification" ? wait.promise : undefined;
+  const pending = h.edition.prepare();
+  await until(() => h.calls.some(call => call.format === "pdf-verification"));
+  assert.equal(h.urls.size, 0); assert.equal(h.edition.state.publicationProgress.phase, "verifying-pdf");
+  assert.match(h.el("status").textContent, /Verifying the assembled PDF/);
+  wait.resolve(); await pending;
+  assert.equal(h.urls.size, 3); assert.equal(h.edition.state.pdfReport.layout.verdict, "clean");
+  assert(h.el("verification").children.some(node => /Assembled PDF: 1 page/.test(node.textContent)));
+  h.editor.fire("input"); assert.equal(h.urls.size, 0); assert.equal(h.edition.state.pdfReport, null);
+  assert.equal(h.el("verification").hidden, true);
+  h.el("pdf").checked = false; h.el("pdf").fire("change"); assert.equal(option.disabled, true);
+  await h.edition.prepare();
+  assert(!h.edition.state.pdfReport); assert.equal(h.calls.filter(call => call.format === "pdf-verification").length, 1);
+});
+
+test("native PDF findings remain readable while the complete edition is withheld", async t => {
+  const h = fixture(t, { dom: true, real: true, strict: false });
+  h.el("strict-pdf").checked = true; h.el("strict-pdf").fire("change");
+  h.pdfVerification = pdfVerification([{ code: "overflow", detail: "<img> extends beyond the margin." }]);
+  await assert.rejects(h.edition.prepare(), code("BOOK_PDF_FINDINGS"));
+  assert.equal(h.urls.size, 0); assert.equal(h.edition.state.linkReport, null);
+  assert.equal(h.edition.state.pdfReport.layout.findings.length, 1);
+  assert(h.el("verification").children.some(node =>
+    node.tagName === "p" && node.textContent.includes("<img> extends beyond the margin.")));
+  h.el("strict-pdf").checked = false; h.el("strict-pdf").fire("change");
+  assert.equal(h.edition.state.pdfReport, null); assert.equal(h.el("verification").hidden, true);
+});
+
+test("a publisher without an admitted PDF report cannot release workbench downloads", async t => {
+  const h = fixture(t, { dom: true, strict: false });
+  h.el("strict-pdf").checked = true; h.el("strict-pdf").fire("change");
+  for (const invalid of [undefined, Object.freeze(pdfVerification())]) {
+    const pending = h.edition.prepare();
+    const result = complete(); result.pdfReport = invalid;
+    h.gates.at(-1).resolve(result);
+    await assert.rejects(pending, code(invalid ? "INVALID_BOOK_PDF_VERIFICATION" : "UNSUPPORTED_BOOK_PDF_VERIFICATION"));
+    assert.equal(h.urls.size, 0); assert.equal(h.edition.state.pdfReport, null);
+  }
 });

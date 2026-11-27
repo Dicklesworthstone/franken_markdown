@@ -850,7 +850,7 @@ impl Poster {
                 // Mermaid diagrams draw as figures, as in HTML and PDF.
                 let language = lang.as_deref().unwrap_or("");
                 let diagram = code::bounded_language(language)
-                    .then(|| franken_markdown::diagrams::figure_svg(code, language))
+                    .then(|| franken_markdown::diagrams::figure_svg_with_alt(code, language))
                     .flatten();
                 match diagram {
                     Some((svg, alt)) => {
@@ -861,7 +861,7 @@ impl Poster {
                         let image = Inline::Image {
                             dest,
                             title: None,
-                            alt: alt.to_owned(),
+                            alt,
                         };
                         self.paragraph(std::slice::from_ref(&image), l, r, quote);
                     }

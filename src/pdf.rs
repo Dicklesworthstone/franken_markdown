@@ -6025,7 +6025,7 @@ fn layout_diagram(
     out: &mut Vec<Line>,
     cx: &mut LayoutCx<'_>,
 ) -> bool {
-    let Some((svg, alt)) = crate::diagrams::figure_svg(code, lang.unwrap_or("")) else {
+    let Some((svg, alt)) = crate::diagrams::figure_svg_with_alt(code, lang.unwrap_or("")) else {
         return false;
     };
     // Equal sources share one image XObject.
@@ -6033,7 +6033,7 @@ fn layout_diagram(
     let Some(image) = parse_svg_image_asset(&key, svg.as_bytes()) else {
         return false;
     };
-    push_figure_line(image, alt, None, indent, out, cx)
+    push_figure_line(image, &alt, None, indent, out, cx)
 }
 
 /// One block figure line: `image` at its natural size, scaled down to fit the

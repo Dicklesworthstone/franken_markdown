@@ -625,7 +625,7 @@ fn arrowhead(svg: &mut String, x: f32, y: f32, direction: f32, head: ArrowHead) 
     }
 }
 
-pub(super) fn render(source: &str) -> Option<String> {
+pub(super) fn render(source: &str) -> Option<super::RenderedDiagram> {
     let diagram = parse(source)?;
     let labels: Vec<_> = diagram
         .participants
@@ -967,7 +967,12 @@ pub(super) fn render(source: &str) -> Option<String> {
         }
     }
     svg.push_str("</svg>\n");
-    Some(svg)
+    Some(
+        super::RenderedDiagram::figure(svg, "Sequence diagram").with_accessible_text(
+            diagram.accessible_title.or(diagram.title),
+            diagram.description,
+        ),
+    )
 }
 
 const STYLE: &str = r#"<style>

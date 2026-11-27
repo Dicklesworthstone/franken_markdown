@@ -324,7 +324,9 @@ Nested `loop`, `alt`/`else`, `opt`, `par`/`and`, `critical`/`option`, and `break
 fragments draw explicit frames and branch separators, with every condition
 visible. `Note left of`, `Note right of`, and `Note over` preserve their actual
 placement; `over` can name one or two participants. Titles, `accTitle:` and
-single-line `accDescr:` metadata are retained. `autonumber` starts at one, or
+single-line `accDescr:` metadata are retained. The tagged PDF figure and the SVG
+poster image use the accessible title (or the visible title) and description
+as alternative text. If only a description is provided, it stands alone. `autonumber` starts at one, or
 accepts an unsigned integer start and a positive integer increment.
 
 Labels wrap within measured conservative boxes, participant columns make room

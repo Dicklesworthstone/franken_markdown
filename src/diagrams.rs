@@ -65,6 +65,39 @@ pub fn is_diagram_code(code: &str, lang: &str) -> bool {
 /// Returns `Some(svg)` if successfully parsed, or `None` to fallback to code block.
 #[must_use]
 pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
+    Some(compile_diagram(code, lang)?.svg)
+}
+
+/// The generic kind stays available to existing callers. Publication backends
+/// also use the authored alternative text, which is kept as plain Unicode
+/// until each backend encodes it for its own output format.
+struct RenderedDiagram {
+    svg: String,
+    kind: Option<&'static str>,
+    alt: Option<String>,
+}
+
+impl RenderedDiagram {
+    fn figure(svg: String, kind: &'static str) -> Self {
+        Self {
+            svg,
+            kind: Some(kind),
+            alt: None,
+        }
+    }
+
+    fn with_accessible_text(mut self, title: Option<String>, description: Option<String>) -> Self {
+        self.alt = match (title, description) {
+            (Some(title), Some(description)) if title != description => {
+                Some(format!("{title} — {description}"))
+            }
+            (title, description) => title.or(description),
+        };
+        self
+    }
+}
+
+fn compile_diagram(code: &str, lang: &str) -> Option<RenderedDiagram> {
     let trimmed = code.trim();
     let lower_lang = lang.trim().to_ascii_lowercase();
     let first_directive = trimmed
@@ -74,74 +107,58 @@ pub fn render_diagram_svg(code: &str, lang: &str) -> Option<String> {
         .unwrap_or("");
 
     if lower_lang == "timeline" {
-        // Explicit fences own their grammar before header auto-detection.
-        // Pass the original source so outer whitespace counts toward its bound.
-        timeline::render(code)
+        // Outer whitespace counts towards the timeline source bound.
+        timeline::render(code).map(|svg| RenderedDiagram::figure(svg, "Timeline diagram"))
     } else if lower_lang == "state" {
-        // An explicit state fence owns its grammar, including the required
-        // header. Other diagram headers must not bypass that contract.
-        state::render(trimmed)
+        state::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "State diagram"))
     } else if lower_lang == "class" {
-        class::render(trimmed)
+        class::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Class diagram"))
     } else if lower_lang == "er" {
-        er::render(trimmed)
+        er::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Entity relationship diagram"))
     } else if lower_lang == "sequence" || sequence::is_header(first_directive) {
         sequence::render(trimmed)
     } else if lower_lang == "ditaa"
         || (first_directive.starts_with("+---") && trimmed.contains('|'))
     {
-        render_ascii_diagram(trimmed)
+        render_ascii_diagram(trimmed).map(|svg| RenderedDiagram {
+            svg,
+            kind: None,
+            alt: None,
+        })
     } else if lower_lang == "flowchart" {
-        render_flowchart(trimmed)
+        render_flowchart(trimmed).map(|svg| RenderedDiagram::figure(svg, "Diagram"))
     } else if lower_lang == "pie" || pie::is_header(first_directive) {
-        pie::render(trimmed)
+        pie::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Pie chart"))
     } else if state::is_header(first_directive) {
-        state::render(trimmed)
+        state::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "State diagram"))
     } else if class::is_header(first_directive) {
-        class::render(trimmed)
+        class::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Class diagram"))
     } else if er::is_header(first_directive) {
-        er::render(trimmed)
+        er::render(trimmed).map(|svg| RenderedDiagram::figure(svg, "Entity relationship diagram"))
     } else if timeline::is_header(first_directive) {
-        timeline::render(code)
-    } else if lower_lang == "mermaid" && !names_flowchart(first_directive) {
-        // gantt and other Mermaid
-        // types this compiler does not draw stay readable source code instead
-        // of being misread as flowchart nodes.
-        None
-    } else if lower_lang == "mermaid" || names_flowchart(first_directive) {
-        render_flowchart(trimmed)
+        timeline::render(code).map(|svg| RenderedDiagram::figure(svg, "Timeline diagram"))
+    } else if names_flowchart(first_directive) {
+        render_flowchart(trimmed).map(|svg| RenderedDiagram::figure(svg, "Diagram"))
     } else {
         None
     }
 }
 
-/// A supported Mermaid diagram as an SVG figure, with alt text,
-/// for paged and poster outputs. ASCII box art returns `None`: those outputs
-/// keep it as a fitted monospace panel that preserves its row geometry.
+/// A supported Mermaid SVG and its diagram kind. ASCII box art returns
+/// `None` so paged outputs can keep it as a fitted monospace panel.
 #[must_use]
 pub fn figure_svg(code: &str, lang: &str) -> Option<(String, &'static str)> {
-    if !is_diagram_code(code, lang) {
-        return None;
-    }
-    let svg = render_diagram_svg(code, lang)?;
-    let alt = if svg.contains("class=\"fmd-diagram fmd-pie\"") {
-        "Pie chart"
-    } else if svg.contains("class=\"fmd-diagram fmd-sequence\"") {
-        "Sequence diagram"
-    } else if svg.contains("class=\"fmd-diagram fmd-state\"") {
-        "State diagram"
-    } else if svg.contains("class=\"fmd-diagram fmd-class\"") {
-        "Class diagram"
-    } else if svg.contains("class=\"fmd-diagram fmd-er\"") {
-        "Entity relationship diagram"
-    } else if svg.contains("class=\"fmd-diagram fmd-timeline\"") {
-        "Timeline diagram"
-    } else if svg.contains("class=\"fmd-diagram fmd-flowchart\"") {
-        "Diagram"
-    } else {
-        return None;
-    };
-    Some((svg, alt))
+    let diagram = compile_diagram(code, lang)?;
+    Some((diagram.svg, diagram.kind?))
+}
+
+/// A supported Mermaid SVG and its plain-text alternative for a tagged PDF
+/// figure or an SVG poster image. Untitled figures use the diagram kind.
+#[must_use]
+pub fn figure_svg_with_alt(code: &str, lang: &str) -> Option<(String, String)> {
+    let diagram = compile_diagram(code, lang)?;
+    let kind = diagram.kind?;
+    Some((diagram.svg, diagram.alt.unwrap_or_else(|| kind.to_owned())))
 }
 
 /// A Mermaid flowchart header: `graph`/`flowchart`, optionally with a direction.

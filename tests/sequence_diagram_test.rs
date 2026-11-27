@@ -339,7 +339,7 @@ fn shared_publication_paths_use_the_complete_sequence_figure_or_complete_code() 
     let pdf = render_pdf(&markdown, &PdfOptions::default()).unwrap();
     assert_eq!(pdf, render_pdf(&markdown, &PdfOptions::default()).unwrap());
     let raw = String::from_utf8_lossy(&pdf);
-    assert!(raw.contains("/S /Figure") && raw.contains("/Alt (Sequence diagram)"));
+    assert!(raw.contains("/S /Figure") && raw.contains("/Alt (Retried request)"));
     assert!(!raw.contains("/Subtype /Image"), "diagram stays vector");
     let (poster, _, warnings) = franken_markdown::svg::render_svg_with_diagnostics(
         &parse_markdown(&markdown),
@@ -349,7 +349,7 @@ fn shared_publication_paths_use_the_complete_sequence_figure_or_complete_code() 
     assert!(
         String::from_utf8(poster)
             .unwrap()
-            .contains("aria-label=\"Sequence diagram\"")
+            .contains("aria-label=\"Retried request\"")
     );
 
     let unsupported =
@@ -367,5 +367,57 @@ fn shared_publication_paths_use_the_complete_sequence_figure_or_complete_code() 
     assert!(runs.iter().all(|run| run.kind != "image"));
     for text in ["KEEPTHIS", "KEEPTHAT", "rect rgb"] {
         assert!(runs.iter().any(|run| run.text.contains(text)), "{text}");
+    }
+}
+
+#[test]
+fn authored_accessibility_survives_vector_publication_and_entity_decoding() {
+    let source = "sequenceDiagram\ntitle Visible caption\naccTitle: Café &amp; tea\naccDescr: A &lt; B\nA->>B: Prepare order";
+    let (svg, alt) = franken_markdown::diagrams::figure_svg_with_alt(source, "mermaid").unwrap();
+    let expected = "Café & tea — A < B";
+    assert_eq!(alt, expected);
+    assert!(svg.contains("<title>Café &amp; tea</title>"));
+    assert!(svg.contains("<desc>A &lt; B</desc>"));
+    assert!(svg.contains(">Visible caption</text>"));
+    assert_eq!(
+        franken_markdown::diagrams::figure_svg(source, "mermaid").unwrap(),
+        (svg, "Sequence diagram")
+    );
+
+    let markdown = format!("```mermaid\n{source}\n```");
+    let pdf = render_pdf(&markdown, &PdfOptions::default()).unwrap();
+    let encoded: String = expected
+        .encode_utf16()
+        .map(|unit| format!("{unit:04X}"))
+        .collect();
+    assert!(String::from_utf8_lossy(&pdf).contains(&format!("/Alt <FEFF{encoded}>")));
+
+    let (poster, _, warnings) = franken_markdown::svg::render_svg_with_diagnostics(
+        &parse_markdown(&markdown),
+        &franken_markdown::svg::SvgOptions::default(),
+    );
+    assert!(warnings.is_empty());
+    assert!(
+        String::from_utf8(poster)
+            .unwrap()
+            .contains("aria-label=\"Café &amp; tea — A &lt; B\"")
+    );
+}
+
+#[test]
+fn sequence_alternatives_fall_back_to_the_available_text() {
+    for (directives, expected) in [
+        ("", "Sequence diagram"),
+        ("accDescr: Request sent", "Request sent"),
+        ("title Visible", "Visible"),
+        ("accTitle: Request\naccDescr: Request", "Request"),
+    ] {
+        let source = format!("sequenceDiagram\n{directives}\nA->>B: Request");
+        assert_eq!(
+            franken_markdown::diagrams::figure_svg_with_alt(&source, "mermaid")
+                .unwrap()
+                .1,
+            expected
+        );
     }
 }

@@ -2788,8 +2788,8 @@ impl RenderWarning {
                 strategy: PdfPaginationStrategy::RelaxedHeight,
                 reason,
             } => format!(
-                "exact PDF pagination could not honor every heading keep ({reason}); \
-                 used relaxed_height pagination with only impossible heading-to-subject \
+                "exact PDF pagination could not honor every keep ({reason}); \
+                 used relaxed_height pagination with only impossible heading or short-introduction \
                  keeps relaxed; measured heights, forced breaks, heading interiors and \
                  hard widow/orphan rules were preserved"
             ),
@@ -31735,9 +31735,9 @@ fn page_break_plan_and_report(
         ),
         Err(reason) => {
             // Retain the mixed-height planner when the sole admitted weakening
-            // is a heading chain that provably cannot share any full page with
-            // its single-fragment subject. Strict and continued-note policies
-            // keep their original hard constraints and typed failure.
+            // is an introduction chain that provably cannot share any full
+            // page with its subject's minimum legal first fragment. Strict and
+            // continued-note policies retain the original typed failure.
             if !opts.strict_pagination
                 && matches!(
                     &reason,
@@ -32085,14 +32085,14 @@ fn exact_height_page_breaks_reserving(
 }
 
 /// The hard bridge and the narrowly admitted best-effort recovery share every
-/// measurement and plan validation. Recovery supplies sorted heading starts;
-/// only their final keep-with-next flags change, retaining the boundary costs.
+/// measurement and plan validation. Only the keep-with-next flags at the
+/// supplied block starts change. Their boundary costs still apply.
 fn height_page_breaks_reserving(
     lines: &[Line],
     page: PageGeom,
     reservation_prefix: LayoutUnit,
     reserve: impl Fn(usize) -> f32,
-    relaxed_heading_starts: &[usize],
+    relaxed_intro_starts: &[usize],
 ) -> std::result::Result<PageBreakPlan, PdfPaginationFailure> {
     use crate::pagination::height::{
         BlockCandidates, BlockPolicy, plan_blocks_with_reservation_prefix,
@@ -32123,7 +32123,7 @@ fn height_page_breaks_reserving(
             )],
         });
         let mut policy = joint_pagination::block_policy(lines, start);
-        if relaxed_heading_starts.binary_search(&start).is_ok() {
+        if relaxed_intro_starts.binary_search(&start).is_ok() {
             policy.keep_with_next = false;
         }
 

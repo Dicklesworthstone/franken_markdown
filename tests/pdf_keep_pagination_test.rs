@@ -392,6 +392,11 @@ fn oversized_kept_groups_refuse_strict_exports_and_report_successful_fallbacks()
         options.strict_pagination = false;
         options.optimal_pagination = true;
         let fallback = render_pdf_reported(&source, &options).unwrap();
+        assert_eq!(
+            fallback.pagination.page_breaks.strategy,
+            franken_markdown::PdfPaginationStrategy::RelaxedHeight,
+            "an impossible caption must not discard hard constraints throughout the document"
+        );
         assert!(!fallback.pagination.page_breaks.is_exact());
         let reason = fallback.pagination.page_breaks.fallback.as_ref().unwrap();
         assert!(matches!(&strict, RenderError::Pagination(actual) if actual == reason));
@@ -485,6 +490,19 @@ fn nested_introductions_form_transitive_keeps_only_with_their_own_subjects() {
     let pages = exact_pages(source, &options(200.0, 172));
     assert_eq!(pages.len(), 1);
     assert_eq!(plain(&pages), "CAP00.CAP01.FIGURE");
+
+    let mut best_effort = options(180.0, 172);
+    best_effort.strict_pagination = false;
+    best_effort.optimal_pagination = true;
+    let fallback = render_pdf_reported(source, &best_effort).unwrap();
+    assert_eq!(
+        fallback.pagination.page_breaks.strategy,
+        franken_markdown::PdfPaginationStrategy::RelaxedHeight
+    );
+    let pages = painted_pages(&fallback.bytes);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(plain(&pages[..1]), "CAP00.CAP01.");
+    assert_eq!(plain(&pages[1..]), "FIGURE");
 
     // A short caption introducing a table within a quoted list item retains
     // that item's quote/list ownership, even when the table header is empty.

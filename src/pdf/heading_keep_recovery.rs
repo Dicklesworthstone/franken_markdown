@@ -1,10 +1,10 @@
-//! Narrow recovery for an impossible heading-to-subject keep in best-effort PDF.
+//! Narrow recovery for an impossible heading or short-introduction keep in best-effort PDF.
 //!
-//! The hard planner always runs first. Only a complete heading chain followed
-//! by a subject’s minimum legal first fragment is considered. Both must fit alone,
-//! while their exact measured heights and reservations cannot fit together.
-//! The final heading's keep is then priced by the existing boundary penalty;
-//! heading interiors, the rest of the chain and every other hard rule survive.
+//! The hard planner always runs first. Measure the chain of headings and short
+//! introductions, then the smallest legal first fragment of their subject.
+//! Each must fit alone, while their combined heights and reservations cannot.
+//! The final block's keep is then priced by the existing boundary penalty;
+//! block interiors, the rest of the chain and every other hard rule survive.
 //! One bounded replan covers all admitted boundaries. Strict requests and the
 //! continued-footnote allocator never enter this recovery path.
 
@@ -66,7 +66,7 @@ fn first_fragment_len(variant: &BlockVariant, policy: BlockPolicy) -> usize {
         .unwrap_or(total)
 }
 
-/// Sorted starts of the last headings in independently impossible keep chains.
+/// Starts of the final introducing blocks in independently impossible keeps.
 /// Fixed-point admission uses exactly the same variants as the production
 /// bridge, including final gaps, baseline-grid heights and page-foot reserves.
 fn boundaries(
@@ -79,7 +79,7 @@ fn boundaries(
     let prefix = i64::from(reservation_prefix.milli_points());
     let mut result = Vec::new();
     let mut chain: Option<Measured> = None;
-    let mut last_heading = 0;
+    let mut last_intro = 0;
     let mut start = 0;
     while start < lines.len() {
         let end = pdf_height_block_end(lines, start);
@@ -87,29 +87,33 @@ fn boundaries(
         if policy.break_before {
             chain = None;
         }
-        if lines[start].flow.kind == FlowKind::Heading
-            && policy.keep_together
+        // Headings and short introductions are the only measured prose
+        // blocks kept both internally intact and bonded to their subject.
+        if matches!(
+            lines[start].flow.kind,
+            FlowKind::Heading | FlowKind::Paragraph
+        ) && policy.keep_together
             && policy.keep_with_next
         {
             let variant = joint_pagination::block_variant(lines, start, end, 0, &reserve);
             let measured = Measured::prefix(&variant, end - start)?;
             chain = Some(chain.unwrap_or_default().add(measured)?);
-            last_heading = start;
+            last_intro = start;
         } else {
             if lines[start].flow.kind != FlowKind::Heading
                 && !policy.break_before
                 // A label, definition term or hyphenated word may independently
-                // forbid this boundary; heading recovery cannot weaken it.
+                // forbid this boundary; recovery cannot weaken it.
                 && !pdf_split_is_hard_forbidden(lines, start)
-                && let Some(headings) = chain
-                && headings.occupied(prefix)? <= capacity
+                && let Some(intros) = chain
+                && intros.occupied(prefix)? <= capacity
             {
                 let variant = joint_pagination::block_variant(lines, start, end, 0, &reserve);
                 let subject = Measured::prefix(&variant, first_fragment_len(&variant, policy))?;
                 if subject.occupied(prefix)? <= capacity
-                    && headings.add(subject)?.occupied(prefix)? > capacity
+                    && intros.add(subject)?.occupied(prefix)? > capacity
                 {
-                    result.push(last_heading);
+                    result.push(last_intro);
                 }
             }
             chain = None;
@@ -180,6 +184,7 @@ mod tests {
             },
             grid: None,
             hyphenated: false,
+            right_protrusion: 0.0,
             segs: Vec::new(),
             image: None,
         }

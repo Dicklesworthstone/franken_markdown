@@ -16,8 +16,8 @@ pub enum PdfPaginationStrategy {
     Greedy,
     /// The bounded, fixed-point planner satisfied its hard block constraints.
     ExactHeight,
-    /// Fixed-point planning with only provably impossible heading-to-subject
-    /// keeps relaxed. All other hard constraints remain in force.
+    /// Fixed-point planning with only provably impossible heading or short-
+    /// introduction keeps relaxed. All other hard constraints remain in force.
     RelaxedHeight,
     /// Guaranteed-progress page planning with soft keep/widow/orphan costs.
     Legacy,

@@ -213,21 +213,23 @@ cannot reserve footnote space. These fallbacks remain successful renders, but
 they do not establish the exact planner's hard guarantees.
 
 Before choosing those broad fallbacks, non-strict optimal rendering can recover
-an impossible heading-to-subject keep. It considers a complete consecutive
-heading chain and the smallest legal first fragment of its subject. For a
-figure this is the whole figure. For a paragraph it includes the rows needed
-to satisfy widow and orphan rules. For a table it includes the header and
-any rows that must stay with it. The headings and this first fragment must
-each fit an empty page independently, while
+a page plan when a heading or short introduction cannot fit with its subject.
+A measured introduction of up to three lines can introduce a figure, table,
+code block, or child list in the same source container. The planner compares
+the entire chain of headings and introductions with the smallest legal first
+fragment of the subject. For a figure this is the whole figure. For a paragraph
+it includes the rows needed to satisfy widow and orphan rules. For a table it
+includes the header and any rows that must stay with it. The introductory
+chain and the first fragment must each fit an empty page independently, while
 their combined fixed-point height and note reservations exceed the full page.
-Only the final heading's keep with the subject becomes a finite, high-cost
-preference. Heading interiors, other keeps, explicit breaks, hard widow/orphan
-minima, baseline-grid heights and page-foot reservations retain the original
-planner's rules. The artwork and font sizes are unchanged.
+Only the final block's keep with the subject becomes a finite, high-cost
+preference. Heading and introduction interiors, other keeps, explicit breaks,
+hard widow/orphan minima, baseline-grid heights and page-foot reservations
+retain the original planner's rules. The artwork and font sizes are unchanged.
 
 Successful recovery reports `RelaxedHeight` (`relaxed_height` in JSON), retains
 the original `infeasible` reason, and returns false from `is_exact()`. Its
-`pagination_infeasible` warning describes the limited heading relaxation.
+`pagination_infeasible` warning describes the relaxed keep.
 Strict requests still return the original typed error. Continued-note layouts,
 other failure kinds and unsuccessful recovery retain
 their existing behavior. Optional paragraph alternatives still use the hard

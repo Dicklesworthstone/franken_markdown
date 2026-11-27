@@ -75,3 +75,23 @@ test('many price candidates preserve later links and formulas within the render 
   const grouped = '$5{'.repeat(4096) + '}'.repeat(4096);
   assert.equal(render(grouped + ' **kept**'), '<p>' + grouped + ' <strong>kept</strong></p>\n');
 });
+
+test('braced TeX prices keep header and body pipes inside the formula', () => {
+  for (const formula of [
+    String.raw`$P(A|B)+\text{USD $5}$`,
+    String.raw`$\text{{USD $5} and $10}|x$`,
+    String.raw`$\text{escaped \} $5}|x$`,
+  ]) {
+    const html = render(formula + '|Link\r\n---|---\r\n' + formula + '|[café](/réel)\r\n');
+    assert.ok(html.includes('<th>' + formula + '</th><th>Link</th>'), html);
+    assert.ok(html.includes('<td>' + formula + '</td><td><a href="/réel">café</a></td>'), html);
+  }
+});
+
+test('a brace opened before a price cannot let it borrow another cell', () => {
+  for (const first of ['{Cost $12', String.raw`\{Cost $12`, String.raw`$\{cost`]) {
+    const html = render('Left|Price|Formula|Link\n---|---|---|---\n' + first + ' | $5 | $x|y$ | [go](/ok)');
+    const cells = [...html.matchAll(/<td>(.*?)<\/td>/g)].map(match => match[1]);
+    assert.deepEqual(cells, [first.replace('\\{', '{'), '$5', '$x|y$', '<a href="/ok">go</a>']);
+  }
+});

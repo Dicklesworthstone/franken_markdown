@@ -1104,22 +1104,35 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
           const afterPipe = i > 0 && lastPipe === i - 1, after = text[end];
           const startsPrice = width === 1 && /[0-9]/.test(after || '');
           const startsCell = afterPipe && after !== undefined && /[a-zA-Z0-9\\\u0080-\uffff]/.test(after);
-          allocate(); runs[width - 1].push({start: i, afterPipe, brace: braces.at(-1) ?? -1,
+          // A cell opener stays a boundary even inside unmatched braces. A
+          // double-dollar span skips invalid runs in prose only.
+          const skipThrough = width === 2 ? (table ? -1 : Infinity)
+            : table && startsCell ? -1 : braces.at(-1) ?? -1;
+          allocate(); runs[width - 1].push({start: i, afterPipe, skipThrough,
             closes: i > 0 && !' \t\n'.includes(text[i - 1]) && !startsPrice && (!table || !startsCell)});
         }
         i = end; continue;
       }
-      if (!table && text[i] === '{') { allocate(); braces.push(i); }
-      else if (!table && text[i] === '}') braces.pop();
+      if (text[i] === '{') { allocate(); braces.push(i); }
+      else if (text[i] === '}') braces.pop();
       if (text[i] === '|') lastPipe = i;
       i++;
     }
     for (const candidates of runs) {
-      let closer = -1;
+      let closer = -1, latestContentStart = -1;
       for (let i = candidates.length - 1; i >= 0; i--) {
         charge();
-        if (candidates[i].closes) closer = i;
-        candidates[i].nextClose = closer;
+        const candidate = candidates[i];
+        if (candidate.closes) {
+          closer = i;
+          latestContentStart = Infinity;
+        } else {
+          // A formula may skip these dollars only if it opened every
+          // intervening TeX group. Cache that bound along with the closer.
+          latestContentStart = Math.min(latestContentStart, candidate.skipThrough);
+        }
+        candidate.nextClose = closer;
+        candidate.latestContentStart = latestContentStart;
       }
     }
     return (start, width) => {
@@ -1129,17 +1142,10 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       while (next[width - 1] < candidates.length && candidates[next[width - 1]].start <= content) {
         charge(); next[width - 1]++;
       }
-      const first = next[width - 1], closer = candidates[first]?.nextClose ?? -1;
-      if (closer < 0) return -1;
-      for (let i = first; i < closer; i++) {
-        charge();
-        // TeX groups may contain literal prices. A group opened before this
-        // formula cannot protect an invalid dollar belonging to later prose.
-        if (table || width === 1 && candidates[i].brace < content) return -1;
-      }
-      const close = candidates[closer];
-      // A price cell cannot borrow a following cell's dollar. Table matching
-      // stops at the first same-width run, even if it is an ineligible closer.
+      const first = candidates[next[width - 1]];
+      if (!first || content > first.latestContentStart) return -1;
+      const close = candidates[first.nextClose];
+      // A price cell cannot borrow a following cell's dollar.
       const numeric = width === 1 && (/^[0-9]/.test(text[content])
         || '+-'.includes(text[content]) && /[0-9]/.test(text[content + 1] || ''));
       return table && numeric && close.afterPipe ? -1 : close.start + width;

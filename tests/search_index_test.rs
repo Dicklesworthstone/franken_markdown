@@ -403,7 +403,11 @@ fn full_index_searches_visible_html_text_at_real_markdown_anchors() {
         entries,
         [
             ("guide", "Guide"),
-            ("guide", "Setup North South Tip Copy Ctrl+C Route & map"),
+            ("guide", "Setup"),
+            ("guide", "North South"),
+            ("guide", "Tip"),
+            ("guide", "Copy Ctrl+C"),
+            ("guide", "Route & map"),
             ("guide", "Use compass now."),
             ("setup", "Setup"),
         ]

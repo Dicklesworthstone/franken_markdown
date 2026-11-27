@@ -217,7 +217,9 @@ mod tests {
         let json = index_json(&book).unwrap();
         assert!(json.contains("launch_unique();"));
         assert!(json.contains("timeout 30"));
-        assert!(json.contains("\"anchor\":\"guide\",\"text\":\"Readable HTML_unique\""));
+        for passage in ["Readable", "HTML_unique"] {
+            assert!(json.contains(&format!("\"anchor\":\"guide\",\"text\":\"{passage}\"")));
+        }
         assert!(json.contains("unique citation body"));
         assert!(json.contains("\"anchor\":\"fn-n\""));
     }

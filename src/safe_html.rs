@@ -1912,37 +1912,43 @@ impl Sanitizer {
     }
 }
 
-/// Append searchable text for the default sanitized HTML representation. Track
-/// recognized markup so callers can retain their raw-block exclusion for
-/// unsupported source. Formatting tags join adjacent text, while line breaks
-/// and structural tags separate words just as they do in the published page.
-pub(crate) fn push_search_text(raw: &str, out: &mut String) -> bool {
-    let mut recognized = false;
-    for piece in pieces(raw) {
+/// Reader-facing text from sanitized HTML. Emit a separate passage at paragraph,
+/// list item and table row boundaries; inline formatting joins adjacent words.
+/// When extracting an entire block, unsupported raw source stays unindexed.
+pub(crate) fn visit_search_text(raw: &str, block: bool, mut visit: impl FnMut(Option<&str>)) {
+    let pieces = pieces(raw);
+    if block
+        && !pieces.iter().any(
+            |piece| matches!(piece, Piece::Tag(tag, _) if allowed_element(&tag.name).is_some()),
+        )
+    {
+        return;
+    }
+    for piece in pieces {
         match piece {
             Piece::Ignorable => {}
-            Piece::Text(text) => out.push_str(&decode_entities(text)),
+            Piece::Text(text) => visit(Some(&decode_entities(text))),
             Piece::Tag(tag, source) => {
                 let name = tag.name.as_str();
                 if allowed_element(name).is_none() {
                     if !dropped_element(name) {
-                        out.push_str(source);
+                        visit(Some(source));
                     }
                     continue;
                 }
-                recognized = true;
                 match name {
-                    "img" if !tag.closing => out.push_str(tag.attr("alt").unwrap_or("")),
-                    "br" | "hr" | "blockquote" | "caption" | "center" | "dd" | "details"
-                    | "div" | "dl" | "dt" | "figcaption" | "figure" | "h1" | "h2" | "h3"
-                    | "h4" | "h5" | "h6" | "li" | "ol" | "p" | "pre" | "summary" | "table"
-                    | "td" | "th" | "tr" | "ul" => out.push(' '),
+                    "img" if !tag.closing => visit(Some(tag.attr("alt").unwrap_or(""))),
+                    "br" | "td" | "th" => visit(Some(" ")),
+                    "hr" | "blockquote" | "caption" | "center" | "dd" | "details" | "div"
+                    | "dl" | "dt" | "figcaption" | "figure" | "h1" | "h2" | "h3" | "h4" | "h5"
+                    | "h6" | "li" | "ol" | "p" | "pre" | "summary" | "table" | "tr" | "ul" => {
+                        visit(None);
+                    }
                     _ => {}
                 }
             }
         }
     }
-    recognized
 }
 
 /// The text a raw HTML fragment shows: decoded text runs plus the source of

@@ -76,7 +76,8 @@ fn native_sidecar_includes_all_supported_content_and_real_note_targets() {
         "Cache_unique Stores reusable values",
         "x_unique^2 + y^2",
         "Note_unique body.",
-        "HTML_unique A & B",
+        "\"text\":\"HTML_unique\"",
+        "\"text\":\"A & B\"",
     ] {
         assert!(index.contains(text), "missing {text:?}: {index}");
     }

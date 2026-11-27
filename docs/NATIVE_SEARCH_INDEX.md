@@ -33,7 +33,9 @@ The same correction applies to offline book search because it uses the shared
 full-content indexer.
 
 Search includes the reader-visible text of supported HTML blocks, including table
-cells, details, summaries, and image alternative text. Search results in a raw
+cells, details, summaries, and image alternative text. Paragraphs, list items,
+summaries, and table rows get separate entries, so an exact phrase cannot
+match by joining words from different passages. Search results in a raw
 HTML heading use the surrounding Markdown section or note. Inline formatting
 keeps words together, line breaks separate words, and comments and formatting
 attributes stay outside snippets. Blocks containing only unsupported markup

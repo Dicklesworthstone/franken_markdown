@@ -275,9 +275,14 @@ fn walk_blocks(
             }
             Block::HtmlBlock(raw) if full => {
                 let mut text = String::new();
-                if crate::safe_html::push_search_text(raw, &mut text) {
-                    push_content(&text, current_anchor, entries);
-                }
+                crate::safe_html::visit_search_text(raw, true, |part| match part {
+                    Some(part) => text.push_str(part),
+                    None => {
+                        push_content(&text, current_anchor, entries);
+                        text.clear();
+                    }
+                });
+                push_content(&text, current_anchor, entries);
             }
             // Definition bodies are emitted only when dequeued after the body.
             Block::FootnoteDefinition { .. } => {}
@@ -411,7 +416,9 @@ fn push_inlines_to_plain(inlines: &[Inline], out: &mut String) {
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::SoftBreak | Inline::HardBreak => out.push(' '),
             Inline::Html(html) => {
-                crate::safe_html::push_search_text(html, out);
+                crate::safe_html::visit_search_text(html, false, |part| {
+                    out.push_str(part.unwrap_or(" "));
+                });
             }
         }
     }

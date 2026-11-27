@@ -1908,8 +1908,22 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
     // setext meaning when neither does.
     if ((!header.includes('|') && !delimiter.includes('|')) || !tableRowSource(header)) return null;
     const cells = tableCells(delimiter);
-    if (cells.length !== tableCells(header).length || !cells.every(c => /^:?-+:?$/.test(c))) return null;
-    return cells.map(c => c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : '');
+    if (cells.length !== tableCells(header).length || !cells.every(c => /^:?-+:?$|^-{3,}\.$/.test(c))) return null;
+    return cells.map(c => c.endsWith('.') ? 'decimal' : c.startsWith(':') && c.endsWith(':') ? 'center'
+      : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : '');
+  }
+  // In an opted-in table, a marker-only row decorates the preceding data
+  // cells. Match the native parser's visible columns and decoded plain text.
+  function footingRules(cells, columns) {
+    const rules = [];
+    for (let i = 0; i < Math.min(cells.length, columns); i++) {
+      const raw = cells[i];
+      const value = /[\\&]/.test(raw) ? unescape(raw).trim() : raw;
+      if (!value) continue;
+      if (value !== '---' && value !== '===') return null;
+      allocate(); rules.push([i, value]);
+    }
+    return rules.length ? rules : null;
   }
   // Match the native parser's bound on synthesized empty cells. A wide header
   // and many short rows must not multiply a tiny source into unbounded padding.
@@ -2452,13 +2466,23 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
       const aligns = !paragraphOnly && i + 1 < lines.length && tableAlignments(line, lines[i + 1]);
       if (aligns) {
         const head = tableCells(line), rows = [], padding = tablePadding(aligns.length);
+        const rules = aligns.includes('decimal') ? new Map() : null;
         i += 2;
         while (i < lines.length && tableRowSource(lines[i])) {
           const cells = tableCells(lines[i]);
           if (!padding(cells.length)) { paddingFallback = true; break; }
-          allocate(); rows.push(cells); i++;
+          i++;
+          const markers = rules && rows.length && footingRules(cells, aligns.length);
+          if (markers) {
+            const previous = rows[rows.length - 1];
+            let rowRules = rules.get(previous);
+            if (!rowRules) { allocate(); rules.set(previous, rowRules = new Map()); }
+            for (const [column, marker] of markers) {
+              if (rowRules.get(column) !== '===') rowRules.set(column, marker);
+            }
+          } else { allocate(); rows.push(cells); }
         }
-        push({kind: 'table', aligns, head, rows}); continue;
+        push({kind: 'table', aligns, head, rows, rules}); continue;
       }
       let term = extensions && !paragraphOnly && !lazyPadding.get(lines)?.has(i)
         ? definitionTermEnd(i) : -1;
@@ -2814,13 +2838,19 @@ function parseMarkdownClient(source, imageAssets, profile, contents) {
           const row = (cells, tag) => {
             let html = '<tr>';
             for (let index = 0; index < node.aligns.length; index++) {
-              const align = node.aligns[index];
-              html = append(html, '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>'
+              const align = node.aligns[index], marker = node.rules?.get(cells)?.get(index);
+              const border = marker === '===' ? 'border-bottom:3px double currentColor'
+                : marker === '---' ? 'border-bottom:1px solid currentColor' : '';
+              const style = [align && 'text-align:' + (align === 'decimal' ? 'right' : align), border]
+                .filter(Boolean).join(';');
+              html = append(html, '<' + tag + (tag === 'th' && node.rules ? ' scope="col"' : '')
+                + (style ? ' style="' + style + '"' : '') + '>'
                 + inline(cells[index] || '', 0, true, footnotes, true, true) + '</' + tag + '>');
             }
             return append(html, '</tr>\n');
           };
-          out = append(out, '<div class="table-wrap" role="region" aria-label="Markdown table" tabindex="0"><table>\n<thead>\n'
+          out = append(out, '<div class="table-wrap" role="region" aria-label="Markdown table" tabindex="0"><table'
+            + (node.rules ? ' class="fmd-financial-table"' : '') + '>\n<thead>\n'
             + row(node.head, 'th') + '</thead>\n<tbody>\n');
           for (const cells of node.rows) out = append(out, row(cells, 'td'));
           out = append(out, '</tbody>\n</table></div>\n'); break;
